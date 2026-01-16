@@ -368,10 +368,24 @@ class CursorAgentClient:
             output = stdout.decode("utf-8", errors="replace")
             error_output = stderr.decode("utf-8", errors="replace")
             
+            # 构建错误信息（包含更多上下文）
+            error_msg = None
+            if process.returncode != 0:
+                error_parts = []
+                if error_output.strip():
+                    error_parts.append(f"stderr: {error_output.strip()}")
+                if output.strip() and not error_output.strip():
+                    # 如果 stderr 为空但 stdout 有内容，可能错误在 stdout 中
+                    error_parts.append(f"stdout: {output.strip()[:500]}")
+                if not error_parts:
+                    error_parts.append(f"exit_code: {process.returncode} (无错误输出)")
+                error_msg = "; ".join(error_parts)
+                logger.warning(f"agent CLI 返回非零退出码 {process.returncode}: {error_msg[:200]}")
+            
             return {
                 "success": process.returncode == 0,
                 "output": output,
-                "error": error_output if process.returncode != 0 else None,
+                "error": error_msg,
                 "exit_code": process.returncode,
                 "command": f"agent -p '...' --model {self.config.model}" + (" --force" if self.config.force_write else ""),
             }

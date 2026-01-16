@@ -106,9 +106,10 @@ class PlannerAgent(BaseAgent):
             )
             
             if not result.success:
-                logger.error(f"[{self.id}] 规划失败: {result.error}")
+                error_detail = result.error or f"exit_code={result.exit_code}, output={result.output[:200] if result.output else 'empty'}"
+                logger.error(f"[{self.id}] 规划失败: {error_detail}")
                 self.update_status(AgentStatus.FAILED)
-                return {"success": False, "error": result.error, "tasks": []}
+                return {"success": False, "error": error_detail, "tasks": []}
             
             # 解析规划结果
             plan_result = self._parse_planning_result(result.output)
