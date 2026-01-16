@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "审计所有 shell 命令执行"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "记录 shell 命令执行结果"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "审计 MCP 工具调用"
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "记录 MCP 工具调用结果"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "./hooks/afterFileEdit.sh",
+        "description": "文件编辑后格式化"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "审计提交的 prompt"
+      }
+    ],
+    "stop": [
+      {
+        "command": "./hooks/audit.sh",
+        "description": "记录 agent 结束"
+      }
+    ]
+  }
+}

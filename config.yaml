@@ -1,0 +1,66 @@
+# 规划者-执行者 多Agent系统 配置文件
+
+# 系统配置
+system:
+  max_iterations: 10        # 最大迭代次数
+  worker_pool_size: 3       # Worker 池大小
+  enable_sub_planners: true # 是否启用子规划者
+  strict_review: false      # 严格评审模式
+
+# 模型配置 - 不同 Agent 使用不同模型
+# 使用 `agent models` 查看完整可用模型列表
+models:
+  # 规划者模型 - GPT 5.2 High 擅长高层规划和任务分解
+  planner: gpt-5.2-high
+  
+  # 执行者模型 - Claude 4.5 Opus (Thinking) 擅长代码生成
+  worker: opus-4.5-thinking
+  
+  # 评审者模型 - Claude 4.5 Opus (Thinking) 擅长代码审查
+  reviewer: opus-4.5-thinking
+
+# 可用模型列表 (2026-01):
+# - gpt-5.2-high      : GPT-5.2 High
+# - gpt-5.2           : GPT-5.2
+# - gpt-5.2-codex     : GPT-5.2 Codex
+# - opus-4.5-thinking : Claude 4.5 Opus (Thinking) [默认]
+# - opus-4.5          : Claude 4.5 Opus
+# - sonnet-4.5-thinking: Claude 4.5 Sonnet (Thinking)
+# - sonnet-4.5        : Claude 4.5 Sonnet
+# - gemini-3-pro      : Gemini 3 Pro
+# - gemini-3-flash    : Gemini 3 Flash
+# - grok              : Grok
+
+# agent CLI 配置
+# 安装: curl https://cursor.com/install -fsS | bash
+# 身份验证: export CURSOR_API_KEY=your_api_key_here
+agent_cli:
+  path: agent               # agent CLI 路径
+  timeout: 300              # 超时时间（秒）
+  max_retries: 3            # 最大重试次数
+  output_format: text       # 输出格式: text, json, stream-json
+  # api_key: ""             # API 密钥（可选，推荐使用环境变量）
+
+# 规划者配置
+planner:
+  max_sub_planners: 3       # 最大子规划者数量
+  max_tasks_per_plan: 10    # 单次规划最大任务数
+  exploration_depth: 3      # 探索深度
+  timeout: 180              # 规划超时（秒）
+
+# 执行者配置
+worker:
+  task_timeout: 300         # 任务超时时间（秒）
+  max_concurrent_tasks: 1   # 同时处理的任务数
+
+# 评审者配置
+reviewer:
+  strict_mode: false        # 严格模式
+  timeout: 120              # 评审超时（秒）
+
+# 日志配置
+logging:
+  level: INFO               # 日志级别: DEBUG, INFO, WARNING, ERROR
+  file: logs/agent.log      # 日志文件
+  rotation: 10 MB           # 日志轮转大小
+  retention: 7 days         # 日志保留时间

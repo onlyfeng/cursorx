@@ -1,0 +1,91 @@
+# Cursor CLI 修复 CI 失败工作流
+# 参考: https://cursor.com/cn/docs/cli/cookbook/fix-ci
+#
+# 当 CI 构建失败时自动尝试修复
+
+name: 修复 CI 失败
+
+on:
+  workflow_run:
+    workflows: ["CI"]  # 替换为你的 CI 工作流名称
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix-ci:
+    runs-on: ubuntu-latest
+    # 仅在 CI 失败时运行
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: 安装 Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+
+      - name: 配置 git
+        run: |
+          git config user.name "Cursor Agent"
+          git config user.email "cursoragent@cursor.com"
+
+      - name: 获取失败日志
+        id: get-logs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 获取失败的工作流运行日志
+          gh run view ${{ github.event.workflow_run.id }} --log-failed > /tmp/ci-failure.log 2>&1 || true
+          echo "logs_file=/tmp/ci-failure.log" >> $GITHUB_OUTPUT
+
+      - name: 分析并修复问题
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          agent --force --model "opus-4.5-thinking" --output-format=text --print "
+          CI 构建失败。请分析失败日志并尝试修复问题。
+
+          失败日志位于: ${{ steps.get-logs.outputs.logs_file }}
+          分支: ${{ github.event.workflow_run.head_branch }}
+          
+          请执行以下步骤:
+          1. 读取失败日志，理解失败原因
+          2. 分析相关代码文件
+          3. 进行必要的修复
+          4. 验证修复是否解决了问题
+          
+          注意:
+          - 只修复导致 CI 失败的问题
+          - 不要进行不相关的改动
+          - 如果无法确定问题，请说明原因
+          "
+
+      - name: 检查是否有变更
+        id: check-changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 提交修复
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          git add -A
+          git commit -m "fix: 自动修复 CI 失败
+
+          由 Cursor Agent 自动生成的修复。
+          
+          原始失败运行: ${{ github.event.workflow_run.html_url }}"
+          git push origin ${{ github.event.workflow_run.head_branch }}

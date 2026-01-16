@@ -1,0 +1,21 @@
+# 规划者-执行者 多Agent系统依赖
+
+# 异步支持
+asyncio-pool>=0.6.0
+aiofiles>=23.2.1
+
+# 数据模型
+pydantic>=2.5.0
+
+# 进程/子进程管理
+psutil>=5.9.0
+
+# 日志
+loguru>=0.7.2
+
+# 配置管理
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# 类型支持
+typing-extensions>=4.9.0

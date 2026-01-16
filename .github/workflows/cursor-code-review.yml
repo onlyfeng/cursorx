@@ -1,0 +1,77 @@
+# Cursor CLI 自动代码审查工作流
+# 参考: https://cursor.com/cn/docs/cli/cookbook/code-review
+#
+# 使用前请确保:
+# 1. 在仓库 Settings > Secrets 中设置 CURSOR_API_KEY
+# 2. 确保 GitHub Token 有足够的权限
+
+name: 代码审查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+  issues: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    # 跳过草稿 PR 的自动代码审查
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: 安装 Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+
+      - name: 配置 git 身份信息
+        run: |
+          git config user.name "Cursor Agent"
+          git config user.email "cursoragent@cursor.com"
+
+      - name: 执行自动代码审查
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          MODEL: gpt-5
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
+        run: |
+          agent --force --model "$MODEL" --output-format=text --print '您正在 GitHub Actions 运行器中执行自动代码审查。gh 命令行界面可用并通过 GH_TOKEN 进行身份验证。您可以对拉取请求进行评论。
+
+          上下文：
+          - 仓库：${{ github.repository }}
+          - PR 编号：${{ github.event.pull_request.number }}
+          - PR Head SHA：${{ github.event.pull_request.head.sha }}
+          - PR Base SHA：${{ github.event.pull_request.base.sha }}
+          - 阻塞审查：${{ env.BLOCKING_REVIEW }}
+
+          目标：
+          1) 重新检查现有审查评论，并在问题解决后回复已解决。
+          2) 审查当前 PR 差异，仅标记明确的高严重性问题。
+          3) 仅在更改的行上留下非常简短的内联评论（1-2 句话），并在最后提供简要总结。
+
+          流程：
+          - 获取现有评论：gh pr view --json comments
+          - 获取差异：gh pr diff
+          - 获取带有补丁的更改文件：gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq ".[] | {filename,patch}"
+          
+          仅分析以下问题：
+          - 空值/未定义解引用
+          - 资源泄漏（未关闭的文件或连接）
+          - 注入攻击（SQL/XSS）
+          - 并发/竞态条件
+          - 关键操作缺少错误处理
+          - 具有不正确行为的明显逻辑错误
+          - 明确的安全漏洞
+          
+          避免重复：如果相同或相近行上已存在类似反馈，则跳过。'

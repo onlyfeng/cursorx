@@ -1,0 +1,25 @@
+{
+  "$schema": "https://cursor.com/schemas/mcp.json",
+  "mcpServers": {
+    "filesystem": {
+      "description": "文件系统操作",
+      "enabled": true
+    },
+    "search": {
+      "description": "代码搜索",
+      "enabled": true
+    },
+    "fetch": {
+      "description": "HTTP 请求 - 获取网页内容（无需 GUI）",
+      "command": "npx", 
+      "args": ["@anthropic/mcp-server-fetch"],
+      "enabled": true
+    },
+    "playwright": {
+      "description": "浏览器自动化 - Headless 模式（无需 GUI）",
+      "command": "npx",
+      "args": ["@anthropic/mcp-server-playwright", "--headless"],
+      "enabled": false
+    }
+  }
+}
