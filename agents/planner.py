@@ -1,15 +1,20 @@
 """规划者 Agent
 
 负责探索代码库、分解任务、派生子规划者
+支持语义搜索增强的代码库探索
 """
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
 from tasks.task import Task, TaskType, TaskPriority
 from cursor.client import CursorAgentClient, CursorAgentConfig
+
+# 可选的语义搜索支持
+if TYPE_CHECKING:
+    from indexing import SemanticSearch, SearchOptions
 
 
 class PlannerConfig(BaseModel):
@@ -20,6 +25,10 @@ class PlannerConfig(BaseModel):
     max_tasks_per_plan: int = 10       # 单次规划最大任务数
     exploration_depth: int = 3          # 探索深度
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    # 语义搜索配置（可选增强）
+    enable_semantic_search: bool = False       # 是否启用语义搜索
+    semantic_search_top_k: int = 10            # 搜索返回结果数
+    semantic_search_min_score: float = 0.3     # 最低相似度阈值
 
 
 class PlannerAgent(BaseAgent):
@@ -70,7 +79,7 @@ class PlannerAgent(BaseAgent):
 }
 ```"""
     
-    def __init__(self, config: PlannerConfig):
+    def __init__(self, config: PlannerConfig, semantic_search: Optional["SemanticSearch"] = None):
         agent_config = AgentConfig(
             role=AgentRole.PLANNER,
             name=config.name,
@@ -80,6 +89,23 @@ class PlannerAgent(BaseAgent):
         self.planner_config = config
         self.cursor_client = CursorAgentClient(config.cursor_config)
         self.sub_planners: list["PlannerAgent"] = []
+        
+        # 语义搜索增强（可选）
+        self._semantic_search: Optional["SemanticSearch"] = semantic_search
+        self._search_enabled = config.enable_semantic_search and semantic_search is not None
+        if self._search_enabled:
+            logger.info(f"[{config.name}] 语义搜索已启用")
+    
+    def set_semantic_search(self, search: "SemanticSearch") -> None:
+        """设置语义搜索引擎（延迟初始化）
+        
+        Args:
+            search: SemanticSearch 实例
+        """
+        self._semantic_search = search
+        self._search_enabled = self.planner_config.enable_semantic_search
+        if self._search_enabled:
+            logger.info(f"[{self.id}] 语义搜索已启用")
     
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行规划任务
@@ -95,14 +121,25 @@ class PlannerAgent(BaseAgent):
         logger.info(f"[{self.id}] 开始规划: {instruction[:100]}...")
         
         try:
+            # 使用语义搜索探索代码库（可选增强）
+            search_context = None
+            if self._search_enabled:
+                search_context = await self._explore_with_semantic_search(instruction)
+                logger.info(f"[{self.id}] 语义搜索找到 {len(search_context.get('related_code', []))} 个相关代码片段")
+            
+            # 合并上下文
+            merged_context = context.copy() if context else {}
+            if search_context:
+                merged_context["semantic_search_results"] = search_context
+            
             # 构建规划 prompt
-            prompt = self._build_planning_prompt(instruction, context)
+            prompt = self._build_planning_prompt(instruction, merged_context)
             
             # 调用 Cursor Agent 执行规划
             result = await self.cursor_client.execute(
                 instruction=prompt,
                 working_directory=self.planner_config.working_directory,
-                context=context,
+                context=merged_context,
             )
             
             if not result.success:
@@ -122,12 +159,56 @@ class PlannerAgent(BaseAgent):
                 "analysis": plan_result.get("analysis", ""),
                 "tasks": plan_result.get("tasks", []),
                 "sub_planners_needed": plan_result.get("sub_planners_needed", []),
+                "search_context": search_context,  # 返回搜索结果供后续使用
             }
             
         except Exception as e:
             logger.exception(f"[{self.id}] 规划异常: {e}")
             self.update_status(AgentStatus.FAILED)
             return {"success": False, "error": str(e), "tasks": []}
+    
+    async def _explore_with_semantic_search(self, instruction: str) -> dict[str, Any]:
+        """使用语义搜索探索代码库
+        
+        Args:
+            instruction: 用户目标指令
+            
+        Returns:
+            搜索结果上下文
+        """
+        if not self._semantic_search:
+            return {}
+        
+        try:
+            # 执行语义搜索
+            results = await self._semantic_search.search(
+                query=instruction,
+                top_k=self.planner_config.semantic_search_top_k,
+                min_score=self.planner_config.semantic_search_min_score,
+            )
+            
+            # 构建相关代码片段列表
+            related_code = []
+            for result in results:
+                chunk = result.chunk
+                related_code.append({
+                    "file_path": chunk.file_path,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "name": chunk.name,
+                    "chunk_type": chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
+                    "content_preview": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
+                    "score": result.score,
+                })
+            
+            return {
+                "related_code": related_code,
+                "total_found": len(results),
+            }
+            
+        except Exception as e:
+            logger.warning(f"[{self.id}] 语义搜索失败: {e}")
+            return {}
     
     def _build_planning_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
         """构建规划 prompt"""
@@ -143,6 +224,21 @@ class PlannerAgent(BaseAgent):
                 parts.append(f"\n## 前序分析\n{context['previous_analysis']}")
             if "constraints" in context:
                 parts.append(f"\n## 约束条件\n{context['constraints']}")
+            
+            # 添加语义搜索结果
+            if "semantic_search_results" in context:
+                search_results = context["semantic_search_results"]
+                related_code = search_results.get("related_code", [])
+                if related_code:
+                    parts.append(f"\n## 相关代码（语义搜索结果，共 {len(related_code)} 个）")
+                    for i, code in enumerate(related_code[:5], 1):  # 只展示前5个
+                        parts.append(
+                            f"\n### {i}. {code.get('name', '未命名')} ({code['file_path']}:{code['start_line']}-{code['end_line']})"
+                            f"\n类型: {code.get('chunk_type', 'unknown')} | 相似度: {code.get('score', 0):.2f}"
+                            f"\n```\n{code.get('content_preview', '')}\n```"
+                        )
+                    if len(related_code) > 5:
+                        parts.append(f"\n... 还有 {len(related_code) - 5} 个相关代码片段未显示")
         
         parts.append("\n请分析并输出任务规划:")
         
@@ -195,9 +291,14 @@ class PlannerAgent(BaseAgent):
             max_sub_planners=0,  # 子规划者不能再派生
             max_tasks_per_plan=self.planner_config.max_tasks_per_plan,
             cursor_config=self.planner_config.cursor_config,
+            # 继承父规划者的语义搜索配置
+            enable_semantic_search=self.planner_config.enable_semantic_search,
+            semantic_search_top_k=self.planner_config.semantic_search_top_k,
+            semantic_search_min_score=self.planner_config.semantic_search_min_score,
         )
         
-        sub_planner = PlannerAgent(sub_config)
+        # 创建子规划者并传递语义搜索实例
+        sub_planner = PlannerAgent(sub_config, semantic_search=self._semantic_search)
         sub_planner.set_context("parent_planner", self.id)
         sub_planner.set_context("focus_area", area)
         if context:

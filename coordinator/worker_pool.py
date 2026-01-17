@@ -1,11 +1,14 @@
 """Worker 池管理"""
 import asyncio
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from loguru import logger
 
 from agents.worker import WorkerAgent, WorkerConfig
 from tasks.task import Task
 from tasks.queue import TaskQueue
+
+if TYPE_CHECKING:
+    from knowledge import KnowledgeManager
 
 
 class WorkerPool:
@@ -18,12 +21,14 @@ class WorkerPool:
         self,
         size: int = 3,
         worker_config: Optional[WorkerConfig] = None,
+        knowledge_manager: Optional["KnowledgeManager"] = None,
     ):
         self.size = size
         self.worker_config = worker_config or WorkerConfig()
         self.workers: list[WorkerAgent] = []
         self._running = False
         self._worker_tasks: list[asyncio.Task] = []
+        self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
     
     def initialize(self) -> None:
         """初始化 Worker 池"""
@@ -34,10 +39,23 @@ class WorkerPool:
                 working_directory=self.worker_config.working_directory,
                 task_timeout=self.worker_config.task_timeout,
                 cursor_config=self.worker_config.cursor_config,
+                enable_knowledge_search=self.worker_config.enable_knowledge_search,
+                knowledge_search_top_k=self.worker_config.knowledge_search_top_k,
             )
-            worker = WorkerAgent(config)
+            worker = WorkerAgent(config, knowledge_manager=self._knowledge_manager)
             self.workers.append(worker)
         logger.info(f"Worker 池已初始化: {self.size} 个 Worker")
+    
+    def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
+        """设置知识库管理器（延迟初始化）
+        
+        Args:
+            manager: KnowledgeManager 实例
+        """
+        self._knowledge_manager = manager
+        for worker in self.workers:
+            worker.set_knowledge_manager(manager)
+        logger.info(f"Worker 池已绑定知识库管理器")
     
     async def start(self, task_queue: TaskQueue, iteration_id: int) -> None:
         """启动 Worker 池处理任务

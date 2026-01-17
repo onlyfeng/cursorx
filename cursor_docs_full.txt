@@ -1,0 +1,133 @@
+# Cursor 完整文档列表 (中文版)
+# 自动生成自 https://cursor.com/llms.txt
+
+# ========== 入门指南 ==========
+https://cursor.com/cn/docs
+https://cursor.com/cn/docs/get-started/quickstart
+https://cursor.com/cn/docs/get-started/concepts
+https://cursor.com/cn/docs/models
+https://cursor.com/cn/docs/account/pricing
+
+# ========== Agent 功能 ==========
+https://cursor.com/cn/docs/agent/overview
+https://cursor.com/cn/docs/agent/modes
+https://cursor.com/cn/docs/agent/review
+https://cursor.com/cn/docs/agent/terminal
+https://cursor.com/cn/docs/agent/browser
+https://cursor.com/cn/docs/agent/security
+https://cursor.com/cn/docs/agent/hooks
+
+# ========== Context 上下文 ==========
+https://cursor.com/cn/docs/context/rules
+https://cursor.com/cn/docs/context/commands
+https://cursor.com/cn/docs/context/skills
+https://cursor.com/cn/docs/context/subagents
+https://cursor.com/cn/docs/context/semantic-search
+https://cursor.com/cn/docs/context/mentions
+https://cursor.com/cn/docs/context/mcp
+https://cursor.com/cn/docs/context/mcp/directory
+https://cursor.com/cn/docs/context/mcp/install-links
+
+# ========== 功能特性 ==========
+https://cursor.com/cn/docs/tab/overview
+https://cursor.com/cn/docs/cloud-agent
+https://cursor.com/cn/docs/cloud-agent/web-and-mobile
+https://cursor.com/cn/docs/cloud-agent/egress-ip-ranges
+https://cursor.com/cn/docs/cloud-agent/api/endpoints
+https://cursor.com/cn/docs/inline-edit/overview
+https://cursor.com/cn/docs/inline-edit/terminal
+https://cursor.com/cn/docs/bugbot
+
+# ========== CLI 命令行 ==========
+https://cursor.com/cn/docs/cli/overview
+https://cursor.com/cn/docs/cli/installation
+https://cursor.com/cn/docs/cli/using
+https://cursor.com/cn/docs/cli/shell-mode
+https://cursor.com/cn/docs/cli/mcp
+https://cursor.com/cn/docs/cli/headless
+https://cursor.com/cn/docs/cli/github-actions
+
+# CLI 参考文档
+https://cursor.com/cn/docs/cli/reference/slash-commands
+https://cursor.com/cn/docs/cli/reference/parameters
+https://cursor.com/cn/docs/cli/reference/authentication
+https://cursor.com/cn/docs/cli/reference/permissions
+https://cursor.com/cn/docs/cli/reference/configuration
+https://cursor.com/cn/docs/cli/reference/output-format
+
+# CLI Cookbook
+https://cursor.com/cn/docs/cli/cookbook/code-review
+https://cursor.com/cn/docs/cli/cookbook/update-docs
+https://cursor.com/cn/docs/cli/cookbook/fix-ci
+https://cursor.com/cn/docs/cli/cookbook/secret-audit
+https://cursor.com/cn/docs/cli/cookbook/translate-keys
+
+# ========== 集成 ==========
+https://cursor.com/cn/docs/integrations/slack
+https://cursor.com/cn/docs/integrations/linear
+https://cursor.com/cn/docs/integrations/github
+https://cursor.com/cn/docs/integrations/git
+https://cursor.com/cn/docs/integrations/gitlab
+https://cursor.com/cn/docs/integrations/deeplinks
+
+# ========== 配置 ==========
+https://cursor.com/cn/docs/context/ignore-files
+https://cursor.com/cn/docs/configuration/extensions
+https://cursor.com/cn/docs/configuration/kbd
+https://cursor.com/cn/docs/configuration/themes
+https://cursor.com/cn/docs/configuration/shell
+https://cursor.com/cn/docs/configuration/worktrees
+https://cursor.com/cn/docs/settings/api-keys
+https://cursor.com/cn/docs/settings/aws-bedrock
+
+# 语言配置
+https://cursor.com/cn/docs/configuration/languages
+https://cursor.com/cn/docs/configuration/languages/python
+https://cursor.com/cn/docs/configuration/languages/javascript-typescript
+https://cursor.com/cn/docs/configuration/languages/ios-macos-swift
+https://cursor.com/cn/docs/configuration/languages/java
+
+# 迁移指南
+https://cursor.com/cn/docs/configuration/migrations
+https://cursor.com/cn/docs/configuration/migrations/vscode
+https://cursor.com/cn/docs/configuration/migrations/jetbrains
+
+# ========== 账户与团队 ==========
+https://cursor.com/cn/docs/account/billing
+https://cursor.com/cn/docs/account/billing/spend-alerts
+https://cursor.com/cn/docs/account/billing/spend-limits
+https://cursor.com/cn/docs/account/update-access
+https://cursor.com/cn/docs/account/teams/setup
+https://cursor.com/cn/docs/account/teams/pricing
+https://cursor.com/cn/docs/account/teams/members
+https://cursor.com/cn/docs/account/teams/sso
+https://cursor.com/cn/docs/account/teams/dashboard
+https://cursor.com/cn/docs/account/teams/analytics
+
+# ========== 企业版 ==========
+https://cursor.com/cn/docs/enterprise
+https://cursor.com/cn/docs/enterprise/identity-and-access-management
+https://cursor.com/cn/docs/account/teams/scim
+https://cursor.com/cn/docs/enterprise/privacy-and-data-governance
+https://cursor.com/cn/docs/enterprise/network-configuration
+https://cursor.com/cn/docs/enterprise/llm-safety-and-controls
+https://cursor.com/cn/docs/enterprise/model-and-integration-management
+https://cursor.com/cn/docs/enterprise/compliance-and-monitoring
+https://cursor.com/cn/docs/enterprise/deployment-patterns
+https://cursor.com/cn/docs/account/enterprise/service-accounts
+https://cursor.com/cn/docs/account/enterprise/billing-groups
+
+# ========== Cookbook 教程 ==========
+https://cursor.com/cn/docs/cookbook/agent-workflows
+https://cursor.com/cn/docs/cookbook/building-mcp-server
+https://cursor.com/cn/docs/cookbook/web-development
+https://cursor.com/cn/docs/cookbook/data-science
+https://cursor.com/cn/docs/cookbook/large-codebases
+https://cursor.com/cn/docs/cookbook/mermaid-diagrams
+https://cursor.com/cn/docs/cookbook/bugbot-rules
+
+# ========== 故障排除 ==========
+https://cursor.com/cn/docs/troubleshooting/common-issues
+https://cursor.com/cn/docs/troubleshooting/request-reporting
+https://cursor.com/cn/docs/troubleshooting/troubleshooting-guide
+https://cursor.com/cn/docs/downloads

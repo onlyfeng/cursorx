@@ -1,0 +1,46 @@
+# Cursor CLI 相关文档
+# 包含：CLI 核心功能、参考文档、Cookbook、相关配置
+# 共 24 个 URL
+
+# ========== CLI 核心文档 ==========
+# CLI 概览和基础用法
+https://cursor.com/cn/docs/cli/overview
+https://cursor.com/cn/docs/cli/installation
+https://cursor.com/cn/docs/cli/using
+https://cursor.com/cn/docs/cli/shell-mode
+https://cursor.com/cn/docs/cli/mcp
+https://cursor.com/cn/docs/cli/headless
+https://cursor.com/cn/docs/cli/github-actions
+
+# ========== CLI 参考文档 ==========
+# 详细的参数、命令、权限等说明
+https://cursor.com/cn/docs/cli/reference/slash-commands
+https://cursor.com/cn/docs/cli/reference/parameters
+https://cursor.com/cn/docs/cli/reference/authentication
+https://cursor.com/cn/docs/cli/reference/permissions
+https://cursor.com/cn/docs/cli/reference/configuration
+https://cursor.com/cn/docs/cli/reference/output-format
+
+# ========== CLI Cookbook ==========
+# 实战教程和最佳实践
+https://cursor.com/cn/docs/cli/cookbook/code-review
+https://cursor.com/cn/docs/cli/cookbook/update-docs
+https://cursor.com/cn/docs/cli/cookbook/fix-ci
+https://cursor.com/cn/docs/cli/cookbook/secret-audit
+https://cursor.com/cn/docs/cli/cookbook/translate-keys
+
+# ========== CLI 相关配置 ==========
+# Shell 配置（影响 CLI shell-mode）
+https://cursor.com/cn/docs/configuration/shell
+
+# API Keys（CLI 认证必需）
+https://cursor.com/cn/docs/settings/api-keys
+
+# Git 集成（CLI 常用操作）
+https://cursor.com/cn/docs/integrations/git
+https://cursor.com/cn/docs/integrations/github
+
+# ========== 基础概念 ==========
+# 理解 CLI 需要的基础知识
+https://cursor.com/cn/docs/get-started/concepts
+https://cursor.com/cn/docs/models

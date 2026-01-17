@@ -58,6 +58,34 @@ reviewer:
   strict_mode: false        # 严格模式
   timeout: 120              # 评审超时（秒）
 
+# 索引配置 - 语义搜索支持
+indexing:
+  enabled: true                              # 是否启用语义索引
+  model: all-MiniLM-L6-v2                    # 嵌入模型（本地 sentence-transformers）
+  persist_path: .cursor/vector_index/        # 向量索引持久化路径
+  chunk_size: 500                            # 分块大小（字符数）
+  chunk_overlap: 50                          # 分块重叠
+  # 文件过滤
+  include_patterns:
+    - "**/*.py"
+    - "**/*.js"
+    - "**/*.ts"
+    - "**/*.go"
+    - "**/*.rs"
+  exclude_patterns:
+    - "**/node_modules/**"
+    - "**/.git/**"
+    - "**/venv/**"
+    - "**/__pycache__/**"
+    - "**/dist/**"
+    - "**/build/**"
+  # 搜索选项
+  search:
+    top_k: 10                                # 默认返回结果数
+    min_score: 0.3                           # 最低相似度阈值
+    include_context: true                    # 是否包含上下文
+    context_lines: 3                         # 上下文行数
+
 # 日志配置
 logging:
   level: INFO               # 日志级别: DEBUG, INFO, WARNING, ERROR

@@ -1,9 +1,10 @@
 """编排器 - 系统核心协调组件
 
 协调规划者、执行者、评审者的工作流程
+支持知识库集成
 """
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -15,6 +16,9 @@ from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewerAgent, ReviewerConfig, ReviewDecision
 from cursor.client import CursorAgentConfig
 from .worker_pool import WorkerPool
+
+if TYPE_CHECKING:
+    from knowledge import KnowledgeManager
 
 
 class OrchestratorConfig(BaseModel):
@@ -37,7 +41,11 @@ class Orchestrator:
     4. 聚合执行结果
     """
     
-    def __init__(self, config: OrchestratorConfig):
+    def __init__(
+        self,
+        config: OrchestratorConfig,
+        knowledge_manager: Optional["KnowledgeManager"] = None,
+    ):
         self.config = config
         
         # 系统状态
@@ -48,6 +56,9 @@ class Orchestrator:
         
         # 任务队列
         self.task_queue = TaskQueue()
+        
+        # 知识库管理器（用于 Cursor 相关问题自动搜索）
+        self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
         
         # 初始化 Agents
         self.planner = PlannerAgent(PlannerConfig(
@@ -61,7 +72,7 @@ class Orchestrator:
             cursor_config=config.cursor_config,
         ))
         
-        # Worker 池
+        # Worker 池（传递知识库管理器）
         from agents.worker import WorkerConfig
         self.worker_pool = WorkerPool(
             size=config.worker_pool_size,
@@ -69,6 +80,7 @@ class Orchestrator:
                 working_directory=config.working_directory,
                 cursor_config=config.cursor_config,
             ),
+            knowledge_manager=knowledge_manager,
         )
         self.worker_pool.initialize()
         
@@ -77,6 +89,16 @@ class Orchestrator:
         self.state.register_agent(self.reviewer.id, AgentRole.REVIEWER)
         for worker in self.worker_pool.workers:
             self.state.register_agent(worker.id, AgentRole.WORKER)
+    
+    def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
+        """设置知识库管理器（延迟初始化）
+        
+        Args:
+            manager: KnowledgeManager 实例
+        """
+        self._knowledge_manager = manager
+        self.worker_pool.set_knowledge_manager(manager)
+        logger.info("Orchestrator 已绑定知识库管理器")
     
     async def run(self, goal: str) -> dict[str, Any]:
         """运行编排器完成目标

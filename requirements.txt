@@ -19,3 +19,21 @@ pyyaml>=6.0.1
 
 # 类型支持
 typing-extensions>=4.9.0
+
+# HTML/网页处理
+beautifulsoup4>=4.12.0  # HTML 解析
+html2text>=2024.1.0     # HTML 转 Markdown
+lxml>=5.0.0             # 高性能 XML/HTML 解析器
+
+# HTTP 客户端
+httpx>=0.27.0           # 异步 HTTP 客户端（可选，作为备选）
+
+# 向量/语义搜索
+sentence-transformers>=2.2.0  # 文本嵌入向量生成
+chromadb>=0.4.0               # 向量数据库，支持持久化存储
+tiktoken>=0.5.0               # OpenAI 分词器，用于计算 token 数量
+hnswlib>=0.7.0                # 轻量级向量索引库（FAISS 替代，可选）
+
+# 测试
+pytest>=7.0.0                 # 测试框架
+pytest-asyncio>=0.23.0        # 异步测试支持
