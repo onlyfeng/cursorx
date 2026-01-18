@@ -7,6 +7,7 @@
 - [开发环境设置](#开发环境设置)
 - [代码修改检查清单](#代码修改检查清单)
 - [快速验证要点](#快速验证要点)
+  - [验证层次对比](#验证层次对比)
 - [运行时验证 vs 静态分析](#运行时验证-vs-静态分析)
 - [预提交检查流程](#预提交检查流程)
 - [常见问题和解决方案](#常见问题和解决方案)
@@ -372,10 +373,12 @@ python run.py --help
 # 1. 帮助信息验证（基础）
 python run.py --help
 
-# 2. 各子命令帮助验证
+# 2. 各模式帮助验证
+python run.py basic --help 2>/dev/null || true
+python run.py iterate --help 2>/dev/null || true
 python run.py plan --help 2>/dev/null || true
-python run.py execute --help 2>/dev/null || true
-python run.py review --help 2>/dev/null || true
+python run.py ask --help 2>/dev/null || true
+python run.py auto --help 2>/dev/null || true
 
 # 3. dry-run 模式验证（如果支持）
 python run.py --dry-run "test task" 2>/dev/null || true
@@ -418,6 +421,80 @@ bash scripts/check_all.sh
 - **多模式验证必须步骤**：入口脚本多模式初始化验证
 - **自动化检查工具整合**：工具链执行顺序和配置
 - **常见失败场景排查**：问题诊断和解决方案
+
+### 验证层次对比
+
+不同验证方法覆盖的代码路径和检测能力差异显著，选择正确的验证层次可以有效发现隐藏问题。
+
+#### 验证层次对比表
+
+| 验证层次 | 覆盖范围 | 检测能力 | 执行速度 | 使用场景 |
+|----------|----------|----------|----------|----------|
+| **静态分析** | 语法、类型、导入声明 | 语法错误、类型不匹配、未声明变量 | 快（<5秒） | 每次保存时 |
+| **入口验证 (--help)** | 参数解析器初始化路径 | 顶层导入错误、参数定义错误 | 快（<2秒） | 每次修改后 |
+| **多模式验证** | 各模式初始化路径 | 条件导入错误、模式特定依赖 | 中（5-15秒） | 提交前必做 |
+| **E2E 测试** | 完整业务流程 | 运行时错误、集成问题、逻辑错误 | 慢（30秒-数分钟） | 重要修改/发布前 |
+
+#### --help 验证的局限性
+
+⚠️ **关键提醒**：`python run.py --help` 仅触发参数解析器初始化，**不会执行模式特定的条件导入**。
+
+```python
+# 示例：以下代码在 --help 时不会被执行
+def run_plan_mode(args):
+    from agents import PlannerAgent  # 条件导入，--help 不触发
+    agent = PlannerAgent()
+    return agent.plan(args.task)
+
+def run_execute_mode(args):
+    from coordinator import Orchestrator  # 条件导入，--help 不触发
+    orchestrator = Orchestrator()
+    return orchestrator.run(args.task)
+```
+
+**必须逐模式验证的原因**：
+- `--help` 只验证 argparse 定义正确
+- 模式分支内的导入错误（如拼写错误、缺失依赖）不会被发现
+- CI 环境可能缺少某些可选依赖，导致特定模式失败
+
+#### 一键多模式验证命令
+
+```bash
+# ===== 多模式验证（推荐在提交前执行）=====
+
+# 方式 1：完整多模式验证（串行）
+python run.py --help && \
+python run.py basic --help 2>/dev/null && \
+python run.py iterate --help 2>/dev/null && \
+python run.py plan --help 2>/dev/null && \
+python run.py ask --help 2>/dev/null && \
+python run.py auto --help 2>/dev/null && \
+echo "✓ 所有模式验证通过"
+
+# 方式 2：快速验证脚本（项目内置）
+bash scripts/check_all.sh --mode-check
+
+# 方式 3：结合导入验证的完整验证
+python -c "import agents; import core; import cursor; import coordinator" && \
+python run.py --help && \
+python run.py basic --help 2>/dev/null && \
+python run.py iterate --help 2>/dev/null && \
+python run.py plan --help 2>/dev/null && \
+python run.py ask --help 2>/dev/null && \
+python run.py auto --help 2>/dev/null && \
+echo "✓ 导入 + 多模式验证通过"
+```
+
+#### 验证层次选择指南
+
+| 修改内容 | 最低验证层次 | 推荐验证层次 |
+|----------|--------------|--------------|
+| 修复 typo、注释 | 静态分析 | 入口验证 |
+| 修改函数实现 | 入口验证 | 多模式验证 + 单元测试 |
+| 添加/修改导入 | 多模式验证 | 多模式验证 + 导入测试 |
+| 修改入口逻辑 | 多模式验证 | E2E 测试 |
+| 重构模块结构 | E2E 测试 | 完整测试套件 |
+| 添加新模式/子命令 | 多模式验证 | E2E 测试 + 手动验证 |
 
 ---
 

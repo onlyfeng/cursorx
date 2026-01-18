@@ -174,12 +174,15 @@ python run.py --help
 
 ```bash
 # 必须执行：验证所有模式的导入
-python run.py --mode agent --help
-python run.py --mode plan --help
+# 注意：使用代码中定义的模式别名（参见 run.py 中的 MODE_ALIASES）
+python run.py --mode basic --help
+python run.py --mode mp --help
 python run.py --mode iterate --help
+python run.py --mode plan --help
+python run.py --mode ask --help
 
 # 一键验证所有模式
-for mode in agent plan iterate; do
+for mode in basic mp iterate plan ask; do
     python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 验证失败"
 done
 ```
@@ -217,7 +220,8 @@ python -c "import agents; import coordinator; import core; import cursor"
 python run.py --help
 
 # 4. 验证所有运行模式 (必须！)
-for mode in agent plan iterate; do
+# 注意: 模式名需与 run.py 中的 MODE_ALIASES 定义一致
+for mode in basic mp iterate plan ask; do
     python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 失败"
 done
 
@@ -275,9 +279,12 @@ mypy agents/ coordinator/ core/ cursor/
 python run.py --help
 
 # 3. 运行时验证（覆盖所有模式）- 必须！
-python run.py --mode agent --help 2>/dev/null || echo "agent 模式导入失败"
-python run.py --mode plan --help 2>/dev/null || echo "plan 模式导入失败"
+# 使用代码中定义的模式别名
+python run.py --mode basic --help 2>/dev/null || echo "basic 模式导入失败"
+python run.py --mode mp --help 2>/dev/null || echo "mp 模式导入失败"
 python run.py --mode iterate --help 2>/dev/null || echo "iterate 模式导入失败"
+python run.py --mode plan --help 2>/dev/null || echo "plan 模式导入失败"
+python run.py --mode ask --help 2>/dev/null || echo "ask 模式导入失败"
 
 # 4. 完整功能测试
 pytest tests/test_e2e_*.py -v
@@ -326,7 +333,8 @@ python run.py --mode cloud  # ✗ 失败
 
 ```bash
 # 必须执行的多模式验证命令
-MODES="agent plan iterate"
+# 模式名需与 run.py 中的 MODE_ALIASES 定义一致
+MODES="basic mp iterate plan ask"
 for mode in $MODES; do
     echo "验证模式: $mode"
     python run.py --mode $mode --help || echo "模式 $mode 验证失败"
@@ -341,9 +349,11 @@ done
    - name: Validate all run modes
      run: |
        python run.py --help
-       python run.py --mode agent --help
-       python run.py --mode plan --help
+       python run.py --mode basic --help
+       python run.py --mode mp --help
        python run.py --mode iterate --help
+       python run.py --mode plan --help
+       python run.py --mode ask --help
    ```
 
 2. **在 check_all.sh 中添加模式验证**
@@ -351,7 +361,7 @@ done
    # scripts/check_all.sh
    echo "验证入口脚本所有模式..."
    python run.py --help
-   for mode in agent plan iterate; do
+   for mode in basic mp iterate plan ask; do
        python run.py --mode $mode --help 2>/dev/null || {
            echo "错误: 模式 $mode 验证失败"
            exit 1
@@ -364,7 +374,8 @@ done
    # scripts/pre_commit_check.py
    def verify_run_modes():
        """验证 run.py 所有模式可正常初始化"""
-       modes = ["agent", "plan", "iterate"]
+       # 模式名需与 run.py 中的 MODE_ALIASES 定义一致
+       modes = ["basic", "mp", "iterate", "plan", "ask"]
        for mode in modes:
            result = subprocess.run(
                ["python", "run.py", "--mode", mode, "--help"],
@@ -530,6 +541,126 @@ def main() -> None:
 
 ---
 
+### 案例 8: 多模式入口脚本验证策略
+
+**问题描述**
+
+静态验证（如 `python -c "import module"`）和基础 `--help` 验证通过后，特定运行模式在实际执行时仍可能失败。这是因为不同模式有各自独立的导入路径和依赖链，仅验证顶层入口无法覆盖所有分支。
+
+**问题现象**
+```python
+# run.py 支持多种模式
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["basic", "iterate", "plan", "ask"])
+    args = parser.parse_args()
+    
+    if args.mode == "iterate":
+        from scripts.run_iterate import SelfIterator  # 特定模式的导入
+    elif args.mode == "plan":
+        from agents.planner import Planner  # 另一个模式的导入
+
+# 验证结果
+python run.py --help        # ✓ 通过（不触发模式分支）
+python run.py --mode basic  # ✓ 通过
+python run.py --mode iterate  # ✗ 失败（缺少依赖）
+```
+
+**影响范围**
+- CI 基础验证通过但特定功能不可用
+- 用户在使用某个模式时才发现问题
+- 问题定位困难，可能被误认为是运行时 bug
+
+**解决方案：必须逐模式执行 --help 验证**
+
+参考 `scripts/check_all.sh` 中的 `check_run_modes` 函数作为最佳实践：
+
+```bash
+# scripts/check_all.sh 中的 check_run_modes 函数
+check_run_modes() {
+    print_section "运行模式检查"
+
+    # 检查 run.py 是否存在
+    if [ ! -f "run.py" ]; then
+        check_fail "run.py 不存在"
+        return 1
+    fi
+
+    # 验证 run.py --help
+    if python3 run.py --help &>/dev/null; then
+        check_pass "python run.py --help 可用"
+    else
+        check_fail "python run.py --help 失败"
+        return 1
+    fi
+
+    # 定义运行模式
+    RUN_MODES=("basic" "iterate" "plan" "ask")
+    MODE_ERRORS=0
+
+    # 循环验证所有模式
+    for mode in "${RUN_MODES[@]}"; do
+        if python3 run.py --mode "$mode" --help &>/dev/null; then
+            check_pass "运行模式可用: --mode $mode"
+        else
+            check_fail "运行模式失败: --mode $mode"
+            ((MODE_ERRORS++))
+        fi
+    done
+
+    # 汇总结果
+    if [ $MODE_ERRORS -eq 0 ]; then
+        check_info "所有运行模式验证通过 (${#RUN_MODES[@]} 个模式)"
+    else
+        check_warn "有 $MODE_ERRORS 个运行模式验证失败"
+    fi
+}
+```
+
+**验证策略层次**
+
+| 验证层次 | 验证方法 | 覆盖范围 | 局限性 |
+|---------|---------|---------|--------|
+| 1. 静态导入 | `python -c "import X"` | 顶层导入 | 不覆盖条件导入 |
+| 2. 基础入口 | `python run.py --help` | 参数解析 | 不触发模式分支 |
+| 3. 逐模式验证 | `python run.py --mode X --help` | 模式初始化 | 需逐一执行 |
+| 4. 功能测试 | `pytest tests/` | 完整功能 | 依赖测试覆盖率 |
+
+**快速验证脚本**
+
+```bash
+#!/bin/bash
+# 多模式验证一键脚本
+# 模式列表需与 run.py 中的 MODE_ALIASES 定义保持一致
+MODES="basic mp iterate plan ask"
+FAILED=0
+
+echo "验证入口脚本..."
+python3 run.py --help >/dev/null 2>&1 || { echo "✗ run.py --help 失败"; exit 1; }
+echo "✓ run.py --help 通过"
+
+echo ""
+echo "逐模式验证..."
+for mode in $MODES; do
+    if python3 run.py --mode "$mode" --help >/dev/null 2>&1; then
+        echo "✓ 模式 $mode 验证通过"
+    else
+        echo "✗ 模式 $mode 验证失败"
+        FAILED=1
+    fi
+done
+
+[ $FAILED -eq 0 ] && echo -e "\n所有模式验证通过" || exit 1
+```
+
+**经验教训**
+- 静态验证和 `--help` 验证是必要但不充分的
+- 必须对每个运行模式单独执行验证
+- 新增模式时必须同步更新验证脚本中的模式列表
+- 使用 `check_all.sh` 的 `check_run_modes` 函数作为标准验证流程
+
+---
+
 ## 根因分析
 
 ### 共同问题模式
@@ -544,6 +675,7 @@ def main() -> None:
 | **动态导入遗漏** | 条件/延迟导入的依赖未被静态验证发现 | 案例5 | 运行时多模式验证 |
 | **多模式验证缺失** | 入口脚本仅验证部分模式 | 案例6 | 全模式启动测试 |
 | **事件循环生命周期** | asyncio 事件循环关闭后子进程清理失败 | 案例7 | 自定义事件循环管理 |
+| **单层验证不足** | 静态验证和 --help 通过但特定模式失败 | 案例8 | 逐模式 --help 验证 |
 
 ### 根本原因
 
@@ -892,15 +1024,19 @@ pip-compile --dry-run requirements.in
 1. **验证所有运行模式可正常初始化**
    ```bash
    # 必须逐个验证每种模式
-   python run.py --mode agent --help 2>/dev/null || echo "agent 模式验证失败"
-   python run.py --mode plan --help 2>/dev/null || echo "plan 模式验证失败"
+   # 使用 run.py 中 MODE_ALIASES 定义的模式别名
+   python run.py --mode basic --help 2>/dev/null || echo "basic 模式验证失败"
+   python run.py --mode mp --help 2>/dev/null || echo "mp 模式验证失败"
    python run.py --mode iterate --help 2>/dev/null || echo "iterate 模式验证失败"
+   python run.py --mode plan --help 2>/dev/null || echo "plan 模式验证失败"
+   python run.py --mode ask --help 2>/dev/null || echo "ask 模式验证失败"
    ```
 
 2. **一键多模式验证脚本**
    ```bash
    # 验证所有模式的完整脚本
-   MODES="agent plan iterate"
+   # 模式列表需与 run.py 中的 MODE_ALIASES 定义保持一致
+   MODES="basic mp iterate plan ask"
    FAILED=0
    for mode in $MODES; do
        echo "验证模式: $mode"
@@ -1051,7 +1187,8 @@ python run.py --help
 
 # 7. 多模式验证（必须！）
 # 验证所有运行模式的导入和初始化
-for mode in agent plan iterate; do
+# 模式名需与 run.py 中的 MODE_ALIASES 定义一致
+for mode in basic mp iterate plan ask; do
     python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 失败"
 done
 
@@ -1266,4 +1403,4 @@ DeprecationWarning: function X is deprecated
 ---
 
 *文档创建日期: 2026-01-18*
-*最后更新: 2026-01-19（添加事件循环管理检查点和多模式验证必须步骤）*
+*最后更新: 2026-01-19（添加案例 8：多模式入口脚本验证策略）*

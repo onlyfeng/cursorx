@@ -59,6 +59,7 @@ class RunMode(str, Enum):
 MODE_ALIASES = {
     "default": RunMode.BASIC,
     "basic": RunMode.BASIC,
+    "agent": RunMode.BASIC,
     "simple": RunMode.BASIC,
     "mp": RunMode.MP,
     "multiprocess": RunMode.MP,
