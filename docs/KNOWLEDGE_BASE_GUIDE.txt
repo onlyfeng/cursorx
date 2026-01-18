@@ -272,5 +272,64 @@ A6:
 
 
 ================================================================================
+7. Cursor CLI 知识库集成
+================================================================================
+
+7.1 更新 Cursor CLI 知识库
+-------------------------
+从本地文档更新：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py update
+
+从网页 URL 更新（需要网络）：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py update --url
+
+7.2 验证知识库
+-------------
+验证知识库内容是否正确：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py verify
+
+7.3 Agent 查询测试
+-----------------
+运行完整测试（更新 + 验证 + Agent 查询）：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py test
+
+7.4 交互式查询
+-------------
+启动交互式查询模式：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py interactive
+
+7.5 直接查询
+-----------
+单次查询：
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "CLI 参数"
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "斜杠命令"
+    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "MCP 服务器"
+
+7.6 测试查询示例
+---------------
+以下查询可用于验证知识库：
+
+    # 查询 CLI 命令行参数
+    python scripts/test_cursor_knowledge.py query "CLI 参数"
+    
+    # 查询斜杠命令
+    python scripts/test_cursor_knowledge.py query "斜杠命令"
+    
+    # 查询模型列表
+    python scripts/test_cursor_knowledge.py query "模型"
+    
+    # 查询认证方法
+    python scripts/test_cursor_knowledge.py query "登录 认证"
+
+7.7 知识库内容来源
+-----------------
+知识库从以下来源获取信息：
+    - cursor_cli_docs.txt: CLI 文档 URL 列表
+    - cursor_agent_docs.txt: Agent 文档 URL 列表
+    - cursor_docs_full.txt: 完整文档列表
+    - AGENTS.md: Agent 系统规则（包含详细命令说明）
+
+
+================================================================================
                               文档结束
 ================================================================================
