@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: 检出代码仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -92,7 +92,7 @@ jobs:
 
     steps:
       - name: 检出代码仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
