@@ -4,24 +4,33 @@
 在提交代码前执行全面的检查，确保代码质量和依赖完整性。
 
 检查内容：
-1. 递归导入项目所有 Python 模块
-2. 检查 requirements.txt 中的依赖是否都已安装
-3. 尝试导入 run.py 并验证关键类和函数存在
-4. 运行快速冒烟测试（不实际执行任务，仅验证初始化）
+1. 语法检查 - 验证所有 Python 文件的语法正确性
+2. 依赖检查 - 检查 requirements.txt 中的依赖是否都已安装
+3. 模块导入检查 - 递归导入项目所有 Python 模块
+4. 完整导入验证 - 验证 agents/, coordinator/, core/, cursor/, knowledge/, tasks/
+   目录下的所有模块，并对 run.py 执行语法和导入测试
+5. 关键组件检查 - 验证 run.py 中的关键类和函数存在
+6. 配置文件检查 - 验证 config.yaml、mcp.json 等配置文件格式
+7. 冒烟测试 - 运行快速测试（不实际执行任务，仅验证初始化）
 
 用法：
     python scripts/pre_commit_check.py [--verbose] [--fix]
+    python scripts/pre_commit_check.py --quick  # 快速检查模式
+    python scripts/pre_commit_check.py --ci     # CI 模式（禁用颜色）
+    python scripts/pre_commit_check.py --module-only  # 仅模块导入检查
 """
 
 import argparse
 import importlib
 import importlib.util
+import json
 import os
 import pkgutil
 import re
 import sys
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -112,10 +121,27 @@ OPTIONAL_PACKAGES = [
 
 
 # ============================================================
+# CI 环境检测
+# ============================================================
+
+def is_ci_environment() -> bool:
+    """检测是否在 CI 环境中运行"""
+    return os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
+
+
+def get_github_step_summary_path() -> Optional[str]:
+    """获取 GitHub Step Summary 文件路径"""
+    return os.environ.get("GITHUB_STEP_SUMMARY")
+
+
+# ============================================================
 # 颜色输出
 # ============================================================
 
 class Colors:
+    """终端颜色定义，支持禁用颜色输出"""
+    _enabled: bool = True
+    
     RED = "\033[0;31m"
     GREEN = "\033[0;32m"
     YELLOW = "\033[1;33m"
@@ -124,6 +150,37 @@ class Colors:
     MAGENTA = "\033[0;35m"
     BOLD = "\033[1m"
     NC = "\033[0m"
+    
+    @classmethod
+    def disable(cls) -> None:
+        """禁用颜色输出"""
+        cls._enabled = False
+        cls.RED = ""
+        cls.GREEN = ""
+        cls.YELLOW = ""
+        cls.BLUE = ""
+        cls.CYAN = ""
+        cls.MAGENTA = ""
+        cls.BOLD = ""
+        cls.NC = ""
+    
+    @classmethod
+    def enable(cls) -> None:
+        """启用颜色输出"""
+        cls._enabled = True
+        cls.RED = "\033[0;31m"
+        cls.GREEN = "\033[0;32m"
+        cls.YELLOW = "\033[1;33m"
+        cls.BLUE = "\033[0;34m"
+        cls.CYAN = "\033[0;36m"
+        cls.MAGENTA = "\033[0;35m"
+        cls.BOLD = "\033[1m"
+        cls.NC = "\033[0m"
+    
+    @classmethod
+    def is_enabled(cls) -> bool:
+        """检查颜色输出是否启用"""
+        return cls._enabled
 
 
 def print_header(text: str) -> None:
@@ -139,24 +196,29 @@ def print_section(text: str) -> None:
 
 
 def print_pass(text: str) -> None:
-    print(f"  {Colors.GREEN}✓{Colors.NC} {text}")
+    symbol = "✓" if Colors.is_enabled() else "[PASS]"
+    print(f"  {Colors.GREEN}{symbol}{Colors.NC} {text}")
 
 
 def print_fail(text: str) -> None:
-    print(f"  {Colors.RED}✗{Colors.NC} {text}")
+    symbol = "✗" if Colors.is_enabled() else "[FAIL]"
+    print(f"  {Colors.RED}{symbol}{Colors.NC} {text}")
 
 
 def print_warn(text: str) -> None:
-    print(f"  {Colors.YELLOW}⚠{Colors.NC} {text}")
+    symbol = "⚠" if Colors.is_enabled() else "[WARN]"
+    print(f"  {Colors.YELLOW}{symbol}{Colors.NC} {text}")
 
 
 def print_info(text: str) -> None:
-    print(f"  {Colors.BLUE}ℹ{Colors.NC} {text}")
+    symbol = "ℹ" if Colors.is_enabled() else "[INFO]"
+    print(f"  {Colors.BLUE}{symbol}{Colors.NC} {text}")
 
 
 def print_debug(text: str, verbose: bool = False) -> None:
     if verbose:
-        print(f"  {Colors.MAGENTA}•{Colors.NC} {text}")
+        symbol = "•" if Colors.is_enabled() else "[DEBUG]"
+        print(f"  {Colors.MAGENTA}{symbol}{Colors.NC} {text}")
 
 
 # ============================================================
@@ -197,8 +259,11 @@ class CheckReport:
         """打印检查汇总"""
         print_header("预提交检查报告")
         
-        print(f"\n  {Colors.GREEN}✓ 通过:{Colors.NC} {self.passed_count}")
-        print(f"  {Colors.RED}✗ 失败:{Colors.NC} {self.failed_count}")
+        pass_symbol = "✓" if Colors.is_enabled() else "[PASS]"
+        fail_symbol = "✗" if Colors.is_enabled() else "[FAIL]"
+        
+        print(f"\n  {Colors.GREEN}{pass_symbol} 通过:{Colors.NC} {self.passed_count}")
+        print(f"  {Colors.RED}{fail_symbol} 失败:{Colors.NC} {self.failed_count}")
         print()
         
         if self.all_passed:
@@ -216,6 +281,48 @@ class CheckReport:
                 if not check.passed and check.fix_suggestion:
                     print(f"\n  {Colors.YELLOW}• {check.name}:{Colors.NC}")
                     print(f"    {check.fix_suggestion}")
+    
+    def to_markdown(self) -> str:
+        """生成 Markdown 格式的检查报告（用于 GitHub Step Summary）"""
+        lines = []
+        lines.append("## 预提交检查报告")
+        lines.append("")
+        
+        # 总体状态
+        if self.all_passed:
+            lines.append("### ✅ 所有检查通过")
+        else:
+            lines.append(f"### ❌ 发现 {self.failed_count} 个问题")
+        lines.append("")
+        
+        # 统计表格
+        lines.append("| 统计 | 数量 |")
+        lines.append("|------|------|")
+        lines.append(f"| ✅ 通过 | {self.passed_count} |")
+        lines.append(f"| ❌ 失败 | {self.failed_count} |")
+        lines.append("")
+        
+        # 详细结果表格
+        lines.append("### 检查详情")
+        lines.append("")
+        lines.append("| 检查项 | 状态 | 信息 |")
+        lines.append("|--------|------|------|")
+        for check in self.checks:
+            status = "✅" if check.passed else "❌"
+            message = check.message.replace("|", "\\|")  # 转义表格分隔符
+            lines.append(f"| {check.name} | {status} | {message} |")
+        lines.append("")
+        
+        # 失败项的修复建议
+        failed_checks = [c for c in self.checks if not c.passed and c.fix_suggestion]
+        if failed_checks:
+            lines.append("### 修复建议")
+            lines.append("")
+            for check in failed_checks:
+                lines.append(f"- **{check.name}**: {check.fix_suggestion}")
+            lines.append("")
+        
+        return "\n".join(lines)
 
 
 # ============================================================
@@ -553,6 +660,128 @@ def check_syntax(verbose: bool = False) -> CheckResult:
     return result
 
 
+def verify_all_imports(verbose: bool = False) -> CheckResult:
+    """递归验证所有项目模块的导入
+
+    该函数会：
+    1. 递归导入 agents/, coordinator/, core/, cursor/, knowledge/, tasks/ 下的所有模块
+    2. 对 run.py 执行语法验证和导入测试
+    3. 报告所有导入错误
+    """
+    result = CheckResult(name="完整导入验证", passed=True)
+    import_errors: list[tuple[str, str]] = []
+    successful_imports: list[str] = []
+
+    # 需要验证的目录列表
+    target_dirs = ["agents", "coordinator", "core", "cursor", "knowledge", "tasks"]
+
+    # 1. 验证 run.py 语法
+    run_py = PROJECT_ROOT / "run.py"
+    if run_py.exists():
+        try:
+            with open(run_py, "r", encoding="utf-8") as f:
+                source = f.read()
+            compile(source, str(run_py), "exec")
+            print_debug("run.py 语法验证通过", verbose)
+        except SyntaxError as e:
+            import_errors.append(("run.py", f"语法错误: 行 {e.lineno}: {e.msg}"))
+            print_debug(f"run.py 语法错误: {e}", verbose)
+    else:
+        import_errors.append(("run.py", "文件不存在"))
+
+    # 2. 验证 run.py 导入
+    try:
+        # 清除缓存以确保重新导入
+        if "run" in sys.modules:
+            del sys.modules["run"]
+        importlib.import_module("run")
+        successful_imports.append("run")
+        print_debug("run.py 导入成功", verbose)
+    except Exception as e:
+        import_errors.append(("run", f"导入失败: {e}"))
+        print_debug(f"run.py 导入失败: {e}", verbose)
+
+    # 3. 递归导入所有目标目录下的模块
+    for dir_name in target_dirs:
+        dir_path = PROJECT_ROOT / dir_name
+
+        if not dir_path.is_dir():
+            print_debug(f"目录不存在: {dir_name}/", verbose)
+            continue
+
+        # 检查 __init__.py
+        init_file = dir_path / "__init__.py"
+        if not init_file.exists():
+            import_errors.append((dir_name, "__init__.py 不存在"))
+            continue
+
+        # 导入主模块
+        try:
+            if dir_name in sys.modules:
+                # 重新加载以捕获最新变更
+                importlib.reload(sys.modules[dir_name])
+            else:
+                importlib.import_module(dir_name)
+            successful_imports.append(dir_name)
+            print_debug(f"导入成功: {dir_name}", verbose)
+        except Exception as e:
+            import_errors.append((dir_name, str(e)))
+            print_debug(f"导入失败: {dir_name} - {e}", verbose)
+            continue
+
+        # 递归导入所有子模块
+        for py_file in dir_path.rglob("*.py"):
+            # 跳过私有模块（但保留 __init__.py）
+            if py_file.name.startswith("_") and py_file.name != "__init__.py":
+                continue
+
+            # 跳过 __pycache__ 目录
+            if "__pycache__" in py_file.parts:
+                continue
+
+            # 构建模块路径
+            relative_path = py_file.relative_to(PROJECT_ROOT)
+            parts = list(relative_path.parts)
+            parts[-1] = parts[-1].replace(".py", "")
+
+            # 跳过 __init__（已经在导入主模块时处理）
+            if parts[-1] == "__init__":
+                continue
+
+            full_module_name = ".".join(parts)
+
+            try:
+                if full_module_name in sys.modules:
+                    importlib.reload(sys.modules[full_module_name])
+                else:
+                    importlib.import_module(full_module_name)
+                successful_imports.append(full_module_name)
+                print_debug(f"导入成功: {full_module_name}", verbose)
+            except Exception as e:
+                import_errors.append((full_module_name, str(e)))
+                print_debug(f"导入失败: {full_module_name} - {e}", verbose)
+
+    # 生成结果
+    result.details.append(f"成功导入: {len(successful_imports)} 个模块")
+    result.details.append(f"目标目录: {', '.join(target_dirs)}")
+
+    if import_errors:
+        result.passed = False
+        result.message = f"{len(import_errors)} 个模块导入失败"
+        result.details.append("导入失败的模块:")
+        for module, error in import_errors[:10]:  # 显示前10个错误
+            # 截断过长的错误信息
+            error_short = error[:80] + "..." if len(error) > 80 else error
+            result.details.append(f"  - {module}: {error_short}")
+        if len(import_errors) > 10:
+            result.details.append(f"  ... 还有 {len(import_errors) - 10} 个错误")
+        result.fix_suggestion = "检查导入错误并修复语法/依赖问题，运行 --verbose 查看详细信息"
+    else:
+        result.message = f"所有 {len(successful_imports)} 个模块导入验证通过"
+
+    return result
+
+
 def check_config_files(verbose: bool = False) -> CheckResult:
     """检查配置文件格式"""
     result = CheckResult(name="配置文件检查", passed=True)
@@ -657,8 +886,19 @@ def run_checks(verbose: bool = False) -> CheckReport:
         for detail in result.details:
             print_info(detail)
     
-    # 4. 关键组件检查
-    print_section("4. 关键组件检查")
+    # 4. 完整导入验证（verify_all_imports）
+    print_section("4. 完整导入验证")
+    result = verify_all_imports(verbose)
+    report.add(result)
+    if result.passed:
+        print_pass(result.message)
+    else:
+        print_fail(result.message)
+        for detail in result.details:
+            print_info(detail)
+    
+    # 5. 关键组件检查
+    print_section("5. 关键组件检查")
     result = check_critical_components(verbose)
     report.add(result)
     if result.passed:
@@ -668,8 +908,8 @@ def run_checks(verbose: bool = False) -> CheckReport:
         for detail in result.details:
             print_info(detail)
     
-    # 5. 配置文件检查
-    print_section("5. 配置文件检查")
+    # 6. 配置文件检查
+    print_section("6. 配置文件检查")
     result = check_config_files(verbose)
     report.add(result)
     if result.passed:
@@ -679,8 +919,8 @@ def run_checks(verbose: bool = False) -> CheckReport:
         for detail in result.details:
             print_info(detail)
     
-    # 6. 冒烟测试
-    print_section("6. 冒烟测试")
+    # 7. 冒烟测试
+    print_section("7. 冒烟测试")
     result = check_smoke_test(verbose)
     report.add(result)
     if result.passed:
@@ -724,7 +964,56 @@ def run_quick_checks(verbose: bool = False) -> CheckReport:
         for detail in result.details:
             print_info(detail)
     
+    # 3. 完整导入验证（verify_all_imports）
+    print_section("3. 完整导入验证")
+    result = verify_all_imports(verbose)
+    report.add(result)
+    if result.passed:
+        print_pass(result.message)
+    else:
+        print_fail(result.message)
+        for detail in result.details:
+            print_info(detail)
+    
     return report
+
+
+def run_module_only_checks(verbose: bool = False) -> CheckReport:
+    """仅运行模块导入检查（用于 CI 快速验证）"""
+    report = CheckReport()
+    
+    print_header("模块导入检查")
+    print(f"  项目路径: {PROJECT_ROOT}")
+    print(f"  Python: {sys.version.split()[0]}")
+    print(f"  模式: 仅模块导入检查")
+    if is_ci_environment():
+        print(f"  环境: CI/GitHub Actions")
+    
+    # 1. 完整导入验证（verify_all_imports）
+    print_section("1. 完整导入验证")
+    result = verify_all_imports(verbose)
+    report.add(result)
+    if result.passed:
+        print_pass(result.message)
+    else:
+        print_fail(result.message)
+        for detail in result.details:
+            print_info(detail)
+    
+    return report
+
+
+def write_github_step_summary(report: CheckReport) -> None:
+    """将检查报告写入 GitHub Step Summary"""
+    summary_path = get_github_step_summary_path()
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(report.to_markdown())
+                f.write("\n")
+            print_info(f"已写入 GitHub Step Summary")
+        except Exception as e:
+            print_warn(f"无法写入 GitHub Step Summary: {e}")
 
 
 def main() -> int:
@@ -753,21 +1042,51 @@ def main() -> int:
         action="store_true",
         help="快速检查模式（仅语法和导入）",
     )
+    parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI 模式（禁用颜色输出，适用于 GitHub Actions）",
+    )
+    parser.add_argument(
+        "--module-only",
+        action="store_true",
+        help="仅运行模块导入检查",
+    )
     
     args = parser.parse_args()
     
+    # 检测 CI 环境或显式指定 --ci 参数时禁用颜色
+    if args.ci or is_ci_environment():
+        Colors.disable()
+    
+    # 记录开始时间
+    start_time = datetime.now(timezone.utc)
+    
     try:
-        if args.quick:
+        # 根据模式选择检查范围
+        if args.module_only:
+            report = run_module_only_checks(verbose=args.verbose)
+        elif args.quick:
             report = run_quick_checks(verbose=args.verbose)
         else:
             report = run_checks(verbose=args.verbose)
         
+        # 计算退出码
+        exit_code = 0 if report.all_passed else 1
+        
+        # 计算结束时间
+        end_time = datetime.now(timezone.utc)
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        
         if args.json:
-            import json
             output = {
                 "passed": report.all_passed,
                 "passed_count": report.passed_count,
                 "failed_count": report.failed_count,
+                "exit_code": exit_code,
+                "timestamp": start_time.isoformat(),
+                "duration_ms": duration_ms,
+                "ci_environment": is_ci_environment(),
                 "checks": [
                     {
                         "name": c.name,
@@ -783,7 +1102,11 @@ def main() -> int:
         else:
             report.print_summary()
         
-        return 0 if report.all_passed else 1
+        # 在 CI 环境中写入 GitHub Step Summary
+        if is_ci_environment():
+            write_github_step_summary(report)
+        
+        return exit_code
         
     except KeyboardInterrupt:
         print("\n\n检查已中断")

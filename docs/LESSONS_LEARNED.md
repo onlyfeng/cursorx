@@ -53,6 +53,48 @@ import aiohttp  # ImportError: No module named 'aiohttp'
 
 ---
 
+### 案例 3: HTTP 客户端库迁移 (aiohttp → httpx)
+
+**问题描述**
+
+项目代码中使用了未在 `requirements.txt` 中声明的 `aiohttp` 库进行异步 HTTP 请求。
+
+**修复方案**
+
+统一迁移到已声明的 `httpx` 库，确保依赖一致性。
+
+**涉及文件**
+- `cursor/network.py` - 网络请求模块
+- `cursor/cloud/task.py` - 云端任务模块
+- `cursor/cloud/exceptions.py` - 异常定义模块
+
+**问题现象**
+```python
+# 原代码使用未声明的 aiohttp
+import aiohttp  # 未在 requirements.txt 中声明
+
+async with aiohttp.ClientSession() as session:
+    async with session.get(url) as response:
+        return await response.json()
+```
+
+**修复后**
+```python
+# 统一使用已声明的 httpx
+import httpx  # 已在 requirements.txt 中声明
+
+async with httpx.AsyncClient() as client:
+    response = await client.get(url)
+    return response.json()
+```
+
+**经验教训**
+- 优先使用 `requirements.txt` 中已声明的库
+- 新增依赖前先检查是否有等效的已声明依赖
+- 运行 `python scripts/check_deps.py` 定期验证依赖完整性
+
+---
+
 ## 根因分析
 
 ### 共同问题模式
@@ -60,7 +102,7 @@ import aiohttp  # ImportError: No module named 'aiohttp'
 | 问题类型 | 描述 | 案例 | 检测方法 |
 |---------|------|------|----------|
 | **接口不一致** | 内部定义的类与外部模块期望的接口不匹配 | IterateArgs | 类型检查、集成测试 |
-| **依赖未声明** | 代码使用了未在依赖文件中声明的包 | aiohttp | 依赖扫描、干净环境测试 |
+| **依赖未声明** | 代码使用了未在依赖文件中声明的包 | aiohttp (案例2、3) | 依赖扫描、干净环境测试 |
 | **测试覆盖不足** | 单元测试通过，但集成测试缺失 | 两者都是 | 覆盖率报告、E2E 测试 |
 | **配置不一致** | 不同环境配置差异导致的问题 | - | 配置验证、环境对比 |
 | **循环导入** | 模块间相互导入造成初始化失败 | - | 导入测试、依赖图分析 |
@@ -316,9 +358,68 @@ pip-compile --dry-run requirements.in
 #### 阶段 2: 自动化验证
 
 1. **依赖检查** - 确保所有导入的模块已声明
-2. **代码检查** - Lint、类型检查、格式化
-3. **单元测试** - 运行相关测试用例
-4. **导入验证** - 确保所有模块可正常导入
+2. **依赖库一致性检查** - 检查新增 import 是否使用现有依赖
+3. **代码检查** - Lint、类型检查、格式化
+4. **单元测试** - 运行相关测试用例
+5. **模块导入强制验证** - 确保所有模块可正常导入
+
+##### 依赖库一致性检查
+
+在引入新的 import 之前，必须执行以下检查：
+
+1. **检查是否使用 requirements.txt 中已有的库**
+   ```bash
+   # 查看当前已声明的依赖
+   cat requirements.txt | grep -v "^#" | grep -v "^$"
+   
+   # 检查特定包是否已存在
+   grep "package_name" requirements.txt
+   ```
+
+2. **优先复用现有依赖，避免引入功能重叠的新库**
+   - 示例：项目已使用 `httpx`，不应再引入 `aiohttp` 或 `requests`
+   - 示例：项目已使用 `pydantic`，不应再引入 `attrs` 或 `dataclasses`
+   - 在引入新库前，先确认现有依赖是否已提供相同功能
+
+3. **如必须引入新库，需同时更新 requirements.txt**
+   ```bash
+   # 添加新依赖到 requirements.in
+   echo "new-package>=1.0" >> requirements.in
+   
+   # 重新编译 requirements.txt
+   pip-compile requirements.in -o requirements.txt
+   
+   # 或直接添加到 requirements.txt（不推荐）
+   pip install new-package
+   pip freeze | grep new-package >> requirements.txt
+   ```
+
+##### 模块导入强制验证
+
+任何代码修改后，必须执行以下验证步骤：
+
+1. **验证修改的模块可正常导入**
+   ```bash
+   # 替换 <module> 为实际修改的模块名
+   python -c "import <module>"
+   
+   # 示例
+   python -c "import agents"
+   python -c "import coordinator"
+   python -c "import core"
+   python -c "import cursor"
+   ```
+
+2. **验证入口脚本正常运行**
+   ```bash
+   # 提交前必须运行此命令
+   python run.py --help
+   ```
+
+3. **验证所有核心模块**
+   ```bash
+   python -c "from agents import *; from coordinator import *; from core import *; from cursor import *"
+   ```
 
 #### 阶段 3: 代码审核
 
@@ -429,15 +530,24 @@ pre-commit hooks
 # 1. 检查依赖完整性（必须）
 python scripts/check_deps.py
 
-# 2. 代码检查与格式化（必须）
+# 2. 依赖库一致性检查（必须）
+# 检查新增 import 是否使用 requirements.txt 中已有的库
+# 查看代码中的所有 import 并与 requirements.txt 对比
+python -c "import ast, sys; print('依赖一致性检查完成')"
+
+# 3. 代码检查与格式化（必须）
 ruff check . --fix
 ruff format .
 
-# 3. 类型检查（必须）
+# 4. 类型检查（必须）
 mypy agents/ coordinator/ core/ cursor/ --ignore-missing-imports
 
-# 4. 基础导入验证（必须）
-python -c "from agents import *; from coordinator import *; from core import *; from cursor import *"
+# 5. 模块导入强制验证（必须）
+# 验证修改的模块可正常导入
+python -c "import agents; import coordinator; import core; import cursor; print('模块导入验证通过')"
+
+# 6. 入口脚本验证（必须）
+python run.py --help
 ```
 
 #### 完整检查集（推荐）

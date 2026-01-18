@@ -124,6 +124,36 @@ from cursorx.core import Message  # 不推荐
 | 版本固定 | 必须指定最低版本号 | 查看 `requirements.txt` 格式 |
 | 可选依赖标注 | 可选依赖需要在代码中做 try/except 处理 | 代码审查 |
 
+### 依赖库一致性检查（重点）
+
+| 检查项 | 说明 | 命令 |
+|--------|------|------|
+| 复用已有依赖 | 新增 import 优先使用 requirements.txt 中已有的库 | `grep "package" requirements.txt` |
+| 避免功能重叠 | 不引入与现有依赖功能重叠的新库 | 代码审查 |
+| 同步更新依赖 | 如必须引入新库，需同时更新 requirements.txt | `pip-compile requirements.in` |
+
+#### 依赖库一致性示例
+
+```python
+# ✅ 正确：使用项目已有的 httpx（而非 aiohttp 或 requests）
+import httpx
+
+async def fetch_data(url: str):
+    async with httpx.AsyncClient() as client:
+        return await client.get(url)
+
+# ❌ 错误：引入功能重叠的新库
+import aiohttp  # 项目已使用 httpx，不应再引入 aiohttp
+import requests  # 同步 HTTP 也应使用 httpx
+
+# ✅ 正确：使用项目已有的 pydantic
+from pydantic import BaseModel
+
+# ❌ 错误：引入功能重叠的库
+from attrs import define  # 项目已使用 pydantic
+from dataclasses import dataclass  # 应使用 pydantic
+```
+
 #### 依赖处理示例
 
 ```python
@@ -156,27 +186,36 @@ def create_vector_store():
 
 代码修改后，请按以下步骤快速验证，避免常见问题：
 
-### 1. 模块导入验证
+### 1. 模块导入强制验证（必须）
 
-修改任何模块后，立即验证模块可正确导入：
+**任何代码修改后必须执行以下验证：**
 
 ```bash
 # 替换 <module> 为实际修改的模块名
-python -c "from <module> import *"
+python -c "import <module>"
 
 # 示例
-python -c "from agents import *"
-python -c "from core import *"
-python -c "from cursor import *"
+python -c "import agents"
+python -c "import core"
+python -c "import cursor"
+python -c "import coordinator"
+
+# 完整模块验证
+python -c "from agents import *; from coordinator import *; from core import *; from cursor import *"
 ```
 
-### 2. 入口脚本验证
+> **强制要求**：每次修改代码后，必须运行 `python -c "import <module>"` 验证修改的模块可正常导入。
 
-修改入口脚本或相关依赖后，验证脚本可正常执行：
+### 2. 入口脚本验证（必须）
+
+**提交前必须验证入口脚本可正常执行：**
 
 ```bash
+# 提交前必须运行此命令
 python run.py --help
 ```
+
+> **强制要求**：提交前必须运行 `python run.py --help` 验证入口脚本正常工作。
 
 ### 3. 完整验证
 

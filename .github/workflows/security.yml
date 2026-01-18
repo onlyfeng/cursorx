@@ -6,22 +6,53 @@ on:
     - cron: '0 0 * * 1'
   # PR 触发
   pull_request:
-    branches: [main]
-    paths:
-      - 'requirements.txt'
-      - 'pyproject.toml'
-      - '.github/workflows/security.yml'
+    branches: [main, master]
   # 手动触发
   workflow_dispatch:
 
 permissions:
   contents: read
   security-events: write
+  pull-requests: write
 
 jobs:
+  # 检测依赖文件变更
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      deps: ${{ steps.filter.outputs.deps }}
+      deps_files: ${{ steps.filter.outputs.deps_files }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检测依赖文件变更
+        uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            deps:
+              - 'requirements*.txt'
+              - 'requirements*.in'
+              - 'pyproject.toml'
+              - 'setup.py'
+              - 'setup.cfg'
+          list-files: shell
+
+      - name: 非 PR 事件默认运行
+        if: github.event_name != 'pull_request'
+        run: echo "deps=true" >> $GITHUB_OUTPUT
+
   dependency-audit:
     name: Dependency Security Audit
+    needs: changes
+    if: needs.changes.outputs.deps == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      pip_check_status: ${{ steps.pip_check.outputs.status }}
+      audit_status: ${{ steps.audit.outputs.status }}
+      vulnerabilities_found: ${{ steps.audit.outputs.vulnerabilities }}
     
     steps:
       - name: Checkout code
@@ -39,14 +70,63 @@ jobs:
           pip install pip-audit>=2.6.0
           pip install -r requirements.txt
 
+      - name: Run pip check
+        id: pip_check
+        run: |
+          echo "## pip check 依赖完整性检查" >> $GITHUB_STEP_SUMMARY
+          set +e
+          OUTPUT=$(pip check 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ 所有依赖完整性检查通过" >> $GITHUB_STEP_SUMMARY
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 依赖完整性检查失败" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "$OUTPUT" > pip-check-results.txt
+          fi
+
       - name: Run pip-audit
         id: audit
         run: |
+          echo "## pip-audit 安全漏洞扫描" >> $GITHUB_STEP_SUMMARY
+          set +e
           # 运行 pip-audit，高危及以上漏洞会导致失败
           # --strict: 任何漏洞都视为错误
           # --desc: 显示漏洞描述
-          # --fix: 仅显示可修复的建议（不自动修复）
-          pip-audit --strict --desc on 2>&1 | tee audit-results.txt
+          OUTPUT=$(pip-audit --strict --desc on 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          echo "$OUTPUT" > audit-results.txt
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ 未发现已知安全漏洞" >> $GITHUB_STEP_SUMMARY
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "vulnerabilities=0" >> $GITHUB_OUTPUT
+          else
+            # 统计漏洞数量
+            VULN_COUNT=$(echo "$OUTPUT" | grep -cE "^Name:" || echo "0")
+            echo "vulnerabilities=$VULN_COUNT" >> $GITHUB_OUTPUT
+            
+            # 检查是否存在高危漏洞
+            if echo "$OUTPUT" | grep -iE "(high|critical)"; then
+              echo "⛔ 发现高危/严重安全漏洞！" >> $GITHUB_STEP_SUMMARY
+              echo "status=critical" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ 发现潜在安全问题" >> $GITHUB_STEP_SUMMARY
+              echo "status=warning" >> $GITHUB_OUTPUT
+            fi
+            
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
         continue-on-error: true
 
       - name: Check audit results
@@ -59,7 +139,7 @@ jobs:
             fi
             
             # 检查 pip-audit 是否报告了漏洞
-            if [ "${{ steps.audit.outcome }}" == "failure" ]; then
+            if [ "${{ steps.audit.outputs.status }}" == "warning" ]; then
               echo "::warning::发现安全漏洞，请查看详细报告"
               # 对于非高危漏洞，仅警告不失败
               cat audit-results.txt
@@ -71,7 +151,9 @@ jobs:
         if: always()
         with:
           name: security-audit-results
-          path: audit-results.txt
+          path: |
+            audit-results.txt
+            pip-check-results.txt
           retention-days: 30
 
       - name: Create issue on vulnerability (optional)
@@ -106,5 +188,79 @@ jobs:
                 title: '🔐 安全漏洞检测报告 - ' + new Date().toISOString().split('T')[0],
                 body: `## 依赖安全扫描发现问题\n\n自动化安全扫描发现以下漏洞:\n\n\`\`\`\n${auditResults.substring(0, 3000)}\n\`\`\`\n\n请及时处理！`,
                 labels: ['security', 'automated']
+              });
+            }
+
+  # PR 安全检查评论
+  security-comment:
+    name: PR Security Comment
+    needs: [changes, dependency-audit]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发表安全检查评论
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pipCheckStatus = '${{ needs.dependency-audit.outputs.pip_check_status }}';
+            const auditStatus = '${{ needs.dependency-audit.outputs.audit_status }}';
+            const vulnCount = '${{ needs.dependency-audit.outputs.vulnerabilities_found }}';
+            
+            const statusIcon = (status) => {
+              if (status === 'success') return '✅';
+              if (status === 'warning') return '⚠️';
+              if (status === 'critical') return '⛔';
+              return '❌';
+            };
+            
+            const statusText = (status) => {
+              if (status === 'success') return '通过';
+              if (status === 'warning') return '警告';
+              if (status === 'critical') return '严重';
+              return '失败';
+            };
+            
+            let body = `## 🔐 依赖安全检查报告
+            
+            检测到依赖文件变更，已执行安全审计：
+            
+            | 检查项 | 状态 | 说明 |
+            |--------|------|------|
+            | pip check | ${statusIcon(pipCheckStatus)} ${statusText(pipCheckStatus)} | 依赖完整性验证 |
+            | pip-audit | ${statusIcon(auditStatus)} ${statusText(auditStatus)} | 已知漏洞扫描 |
+            `;
+            
+            if (vulnCount && vulnCount !== '0') {
+              body += `\n### ⚠️ 发现 ${vulnCount} 个潜在安全问题\n`;
+              body += `请查看 workflow 日志获取详细信息。\n`;
+            }
+            
+            body += `\n> 详细信息请查看 [Security Audit 运行日志](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`;
+            
+            // 查找已有评论
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('🔐 依赖安全检查报告')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
               });
             }

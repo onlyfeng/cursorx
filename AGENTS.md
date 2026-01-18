@@ -594,6 +594,7 @@ NDJSON 格式，每行一个 JSON 对象，用于实时进度跟踪：
 | Lint | `lint.yml` | flake8、ruff、mypy 代码检查 |
 | PR Check | `pr-check.yml` | PR 综合检查（复用 CI 和 Lint） |
 | Security | `security.yml` | 依赖安全审计 (pip-audit) |
+| Notify Failure | `notify-failure.yml` | 工作流失败通知（Slack/Issue） |
 
 ### 触发条件
 
@@ -660,3 +661,35 @@ bash scripts/check_all.sh --full
 # 快速检查（仅关键项）
 bash scripts/check_all.sh
 ```
+
+### 失败通知配置
+
+`notify-failure.yml` 工作流会在其他工作流失败时发送通知。
+
+#### 支持的通知方式
+
+| 方式 | 配置 | 说明 |
+|------|------|------|
+| GitHub Step Summary | 默认启用 | 在 Actions 界面显示失败摘要 |
+| Slack Webhook | 需配置 Secret | 发送到 Slack 频道 |
+| GitHub Issue | 需配置 Variable | 持续失败时创建 Issue |
+
+#### Slack 通知配置
+
+1. 在 Slack 中创建 Incoming Webhook
+2. 在仓库 Settings → Secrets and variables → Actions → Secrets 中添加：
+   - Name: `SLACK_WEBHOOK_URL`
+   - Value: `https://hooks.slack.com/services/xxx/xxx/xxx`
+
+#### GitHub Issue 自动创建配置
+
+当工作流连续失败 3 次以上时，自动创建 Issue 追踪问题：
+
+1. 在仓库 Settings → Secrets and variables → Actions → Variables 中添加：
+   - Name: `CREATE_ISSUE_ON_FAILURE`
+   - Value: `true`
+
+2. Issue 自动管理：
+   - 连续失败 3 次：创建新 Issue（标签：`ci-failure`, `automated`, `bug`）
+   - 再次失败：在现有 Issue 中添加评论
+   - 恢复成功：自动关闭相关 Issue

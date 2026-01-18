@@ -26,14 +26,21 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
 
-      - name: 安装 flake8
-        run: pip install flake8
+      - name: 安装 pip-tools 和 flake8
+        run: |
+          python -m pip install --upgrade pip pip-tools
+          pip install flake8
 
       - name: 检查严重错误 (E9, F63, F7, F82)
         run: |
@@ -51,14 +58,21 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
 
-      - name: 安装 ruff
-        run: pip install ruff
+      - name: 安装 pip-tools 和 ruff
+        run: |
+          python -m pip install --upgrade pip pip-tools
+          pip install ruff
 
       - name: ruff 检查
         run: |
@@ -82,18 +96,25 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
 
-      - name: 安装依赖
-        run: |
-          python -m pip install --upgrade pip
-          pip install mypy
-          # 安装项目依赖以支持类型检查
-          pip install -r requirements.txt
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: 使用 pip-sync 安装依赖
+        run: pip-sync requirements.txt
+
+      - name: 安装 mypy
+        run: pip install mypy
 
       - name: mypy 类型检查 (core/ 和 agents/)
         run: |
@@ -117,14 +138,21 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
 
-      - name: 安装检查工具
-        run: pip install flake8 ruff
+      - name: 安装 pip-tools 和检查工具
+        run: |
+          python -m pip install --upgrade pip pip-tools
+          pip install flake8 ruff
 
       - name: flake8 代码风格检查
         run: |

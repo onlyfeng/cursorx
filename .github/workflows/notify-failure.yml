@@ -1,0 +1,243 @@
+# 工作流失败通知
+# 监听其他工作流的完成事件，在失败时发送通知
+
+name: Notify on Failure
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Lint
+      - PR Check
+      - Security Audit
+    types:
+      - completed
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    # 只在工作流失败时运行
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+
+    steps:
+      - name: 获取失败信息
+        id: failure_info
+        run: |
+          echo "workflow_name=${{ github.event.workflow_run.name }}" >> $GITHUB_OUTPUT
+          echo "workflow_url=${{ github.event.workflow_run.html_url }}" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.event.workflow_run.head_branch }}" >> $GITHUB_OUTPUT
+          echo "commit_sha=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+          echo "run_id=${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
+          echo "actor=${{ github.event.workflow_run.actor.login }}" >> $GITHUB_OUTPUT
+          echo "repo=${{ github.repository }}" >> $GITHUB_OUTPUT
+
+      - name: 输出失败摘要
+        run: |
+          echo "## 🚨 工作流失败通知" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 字段 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 工作流 | ${{ steps.failure_info.outputs.workflow_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 分支 | ${{ steps.failure_info.outputs.branch }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 提交 | \`${{ steps.failure_info.outputs.commit_sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 触发者 | @${{ steps.failure_info.outputs.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 链接 | [查看详情](${{ steps.failure_info.outputs.workflow_url }}) |" >> $GITHUB_STEP_SUMMARY
+
+      # Slack 通知（可选，需要配置 SLACK_WEBHOOK_URL secret）
+      - name: Slack 通知
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚨 CI 工作流失败",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*工作流:*\n${{ steps.failure_info.outputs.workflow_name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*分支:*\n${{ steps.failure_info.outputs.branch }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*仓库:*\n${{ steps.failure_info.outputs.repo }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*触发者:*\n${{ steps.failure_info.outputs.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "查看失败详情"
+                      },
+                      "url": "${{ steps.failure_info.outputs.workflow_url }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      # 检查是否为持续失败（可选，用于创建 Issue）
+      - name: 检出代码
+        if: ${{ vars.CREATE_ISSUE_ON_FAILURE == 'true' }}
+        uses: actions/checkout@v4
+
+      - name: 检查近期失败次数
+        if: ${{ vars.CREATE_ISSUE_ON_FAILURE == 'true' }}
+        id: check_failures
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ github.event.workflow_run.workflow_id }}',
+              branch: '${{ steps.failure_info.outputs.branch }}',
+              per_page: 5
+            });
+
+            const recentFailures = runs.workflow_runs.filter(
+              run => run.conclusion === 'failure'
+            ).length;
+
+            console.log(`近期 5 次运行中有 ${recentFailures} 次失败`);
+            core.setOutput('recent_failures', recentFailures);
+            core.setOutput('should_create_issue', recentFailures >= 3);
+
+      - name: 创建 GitHub Issue（持续失败）
+        if: |
+          vars.CREATE_ISSUE_ON_FAILURE == 'true' &&
+          steps.check_failures.outputs.should_create_issue == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // 检查是否已存在相关 Issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure,automated'
+            });
+
+            const workflowName = '${{ steps.failure_info.outputs.workflow_name }}';
+            const branch = '${{ steps.failure_info.outputs.branch }}';
+            const existingIssue = issues.find(
+              issue => issue.title.includes(workflowName) && issue.title.includes(branch)
+            );
+
+            if (existingIssue) {
+              // 更新现有 Issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `## 🔄 又一次失败\n\n` +
+                      `- **运行链接**: ${{ steps.failure_info.outputs.workflow_url }}\n` +
+                      `- **提交**: \`${{ steps.failure_info.outputs.commit_sha }}\`\n` +
+                      `- **时间**: ${new Date().toISOString()}\n`
+              });
+              console.log(`已更新 Issue #${existingIssue.number}`);
+            } else {
+              // 创建新 Issue
+              const { data: newIssue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 CI 持续失败: ${workflowName} on ${branch}`,
+                body: `## 工作流持续失败警告\n\n` +
+                      `**${workflowName}** 工作流在 **${branch}** 分支上连续失败 3 次以上。\n\n` +
+                      `### 失败信息\n\n` +
+                      `| 字段 | 值 |\n` +
+                      `|------|-----|\n` +
+                      `| 工作流 | ${workflowName} |\n` +
+                      `| 分支 | ${branch} |\n` +
+                      `| 最近失败 | ${{ steps.failure_info.outputs.workflow_url }} |\n` +
+                      `| 提交 | \`${{ steps.failure_info.outputs.commit_sha }}\` |\n` +
+                      `| 触发者 | @${{ steps.failure_info.outputs.actor }} |\n\n` +
+                      `### 建议操作\n\n` +
+                      `1. 查看 [失败日志](${{ steps.failure_info.outputs.workflow_url }})\n` +
+                      `2. 检查最近的代码变更\n` +
+                      `3. 修复问题后关闭此 Issue\n\n` +
+                      `---\n` +
+                      `*此 Issue 由 CI 自动创建*`,
+                labels: ['ci-failure', 'automated', 'bug']
+              });
+              console.log(`已创建 Issue #${newIssue.number}`);
+            }
+
+  # 成功恢复通知（关闭相关 Issue）
+  notify-recovery:
+    runs-on: ubuntu-latest
+    # 只在工作流成功时运行
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.CREATE_ISSUE_ON_FAILURE == 'true'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 关闭恢复的 Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflowName = '${{ github.event.workflow_run.name }}';
+            const branch = '${{ github.event.workflow_run.head_branch }}';
+
+            // 查找相关的失败 Issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure,automated'
+            });
+
+            const relatedIssue = issues.find(
+              issue => issue.title.includes(workflowName) && issue.title.includes(branch)
+            );
+
+            if (relatedIssue) {
+              // 添加恢复评论
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: relatedIssue.number,
+                body: `## ✅ CI 已恢复\n\n` +
+                      `**${workflowName}** 工作流在 **${branch}** 分支上已恢复正常。\n\n` +
+                      `- **成功运行**: ${{ github.event.workflow_run.html_url }}\n` +
+                      `- **提交**: \`${{ github.event.workflow_run.head_sha }}\`\n\n` +
+                      `自动关闭此 Issue。`
+              });
+
+              // 关闭 Issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: relatedIssue.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+
+              console.log(`已关闭 Issue #${relatedIssue.number}`);
+            }

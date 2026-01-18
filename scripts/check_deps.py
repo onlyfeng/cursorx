@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import ast
+import pkgutil
 
 
 # ============================================================
@@ -122,6 +124,28 @@ class DependencyConflict:
 
 
 @dataclass
+class UndeclaredImport:
+    """未声明的导入"""
+    package: str
+    import_locations: list[str] = field(default_factory=list)  # 文件:行号 列表
+    
+    def add_location(self, file_path: str, line_no: int) -> None:
+        self.import_locations.append(f"{file_path}:{line_no}")
+
+
+@dataclass
+class ImportConsistencyReport:
+    """导入一致性检查报告"""
+    undeclared_imports: dict[str, UndeclaredImport] = field(default_factory=dict)
+    total_py_files: int = 0
+    total_imports: int = 0
+    
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.undeclared_imports)
+
+
+@dataclass
 class DependencyReport:
     """依赖检查报告"""
     timestamp: str = ""
@@ -132,10 +156,12 @@ class DependencyReport:
     missing_packages: list[str] = field(default_factory=list)
     extra_packages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    import_consistency: Optional[ImportConsistencyReport] = None
     
     @property
     def has_errors(self) -> bool:
-        return bool(self.version_mismatches or self.dependency_conflicts or self.missing_packages)
+        has_import_issues = self.import_consistency.has_issues if self.import_consistency else False
+        return bool(self.version_mismatches or self.dependency_conflicts or self.missing_packages or has_import_issues)
     
     @property
     def has_warnings(self) -> bool:
@@ -462,6 +488,265 @@ def analyze_dependency_tree(verbose: bool = False) -> list[DependencyConflict]:
 
 
 # ============================================================
+# 导入一致性检查
+# ============================================================
+
+def get_stdlib_modules() -> set[str]:
+    """获取 Python 标准库模块列表"""
+    stdlib = set()
+    
+    # Python 3.10+ 内置 sys.stdlib_module_names
+    if hasattr(sys, 'stdlib_module_names'):
+        stdlib.update(sys.stdlib_module_names)
+    else:
+        # 回退: 使用已知的标准库模块列表
+        # 这是 Python 3.9+ 常见标准库模块的子集
+        known_stdlib = {
+            # 内置
+            'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio',
+            'asyncore', 'atexit', 'audioop', 'base64', 'bdb', 'binascii',
+            'binhex', 'bisect', 'builtins', 'bz2', 'calendar', 'cgi', 'cgitb',
+            'chunk', 'cmath', 'cmd', 'code', 'codecs', 'codeop', 'collections',
+            'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
+            'contextvars', 'copy', 'copyreg', 'cProfile', 'crypt', 'csv',
+            'ctypes', 'curses', 'dataclasses', 'datetime', 'dbm', 'decimal',
+            'difflib', 'dis', 'distutils', 'doctest', 'email', 'encodings',
+            'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp', 'fileinput',
+            'fnmatch', 'fractions', 'ftplib', 'functools', 'gc', 'getopt',
+            'getpass', 'gettext', 'glob', 'graphlib', 'grp', 'gzip', 'hashlib',
+            'heapq', 'hmac', 'html', 'http', 'idlelib', 'imaplib', 'imghdr',
+            'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools',
+            'json', 'keyword', 'lib2to3', 'linecache', 'locale', 'logging',
+            'lzma', 'mailbox', 'mailcap', 'marshal', 'math', 'mimetypes',
+            'mmap', 'modulefinder', 'multiprocessing', 'netrc', 'nis',
+            'nntplib', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev',
+            'parser', 'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes',
+            'pkgutil', 'platform', 'plistlib', 'poplib', 'posix', 'posixpath',
+            'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile',
+            'pyclbr', 'pydoc', 'queue', 'quopri', 'random', 're', 'readline',
+            'reprlib', 'resource', 'rlcompleter', 'runpy', 'sched', 'secrets',
+            'select', 'selectors', 'shelve', 'shlex', 'shutil', 'signal',
+            'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver',
+            'spwd', 'sqlite3', 'ssl', 'stat', 'statistics', 'string',
+            'stringprep', 'struct', 'subprocess', 'sunau', 'symtable', 'sys',
+            'sysconfig', 'syslog', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile',
+            'termios', 'test', 'textwrap', 'threading', 'time', 'timeit',
+            'tkinter', 'token', 'tokenize', 'trace', 'traceback', 'tracemalloc',
+            'tty', 'turtle', 'turtledemo', 'types', 'typing', 'unicodedata',
+            'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings', 'wave',
+            'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib',
+            'xml', 'xmlrpc', 'zipapp', 'zipfile', 'zipimport', 'zlib',
+            # Python 3.11+ 新增
+            'tomllib', '_thread',
+        }
+        stdlib.update(known_stdlib)
+    
+    # 添加 pkgutil 发现的内置模块
+    for importer, modname, ispkg in pkgutil.iter_modules():
+        # 只取内置模块
+        if modname.startswith('_') or modname in stdlib:
+            stdlib.add(modname)
+    
+    return stdlib
+
+
+def get_package_import_mapping() -> dict[str, str]:
+    """获取包名到导入名的映射（处理包名与导入名不一致的情况）"""
+    # 常见的包名与导入名不一致的映射
+    # 格式: import_name -> package_name (requirements.txt 中的名称)
+    return {
+        # import 名 -> pypi 包名
+        'PIL': 'pillow',
+        'cv2': 'opencv-python',
+        'sklearn': 'scikit-learn',
+        'yaml': 'pyyaml',
+        'bs4': 'beautifulsoup4',
+        'dotenv': 'python-dotenv',
+        'git': 'gitpython',
+        'magic': 'python-magic',
+        'dateutil': 'python-dateutil',
+        'jose': 'python-jose',
+        'jwt': 'pyjwt',
+        'Crypto': 'pycryptodome',
+        'OpenSSL': 'pyopenssl',
+        'wx': 'wxpython',
+        'serial': 'pyserial',
+        'usb': 'pyusb',
+        'lxml': 'lxml',
+        'attr': 'attrs',
+    }
+
+
+def normalize_package_name(name: str) -> str:
+    """规范化包名（处理 - 和 _ 的差异）"""
+    return name.lower().replace("-", "_").replace(".", "_")
+
+
+def extract_imports_from_file(file_path: Path) -> list[tuple[str, int]]:
+    """从 Python 文件中提取所有 import 的模块名和行号"""
+    imports = []
+    
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        tree = ast.parse(content, filename=str(file_path))
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    # 取顶层模块名
+                    module_name = alias.name.split('.')[0]
+                    imports.append((module_name, node.lineno))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    # 取顶层模块名
+                    module_name = node.module.split('.')[0]
+                    imports.append((module_name, node.lineno))
+    except SyntaxError:
+        # 文件语法错误，跳过
+        pass
+    except Exception:
+        # 其他错误，跳过
+        pass
+    
+    return imports
+
+
+def get_project_local_modules() -> set[str]:
+    """获取项目中所有本地模块名（排除第三方依赖检测）"""
+    local_modules = set()
+    
+    # 顶级包目录
+    top_level_dirs = ['agents', 'coordinator', 'core', 'cursor', 'indexing', 
+                      'knowledge', 'process', 'tasks', 'tests', 'scripts']
+    local_modules.update(top_level_dirs)
+    
+    # 扫描项目中所有 Python 模块
+    for py_file in PROJECT_ROOT.rglob("*.py"):
+        # 排除特定目录
+        if any(d in py_file.parts for d in {'venv', '.venv', 'node_modules', '__pycache__', '.git'}):
+            continue
+        
+        try:
+            rel_path = py_file.relative_to(PROJECT_ROOT)
+            parts = rel_path.parts
+            
+            # 添加所有路径组件作为可能的本地模块
+            for part in parts:
+                if part.endswith('.py'):
+                    # 模块名（不含 .py）
+                    local_modules.add(part[:-3])
+                else:
+                    local_modules.add(part)
+        except ValueError:
+            continue
+    
+    return local_modules
+
+
+def check_import_consistency(verbose: bool = False) -> ImportConsistencyReport:
+    """检查项目中 import 语句与 requirements.txt 声明的一致性
+    
+    功能：
+    1. 扫描所有 .py 文件的 import 语句
+    2. 对比 requirements.txt 中的声明
+    3. 报告未声明的第三方依赖
+    4. 排除标准库模块
+    
+    Returns:
+        ImportConsistencyReport: 包含未声明导入的详细报告
+    """
+    report = ImportConsistencyReport()
+    
+    # 获取标准库模块
+    stdlib_modules = get_stdlib_modules()
+    
+    # 获取包名映射
+    import_to_package = get_package_import_mapping()
+    
+    # 解析 requirements.txt 中声明的依赖
+    declared_deps = parse_requirements_txt(REQUIREMENTS_FILE)
+    declared_deps.extend(parse_pyproject_toml(PYPROJECT_FILE))
+    
+    # 构建已声明包名集合（规范化后）
+    declared_packages = set()
+    for dep in declared_deps:
+        declared_packages.add(normalize_package_name(dep.name))
+        # 也添加原始名称
+        declared_packages.add(dep.name.lower())
+    
+    # 获取项目本地模块
+    project_modules = get_project_local_modules()
+    
+    # 扫描所有 .py 文件
+    py_files = list(PROJECT_ROOT.rglob("*.py"))
+    # 排除特定目录
+    exclude_dirs = {'venv', '.venv', 'node_modules', '__pycache__', '.git', 'build', 'dist', '.eggs'}
+    py_files = [f for f in py_files if not any(d in f.parts for d in exclude_dirs)]
+    
+    report.total_py_files = len(py_files)
+    
+    if verbose:
+        print_info(f"扫描 {len(py_files)} 个 Python 文件...")
+    
+    all_imports: dict[str, list[tuple[str, int]]] = {}  # module -> [(file, line), ...]
+    
+    for py_file in py_files:
+        imports = extract_imports_from_file(py_file)
+        report.total_imports += len(imports)
+        
+        for module_name, line_no in imports:
+            # 获取相对路径用于报告
+            try:
+                rel_path = py_file.relative_to(PROJECT_ROOT)
+            except ValueError:
+                rel_path = py_file
+            
+            if module_name not in all_imports:
+                all_imports[module_name] = []
+            all_imports[module_name].append((str(rel_path), line_no))
+    
+    # 检查每个导入是否已声明
+    for module_name, locations in all_imports.items():
+        # 跳过标准库
+        if module_name in stdlib_modules:
+            continue
+        
+        # 跳过项目本地模块
+        if module_name in project_modules or module_name.lower() in project_modules:
+            continue
+        
+        # 规范化模块名
+        normalized_module = normalize_package_name(module_name)
+        
+        # 检查是否在已声明依赖中
+        is_declared = (
+            normalized_module in declared_packages or
+            module_name.lower() in declared_packages
+        )
+        
+        # 检查包名映射
+        if not is_declared and module_name in import_to_package:
+            mapped_package = import_to_package[module_name]
+            is_declared = normalize_package_name(mapped_package) in declared_packages
+        
+        if not is_declared:
+            # 记录未声明的导入
+            if module_name not in report.undeclared_imports:
+                report.undeclared_imports[module_name] = UndeclaredImport(package=module_name)
+            
+            for file_path, line_no in locations:
+                report.undeclared_imports[module_name].add_location(file_path, line_no)
+    
+    if verbose:
+        if report.has_issues:
+            print_warn(f"发现 {len(report.undeclared_imports)} 个未声明的第三方依赖")
+        else:
+            print_pass("所有导入的第三方包均已在 requirements.txt 中声明")
+    
+    return report
+
+
+# ============================================================
 # 检查与报告
 # ============================================================
 
@@ -523,6 +808,11 @@ def check_dependencies(verbose: bool = False) -> DependencyReport:
     tree_conflicts = analyze_dependency_tree(verbose)
     report.dependency_conflicts.extend(tree_conflicts)
     
+    # 检查导入一致性
+    if verbose:
+        print_info("检查导入一致性...")
+    report.import_consistency = check_import_consistency(verbose)
+    
     return report
 
 
@@ -566,17 +856,35 @@ def format_report_text(report: DependencyReport) -> str:
             if conflict.message:
                 lines.append(f"    信息: {conflict.message}")
     
+    # 未声明的导入
+    if report.import_consistency and report.import_consistency.has_issues:
+        lines.append(f"\n{'─' * 60}")
+        lines.append("  未声明的第三方依赖")
+        lines.append(f"{'─' * 60}")
+        for pkg_name, undeclared in sorted(report.import_consistency.undeclared_imports.items()):
+            lines.append(f"  ✗ {pkg_name}")
+            # 显示最多 3 个位置
+            for loc in undeclared.import_locations[:3]:
+                lines.append(f"    - {loc}")
+            if len(undeclared.import_locations) > 3:
+                lines.append(f"    ... 及其他 {len(undeclared.import_locations) - 3} 处")
+    
     # 汇总
     lines.append(f"\n{'=' * 60}")
     if report.has_errors:
         error_count = len(report.missing_packages) + len(report.version_mismatches) + len(report.dependency_conflicts)
-        lines.append(f"  发现 {error_count} 个问题需要解决")
+        undeclared_count = len(report.import_consistency.undeclared_imports) if report.import_consistency else 0
+        total_issues = error_count + undeclared_count
+        lines.append(f"  发现 {total_issues} 个问题需要解决")
         lines.append("")
         lines.append("  修复建议:")
         if report.missing_packages:
             lines.append(f"    pip install {' '.join(report.missing_packages)}")
         if report.version_mismatches or report.dependency_conflicts:
             lines.append("    pip install -r requirements.txt --upgrade")
+        if undeclared_count > 0:
+            undeclared_pkgs = list(report.import_consistency.undeclared_imports.keys())
+            lines.append(f"    需在 requirements.txt 中添加: {', '.join(undeclared_pkgs)}")
     else:
         lines.append("  ✓ 所有依赖检查通过")
     lines.append("=" * 60)
@@ -616,6 +924,18 @@ def format_report_json(report: DependencyReport) -> str:
             }
             for c in report.dependency_conflicts
         ],
+        "undeclared_imports": {
+            pkg: {
+                "package": undeclared.package,
+                "locations": undeclared.import_locations,
+            }
+            for pkg, undeclared in (report.import_consistency.undeclared_imports.items() if report.import_consistency else {})
+        } if report.import_consistency else {},
+        "import_consistency_summary": {
+            "total_py_files": report.import_consistency.total_py_files if report.import_consistency else 0,
+            "total_imports": report.import_consistency.total_imports if report.import_consistency else 0,
+            "undeclared_count": len(report.import_consistency.undeclared_imports) if report.import_consistency else 0,
+        },
         "warnings": report.warnings,
     }
     return json.dumps(data, ensure_ascii=False, indent=2)
@@ -658,6 +978,19 @@ def format_report_markdown(report: DependencyReport) -> str:
             lines.append("|---|---|---|---|")
             for c in report.dependency_conflicts:
                 lines.append(f"| `{c.package}` | {c.required_version} | {c.installed_version} | {c.required_by} |")
+        
+        if report.import_consistency and report.import_consistency.has_issues:
+            lines.append("")
+            lines.append("### 未声明的第三方依赖")
+            lines.append("")
+            lines.append("| 包 | 引用位置 |")
+            lines.append("|---|---|")
+            for pkg, undeclared in sorted(report.import_consistency.undeclared_imports.items()):
+                locs = undeclared.import_locations[:3]
+                loc_str = ", ".join(f"`{loc}`" for loc in locs)
+                if len(undeclared.import_locations) > 3:
+                    loc_str += f" 等 {len(undeclared.import_locations)} 处"
+                lines.append(f"| `{pkg}` | {loc_str} |")
         
         lines.append("")
         lines.append("## 修复建议")
@@ -708,16 +1041,31 @@ def print_report(report: DependencyReport) -> None:
             print_info(f"  需要: {conflict.required_version} (by {conflict.required_by})")
             print_info(f"  已安装: {conflict.installed_version}")
     
+    # 未声明的导入
+    if report.import_consistency and report.import_consistency.has_issues:
+        print_section("未声明的第三方依赖")
+        for pkg_name, undeclared in sorted(report.import_consistency.undeclared_imports.items()):
+            print_fail(f"{pkg_name}")
+            for loc in undeclared.import_locations[:3]:
+                print_info(f"  - {loc}")
+            if len(undeclared.import_locations) > 3:
+                print_info(f"  ... 及其他 {len(undeclared.import_locations) - 3} 处")
+    
     # 汇总
     print_header("检查汇总")
     if report.has_errors:
         error_count = len(report.missing_packages) + len(report.version_mismatches) + len(report.dependency_conflicts)
-        print(f"\n{Colors.RED}{Colors.BOLD}  发现 {error_count} 个问题需要解决{Colors.NC}")
+        undeclared_count = len(report.import_consistency.undeclared_imports) if report.import_consistency else 0
+        total_issues = error_count + undeclared_count
+        print(f"\n{Colors.RED}{Colors.BOLD}  发现 {total_issues} 个问题需要解决{Colors.NC}")
         print("\n  修复建议:")
         if report.missing_packages:
             print(f"    {Colors.YELLOW}pip install {' '.join(report.missing_packages)}{Colors.NC}")
         if report.version_mismatches or report.dependency_conflicts:
             print(f"    {Colors.YELLOW}pip install -r requirements.txt --upgrade{Colors.NC}")
+        if undeclared_count > 0:
+            undeclared_pkgs = list(report.import_consistency.undeclared_imports.keys())
+            print(f"    {Colors.YELLOW}需在 requirements.txt 中添加: {', '.join(undeclared_pkgs)}{Colors.NC}")
     else:
         print(f"\n{Colors.GREEN}{Colors.BOLD}  ✓ 所有依赖检查通过{Colors.NC}")
 
@@ -758,12 +1106,16 @@ def main() -> int:
     
     try:
         # 执行检查
-        if not args.ci:
+        # 非 text 格式或 CI 模式时不打印头部
+        show_header = not args.ci and args.format == "text" and not args.output
+        if show_header:
             print_header("依赖检查")
             print(f"  项目路径: {PROJECT_ROOT}")
             print(f"  Python: {sys.version.split()[0]}")
         
-        report = check_dependencies(verbose=args.verbose)
+        # 非 text 格式时禁用 verbose 打印
+        verbose_mode = args.verbose and (args.format == "text" and not args.output)
+        report = check_dependencies(verbose=verbose_mode)
         
         # 生成报告
         if args.format == "json":

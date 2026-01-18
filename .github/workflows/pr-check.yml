@@ -25,10 +25,16 @@ jobs:
     name: Lint 检查
     uses: ./.github/workflows/lint.yml
 
+  # 重用导入测试工作流
+  import-tests:
+    name: 导入测试
+    uses: ./.github/workflows/import-test.yml
+
   # 运行完整的项目健康检查
   full-check:
     name: 完整项目检查
     runs-on: ubuntu-latest
+    needs: [import-tests]
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -221,11 +227,12 @@ jobs:
   summary:
     name: 检查摘要
     runs-on: ubuntu-latest
-    needs: [full-check, format-check, pr-description]
+    needs: [import-tests, full-check, format-check, pr-description]
     if: always()
     steps:
       - name: 生成检查摘要
         env:
+          IMPORT_TESTS_RESULT: ${{ needs.import-tests.result }}
           FULL_CHECK_RESULT: ${{ needs.full-check.result }}
           FORMAT_CHECK_RESULT: ${{ needs.format-check.result }}
           PR_DESC_RESULT: ${{ needs.pr-description.result }}
@@ -234,6 +241,15 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 检查项 | 结果 |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|------|" >> $GITHUB_STEP_SUMMARY
+          
+          # 导入测试结果
+          if [ "$IMPORT_TESTS_RESULT" = "success" ]; then
+            echo "| 模块导入测试 | ✅ 通过 |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$IMPORT_TESTS_RESULT" = "failure" ]; then
+            echo "| 模块导入测试 | ❌ 失败 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 模块导入测试 | ⚠️ $IMPORT_TESTS_RESULT |" >> $GITHUB_STEP_SUMMARY
+          fi
           
           # 完整检查结果
           if [ "$FULL_CHECK_RESULT" = "success" ]; then
@@ -267,7 +283,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # 总体结果
-          if [ "$FULL_CHECK_RESULT" = "success" ] && [ "$PR_DESC_RESULT" = "success" ]; then
+          if [ "$IMPORT_TESTS_RESULT" = "success" ] && [ "$FULL_CHECK_RESULT" = "success" ] && [ "$PR_DESC_RESULT" = "success" ]; then
             echo "## ✅ 所有必要检查通过" >> $GITHUB_STEP_SUMMARY
           else
             echo "## ❌ 部分检查未通过，请查看详情" >> $GITHUB_STEP_SUMMARY
@@ -276,16 +292,18 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 提示" >> $GITHUB_STEP_SUMMARY
           echo "- 运行 \`bash scripts/check_all.sh --full\` 本地检查" >> $GITHUB_STEP_SUMMARY
+          echo "- 运行 \`python scripts/pre_commit_check.py --quick\` 检查模块导入" >> $GITHUB_STEP_SUMMARY
           echo "- 运行 \`ruff format .\` 自动格式化代码" >> $GITHUB_STEP_SUMMARY
           echo "- 运行 \`isort .\` 自动排序 imports" >> $GITHUB_STEP_SUMMARY
 
       - name: 检查是否应该失败
         env:
+          IMPORT_TESTS_RESULT: ${{ needs.import-tests.result }}
           FULL_CHECK_RESULT: ${{ needs.full-check.result }}
           PR_DESC_RESULT: ${{ needs.pr-description.result }}
         run: |
-          # 完整检查和 PR 描述是必须通过的
-          if [ "$FULL_CHECK_RESULT" = "failure" ] || [ "$PR_DESC_RESULT" = "failure" ]; then
+          # 导入测试、完整检查和 PR 描述是必须通过的
+          if [ "$IMPORT_TESTS_RESULT" = "failure" ] || [ "$FULL_CHECK_RESULT" = "failure" ] || [ "$PR_DESC_RESULT" = "failure" ]; then
             echo "必要检查未通过"
             exit 1
           fi

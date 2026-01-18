@@ -1,0 +1,138 @@
+# 模块导入检查工作流
+# 验证所有 Python 模块可以正确导入，确保依赖完整性
+
+name: Import Test
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_call:
+    # 允许被其他工作流调用
+
+jobs:
+  import-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行模块导入检查
+        id: import-check
+        run: |
+          # 运行检查并捕获 JSON 输出
+          python scripts/pre_commit_check.py --json --quick > import-check-result.json 2>&1 || true
+          
+          # 检查结果
+          if python -c "import json; data = json.load(open('import-check-result.json')); exit(0 if data.get('passed') else 1)" 2>/dev/null; then
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "所有模块导入检查通过"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "模块导入检查失败"
+          fi
+          
+          # 显示完整输出
+          cat import-check-result.json
+
+      - name: 生成检查报告摘要
+        if: always()
+        run: |
+          echo "## 模块导入检查报告 (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f import-check-result.json ]; then
+            # 解析 JSON 并生成 Markdown 表格
+            python << 'EOF'
+          import json
+          import os
+          
+          try:
+              with open('import-check-result.json', 'r') as f:
+                  data = json.load(f)
+              
+              summary = []
+              
+              # 总体状态
+              if data.get('passed'):
+                  summary.append("### ✅ 检查通过\n")
+              else:
+                  summary.append("### ❌ 检查失败\n")
+              
+              summary.append(f"- **通过**: {data.get('passed_count', 0)}")
+              summary.append(f"- **失败**: {data.get('failed_count', 0)}")
+              summary.append("")
+              
+              # 详细结果表格
+              summary.append("### 检查详情\n")
+              summary.append("| 检查项 | 状态 | 信息 |")
+              summary.append("|--------|------|------|")
+              
+              for check in data.get('checks', []):
+                  status = "✅" if check.get('passed') else "❌"
+                  name = check.get('name', 'Unknown')
+                  message = check.get('message', '')
+                  summary.append(f"| {name} | {status} | {message} |")
+              
+              summary.append("")
+              
+              # 失败项详情
+              failed_checks = [c for c in data.get('checks', []) if not c.get('passed')]
+              if failed_checks:
+                  summary.append("### 失败详情\n")
+                  for check in failed_checks:
+                      summary.append(f"#### {check.get('name')}")
+                      for detail in check.get('details', []):
+                          summary.append(f"- {detail}")
+                      if check.get('fix_suggestion'):
+                          summary.append(f"\n**修复建议**: {check.get('fix_suggestion')}")
+                      summary.append("")
+              
+              # 写入摘要
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+                  f.write('\n'.join(summary))
+                  
+          except Exception as e:
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+                  f.write(f"\n### ⚠️ 无法解析检查结果\n\n错误: {e}\n")
+          EOF
+          else
+            echo "### ⚠️ 检查结果文件不存在" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 上传检查结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-check-result-py${{ matrix.python-version }}
+          path: import-check-result.json
+          retention-days: 7
+
+      - name: 检查结果判定
+        if: steps.import-check.outputs.status == 'failed'
+        run: |
+          echo "模块导入检查失败，请查看详细报告"
+          exit 1

@@ -51,6 +51,26 @@ readonly: true
 2. **变更文件导入检查**: 验证所有变更的 Python 文件导入正常
 3. **主程序启动验证**: `python run.py --help`
 
+### 依赖审核检查
+
+审核代码变更时，必须执行以下依赖相关检查：
+
+4. **未声明依赖检查**: 检查代码中是否引入了未在 `requirements.in` 或 `pyproject.toml` 中声明的第三方依赖
+   - 命令: `python scripts/check_deps.py` 或手动检查 import 语句
+   - 重点关注: 新增的 import 语句是否对应已声明的包
+
+5. **功能重叠依赖检查**: 检查是否有功能重叠的依赖可以替代
+   - 避免引入功能相似的重复依赖（如同时使用 requests 和 httpx）
+   - 优先使用项目已有的依赖解决问题
+
+6. **模块导入验证**: 验证所有模块可正确导入
+   - 命令: `python -c "import <module_name>"` 逐一验证
+   - 或使用: `python scripts/test_cloud_import.py` 进行批量验证
+
+7. **入口脚本验证**: 确认 `run.py` 入口脚本可正常执行
+   - 命令: `python run.py --help`
+   - 确保主入口无导入错误、参数解析正常
+
 ## 使用的工具
 
 只使用以下只读工具：

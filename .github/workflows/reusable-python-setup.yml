@@ -1,0 +1,96 @@
+# 可复用的 Python 环境设置工作流
+# 提供标准化的 Python 环境设置，包含 pip 缓存和 pip-sync 依赖安装
+#
+# 使用方式:
+#   jobs:
+#     setup:
+#       uses: ./.github/workflows/reusable-python-setup.yml
+#       with:
+#         python-version: '3.11'
+#         requirements-file: 'requirements.txt'
+
+name: Python Setup
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python 版本'
+        required: false
+        type: string
+        default: '3.11'
+      requirements-file:
+        description: '依赖文件路径'
+        required: false
+        type: string
+        default: 'requirements.txt'
+      install-dev-deps:
+        description: '是否安装开发依赖'
+        required: false
+        type: boolean
+        default: false
+      extra-packages:
+        description: '额外安装的包（空格分隔）'
+        required: false
+        type: string
+        default: ''
+      working-directory:
+        description: '工作目录'
+        required: false
+        type: string
+        default: '.'
+    outputs:
+      python-version:
+        description: '实际使用的 Python 版本'
+        value: ${{ jobs.setup.outputs.python-version }}
+      cache-hit:
+        description: '是否命中 pip 缓存'
+        value: ${{ jobs.setup.outputs.cache-hit }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      python-version: ${{ steps.setup-python.outputs.python-version }}
+      cache-hit: ${{ steps.setup-python.outputs.cache-hit }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ inputs.python-version }}
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: 'pip'
+          cache-dependency-path: |
+            ${{ inputs.requirements-file }}
+            requirements-dev.in
+            requirements-test.in
+
+      - name: 安装 pip-tools
+        run: |
+          python -m pip install --upgrade pip pip-tools
+
+      - name: 使用 pip-sync 安装依赖
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          # 使用 pip-sync 确保环境与依赖文件完全一致
+          if [ -f "${{ inputs.requirements-file }}" ]; then
+            pip-sync ${{ inputs.requirements-file }}
+          else
+            echo "警告: 依赖文件 ${{ inputs.requirements-file }} 不存在"
+            exit 1
+          fi
+
+      - name: 安装额外包
+        if: inputs.extra-packages != ''
+        run: |
+          pip install ${{ inputs.extra-packages }}
+
+      - name: 验证依赖安装
+        run: |
+          # 检查依赖一致性
+          pip check
+          echo "✅ Python ${{ steps.setup-python.outputs.python-version }} 环境设置完成"
