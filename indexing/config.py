@@ -1,7 +1,7 @@
 """索引模块配置定义"""
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class EmbeddingProvider(str, Enum):
@@ -50,10 +50,8 @@ class EmbeddingConfig(BaseModel):
     # 性能配置
     max_retries: int = 3                        # 最大重试次数
     timeout: int = 30                           # 超时时间（秒）
-    
-    class Config:
-        """Pydantic 配置"""
-        use_enum_values = True
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ChunkConfig(BaseModel):
@@ -79,10 +77,8 @@ class ChunkConfig(BaseModel):
     supported_languages: list[str] = Field(
         default_factory=lambda: ["python", "javascript", "typescript", "go", "rust"]
     )
-    
-    class Config:
-        """Pydantic 配置"""
-        use_enum_values = True
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class VectorStoreConfig(BaseModel):
@@ -106,10 +102,8 @@ class VectorStoreConfig(BaseModel):
     ef_construction: int = 200                  # HNSW 构建参数
     ef_search: int = 50                         # HNSW 搜索参数
     m: int = 16                                 # HNSW 连接数
-    
-    class Config:
-        """Pydantic 配置"""
-        use_enum_values = True
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class IndexConfig(BaseModel):
@@ -150,7 +144,5 @@ class IndexConfig(BaseModel):
     def get_embedding_dimension(self) -> int:
         """获取向量维度"""
         return self.embedding.dimension
-    
-    class Config:
-        """Pydantic 配置"""
-        use_enum_values = True
+
+    model_config = ConfigDict(use_enum_values=True)

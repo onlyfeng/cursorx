@@ -39,6 +39,10 @@ class MultiProcessOrchestratorConfig(BaseModel):
     planner_model: str = "gpt-5.2-high"           # 规划者使用 GPT 5.2 High
     worker_model: str = "opus-4.5-thinking"       # 执行者使用 Claude 4.5 Opus (Thinking)
     reviewer_model: str = "opus-4.5-thinking"     # 评审者使用 Claude 4.5 Opus (Thinking)
+    stream_events_enabled: bool = False
+    stream_log_console: bool = True
+    stream_log_detail_dir: str = "logs/stream_json/detail/"
+    stream_log_raw_dir: str = "logs/stream_json/raw/"
 
 
 class MultiProcessOrchestrator:
@@ -82,6 +86,11 @@ class MultiProcessOrchestrator:
             "working_directory": self.config.working_directory,
             "timeout": int(self.config.planning_timeout),
             "model": self.config.planner_model,
+            "stream_events_enabled": self.config.stream_events_enabled,
+            "stream_log_console": self.config.stream_log_console,
+            "stream_log_detail_dir": self.config.stream_log_detail_dir,
+            "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            "agent_name": "planner",
         }
         self.planner_id = f"planner-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(
@@ -97,6 +106,10 @@ class MultiProcessOrchestrator:
             "working_directory": self.config.working_directory,
             "task_timeout": int(self.config.execution_timeout),
             "model": self.config.worker_model,
+            "stream_events_enabled": self.config.stream_events_enabled,
+            "stream_log_console": self.config.stream_log_console,
+            "stream_log_detail_dir": self.config.stream_log_detail_dir,
+            "stream_log_raw_dir": self.config.stream_log_raw_dir,
         }
         for i in range(self.config.worker_count):
             worker_id = f"worker-{i}-{uuid.uuid4().hex[:8]}"
@@ -115,6 +128,11 @@ class MultiProcessOrchestrator:
             "timeout": int(self.config.review_timeout),
             "model": self.config.reviewer_model,
             "strict_mode": self.config.strict_review,
+            "stream_events_enabled": self.config.stream_events_enabled,
+            "stream_log_console": self.config.stream_log_console,
+            "stream_log_detail_dir": self.config.stream_log_detail_dir,
+            "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            "agent_name": "reviewer",
         }
         self.reviewer_id = f"reviewer-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(

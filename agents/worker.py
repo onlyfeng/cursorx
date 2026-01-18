@@ -81,6 +81,7 @@ class WorkerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.worker_config = config
+        self._apply_stream_config(self.worker_config.cursor_config)
         self.cursor_client = CursorAgentClient(config.cursor_config)
         self.current_task: Optional[Task] = None
         self.completed_tasks: list[str] = []
@@ -96,6 +97,15 @@ class WorkerAgent(BaseAgent):
         self._knowledge_search_enabled = config.enable_knowledge_search and knowledge_manager is not None
         if self._knowledge_search_enabled:
             logger.info(f"[{config.name}] 知识库搜索已启用")
+
+    def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
+        """注入流式日志配置与 Agent 标识"""
+        cursor_config.stream_agent_id = self.id
+        cursor_config.stream_agent_role = self.role.value
+        cursor_config.stream_agent_name = self.name
+        if cursor_config.stream_events_enabled:
+            cursor_config.output_format = "stream-json"
+            cursor_config.stream_partial_output = True
     
     def set_semantic_search(self, search: "SemanticSearch") -> None:
         """设置语义搜索引擎（延迟初始化）

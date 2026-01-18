@@ -87,6 +87,7 @@ class PlannerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.planner_config = config
+        self._apply_stream_config(self.planner_config.cursor_config)
         self.cursor_client = CursorAgentClient(config.cursor_config)
         self.sub_planners: list["PlannerAgent"] = []
         
@@ -95,6 +96,15 @@ class PlannerAgent(BaseAgent):
         self._search_enabled = config.enable_semantic_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 语义搜索已启用")
+
+    def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
+        """注入流式日志配置与 Agent 标识"""
+        cursor_config.stream_agent_id = self.id
+        cursor_config.stream_agent_role = self.role.value
+        cursor_config.stream_agent_name = self.name
+        if cursor_config.stream_events_enabled:
+            cursor_config.output_format = "stream-json"
+            cursor_config.stream_partial_output = True
     
     def set_semantic_search(self, search: "SemanticSearch") -> None:
         """设置语义搜索引擎（延迟初始化）

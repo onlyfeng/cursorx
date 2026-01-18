@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field
+from loguru import logger
 import uuid
 
 
@@ -75,7 +76,13 @@ class BaseAgent(ABC):
     
     def update_status(self, status: AgentStatus) -> None:
         """更新状态"""
+        previous = self.status
         self.status = status
+        if previous != status:
+            try:
+                logger.info(f"[{self.id}] 状态切换: {previous.value} -> {status.value}")
+            except Exception as e:
+                logger.warning(f"[{self.id}] 记录状态失败: {e}")
     
     def set_context(self, key: str, value: Any) -> None:
         """设置上下文"""

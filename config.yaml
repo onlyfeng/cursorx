@@ -92,3 +92,8 @@ logging:
   file: logs/agent.log      # 日志文件
   rotation: 10 MB           # 日志轮转大小
   retention: 7 days         # 日志保留时间
+  stream_json:
+    enabled: false          # 是否启用 stream-json 流式日志
+    console: true           # 是否输出到控制台
+    detail_dir: logs/stream_json/detail/  # 详细日志目录
+    raw_dir: logs/stream_json/raw/        # 原始 NDJSON 目录

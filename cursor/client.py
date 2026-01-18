@@ -18,11 +18,13 @@ import json
 import os
 import tempfile
 import shutil
-from typing import Any, Optional
+from typing import Any, Optional, AsyncIterator
 from pydantic import BaseModel, Field
 from loguru import logger
 from datetime import datetime
 from pathlib import Path
+
+from cursor.streaming import StreamEventLogger, StreamEventType, parse_stream_event
 
 
 class CursorAgentConfig(BaseModel):
@@ -96,6 +98,15 @@ class CursorAgentConfig(BaseModel):
     # 配合 stream-json 使用，可以增量流式传输变更内容
     # 每条消息会有多个 assistant 事件，需要拼接 message.content[].text
     stream_partial_output: bool = False
+
+    # 流式事件日志配置（仅在 output_format=stream-json 时生效）
+    stream_events_enabled: bool = False
+    stream_log_console: bool = True
+    stream_log_detail_dir: str = "logs/stream_json/detail/"
+    stream_log_raw_dir: str = "logs/stream_json/raw/"
+    stream_agent_id: Optional[str] = None
+    stream_agent_role: Optional[str] = None
+    stream_agent_name: Optional[str] = None
     
     # 是否使用非交互模式（-p 参数）
     # 非交互模式下，Agent 具有完全写入权限
@@ -359,15 +370,18 @@ class CursorAgentClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
-            
+
+            if self.config.output_format == "stream-json":
+                return await self._handle_stream_json_process(process, timeout)
+
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=timeout,
             )
-            
+
             output = stdout.decode("utf-8", errors="replace")
             error_output = stderr.decode("utf-8", errors="replace")
-            
+
             # 构建错误信息（包含更多上下文）
             error_msg = None
             if process.returncode != 0:
@@ -381,7 +395,7 @@ class CursorAgentClient:
                     error_parts.append(f"exit_code: {process.returncode} (无错误输出)")
                 error_msg = "; ".join(error_parts)
                 logger.warning(f"agent CLI 返回非零退出码 {process.returncode}: {error_msg[:200]}")
-            
+
             return {
                 "success": process.returncode == 0,
                 "output": output,
@@ -399,6 +413,143 @@ class CursorAgentClient:
         except Exception as e:
             logger.error(f"agent CLI 执行失败: {e}")
             return None
+
+    def _build_stream_logger(self) -> Optional[StreamEventLogger]:
+        """构建流式事件日志器（可选）"""
+        if not self.config.stream_events_enabled:
+            return None
+        return StreamEventLogger(
+            agent_id=self.config.stream_agent_id,
+            agent_role=self.config.stream_agent_role,
+            agent_name=self.config.stream_agent_name,
+            console=self.config.stream_log_console,
+            detail_dir=self.config.stream_log_detail_dir,
+            raw_dir=self.config.stream_log_raw_dir,
+        )
+
+    async def _handle_stream_json_process(
+        self,
+        process: asyncio.subprocess.Process,
+        timeout: int,
+    ) -> dict[str, Any]:
+        """处理 stream-json 输出"""
+        stream_logger = self._build_stream_logger()
+        deadline = asyncio.get_event_loop().time() + timeout
+        assistant_chunks: list[str] = []
+        fallback_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        stderr_task = asyncio.create_task(
+            self._collect_stream(process.stderr, deadline, stderr_chunks)
+        )
+
+        try:
+            async for line in self._read_stream_lines(process.stdout, deadline, strip_line=True):
+                if stream_logger:
+                    stream_logger.handle_raw_line(line)
+
+                event = parse_stream_event(line)
+                if event:
+                    if stream_logger:
+                        stream_logger.handle_event(event)
+
+                    if event.type == StreamEventType.ASSISTANT:
+                        if event.content:
+                            assistant_chunks.append(event.content)
+                    elif event.type == StreamEventType.MESSAGE:
+                        if event.content:
+                            fallback_chunks.append(event.content)
+
+            await self._wait_process_with_deadline(process, deadline)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise
+        finally:
+            try:
+                await stderr_task
+            except asyncio.TimeoutError:
+                stderr_task.cancel()
+            except Exception as e:
+                logger.warning(f"读取 stderr 失败: {e}")
+
+            if stream_logger:
+                stream_logger.close()
+
+        output = "".join(assistant_chunks)
+        if not output and fallback_chunks:
+            output = "\n".join(fallback_chunks)
+
+        error_output = "".join(stderr_chunks)
+
+        error_msg = None
+        if process.returncode != 0:
+            error_parts = []
+            if error_output.strip():
+                error_parts.append(f"stderr: {error_output.strip()}")
+            if output.strip() and not error_output.strip():
+                error_parts.append(f"stdout: {output.strip()[:500]}")
+            if not error_parts:
+                error_parts.append(f"exit_code: {process.returncode} (无错误输出)")
+            error_msg = "; ".join(error_parts)
+            logger.warning(f"agent CLI 返回非零退出码 {process.returncode}: {error_msg[:200]}")
+
+        return {
+            "success": process.returncode == 0,
+            "output": output,
+            "error": error_msg,
+            "exit_code": process.returncode,
+            "command": f"agent -p '...' --model {self.config.model}" + (" --force" if self.config.force_write else ""),
+        }
+
+    async def _wait_process_with_deadline(
+        self,
+        process: asyncio.subprocess.Process,
+        deadline: float,
+    ) -> None:
+        """等待进程结束（带总超时）"""
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError()
+        await asyncio.wait_for(process.wait(), timeout=remaining)
+
+    async def _read_stream_lines(
+        self,
+        stream: asyncio.StreamReader,
+        deadline: float,
+        strip_line: bool = True,
+    ) -> AsyncIterator[str]:
+        """逐行读取流（带总超时）"""
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+
+            try:
+                line = await asyncio.wait_for(
+                    stream.readline(),
+                    timeout=min(remaining, 1.0),
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            if not line:
+                break
+
+            text = line.decode("utf-8", errors="replace")
+            if strip_line:
+                text = text.rstrip("\r\n")
+            yield text
+
+    async def _collect_stream(
+        self,
+        stream: asyncio.StreamReader,
+        deadline: float,
+        buffer: list[str],
+    ) -> None:
+        """收集流输出到缓冲区"""
+        async for line in self._read_stream_lines(stream, deadline, strip_line=False):
+            buffer.append(line)
     
     async def _mock_execution(
         self,

@@ -5,7 +5,7 @@
 """
 import re
 from typing import Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .models import Document, DocumentChunk
 from indexing.base import CodeChunk, ChunkType
@@ -21,10 +21,8 @@ class DocumentChunkConfig(BaseModel):
     # 分块策略
     respect_paragraph_boundary: bool = True     # 尊重段落边界
     respect_sentence_boundary: bool = True      # 尊重句子边界
-    
-    class Config:
-        """Pydantic 配置"""
-        use_enum_values = True
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class DocumentChunkAdapter:

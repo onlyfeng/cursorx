@@ -14,6 +14,8 @@ import json
 from typing import AsyncIterator, Callable, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from datetime import datetime
 from loguru import logger
 
 
@@ -62,6 +64,122 @@ class StreamEvent:
     content: str = ""                         # 文本内容 (assistant)
     tool_call: Optional[ToolCallInfo] = None  # 工具调用 (tool_*)
     duration_ms: int = 0                      # 耗时毫秒 (result)
+
+
+def parse_stream_event(line: str) -> Optional[StreamEvent]:
+    """解析 stream-json 输出行"""
+    if not line:
+        return None
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return StreamEvent(
+            type=StreamEventType.MESSAGE,
+            data={"content": line},
+            content=line,
+        )
+
+    event_type = data.get("type", "")
+    subtype = data.get("subtype", "")
+
+    if event_type == "system" and subtype == "init":
+        return StreamEvent(
+            type=StreamEventType.SYSTEM_INIT,
+            subtype=subtype,
+            data=data,
+            model=data.get("model", ""),
+        )
+
+    if event_type == "assistant":
+        content = ""
+        message = data.get("message", {})
+        contents = message.get("content", [])
+        if isinstance(contents, list):
+            parts: list[str] = []
+            for item in contents:
+                if isinstance(item, dict):
+                    text = item.get("text", "")
+                    if text:
+                        parts.append(text)
+            content = "".join(parts)
+        elif isinstance(contents, str):
+            content = contents
+
+        return StreamEvent(
+            type=StreamEventType.ASSISTANT,
+            data=data,
+            content=content,
+        )
+
+    if event_type == "tool_call":
+        tool_call = parse_tool_call(data.get("tool_call", {}))
+
+        if subtype == "started":
+            return StreamEvent(
+                type=StreamEventType.TOOL_STARTED,
+                subtype=subtype,
+                data=data,
+                tool_call=tool_call,
+            )
+        if subtype == "completed":
+            return StreamEvent(
+                type=StreamEventType.TOOL_COMPLETED,
+                subtype=subtype,
+                data=data,
+                tool_call=tool_call,
+            )
+
+    if event_type == "result":
+        return StreamEvent(
+            type=StreamEventType.RESULT,
+            data=data,
+            duration_ms=data.get("duration_ms", 0),
+        )
+
+    return StreamEvent(
+        type=StreamEventType.MESSAGE,
+        data=data,
+    )
+
+
+def parse_tool_call(tool_call_data: dict) -> ToolCallInfo:
+    """解析工具调用信息"""
+    info = ToolCallInfo()
+
+    if "writeToolCall" in tool_call_data:
+        write_call = tool_call_data["writeToolCall"]
+        info.tool_type = "write"
+        info.args = write_call.get("args", {})
+        info.path = info.args.get("path", "")
+
+        result = write_call.get("result", {})
+        if "success" in result:
+            info.success = True
+            info.result = result["success"]
+
+    elif "readToolCall" in tool_call_data:
+        read_call = tool_call_data["readToolCall"]
+        info.tool_type = "read"
+        info.args = read_call.get("args", {})
+        info.path = info.args.get("path", "")
+
+        result = read_call.get("result", {})
+        if "success" in result:
+            info.success = True
+            info.result = result["success"]
+
+    elif "shellToolCall" in tool_call_data:
+        shell_call = tool_call_data["shellToolCall"]
+        info.tool_type = "shell"
+        info.args = shell_call.get("args", {})
+
+        result = shell_call.get("result", {})
+        if "success" in result:
+            info.success = True
+            info.result = result["success"]
+
+    return info
 
 
 class StreamingClient:
@@ -171,127 +289,8 @@ class StreamingClient:
                 continue
     
     def _parse_stream_line(self, line: str) -> Optional[StreamEvent]:
-        """解析流式输出行
-        
-        格式参考:
-        - {"type": "system", "subtype": "init", "model": "gpt-5.2-high"}
-        - {"type": "assistant", "message": {"content": [{"text": "..."}]}}
-        - {"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {...}}}
-        - {"type": "tool_call", "subtype": "completed", "tool_call": {...}}
-        - {"type": "result", "duration_ms": 1234}
-        """
-        if not line:
-            return None
-        
-        try:
-            data = json.loads(line)
-            event_type = data.get("type", "")
-            subtype = data.get("subtype", "")
-            
-            # 系统初始化
-            if event_type == "system" and subtype == "init":
-                return StreamEvent(
-                    type=StreamEventType.SYSTEM_INIT,
-                    subtype=subtype,
-                    data=data,
-                    model=data.get("model", ""),
-                )
-            
-            # 助手消息
-            if event_type == "assistant":
-                content = ""
-                message = data.get("message", {})
-                contents = message.get("content", [])
-                if contents and isinstance(contents, list):
-                    content = contents[0].get("text", "")
-                
-                return StreamEvent(
-                    type=StreamEventType.ASSISTANT,
-                    data=data,
-                    content=content,
-                )
-            
-            # 工具调用
-            if event_type == "tool_call":
-                tool_call = self._parse_tool_call(data.get("tool_call", {}))
-                
-                if subtype == "started":
-                    return StreamEvent(
-                        type=StreamEventType.TOOL_STARTED,
-                        subtype=subtype,
-                        data=data,
-                        tool_call=tool_call,
-                    )
-                elif subtype == "completed":
-                    return StreamEvent(
-                        type=StreamEventType.TOOL_COMPLETED,
-                        subtype=subtype,
-                        data=data,
-                        tool_call=tool_call,
-                    )
-            
-            # 结果
-            if event_type == "result":
-                return StreamEvent(
-                    type=StreamEventType.RESULT,
-                    data=data,
-                    duration_ms=data.get("duration_ms", 0),
-                )
-            
-            # 未知类型，返回通用消息
-            return StreamEvent(
-                type=StreamEventType.MESSAGE,
-                data=data,
-            )
-            
-        except json.JSONDecodeError:
-            # 非 JSON 行，作为消息处理
-            return StreamEvent(
-                type=StreamEventType.MESSAGE,
-                data={"content": line},
-                content=line,
-            )
-    
-    def _parse_tool_call(self, tool_call_data: dict) -> ToolCallInfo:
-        """解析工具调用信息"""
-        info = ToolCallInfo()
-        
-        # 写入工具
-        if "writeToolCall" in tool_call_data:
-            write_call = tool_call_data["writeToolCall"]
-            info.tool_type = "write"
-            info.args = write_call.get("args", {})
-            info.path = info.args.get("path", "")
-            
-            result = write_call.get("result", {})
-            if "success" in result:
-                info.success = True
-                info.result = result["success"]
-        
-        # 读取工具
-        elif "readToolCall" in tool_call_data:
-            read_call = tool_call_data["readToolCall"]
-            info.tool_type = "read"
-            info.args = read_call.get("args", {})
-            info.path = info.args.get("path", "")
-            
-            result = read_call.get("result", {})
-            if "success" in result:
-                info.success = True
-                info.result = result["success"]
-        
-        # Shell 工具
-        elif "shellToolCall" in tool_call_data:
-            shell_call = tool_call_data["shellToolCall"]
-            info.tool_type = "shell"
-            info.args = shell_call.get("args", {})
-            
-            result = shell_call.get("result", {})
-            if "success" in result:
-                info.success = True
-                info.result = result["success"]
-        
-        return info
+        """解析流式输出行"""
+        return parse_stream_event(line)
 
 
 class ProgressTracker:
@@ -383,3 +382,123 @@ class ProgressTracker:
             "errors": self.errors,
             "is_complete": self.is_complete,
         }
+
+
+class StreamEventLogger:
+    """流式事件日志器"""
+
+    def __init__(
+        self,
+        agent_id: Optional[str],
+        agent_role: Optional[str],
+        agent_name: Optional[str],
+        console: bool = True,
+        detail_dir: str = "logs/stream_json/detail/",
+        raw_dir: str = "logs/stream_json/raw/",
+    ) -> None:
+        self.agent_id = agent_id or "unknown"
+        self.agent_role = agent_role or "agent"
+        self.agent_name = agent_name or ""
+        self.console = console
+        self.detail_dir = detail_dir
+        self.raw_dir = raw_dir
+
+        self._raw_file = None
+        self._detail_file = None
+        self._prefix = self._build_prefix()
+        self._prepare_files()
+
+    def _build_prefix(self) -> str:
+        """构建日志前缀"""
+        suffix = f"({self.agent_name})" if self.agent_name else ""
+        return f"{self.agent_role}:{self.agent_id}{suffix}"
+
+    def _prepare_files(self) -> None:
+        """准备日志文件"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base_name = f"{self.agent_role}_{self.agent_id}_{timestamp}"
+
+        if self.raw_dir:
+            try:
+                raw_path = Path(self.raw_dir)
+                raw_path.mkdir(parents=True, exist_ok=True)
+                raw_file = raw_path / f"{base_name}.jsonl"
+                self._raw_file = raw_file.open("a", encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"创建 raw 日志失败: {e}")
+                self._raw_file = None
+
+        if self.detail_dir:
+            try:
+                detail_path = Path(self.detail_dir)
+                detail_path.mkdir(parents=True, exist_ok=True)
+                detail_file = detail_path / f"{base_name}.log"
+                self._detail_file = detail_file.open("a", encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"创建 detail 日志失败: {e}")
+                self._detail_file = None
+
+    def handle_raw_line(self, line: str) -> None:
+        """写入 raw NDJSON"""
+        if not self._raw_file:
+            return
+        try:
+            self._raw_file.write(f"{line}\n")
+            self._raw_file.flush()
+        except Exception as e:
+            logger.warning(f"写入 raw 日志失败: {e}")
+
+    def handle_event(self, event: StreamEvent) -> None:
+        """处理并输出流式事件"""
+        message = self._format_event(event)
+        if not message:
+            return
+
+        if self.console:
+            print(message, flush=True)
+
+        if self._detail_file:
+            try:
+                self._detail_file.write(f"{message}\n")
+                self._detail_file.flush()
+            except Exception as e:
+                logger.warning(f"写入 detail 日志失败: {e}")
+
+    def _format_event(self, event: StreamEvent) -> str:
+        """格式化事件输出"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        if event.type == StreamEventType.SYSTEM_INIT:
+            return f"[{timestamp}] [{self._prefix}] 初始化模型: {event.model}"
+
+        if event.type == StreamEventType.ASSISTANT:
+            return f"[{timestamp}] [{self._prefix}] {event.content}"
+
+        if event.type in (StreamEventType.TOOL_STARTED, StreamEventType.TOOL_COMPLETED):
+            tool = event.tool_call
+            status = "开始" if event.type == StreamEventType.TOOL_STARTED else "完成"
+            tool_type = tool.tool_type if tool else "tool"
+            path = tool.path if tool and tool.path else ""
+            extra = f" {path}" if path else ""
+            return f"[{timestamp}] [{self._prefix}] 工具{status}: {tool_type}{extra}"
+
+        if event.type == StreamEventType.RESULT:
+            return f"[{timestamp}] [{self._prefix}] 完成 ({event.duration_ms}ms)"
+
+        if event.type == StreamEventType.ERROR:
+            error = event.data.get("error", "未知错误")
+            return f"[{timestamp}] [{self._prefix}] 错误: {error}"
+
+        if event.type == StreamEventType.MESSAGE and event.content:
+            return f"[{timestamp}] [{self._prefix}] {event.content}"
+
+        return ""
+
+    def close(self) -> None:
+        """关闭文件句柄"""
+        for handle in (self._raw_file, self._detail_file):
+            if handle:
+                try:
+                    handle.close()
+                except Exception as e:
+                    logger.warning(f"关闭日志文件失败: {e}")

@@ -74,6 +74,7 @@ class ReviewerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.reviewer_config = config
+        self._apply_stream_config(self.reviewer_config.cursor_config)
         self.cursor_client = CursorAgentClient(config.cursor_config)
         self.review_history: list[dict] = []
     
@@ -238,6 +239,15 @@ class ReviewerAgent(BaseAgent):
             "summary": output,
             "suggestions": ["无法解析评审结果，建议继续迭代"],
         }
+
+    def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
+        """注入流式日志配置与 Agent 标识"""
+        cursor_config.stream_agent_id = self.id
+        cursor_config.stream_agent_role = self.role.value
+        cursor_config.stream_agent_name = self.name
+        if cursor_config.stream_events_enabled:
+            cursor_config.output_format = "stream-json"
+            cursor_config.stream_partial_output = True
     
     async def reset(self) -> None:
         """重置评审者状态"""

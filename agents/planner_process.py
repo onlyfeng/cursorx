@@ -89,13 +89,22 @@ Shell 命令限制:
         """进程启动初始化"""
         # 创建 agent CLI 客户端 - 使用 GPT 5.2-high 模型进行规划
         # 不使用 --force，只提议更改而不应用
+        stream_enabled = self.config.get("stream_events_enabled", False)
         cursor_config = CursorAgentConfig(
             working_directory=self.config.get("working_directory", "."),
             timeout=self.config.get("timeout", 180),
             model=self.config.get("model", "gpt-5.2-high"),
-            output_format="json",  # JSON 格式便于解析
+            output_format="stream-json" if stream_enabled else "json",
             non_interactive=True,
             force_write=False,     # 不修改文件，只分析
+            stream_partial_output=stream_enabled,
+            stream_events_enabled=stream_enabled,
+            stream_log_console=self.config.get("stream_log_console", True),
+            stream_log_detail_dir=self.config.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=self.config.get("stream_log_raw_dir", "logs/stream_json/raw/"),
+            stream_agent_id=self.agent_id,
+            stream_agent_role=self.agent_type,
+            stream_agent_name=self.config.get("agent_name"),
         )
         self.cursor_client = CursorAgentClient(cursor_config)
         logger.info(f"[{self.agent_id}] 规划者初始化完成 (模型: {cursor_config.model}, force: False)")

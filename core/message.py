@@ -1,7 +1,7 @@
 """消息协议定义"""
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 from datetime import datetime
 import uuid
 
@@ -46,6 +46,8 @@ class Message(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
     correlation_id: Optional[str] = None  # 关联消息 ID（用于追踪请求-响应）
     
+    model_config = ConfigDict()
+    
     def create_reply(self, msg_type: MessageType, payload: dict[str, Any]) -> "Message":
         """创建回复消息"""
         return Message(
@@ -55,8 +57,7 @@ class Message(BaseModel):
             payload=payload,
             correlation_id=self.id,
         )
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+
+    @field_serializer("timestamp")
+    def _serialize_timestamp(self, value: datetime) -> str:
+        return value.isoformat()

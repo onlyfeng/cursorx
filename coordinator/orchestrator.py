@@ -29,6 +29,10 @@ class OrchestratorConfig(BaseModel):
     enable_sub_planners: bool = True   # 是否启用子规划者
     strict_review: bool = False        # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    stream_events_enabled: bool = False
+    stream_log_console: bool = True
+    stream_log_detail_dir: str = "logs/stream_json/detail/"
+    stream_log_raw_dir: str = "logs/stream_json/raw/"
 
 
 class Orchestrator:
@@ -47,6 +51,7 @@ class Orchestrator:
         knowledge_manager: Optional["KnowledgeManager"] = None,
     ):
         self.config = config
+        self._apply_stream_config()
         
         # 系统状态
         self.state = SystemState(
@@ -61,15 +66,19 @@ class Orchestrator:
         self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
         
         # 初始化 Agents
+        planner_cursor_config = config.cursor_config.model_copy(deep=True)
+        reviewer_cursor_config = config.cursor_config.model_copy(deep=True)
+        worker_cursor_config = config.cursor_config.model_copy(deep=True)
+
         self.planner = PlannerAgent(PlannerConfig(
             working_directory=config.working_directory,
-            cursor_config=config.cursor_config,
+            cursor_config=planner_cursor_config,
         ))
         
         self.reviewer = ReviewerAgent(ReviewerConfig(
             working_directory=config.working_directory,
             strict_mode=config.strict_review,
-            cursor_config=config.cursor_config,
+            cursor_config=reviewer_cursor_config,
         ))
         
         # Worker 池（传递知识库管理器）
@@ -78,7 +87,7 @@ class Orchestrator:
             size=config.worker_pool_size,
             worker_config=WorkerConfig(
                 working_directory=config.working_directory,
-                cursor_config=config.cursor_config,
+                cursor_config=worker_cursor_config,
             ),
             knowledge_manager=knowledge_manager,
         )
@@ -89,6 +98,14 @@ class Orchestrator:
         self.state.register_agent(self.reviewer.id, AgentRole.REVIEWER)
         for worker in self.worker_pool.workers:
             self.state.register_agent(worker.id, AgentRole.WORKER)
+
+    def _apply_stream_config(self) -> None:
+        """将流式日志配置注入 CursorAgentConfig"""
+        cursor_config = self.config.cursor_config
+        cursor_config.stream_events_enabled = self.config.stream_events_enabled
+        cursor_config.stream_log_console = self.config.stream_log_console
+        cursor_config.stream_log_detail_dir = self.config.stream_log_detail_dir
+        cursor_config.stream_log_raw_dir = self.config.stream_log_raw_dir
     
     def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
         """设置知识库管理器（延迟初始化）

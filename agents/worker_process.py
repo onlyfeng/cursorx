@@ -68,13 +68,22 @@ Shell 命令限制（重要）:
         """进程启动初始化"""
         # 创建 agent CLI 客户端 - 使用 opus-4.5-thinking 进行编码
         # 使用 --force 允许直接修改文件
+        stream_enabled = self.config.get("stream_events_enabled", False)
         cursor_config = CursorAgentConfig(
             working_directory=self.config.get("working_directory", "."),
             timeout=self.config.get("task_timeout", 300),
             model=self.config.get("model", "opus-4.5-thinking"),
-            output_format="text",  # 文本格式输出执行结果
+            output_format="stream-json" if stream_enabled else "text",
             non_interactive=True,  # 非交互模式
             force_write=True,      # --force 允许直接修改文件
+            stream_partial_output=stream_enabled,
+            stream_events_enabled=stream_enabled,
+            stream_log_console=self.config.get("stream_log_console", True),
+            stream_log_detail_dir=self.config.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=self.config.get("stream_log_raw_dir", "logs/stream_json/raw/"),
+            stream_agent_id=self.agent_id,
+            stream_agent_role=self.agent_type,
+            stream_agent_name=self.config.get("agent_name"),
         )
         self.cursor_client = CursorAgentClient(cursor_config)
         logger.info(f"[{self.agent_id}] 执行者初始化完成 (模型: {cursor_config.model}, force: True)")
