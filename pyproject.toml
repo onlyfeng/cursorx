@@ -180,6 +180,17 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+# 默认超时时间 (秒)
+timeout = 60
+# 测试标记定义
+markers = [
+    "e2e: 端到端测试，测试完整的用户场景和工作流 (deselect with '-m \"not e2e\"')",
+    "slow: 运行时间较长的测试，超过 30 秒 (deselect with '-m \"not slow\"')",
+    "integration: 集成测试，需要外部服务或资源 (deselect with '-m \"not integration\"')",
+    "unit: 单元测试，快速独立的测试 (select with '-m unit')",
+    "cloud: 需要云服务 API 的测试 (deselect with '-m \"not cloud\"')",
+    "network: 需要网络连接的测试 (deselect with '-m \"not network\"')",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",

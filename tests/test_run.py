@@ -1755,30 +1755,27 @@ class TestRunKnowledgeMode:
         self, mock_args: argparse.Namespace
     ) -> None:
         """测试无搜索查询时，目标不被修改"""
+        import coordinator
+        import knowledge
         runner = Runner(mock_args)
 
-        with patch("knowledge.manager.KnowledgeManager") as mock_km_class, \
-             patch("coordinator.orchestrator.Orchestrator") as mock_orchestrator_class, \
-             patch("coordinator.orchestrator.OrchestratorConfig"), \
-             patch("cursor.client.CursorAgentConfig"):
+        # 设置 KnowledgeManager mock
+        mock_km = MagicMock()
+        mock_km.initialize = AsyncMock()
 
-            # 设置 KnowledgeManager mock
-            mock_km = MagicMock()
-            mock_km.initialize = AsyncMock()
-            mock_km_class.return_value = mock_km
+        # 捕获 goal
+        captured_goal = None
 
-            # 捕获 goal
-            captured_goal = None
+        async def capture_goal(goal: str):
+            nonlocal captured_goal
+            captured_goal = goal
+            return {"success": True}
 
-            async def capture_goal(goal: str):
-                nonlocal captured_goal
-                captured_goal = goal
-                return {"success": True}
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.run = AsyncMock(side_effect=capture_goal)
 
-            mock_orchestrator = MagicMock()
-            mock_orchestrator.run = AsyncMock(side_effect=capture_goal)
-            mock_orchestrator_class.return_value = mock_orchestrator
-
+        with patch.object(knowledge, "KnowledgeManager", return_value=mock_km), \
+             patch.object(coordinator, "Orchestrator", return_value=mock_orchestrator):
             # 执行测试 - 不传入 search_knowledge
             options = runner._merge_options({})
             # 不设置 search_knowledge
