@@ -13,7 +13,7 @@ from loguru import logger
 
 from process.worker import AgentWorkerProcess
 from process.message_queue import ProcessMessage, ProcessMessageType
-from cursor.client import CursorAgentClient, CursorAgentConfig, ModelPresets
+from cursor.client import CursorAgentClient, CursorAgentConfig
 
 
 class ReviewDecision(str, Enum):

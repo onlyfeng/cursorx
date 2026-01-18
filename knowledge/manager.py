@@ -25,7 +25,6 @@ from .vector import (
     KnowledgeVectorConfig,
     KnowledgeVectorStore,
     KnowledgeSemanticSearch,
-    VectorSearchResult,
 )
 
 

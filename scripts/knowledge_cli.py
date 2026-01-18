@@ -39,7 +39,7 @@ from typing import Any, Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from knowledge import KnowledgeManager, KnowledgeStorage, Document
+from knowledge import KnowledgeManager, KnowledgeStorage, Document  # noqa: E402
 
 
 class ProgressBar:
@@ -141,7 +141,7 @@ class KnowledgeCLI:
                 print(f"⚠️ 保存失败: {message}")
                 return False
         else:
-            print(f"❌ 添加失败: 无法获取 URL 内容")
+            print("❌ 添加失败: 无法获取 URL 内容")
             return False
     
     async def add_file(self, file_path: str, encoding: str = "utf-8") -> bool:
@@ -181,8 +181,8 @@ class KnowledgeCLI:
                 print(f"⚠️ 保存失败: {message}")
                 return False
         else:
-            print(f"❌ 添加失败: 无法读取文件或格式不支持")
-            print(f"   支持的格式: .txt, .md, .rst, .text, .markdown")
+            print("❌ 添加失败: 无法读取文件或格式不支持")
+            print("   支持的格式: .txt, .md, .rst, .text, .markdown")
             return False
     
     async def import_urls(self, file_path: str) -> int:
@@ -402,7 +402,7 @@ class KnowledgeCLI:
             print(f"✅ 删除成功: {doc_id}")
             return True
         else:
-            print(f"❌ 删除失败")
+            print("❌ 删除失败")
             return False
     
     async def refresh(
@@ -438,7 +438,7 @@ class KnowledgeCLI:
                 # 加载文档获取 URL
                 doc = await self.storage.load_document(entry.doc_id)
                 if not doc:
-                    print(f"    ⚠️ 加载失败，跳过")
+                    print("    ⚠️ 加载失败，跳过")
                     continue
                 
                 # 刷新
@@ -448,11 +448,11 @@ class KnowledgeCLI:
                     success, _ = await self.storage.save_document(refreshed_doc, force=True)
                     if success:
                         success_count += 1
-                        print(f"    ✅ 成功")
+                        print("    ✅ 成功")
                     else:
-                        print(f"    ⚠️ 保存失败")
+                        print("    ⚠️ 保存失败")
                 else:
-                    print(f"    ❌ 获取失败")
+                    print("    ❌ 获取失败")
             
             print(f"\n📊 刷新完成: {success_count}/{len(entries)} 成功")
             return success_count
@@ -474,10 +474,10 @@ class KnowledgeCLI:
                     print(f"   内容大小: {len(refreshed_doc.content)} 字符")
                     return 1
                 else:
-                    print(f"⚠️ 保存失败")
+                    print("⚠️ 保存失败")
                     return 0
             else:
-                print(f"❌ 刷新失败: 无法获取 URL 内容")
+                print("❌ 刷新失败: 无法获取 URL 内容")
                 return 0
         
         else:
@@ -553,16 +553,16 @@ class KnowledgeCLI:
                     else:
                         failed += 1
                         progress.update(1, f"✗ {entry.doc_id}")
-                except Exception as e:
+                except Exception:
                     failed += 1
-                    progress.update(1, f"✗ 错误")
+                    progress.update(1, "✗ 错误")
             else:
                 failed += 1
-                progress.update(1, f"✗ 加载失败")
+                progress.update(1, "✗ 加载失败")
         
         progress.finish(f"索引: {indexed}, 失败: {failed}")
         
-        print(f"\n📊 索引构建完成:")
+        print("\n📊 索引构建完成:")
         print(f"   成功索引: {indexed}")
         print(f"   索引失败: {failed}")
         print(f"   文档总数: {len(entries)}")
@@ -634,13 +634,13 @@ class KnowledgeCLI:
                 else:
                     failed += 1
                     index_progress.update(1, f"✗ {doc.id}")
-            except Exception as e:
+            except Exception:
                 failed += 1
-                index_progress.update(1, f"✗ 错误")
+                index_progress.update(1, "✗ 错误")
         
         index_progress.finish(f"索引: {indexed}, 失败: {failed}")
         
-        print(f"\n📊 索引重建完成:")
+        print("\n📊 索引重建完成:")
         print(f"   成功索引: {indexed}")
         print(f"   索引失败: {failed}")
         print(f"   文档总数: {len(entries)}")
@@ -678,7 +678,7 @@ class KnowledgeCLI:
             # 显示缓存统计
             cache_stats = stats.get('cache_stats', {})
             if cache_stats:
-                print(f"\n  嵌入缓存统计:")
+                print("\n  嵌入缓存统计:")
                 print(f"    缓存大小: {cache_stats.get('memory_cache_size', 0)}")
                 print(f"    命中次数: {cache_stats.get('hits', 0)}")
                 print(f"    未命中次数: {cache_stats.get('misses', 0)}")
@@ -690,7 +690,7 @@ class KnowledgeCLI:
             indexed_count = stats.get('document_count', 0)
             if storage_count != indexed_count:
                 print(f"\n  ⚠️ 索引不同步: 存储 {storage_count} 个文档，已索引 {indexed_count} 个")
-                print(f"     建议运行: python knowledge_cli.py index build")
+                print("     建议运行: python knowledge_cli.py index build")
             else:
                 print(f"\n  ✓ 索引同步: 所有 {storage_count} 个文档已索引")
             

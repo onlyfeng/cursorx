@@ -5,7 +5,7 @@
 """
 import re
 from typing import Optional, Any
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 from .models import Document, DocumentChunk
 from indexing.base import CodeChunk, ChunkType

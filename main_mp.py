@@ -11,7 +11,6 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent))
 
 from coordinator.orchestrator_mp import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
-from cursor.client import CursorAgentConfig
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -235,7 +234,7 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
         stream_log_raw_dir=stream_config["raw_dir"],
     )
     
-    logger.info(f"模型配置:")
+    logger.info("模型配置:")
     logger.info(f"  - 规划者: {config.planner_model}")
     logger.info(f"  - 执行者: {config.worker_model}")
     logger.info(f"  - 评审者: {config.reviewer_model}")
@@ -256,7 +255,7 @@ def print_result(result: dict) -> None:
     print(f"目标: {result.get('goal', 'N/A')}")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
     
-    print(f"\n任务统计:")
+    print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
@@ -264,14 +263,14 @@ def print_result(result: dict) -> None:
     # 进程信息
     process_info = result.get('process_info', {})
     if process_info:
-        print(f"\n进程信息:")
+        print("\n进程信息:")
         for agent_id, info in process_info.items():
             status = "存活" if info.get('alive') else "已停止"
             print(f"  - {info.get('type', 'unknown')}: PID {info.get('pid', 'N/A')} ({status})")
     
     # 迭代详情
     if result.get('iterations'):
-        print(f"\n迭代详情:")
+        print("\n迭代详情:")
         for it in result['iterations']:
             status_emoji = "✓" if it.get('review_passed') else "→"
             print(f"  {status_emoji} 迭代 {it['id']}: {it['tasks_completed']}/{it['tasks_created']} 任务完成")

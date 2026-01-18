@@ -16,13 +16,11 @@ import asyncio
 import subprocess
 import json
 import os
-import tempfile
 import shutil
 from typing import Any, Optional, AsyncIterator
 from pydantic import BaseModel, Field
 from loguru import logger
 from datetime import datetime
-from pathlib import Path
 
 from cursor.streaming import StreamEventLogger, StreamEventType, parse_stream_event
 
@@ -557,7 +555,7 @@ class CursorAgentClient:
         working_directory: str,
     ) -> dict[str, Any]:
         """模拟执行（开发/测试用）"""
-        logger.info(f"[Mock] 模拟执行 Cursor Agent")
+        logger.info("[Mock] 模拟执行 Cursor Agent")
         logger.debug(f"[Mock] 工作目录: {working_directory}")
         logger.debug(f"[Mock] 指令: {prompt[:200]}...")
         
@@ -606,7 +604,7 @@ class CursorAgentClient:
                 timeout=5,
             )
             return result.returncode == 0
-        except:
+        except Exception:
             return False
     
     @staticmethod

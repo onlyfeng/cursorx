@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from coordinator import Orchestrator, OrchestratorConfig
 from cursor.client import CursorAgentConfig
 from knowledge import KnowledgeManager, KnowledgeStorage
-from indexing import SemanticSearch, IndexerConfig
 
 # 默认 Cursor 文档知识库名称
 CURSOR_DOCS_KB_NAME = "cursor-docs"
@@ -230,7 +229,7 @@ async def initialize_cursor_docs_kb() -> KnowledgeManager:
     if doc_count > 0:
         logger.info(f"Cursor 文档知识库已加载: {doc_count} 个文档")
     else:
-        logger.warning(f"Cursor 文档知识库为空，可使用 'python -m knowledge.cli add' 添加文档")
+        logger.warning("Cursor 文档知识库为空，可使用 'python -m knowledge.cli add' 添加文档")
     
     return manager
 
@@ -390,7 +389,7 @@ def print_result(result: dict) -> None:
     print(f"\n状态: {'成功' if result.get('success') else '未完成'}")
     print(f"目标: {result.get('goal', 'N/A')[:100]}...")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
-    print(f"\n任务统计:")
+    print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")

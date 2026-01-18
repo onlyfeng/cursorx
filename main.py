@@ -212,7 +212,6 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     
     # 如果是模拟模式，替换 Cursor 客户端
     if args.mock:
-        from cursor.client import MockCursorAgentClient
         logger.info("使用模拟模式")
         # 这里可以注入 Mock 客户端
     
@@ -232,7 +231,7 @@ def print_result(result: dict) -> None:
     print(f"\n状态: {'成功' if result.get('success') else '未完成'}")
     print(f"目标: {result.get('goal', 'N/A')}")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
-    print(f"\n任务统计:")
+    print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
@@ -241,7 +240,7 @@ def print_result(result: dict) -> None:
         print(f"\n最终评分: {result['final_score']:.1f}")
     
     if result.get('iterations'):
-        print(f"\n迭代详情:")
+        print("\n迭代详情:")
         for it in result['iterations']:
             status_emoji = "✓" if it.get('review_passed') else "→"
             print(f"  {status_emoji} 迭代 {it['id']}: {it['tasks_completed']}/{it['tasks_created']} 任务完成")

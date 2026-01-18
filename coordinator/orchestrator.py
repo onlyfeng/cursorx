@@ -10,7 +10,6 @@ from loguru import logger
 
 from core.state import SystemState, IterationStatus
 from core.base import AgentRole
-from tasks.task import Task
 from tasks.queue import TaskQueue
 from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewerAgent, ReviewerConfig, ReviewDecision
@@ -129,7 +128,7 @@ class Orchestrator:
         self.state.goal = goal
         self.state.is_running = True
         
-        logger.info(f"=== 开始执行目标 ===")
+        logger.info("=== 开始执行目标 ===")
         logger.info(f"目标: {goal}")
         logger.info(f"工作目录: {self.config.working_directory}")
         logger.info(f"最大迭代: {self.config.max_iterations}")

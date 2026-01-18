@@ -3,14 +3,14 @@
 作为独立进程运行的执行者
 """
 import asyncio
-from typing import Any, Optional
+from typing import Optional
 from multiprocessing import Queue
 
 from loguru import logger
 
 from process.worker import AgentWorkerProcess
 from process.message_queue import ProcessMessage, ProcessMessageType
-from cursor.client import CursorAgentClient, CursorAgentConfig, ModelPresets
+from cursor.client import CursorAgentClient, CursorAgentConfig
 
 
 class WorkerAgentProcess(AgentWorkerProcess):
@@ -172,7 +172,7 @@ Shell 命令限制（重要）:
         
         target_files = task_data.get("target_files", [])
         if target_files:
-            parts.append(f"\n### 涉及文件\n" + "\n".join(f"- {f}" for f in target_files))
+            parts.append("\n### 涉及文件\n" + "\n".join(f"- {f}" for f in target_files))
         
         parts.append("\n请开始执行任务:")
         

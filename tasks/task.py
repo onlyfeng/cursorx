@@ -117,7 +117,7 @@ class Task(BaseModel):
         ]
         
         if self.target_files:
-            prompt_parts.append(f"\n### 涉及文件\n" + "\n".join(f"- {f}" for f in self.target_files))
+            prompt_parts.append("\n### 涉及文件\n" + "\n".join(f"- {f}" for f in self.target_files))
         
         if self.context:
             prompt_parts.append(f"\n### 上下文\n```json\n{self.context}\n```")

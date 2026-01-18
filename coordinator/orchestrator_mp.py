@@ -3,10 +3,9 @@
 基于多进程架构的编排器，每个 Agent 作为独立进程运行
 """
 import asyncio
-import time
 import uuid
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from loguru import logger
 
 from core.state import SystemState, IterationStatus
@@ -17,7 +16,6 @@ from process.message_queue import ProcessMessage, ProcessMessageType
 from agents.planner_process import PlannerAgentProcess
 from agents.worker_process import WorkerAgentProcess
 from agents.reviewer_process import ReviewerAgentProcess, ReviewDecision
-from cursor.client import CursorAgentConfig
 
 
 class MultiProcessOrchestratorConfig(BaseModel):

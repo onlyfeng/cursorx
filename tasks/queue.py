@@ -4,7 +4,7 @@ from typing import Optional
 from collections import defaultdict
 from loguru import logger
 
-from .task import Task, TaskStatus, TaskPriority
+from .task import Task, TaskStatus
 
 
 class TaskQueue:

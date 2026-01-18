@@ -4,13 +4,12 @@
 支持语义搜索增强的上下文获取
 支持知识库自动搜索（Cursor 相关问题）
 """
-import asyncio
 from typing import Any, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
-from tasks.task import Task, TaskStatus
+from tasks.task import Task
 from cursor.client import CursorAgentClient, CursorAgentConfig
 
 # 可选的语义搜索支持

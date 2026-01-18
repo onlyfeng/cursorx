@@ -6,11 +6,9 @@
 3. 存储和检索功能 (KnowledgeStorage)
 4. 知识库管理器完整流程 (KnowledgeManager)
 """
-import asyncio
 import tempfile
 import shutil
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +16,6 @@ import pytest
 from knowledge import (
     # 枚举类型
     FetchStatus,
-    FetchPriority,
     FetchMethod,
     ContentFormat,
     # 数据模型
@@ -28,23 +25,17 @@ from knowledge import (
     KnowledgeBaseStats,
     FetchTask,
     # 解析器
-    ParsedContent,
     HTMLParser,
     ContentCleaner,
     MarkdownConverter,
     ChunkSplitter,
     # 存储管理
     IndexEntry,
-    StorageConfig,
-    SearchResult,
     KnowledgeStorage,
     # 获取器
     WebFetcher,
     FetchConfig,
     FetchResult,
-    fetch_url,
-    fetch_urls,
-    # 知识库管理器
     KnowledgeManager,
 )
 

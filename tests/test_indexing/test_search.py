@@ -2,12 +2,8 @@
 
 使用 mock 替代真实的嵌入模型和向量存储
 """
-import asyncio
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-import tempfile
-import os
 
 from indexing.search import (
     SemanticSearch,

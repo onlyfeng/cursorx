@@ -2,17 +2,14 @@
 
 使用 mock 替代真实的 ChromaDB，加快测试速度
 """
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 import tempfile
-import os
 
 from indexing.vector_store import (
     ChromaVectorStore,
     create_vector_store,
     DEFAULT_COLLECTION_NAME,
-    DEFAULT_PERSIST_DIR,
 )
 from indexing.base import CodeChunk, ChunkType, SearchResult
 from indexing.config import VectorStoreConfig, VectorStoreType

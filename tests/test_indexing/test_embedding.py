@@ -2,9 +2,8 @@
 
 使用 mock 替代真实的 SentenceTransformers 模型，加快测试速度
 """
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 import numpy as np
 
 from indexing.embedding import (

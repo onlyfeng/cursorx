@@ -3,7 +3,6 @@
 负责探索代码库、分解任务、派生子规划者
 支持语义搜索增强的代码库探索
 """
-import asyncio
 from typing import Any, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from loguru import logger
@@ -14,7 +13,7 @@ from cursor.client import CursorAgentClient, CursorAgentConfig
 
 # 可选的语义搜索支持
 if TYPE_CHECKING:
-    from indexing import SemanticSearch, SearchOptions
+    from indexing import SemanticSearch
 
 
 class PlannerConfig(BaseModel):

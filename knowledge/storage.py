@@ -19,7 +19,7 @@ import asyncio
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -757,7 +757,6 @@ class KnowledgeStorage:
             removed = 0
             
             # 获取向量存储中已索引的文档 ID
-            vector_stats = await self._vector_store.get_stats()
             indexed_doc_ids = set(self._vector_store._doc_chunk_mapping.keys())
             storage_doc_ids = set(self._index.keys())
             

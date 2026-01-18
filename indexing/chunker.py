@@ -541,7 +541,7 @@ class SemanticCodeChunker(CodeChunker):
             for pattern, chunk_type in patterns:
                 match = re.match(pattern, line)
                 if match:
-                    indent = match.group(1)
+                    _indent = match.group(1)  # noqa: F841
                     signature = match.group(2)
                     name = match.group(3)
                     definitions.append((i, signature, chunk_type, name))

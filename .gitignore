@@ -68,3 +68,4 @@ yarn.lock
 # CursorX local caches / generated data
 .cursor/knowledge/
 .cursor/vector_index/
+.mypy_cache/

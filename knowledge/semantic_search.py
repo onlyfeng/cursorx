@@ -10,7 +10,7 @@
 """
 import asyncio
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from loguru import logger

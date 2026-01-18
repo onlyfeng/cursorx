@@ -11,7 +11,7 @@ stream-json 输出格式:
 """
 import asyncio
 import json
-from typing import AsyncIterator, Callable, Optional, Any
+from typing import AsyncIterator, Callable, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path

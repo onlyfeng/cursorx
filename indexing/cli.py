@@ -14,10 +14,8 @@
 import argparse
 import asyncio
 import json
-import os
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -253,12 +251,12 @@ async def cmd_build(args: argparse.Namespace) -> int:
         indexer.set_progress_callback(progress_bar.update)
         
         # 执行索引
-        chunks = await indexer.index_codebase(incremental=incremental)
+        await indexer.index_codebase(incremental=incremental)
         progress_bar.finish()
         
         # 显示结果
         stats = await indexer.get_stats()
-        print(f"\n索引统计:")
+        print("\n索引统计:")
         print(f"  已索引文件: {stats['indexed_files']}")
         print(f"  代码分块数: {stats['total_chunks']}")
         print(f"  嵌入模型: {stats['embedding_model']}")
@@ -299,7 +297,7 @@ async def cmd_update(args: argparse.Namespace) -> int:
         
         # 显示结果
         progress = indexer.get_progress()
-        print(f"\n更新完成!")
+        print("\n更新完成!")
         print(f"  处理文件: {progress.processed_files}")
         print(f"  新增分块: {len(chunks)}")
         print(f"  耗时: {elapsed:.1f}s")
@@ -486,7 +484,7 @@ async def cmd_status(args: argparse.Namespace) -> int:
                     languages[ext] = languages.get(ext, 0) + 1
                 
                 print(f"总分块数: {total_chunks}")
-                print(f"文件类型分布:")
+                print("文件类型分布:")
                 for ext, count in sorted(languages.items(), key=lambda x: -x[1])[:10]:
                     print(f"  {ext or '(无扩展名)'}: {count}")
         except Exception as e:
@@ -601,26 +599,26 @@ async def cmd_info(args: argparse.Namespace) -> int:
     
     # 可用模型列表
     available_models = get_available_models()
-    print(f"\n可用的本地模型:")
+    print("\n可用的本地模型:")
     for name, info in available_models.items():
         print(f"  - {name}: {info['dimension']}维 - {info['description']}")
     
     # 向量存储信息
-    print(f"\n向量存储:")
+    print("\n向量存储:")
     print(f"  类型: {config.vector_store.store_type}")
     print(f"  目录: {config.vector_store.persist_directory}")
     print(f"  集合: {config.vector_store.collection_name}")
     print(f"  度量: {config.vector_store.metric}")
     
     # 分块配置
-    print(f"\n分块策略:")
+    print("\n分块策略:")
     print(f"  策略: {config.chunking.strategy}")
     print(f"  目标大小: {config.chunking.chunk_size} 字符")
     print(f"  重叠大小: {config.chunking.chunk_overlap} 字符")
     print(f"  最小/最大: {config.chunking.min_chunk_size}/{config.chunking.max_chunk_size}")
     
     # 文件过滤
-    print(f"\n文件过滤:")
+    print("\n文件过滤:")
     print(f"  包含模式: {config.include_patterns}")
     print(f"  排除模式: {config.exclude_patterns[:3]}...")
     
@@ -633,7 +631,7 @@ async def cmd_info(args: argparse.Namespace) -> int:
                 collection_name=config.vector_store.collection_name,
             )
             count = vector_store._collection.count()
-            print(f"\n现有索引:")
+            print("\n现有索引:")
             print(f"  向量数量: {count}")
         except Exception:
             pass

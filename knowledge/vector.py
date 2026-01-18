@@ -9,8 +9,7 @@
 """
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional, Literal
-from datetime import datetime
+from typing import Any, Optional
 from loguru import logger
 
 from .models import Document, DocumentChunk

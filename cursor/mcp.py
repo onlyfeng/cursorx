@@ -5,7 +5,6 @@
 """
 import asyncio
 import subprocess
-from typing import Optional
 from dataclasses import dataclass
 from loguru import logger
 
@@ -167,7 +166,7 @@ class MCPManager:
                 timeout=10,
             )
             return result.returncode == 0
-        except:
+        except Exception:
             return False
 
 

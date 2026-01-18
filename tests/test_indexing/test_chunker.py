@@ -3,16 +3,14 @@
 测试 SemanticCodeChunker 的各种分块策略
 """
 import pytest
-from unittest.mock import patch, MagicMock
 
 from indexing.chunker import (
     SemanticCodeChunker,
-    chunk_file,
     chunk_text,
     ChunkContext,
     EXTENSION_LANGUAGE_MAP,
 )
-from indexing.base import CodeChunk, ChunkType
+from indexing.base import ChunkType
 from indexing.config import ChunkConfig, ChunkStrategy
 
 

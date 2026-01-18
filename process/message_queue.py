@@ -4,7 +4,7 @@
 """
 import multiprocessing as mp
 from multiprocessing import Queue
-from typing import Any, Optional
+from typing import Optional
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -110,7 +110,7 @@ class MessageQueue:
             if timeout:
                 return self.to_coordinator.get(timeout=timeout)
             return self.to_coordinator.get_nowait()
-        except:
+        except Exception:
             return None
     
     def cleanup(self) -> None:
@@ -119,7 +119,7 @@ class MessageQueue:
         try:
             self.to_coordinator.close()
             self.to_coordinator.join_thread()
-        except:
+        except Exception:
             pass
         
         # 关闭所有 Agent 队列
@@ -127,7 +127,7 @@ class MessageQueue:
             try:
                 queue.close()
                 queue.join_thread()
-            except:
+            except Exception:
                 pass
         
         self._agent_queues.clear()

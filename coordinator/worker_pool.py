@@ -4,7 +4,6 @@ from typing import Optional, TYPE_CHECKING
 from loguru import logger
 
 from agents.worker import WorkerAgent, WorkerConfig
-from tasks.task import Task
 from tasks.queue import TaskQueue
 
 if TYPE_CHECKING:
@@ -55,7 +54,7 @@ class WorkerPool:
         self._knowledge_manager = manager
         for worker in self.workers:
             worker.set_knowledge_manager(manager)
-        logger.info(f"Worker 池已绑定知识库管理器")
+        logger.info("Worker 池已绑定知识库管理器")
     
     async def start(self, task_queue: TaskQueue, iteration_id: int) -> None:
         """启动 Worker 池处理任务

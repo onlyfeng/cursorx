@@ -5,7 +5,7 @@
 import re
 from typing import Any, Optional
 from dataclasses import dataclass, field
-from bs4 import BeautifulSoup, Tag, NavigableString
+from bs4 import BeautifulSoup, Tag
 import html2text
 
 from .models import DocumentChunk
@@ -730,9 +730,9 @@ class ChunkSplitter:
             # 更新该级别的标题，并清除更低级别的标题
             context[level] = heading
             # 清除更低级别（数字更大）的标题
-            for l in list(context.keys()):
-                if l > level:
-                    del context[l]
+            for lvl in list(context.keys()):
+                if lvl > level:
+                    del context[lvl]
         
         # 按级别排序返回
-        return [context[l] for l in sorted(context.keys())]
+        return [context[lvl] for lvl in sorted(context.keys())]

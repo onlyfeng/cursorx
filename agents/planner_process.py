@@ -12,7 +12,7 @@ from loguru import logger
 
 from process.worker import AgentWorkerProcess
 from process.message_queue import ProcessMessage, ProcessMessageType
-from cursor.client import CursorAgentClient, CursorAgentConfig, ModelPresets
+from cursor.client import CursorAgentClient, CursorAgentConfig
 from tasks.task import Task, TaskType, TaskPriority
 
 
@@ -188,7 +188,7 @@ Shell 命令限制:
         
         if context.get("previous_review"):
             review = context["previous_review"]
-            parts.append(f"\n## 上次评审反馈")
+            parts.append("\n## 上次评审反馈")
             if review.get("suggestions"):
                 parts.append("\n".join(f"- {s}" for s in review["suggestions"]))
             if review.get("next_focus"):
