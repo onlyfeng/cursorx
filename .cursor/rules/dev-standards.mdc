@@ -1,0 +1,139 @@
+# 开发规范与常见问题
+
+本文档记录项目开发中的规范要求和常见问题解决方案。
+
+## 依赖管理规范
+
+### HTTP 客户端统一使用 httpx
+
+**问题背景**: 项目中曾同时使用 `aiohttp` 和 `httpx` 两个 HTTP 客户端库，导致：
+1. 依赖不一致：`requirements.txt` 中只有 `httpx`，但代码中使用了 `aiohttp`
+2. 运行时错误：`ModuleNotFoundError: No module named 'aiohttp'`
+3. 事件循环问题：`RuntimeError: Event loop is closed`
+
+**规范要求**:
+- 统一使用 `httpx` 作为异步 HTTP 客户端
+- 不要在代码中引入 `aiohttp` 依赖
+- 新增依赖必须同步更新 `requirements.txt`
+
+**代码迁移示例**:
+
+```python
+# 不要使用 aiohttp
+async with aiohttp.ClientSession() as session:
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+        if response.status == 200:
+            data = await response.json()
+
+# 使用 httpx
+async with httpx.AsyncClient(timeout=10.0) as client:
+    response = await client.get(url)
+    if response.status_code == 200:
+        data = response.json()
+```
+
+**异常处理迁移**:
+
+```python
+# aiohttp 异常
+except aiohttp.ClientError as e:
+    ...
+
+# httpx 异常
+except httpx.RequestError as e:
+    ...
+```
+
+## 代码提交前检查清单
+
+### 1. 依赖一致性检查
+
+- [ ] 新增的 import 语句对应的包已在 `requirements.txt` 中
+- [ ] 没有引入已弃用的依赖（如 aiohttp）
+- [ ] 可选依赖使用 try-except 包装
+
+### 2. 模块导入检查
+
+- [ ] 运行 `python -c "from cursor import *"` 确保无导入错误
+- [ ] 运行 `python tests/test_e2e_basic.py` 确保基础测试通过
+
+### 3. 接口一致性检查
+
+- [ ] 内部类（如 IterateArgs）的属性与使用方保持一致
+- [ ] 新增属性需同步更新所有使用位置
+
+## 常见错误与解决方案
+
+### Event loop is closed
+
+**错误信息**:
+```
+RuntimeError: Event loop is closed
+```
+
+**原因**:
+- 异步客户端（httpx/aiohttp）在事件循环关闭后尝试清理资源
+- 通常发生在 `asyncio.run()` 结束后
+
+**解决方案**:
+1. 确保使用 `async with` 正确管理异步客户端生命周期
+2. 避免在全局作用域创建异步客户端实例
+3. 使用 httpx 替代 aiohttp（httpx 对事件循环处理更友好）
+
+### ModuleNotFoundError
+
+**错误信息**:
+```
+ModuleNotFoundError: No module named 'xxx'
+```
+
+**排查步骤**:
+1. 检查 `requirements.txt` 是否包含该模块
+2. 运行 `pip install -r requirements.txt`
+3. 检查是否存在拼写错误或包名映射问题
+
+**常见包名映射**:
+| PyPI 名称 | 导入名称 |
+|-----------|----------|
+| pyyaml | yaml |
+| python-dotenv | dotenv |
+| beautifulsoup4 | bs4 |
+| sentence-transformers | sentence_transformers |
+
+### AttributeError: object has no attribute
+
+**错误信息**:
+```
+AttributeError: 'IterateArgs' object has no attribute 'commit_message'
+```
+
+**原因**:
+- 内部类或数据类的属性定义与使用方不一致
+- 通常发生在重构后未完全更新所有相关代码
+
+**解决方案**:
+1. 使用 grep 搜索属性的所有使用位置
+2. 添加测试用例验证接口一致性
+3. 参考 `test_interface_consistency` 测试用例
+
+## 审核流程
+
+### 代码审核要点
+
+1. **依赖检查**: 确认新增依赖已添加到 requirements.txt
+2. **导入验证**: 确认所有模块可正常导入
+3. **接口一致性**: 确认内部接口定义与使用保持一致
+4. **测试覆盖**: 确认关键路径有测试用例覆盖
+
+### 自动化检查
+
+项目已包含以下自动化测试：
+
+- `test_all_modules_import`: 验证所有模块递归导入
+- `test_interface_consistency`: 验证 IterateArgs 接口一致性
+- `test_requirements_installed`: 验证依赖包已安装
+
+运行方式：
+```bash
+python tests/test_e2e_basic.py
+```

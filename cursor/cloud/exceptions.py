@@ -15,12 +15,12 @@ from typing import Any, Optional
 
 from loguru import logger
 
-# 检查 aiohttp 可用性
+# 检查 httpx 可用性
 try:
-    import aiohttp
-    AIOHTTP_AVAILABLE = True
+    import httpx
+    HTTPX_AVAILABLE = True
 except ImportError:
-    AIOHTTP_AVAILABLE = False
+    HTTPX_AVAILABLE = False
 
 
 # ========== 异常层次结构 ==========
@@ -279,15 +279,15 @@ class NetworkError(CloudAgentError):
             error_type = "connection"
             retry_after = 5.0
 
-        # aiohttp 特定异常
-        if AIOHTTP_AVAILABLE:
-            if isinstance(error, aiohttp.ClientConnectorError):
+        # httpx 特定异常
+        if HTTPX_AVAILABLE:
+            if isinstance(error, httpx.ConnectError):
                 error_type = "connection"
                 retry_after = 5.0
-            elif isinstance(error, aiohttp.ServerTimeoutError):
+            elif isinstance(error, httpx.TimeoutException):
                 error_type = "timeout"
                 retry_after = 5.0
-            elif isinstance(error, aiohttp.ClientError):
+            elif isinstance(error, httpx.RequestError):
                 error_type = "client_error"
 
         return cls(

@@ -37,10 +37,10 @@ except ImportError:
     WEBSOCKETS_AVAILABLE = False
 
 try:
-    import aiohttp
-    AIOHTTP_AVAILABLE = True
+    import httpx
+    HTTPX_AVAILABLE = True
 except ImportError:
-    AIOHTTP_AVAILABLE = False
+    HTTPX_AVAILABLE = False
 
 
 class TaskStatus(str, Enum):
@@ -384,7 +384,7 @@ class CloudTaskClient:
             logger.debug(f"CLI 查询失败: {e}")
 
         # 方式2: 使用 HTTP API 查询
-        if AIOHTTP_AVAILABLE:
+        if HTTPX_AVAILABLE:
             try:
                 result = await self._query_via_http(task_id)
                 if result:
@@ -434,7 +434,7 @@ class CloudTaskClient:
 
         使用增强的错误处理和重试机制。
         """
-        if not AIOHTTP_AVAILABLE:
+        if not HTTPX_AVAILABLE:
             return None
 
         api_key = self.auth_manager.get_api_key()
@@ -448,55 +448,52 @@ class CloudTaskClient:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as response:
-                    # 成功响应
-                    if response.status == 200:
-                        data = await response.json()
-                        return self._parse_task_api_response(task_id, data)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=headers)
 
-                    # 任务不存在
-                    elif response.status == 404:
+                # 成功响应
+                if response.status_code == 200:
+                    data = response.json()
+                    return self._parse_task_api_response(task_id, data)
+
+                # 任务不存在
+                elif response.status_code == 404:
+                    return TaskResult(
+                        task_id=task_id,
+                        status=TaskStatus.FAILED,
+                        error="任务不存在",
+                    )
+
+                # 处理 HTTP 错误
+                else:
+                    body = response.text
+                    response_headers = dict(response.headers)
+                    error = handle_http_error(
+                        response.status_code,
+                        response_headers,
+                        body,
+                        context=f"查询任务 {task_id}",
+                    )
+
+                    # 认证错误
+                    if isinstance(error, AuthError):
+                        logger.warning(error.user_friendly_message)
                         return TaskResult(
                             task_id=task_id,
                             status=TaskStatus.FAILED,
-                            error="任务不存在",
+                            error=error.user_friendly_message,
                         )
 
-                    # 处理 HTTP 错误
-                    else:
-                        body = await response.text()
-                        response_headers = dict(response.headers)
-                        error = handle_http_error(
-                            response.status,
-                            response_headers,
-                            body,
-                            context=f"查询任务 {task_id}",
-                        )
+                    # 限流错误 - 记录但不抛出
+                    if isinstance(error, RateLimitError):
+                        logger.warning(f"查询限流: {error.user_friendly_message}")
 
-                        # 认证错误
-                        if isinstance(error, AuthError):
-                            logger.warning(error.user_friendly_message)
-                            return TaskResult(
-                                task_id=task_id,
-                                status=TaskStatus.FAILED,
-                                error=error.user_friendly_message,
-                            )
-
-                        # 限流错误 - 记录但不抛出
-                        if isinstance(error, RateLimitError):
-                            logger.warning(f"查询限流: {error.user_friendly_message}")
-
-                        # 其他错误
-                        logger.debug(f"HTTP API 错误: {error}")
+                    # 其他错误
+                    logger.debug(f"HTTP API 错误: {error}")
 
         except asyncio.TimeoutError:
             logger.debug(f"HTTP API 查询超时: task_id={task_id}")
-        except aiohttp.ClientError as e:
+        except httpx.RequestError as e:
             error = NetworkError.from_exception(e, context=f"查询任务 {task_id}")
             logger.debug(f"HTTP 客户端错误: {error}")
         except Exception as e:
@@ -687,8 +684,8 @@ class CloudTaskClient:
             parse_stream_event,
         )
 
-        if not AIOHTTP_AVAILABLE:
-            logger.warning("aiohttp 未安装，回退到轮询模式")
+        if not HTTPX_AVAILABLE:
+            logger.warning("httpx 未安装，回退到轮询模式")
             async for event in self._fallback_to_polling(task_id, timeout, on_event):
                 yield event
             return
@@ -709,18 +706,15 @@ class CloudTaskClient:
         logger.info(f"连接 SSE: {url}")
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as response:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url, headers=headers) as response:
                     # 处理非成功响应
-                    if response.status != 200:
-                        error_text = await response.text()
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        error_text = error_text.decode("utf-8", errors="replace")
                         response_headers = dict(response.headers)
                         error = handle_http_error(
-                            response.status,
+                            response.status_code,
                             response_headers,
                             error_text,
                             context=f"SSE 连接 {task_id}",
@@ -757,13 +751,13 @@ class CloudTaskClient:
                         # 其他错误
                         error_event = StreamEvent(
                             type=StreamEventType.ERROR,
-                            data={"error": str(error), "status_code": response.status},
+                            data={"error": str(error), "status_code": response.status_code},
                         )
                         yield error_event
                         return
 
                     # 读取 SSE 事件流
-                    async for event in self._parse_sse_stream(response.content, parse_stream_event):
+                    async for event in self._parse_sse_stream(response, parse_stream_event):
                         if on_event:
                             on_event(event)
                         yield event
@@ -784,7 +778,7 @@ class CloudTaskClient:
             )
             yield error_event
 
-        except aiohttp.ClientError as e:
+        except httpx.RequestError as e:
             from ..streaming import StreamEvent, StreamEventType
             error = NetworkError.from_exception(e, context=f"SSE 连接 {task_id}")
             logger.error(f"SSE 连接错误: {error.user_friendly_message}")
@@ -799,7 +793,7 @@ class CloudTaskClient:
 
     async def _parse_sse_stream(
         self,
-        content: "aiohttp.StreamReader",
+        response: "httpx.Response",
         parse_func: Callable[[str], Optional["StreamEvent"]],
     ) -> AsyncIterator["StreamEvent"]:
         """解析 SSE 事件流"""
@@ -807,7 +801,7 @@ class CloudTaskClient:
         event_type = ""
         event_data = ""
 
-        async for chunk in content.iter_any():
+        async for chunk in response.aiter_bytes():
             buffer += chunk.decode("utf-8", errors="replace")
 
             while "\n" in buffer:
