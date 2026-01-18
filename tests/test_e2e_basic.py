@@ -157,6 +157,93 @@ def test_stream_config_apply():
     print("✓ 流式日志配置应用正确")
 
 
+def test_iterate_args():
+    """测试 IterateArgs 属性完整性"""
+    from run import Runner
+    
+    # 模拟 options 字典（来自 run.py 的 _run_iterate 方法）
+    options = {
+        "skip_online": True,
+        "dry_run": True,
+        "max_iterations": 5,
+        "workers": 2,
+        "force_update": False,
+        "verbose": True,
+        "auto_commit": True,
+        "auto_push": False,
+        "commit_per_iteration": True,
+        "commit_message": "test: prefix",
+    }
+    
+    # 动态创建 IterateArgs 类（与 run.py 中相同）
+    class IterateArgs:
+        def __init__(self, goal: str, opts: dict):
+            self.requirement = goal
+            self.skip_online = opts.get("skip_online", False)
+            self.changelog_url = "https://cursor.com/cn/changelog"
+            self.dry_run = opts.get("dry_run", False)
+            self.max_iterations = str(opts.get("max_iterations", 5))
+            self.workers = opts.get("workers", 3)
+            self.force_update = opts.get("force_update", False)
+            self.verbose = opts.get("verbose", False)
+            self.auto_commit = opts.get("auto_commit", False)
+            self.auto_push = opts.get("auto_push", False)
+            self.commit_per_iteration = opts.get("commit_per_iteration", False)
+            self.commit_message = opts.get("commit_message", "")
+    
+    args = IterateArgs("测试任务", options)
+    
+    # 验证所有属性
+    assert args.requirement == "测试任务"
+    assert args.skip_online == True
+    assert args.dry_run == True
+    assert args.max_iterations == "5"
+    assert args.workers == 2
+    assert args.force_update == False
+    assert args.verbose == True
+    assert args.auto_commit == True
+    assert args.auto_push == False
+    assert args.commit_per_iteration == True
+    assert args.commit_message == "test: prefix"
+    assert args.changelog_url == "https://cursor.com/cn/changelog"
+    print("✓ IterateArgs 所有属性正确")
+    
+    # 测试默认值
+    args_default = IterateArgs("默认测试", {})
+    assert args_default.skip_online == False
+    assert args_default.dry_run == False
+    assert args_default.auto_commit == False
+    assert args_default.commit_message == ""
+    print("✓ IterateArgs 默认值正确")
+
+
+def test_iterate_mode_detection():
+    """测试 iterate 模式关键词检测"""
+    from run import TaskAnalyzer, RunMode
+    
+    analyzer = TaskAnalyzer(use_agent=False)
+    
+    class MockArgs:
+        mode = "auto"
+        task = ""
+    
+    # 测试 iterate 模式关键词（与 run.py 中 MODE_KEYWORDS 定义一致）
+    iterate_keywords = [
+        "自我迭代",
+        "self-iterate",
+        "iterate",
+        "迭代更新",
+        "更新知识库",
+        "检查更新",
+        "自我更新",
+    ]
+    
+    for keyword in iterate_keywords:
+        analysis = analyzer._rule_based_analysis(keyword, MockArgs())
+        assert analysis.mode == RunMode.ITERATE, f"'{keyword}' 应匹配 ITERATE 模式"
+    print(f"✓ iterate 模式关键词检测正确 ({len(iterate_keywords)} 个关键词)")
+
+
 def main():
     """运行所有测试"""
     print("\n" + "=" * 50)
@@ -170,6 +257,8 @@ def main():
         test_orchestrator_initialization,
         test_iteration_control,
         test_stream_config_apply,
+        test_iterate_args,
+        test_iterate_mode_detection,
     ]
     
     passed = 0

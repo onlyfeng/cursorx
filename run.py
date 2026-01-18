@@ -797,6 +797,7 @@ class Runner:
                 self.auto_commit = opts.get("auto_commit", False)
                 self.auto_push = opts.get("auto_push", False)
                 self.commit_per_iteration = opts.get("commit_per_iteration", False)
+                self.commit_message = opts.get("commit_message", "")
         
         iterate_args = IterateArgs(goal, options)
         iterator = SelfIterator(iterate_args)
