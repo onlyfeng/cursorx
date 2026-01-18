@@ -1318,3 +1318,215 @@ def test_stream_event_logger_aggregation_error_event_flushes(tmp_path: Path) -> 
     assert "Before error" in detail_content
     assert "错误: Something went wrong" in detail_content
     assert "After error" in detail_content
+
+
+# ============== StreamingClient 超长行处理测试 ==============
+
+import asyncio
+import logging
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
+
+from cursor.streaming import StreamingClient
+
+
+class TestReadLinesLongLineHandling:
+    """测试 StreamingClient._read_lines 超长行处理"""
+
+    @staticmethod
+    def _create_mock_stream_reader():
+        """创建 mock StreamReader"""
+        mock_stream = MagicMock(spec=asyncio.StreamReader)
+        mock_stream._limit = 2**16  # 默认 64KB limit
+        return mock_stream
+
+    def test_read_lines_long_line_handling(self) -> None:
+        """测试超过默认缓冲区大小的行能被正确读取"""
+        async def run_test():
+            client = StreamingClient()
+            mock_stream = self._create_mock_stream_reader()
+
+            # 模拟超长行（超过默认缓冲区大小 64KB）
+            # 第一次 readline 返回一个超长行
+            long_line_content = b"X" * (100 * 1024)  # 100KB
+            long_line = long_line_content + b"\n"
+
+            # 第二次 readline 返回空（流结束）
+            readline_results = [long_line, b""]
+            readline_call_count = 0
+
+            async def mock_readline():
+                nonlocal readline_call_count
+                result = readline_results[readline_call_count]
+                readline_call_count += 1
+                return result
+
+            mock_stream.readline = mock_readline
+
+            # 收集读取到的行
+            lines = []
+            async for line in client._read_lines(mock_stream, timeout=10):
+                lines.append(line)
+
+            # 验证超长行被正确读取
+            assert len(lines) == 1
+            assert len(lines[0]) == 100 * 1024  # 去掉换行符后的长度
+            assert lines[0] == "X" * (100 * 1024)
+
+        asyncio.run(run_test())
+
+    def test_read_lines_limit_overrun_error(self) -> None:
+        """模拟 LimitOverrunError 异常并验证恢复机制"""
+        async def run_test():
+            client = StreamingClient()
+            mock_stream = self._create_mock_stream_reader()
+
+            # 设置状态跟踪
+            readline_call_count = 0
+            readuntil_called = False
+
+            async def mock_readline():
+                nonlocal readline_call_count
+                readline_call_count += 1
+                if readline_call_count == 1:
+                    # 第一次调用抛出 LimitOverrunError
+                    raise asyncio.LimitOverrunError(
+                        "Separator is found, but chunk is longer than limit",
+                        consumed=100 * 1024
+                    )
+                else:
+                    # 后续调用返回空（流结束）
+                    return b""
+
+            async def mock_readuntil(separator):
+                nonlocal readuntil_called
+                readuntil_called = True
+                # 模拟 readuntil 成功读取超长行
+                return b"recovered_long_line_content\n"
+
+            mock_stream.readline = mock_readline
+            mock_stream.readuntil = mock_readuntil
+
+            # 收集读取到的行
+            lines = []
+            async for line in client._read_lines(mock_stream, timeout=10):
+                lines.append(line)
+
+            # 验证恢复机制被触发
+            assert readuntil_called, "readuntil 应该在 LimitOverrunError 后被调用"
+            assert len(lines) == 1
+            assert lines[0] == "recovered_long_line_content"
+
+        asyncio.run(run_test())
+
+    def test_read_lines_limit_overrun_with_chunked_fallback(self) -> None:
+        """测试 LimitOverrunError 后 readuntil 也失败时的分块读取后备"""
+        async def run_test():
+            client = StreamingClient()
+            mock_stream = self._create_mock_stream_reader()
+
+            readline_call_count = 0
+            readuntil_call_count = 0
+            read_chunks = []
+
+            async def mock_readline():
+                nonlocal readline_call_count
+                readline_call_count += 1
+                if readline_call_count == 1:
+                    raise asyncio.LimitOverrunError(
+                        "Separator is found, but chunk is longer than limit",
+                        consumed=100 * 1024
+                    )
+                return b""
+
+            async def mock_readuntil(separator):
+                nonlocal readuntil_call_count
+                readuntil_call_count += 1
+                # readuntil 也抛出 LimitOverrunError
+                raise asyncio.LimitOverrunError(
+                    "Still too long",
+                    consumed=50 * 1024
+                )
+
+            chunk_content = b"chunked_content_part1_part2\n"
+
+            async def mock_read(n):
+                nonlocal read_chunks
+                if not read_chunks:
+                    read_chunks.append(True)
+                    return chunk_content
+                return b""
+
+            mock_stream.readline = mock_readline
+            mock_stream.readuntil = mock_readuntil
+            mock_stream.read = mock_read
+
+            lines = []
+            async for line in client._read_lines(mock_stream, timeout=10):
+                lines.append(line)
+
+            # 验证分块读取被触发
+            assert len(read_chunks) > 0, "分块读取应该被触发"
+            assert len(lines) == 1
+            assert "chunked_content" in lines[0]
+
+        asyncio.run(run_test())
+
+
+def test_read_stream_lines_long_line_logging() -> None:
+    """验证超长行处理时的日志记录（使用 loguru）"""
+    from io import StringIO
+
+    from loguru import logger
+
+    async def run_test(log_output: StringIO):
+        client = StreamingClient()
+        mock_stream = MagicMock(spec=asyncio.StreamReader)
+        mock_stream._limit = 2**16
+
+        readline_call_count = 0
+
+        async def mock_readline():
+            nonlocal readline_call_count
+            readline_call_count += 1
+            if readline_call_count == 1:
+                raise asyncio.LimitOverrunError(
+                    "Separator is found, but chunk is longer than limit",
+                    consumed=65536
+                )
+            return b""
+
+        async def mock_readuntil(separator):
+            return b"long_line_recovered\n"
+
+        mock_stream.readline = mock_readline
+        mock_stream.readuntil = mock_readuntil
+
+        lines = []
+        async for line in client._read_lines(mock_stream, timeout=10):
+            lines.append(line)
+
+        return lines
+
+    # 使用 loguru sink 捕获日志
+    log_output = StringIO()
+    handler_id = logger.add(log_output, format="{level}: {message}", level="DEBUG")
+
+    try:
+        lines = asyncio.run(run_test(log_output))
+        log_content = log_output.getvalue()
+    finally:
+        logger.remove(handler_id)
+
+    # 验证日志记录了超长行处理
+    assert "LimitOverrunError" in log_content or "超长行" in log_content, (
+        f"应该记录 LimitOverrunError 相关日志，实际日志: {log_content}"
+    )
+
+    # 验证成功恢复的 debug 日志
+    assert "超长行读取成功" in log_content, (
+        f"应该记录恢复成功的日志，实际日志: {log_content}"
+    )
+
+    # 验证行被正确读取
+    assert len(lines) == 1
+    assert lines[0] == "long_line_recovered"

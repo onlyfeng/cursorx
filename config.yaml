@@ -8,6 +8,7 @@ system:
   strict_review: false      # 严格评审模式
 
 # 模型配置 - 不同 Agent 使用不同模型
+# 适用于: 基本模式 (run.py) 和 多进程模式 (run_mp.py)
 # 使用 `agent models` 查看完整可用模型列表
 models:
   # 规划者模型 - GPT 5.2 High 擅长高层规划和任务分解

@@ -467,6 +467,15 @@ class CursorAgentClient:
                 env=env,
             )
 
+            # 创建子进程后立即设置更大的缓冲区限制（32MB），避免超长行导致异常
+            # asyncio.StreamReader 默认 _limit 为 64KB，对于大型 JSON 输出可能不够
+            if process.stdout and hasattr(process.stdout, '_limit'):
+                process.stdout._limit = 32 * 1024 * 1024  # 32MB
+                logger.debug("已设置 stdout 缓冲区限制为 32MB")
+            if process.stderr and hasattr(process.stderr, '_limit'):
+                process.stderr._limit = 32 * 1024 * 1024  # 32MB
+                logger.debug("已设置 stderr 缓冲区限制为 32MB")
+
             if self.config.output_format == "stream-json":
                 return await self._handle_stream_json_process(process, timeout)
 
@@ -765,11 +774,27 @@ class CursorAgentClient:
         deadline: float,
         strip_line: bool = True,
     ) -> AsyncIterator[str]:
-        """逐行读取流（带总超时）"""
+        """逐行读取流（带总超时）
+
+        支持处理超长行：
+        - 设置更大的 limit（32MB）
+        - 捕获 ValueError/LimitOverrunError 异常（行超过 limit 时抛出）
+        - 使用分块读取作为后备方案，确保超长行被正确读取而非跳过
+        - 特别处理 "Separator is found, but chunk is longer than limit" 错误
+        - 添加日志记录超长行的处理结果，便于调试
+        """
+        # 设置更大的缓冲区限制（32MB），避免超长行导致异常
+        # asyncio.StreamReader 默认 limit 为 64KB
+        if hasattr(stream, '_limit'):
+            stream._limit = 32 * 1024 * 1024  # 32MB
+
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 raise asyncio.TimeoutError()
+
+            line: bytes = b''
+            long_line_handled = False  # 标记是否通过超长行处理获取了内容
 
             try:
                 line = await asyncio.wait_for(
@@ -778,14 +803,131 @@ class CursorAgentClient:
                 )
             except asyncio.TimeoutError:
                 continue
+            except asyncio.LimitOverrunError as e:
+                # "Separator is found, but chunk is longer than limit" 错误
+                # 需要读取缓冲区中的数据
+                logger.warning(f"检测到超长行 (LimitOverrunError): consumed={e.consumed} bytes")
+                try:
+                    # 读取超出的数据直到换行符
+                    line = await stream.readuntil(b'\n')
+                    long_line_handled = True
+                    logger.debug(f"超长行读取成功 (readuntil): {len(line)} bytes")
+                except asyncio.IncompleteReadError as ire:
+                    # 如果流结束了，使用已读取的部分
+                    line = ire.partial
+                    long_line_handled = True
+                    logger.debug(f"超长行读取完成 (流结束): {len(line)} bytes")
+                except asyncio.LimitOverrunError as inner_e:
+                    # 如果还是太长，使用分块读取
+                    logger.warning(f"再次触发 LimitOverrunError: consumed={inner_e.consumed} bytes，使用分块读取")
+                    try:
+                        line = await self._read_long_line(stream, deadline)
+                        long_line_handled = True
+                        logger.info(f"超长行分块读取成功: {len(line)} bytes")
+                    except Exception as read_err:
+                        logger.error(f"分块读取超长行失败: {read_err}")
+                        # 尝试跳过这一行继续处理
+                        continue
+                except Exception as inner_e:
+                    logger.warning(f"处理超长行时发生异常: {inner_e}")
+                    # 尝试使用分块读取作为最后手段
+                    try:
+                        line = await self._read_long_line(stream, deadline)
+                        long_line_handled = True
+                        logger.info(f"超长行异常恢复读取成功: {len(line)} bytes")
+                    except Exception as read_err:
+                        logger.error(f"异常恢复分块读取失败: {read_err}")
+                        continue
+            except ValueError as e:
+                # 行超过 limit 时抛出 ValueError
+                # 使用分块读取作为后备方案
+                logger.warning(f"检测到超长行 (ValueError): {e}")
+                try:
+                    line = await self._read_long_line(stream, deadline)
+                    long_line_handled = True
+                    logger.info(f"超长行分块读取成功 (ValueError): {len(line)} bytes")
+                except Exception as read_err:
+                    logger.error(f"分块读取超长行失败 (ValueError): {read_err}")
+                    continue
+            except Exception as e:
+                # 捕获其他读取异常，记录日志但不崩溃
+                error_msg = str(e)
+                if "Separator is found" in error_msg or "chunk is longer than limit" in error_msg:
+                    # 特定的超长行错误
+                    logger.warning(f"检测到超长行: {error_msg}")
+                    try:
+                        line = await self._read_long_line(stream, deadline)
+                        long_line_handled = True
+                        logger.info(f"超长行分块读取成功 (通用异常): {len(line)} bytes")
+                    except Exception as read_err:
+                        logger.error(f"分块读取超长行失败 (通用异常): {read_err}")
+                        continue
+                else:
+                    logger.warning(f"读取流时发生异常: {e}")
+                    continue
 
             if not line:
                 break
+
+            # 记录超长行处理结果
+            if long_line_handled:
+                logger.debug(f"超长行已成功处理并返回: {len(line)} bytes")
 
             text = line.decode("utf-8", errors="replace")
             if strip_line:
                 text = text.rstrip("\r\n")
             yield text
+
+    async def _read_long_line(
+        self,
+        stream: asyncio.StreamReader,
+        deadline: float,
+        chunk_size: int = 1024 * 1024,  # 1MB 分块
+    ) -> bytes:
+        """分块读取超长行
+
+        当 readline() 因行过长失败时，使用此方法分块读取直到换行符。
+
+        Args:
+            stream: 异步流读取器
+            deadline: 超时截止时间
+            chunk_size: 每次读取的块大小
+
+        Returns:
+            读取到的完整行（包含换行符）
+        """
+        chunks: list[bytes] = []
+        max_line_size = 32 * 1024 * 1024  # 最大行大小 32MB
+
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+
+            try:
+                chunk = await asyncio.wait_for(
+                    stream.read(chunk_size),
+                    timeout=min(remaining, 5.0),
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            if not chunk:
+                break
+
+            chunks.append(chunk)
+
+            # 检查是否包含换行符
+            if b'\n' in chunk:
+                break
+
+            # 防止内存溢出
+            total_size = sum(len(c) for c in chunks)
+            if total_size > max_line_size:
+                logger.warning(f"超长行超过最大限制 ({max_line_size} bytes)，截断处理")
+                break
+
+        return b''.join(chunks)
 
     async def _collect_stream(
         self,

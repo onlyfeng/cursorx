@@ -1134,6 +1134,362 @@ class TestMockExecution:
 # ==================== 集成场景测试 ====================
 
 
+# ==================== 流读取测试 ====================
+
+
+class TestStreamLineReading:
+    """流行读取测试
+
+    验证 _read_stream_lines 方法能正确处理：
+    1. 正常行读取
+    2. 超长行 (>16MB) 分块读取
+    3. LimitOverrunError 异常捕获和恢复
+    """
+
+    @pytest.mark.asyncio
+    async def test_read_normal_lines(self):
+        """测试正常行能被正确读取"""
+        client = CursorAgentClient()
+
+        # 创建 mock StreamReader
+        mock_stream = AsyncMock()
+        lines = [
+            b'{"type": "system", "subtype": "init"}\n',
+            b'{"type": "assistant", "content": "Hello"}\n',
+            b'{"type": "result", "duration_ms": 100}\n',
+            b'',  # EOF
+        ]
+        mock_stream.readline = AsyncMock(side_effect=lines)
+
+        # 设置足够的截止时间
+        deadline = asyncio.get_event_loop().time() + 60
+
+        # 收集读取的行
+        collected_lines = []
+        async for line in client._read_stream_lines(mock_stream, deadline):
+            collected_lines.append(line)
+
+        # 验证结果
+        assert len(collected_lines) == 3
+        assert '{"type": "system", "subtype": "init"}' in collected_lines[0]
+        assert '{"type": "assistant", "content": "Hello"}' in collected_lines[1]
+        assert '{"type": "result", "duration_ms": 100}' in collected_lines[2]
+
+    @pytest.mark.asyncio
+    async def test_read_long_line_via_chunked_read(self):
+        """测试超长行能通过分块读取正确处理"""
+        client = CursorAgentClient()
+
+        # 模拟超长内容（大于默认 limit）
+        long_content = "x" * (1024 * 1024 * 2)  # 2MB 内容
+        long_line = f'{{"type": "data", "content": "{long_content}"}}\n'
+
+        # 创建 mock StreamReader，分块返回超长行
+        mock_stream = AsyncMock()
+        mock_stream._limit = 64 * 1024  # 默认 64KB limit
+
+        # 模拟分块返回
+        chunk_size = 1024 * 1024  # 1MB
+        chunks = []
+        remaining = long_line.encode()
+        while remaining:
+            chunk = remaining[:chunk_size]
+            remaining = remaining[chunk_size:]
+            chunks.append(chunk)
+        chunks.append(b'')  # EOF
+
+        call_count = [0]
+
+        async def mock_read(size):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx < len(chunks):
+                return chunks[idx]
+            return b''
+
+        mock_stream.read = mock_read
+
+        # 设置截止时间
+        deadline = asyncio.get_event_loop().time() + 60
+
+        # 测试 _read_long_line 方法
+        result = await client._read_long_line(mock_stream, deadline)
+
+        # 验证结果
+        assert len(result) == len(long_line.encode())
+        assert b'"type": "data"' in result
+
+    @pytest.mark.asyncio
+    async def test_limit_overrun_error_recovery(self):
+        """测试 LimitOverrunError 异常能被正确捕获和恢复"""
+        client = CursorAgentClient()
+
+        # 创建 mock StreamReader
+        mock_stream = AsyncMock()
+        mock_stream._limit = 64 * 1024  # 64KB limit
+
+        call_count = [0]
+        normal_line = b'{"type": "result"}\n'
+        long_content = b'x' * (1024 * 1024)  # 1MB 内容
+
+        async def mock_readline():
+            nonlocal call_count
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 0:
+                # 第一次调用：抛出 LimitOverrunError
+                raise asyncio.LimitOverrunError(
+                    "Separator is found, but chunk is longer than limit",
+                    consumed=1024 * 100,
+                )
+            elif idx == 1:
+                # 恢复后返回正常行
+                return normal_line
+            else:
+                return b''  # EOF
+
+        async def mock_readuntil(sep):
+            # 模拟读取超长行后的数据直到换行符
+            return long_content + b'\n'
+
+        mock_stream.readline = mock_readline
+        mock_stream.readuntil = mock_readuntil
+
+        # 设置截止时间
+        deadline = asyncio.get_event_loop().time() + 60
+
+        # 收集读取的行
+        collected_lines = []
+        async for line in client._read_stream_lines(mock_stream, deadline):
+            collected_lines.append(line)
+
+        # 验证：应该恢复并继续读取正常行
+        assert len(collected_lines) >= 1
+        assert '{"type": "result"}' in collected_lines[-1]
+
+    @pytest.mark.asyncio
+    async def test_limit_overrun_with_fallback_to_chunked_read(self):
+        """测试 LimitOverrunError 后回退到分块读取"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+        mock_stream._limit = 64 * 1024
+
+        call_count = [0]
+        chunk_data = b'{"type": "long_data", "value": "' + b'y' * 1000 + b'"}\n'
+
+        async def mock_readline():
+            nonlocal call_count
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 0:
+                raise asyncio.LimitOverrunError(
+                    "Separator is found, but chunk is longer than limit",
+                    consumed=50000,
+                )
+            elif idx == 1:
+                return b'{"type": "normal"}\n'
+            else:
+                return b''
+
+        async def mock_readuntil(sep):
+            # 也抛出 LimitOverrunError，触发分块读取
+            raise asyncio.LimitOverrunError(
+                "chunk is longer than limit",
+                consumed=50000,
+            )
+
+        read_call_count = [0]
+
+        async def mock_read(size):
+            nonlocal read_call_count
+            idx = read_call_count[0]
+            read_call_count[0] += 1
+            if idx == 0:
+                return chunk_data
+            return b''
+
+        mock_stream.readline = mock_readline
+        mock_stream.readuntil = mock_readuntil
+        mock_stream.read = mock_read
+
+        deadline = asyncio.get_event_loop().time() + 60
+
+        collected_lines = []
+        async for line in client._read_stream_lines(mock_stream, deadline):
+            collected_lines.append(line)
+
+        # 验证：分块读取的内容应该被收集
+        assert len(collected_lines) >= 1
+
+    @pytest.mark.asyncio
+    async def test_value_error_recovery(self):
+        """测试 ValueError 异常能被正确捕获和恢复"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+
+        call_count = [0]
+        normal_line = b'{"type": "final"}\n'
+        chunk_data = b'{"type": "recovered"}\n'
+
+        async def mock_readline():
+            nonlocal call_count
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 0:
+                # 抛出 ValueError（行超过 limit）
+                raise ValueError("Line is too long")
+            elif idx == 1:
+                return normal_line
+            else:
+                return b''
+
+        read_call_count = [0]
+
+        async def mock_read(size):
+            nonlocal read_call_count
+            idx = read_call_count[0]
+            read_call_count[0] += 1
+            if idx == 0:
+                return chunk_data
+            return b''
+
+        mock_stream.readline = mock_readline
+        mock_stream.read = mock_read
+
+        deadline = asyncio.get_event_loop().time() + 60
+
+        collected_lines = []
+        async for line in client._read_stream_lines(mock_stream, deadline):
+            collected_lines.append(line)
+
+        # 验证：应该恢复并继续读取
+        assert len(collected_lines) >= 1
+
+    @pytest.mark.asyncio
+    async def test_incomplete_read_error_handling(self):
+        """测试 IncompleteReadError 能被正确处理"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+
+        call_count = [0]
+        partial_data = b'{"partial": true}'
+
+        async def mock_readline():
+            nonlocal call_count
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx == 0:
+                raise asyncio.LimitOverrunError(
+                    "Separator is found, but chunk is longer than limit",
+                    consumed=1000,
+                )
+            elif idx == 1:
+                return b'{"type": "next"}\n'
+            else:
+                return b''
+
+        async def mock_readuntil(sep):
+            # 抛出 IncompleteReadError，模拟流结束
+            raise asyncio.IncompleteReadError(partial_data, expected=None)
+
+        mock_stream.readline = mock_readline
+        mock_stream.readuntil = mock_readuntil
+
+        deadline = asyncio.get_event_loop().time() + 60
+
+        collected_lines = []
+        async for line in client._read_stream_lines(mock_stream, deadline):
+            collected_lines.append(line)
+
+        # 验证：应该继续处理
+        assert len(collected_lines) >= 1
+
+    @pytest.mark.asyncio
+    async def test_read_long_line_with_newline_in_chunks(self):
+        """测试分块读取时能正确检测换行符"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+
+        # 模拟多个分块，最后一个包含换行符
+        chunks = [
+            b'{"start": "',
+            b'middle content here',
+            b'", "end": true}\n',  # 包含换行符
+            b'',  # EOF
+        ]
+        chunk_idx = [0]
+
+        async def mock_read(size):
+            idx = chunk_idx[0]
+            chunk_idx[0] += 1
+            if idx < len(chunks):
+                return chunks[idx]
+            return b''
+
+        mock_stream.read = mock_read
+
+        deadline = asyncio.get_event_loop().time() + 60
+
+        result = await client._read_long_line(mock_stream, deadline)
+
+        # 验证：应该在遇到换行符时停止
+        expected = b''.join(chunks[:3])
+        assert result == expected
+        assert b'\n' in result
+
+    @pytest.mark.asyncio
+    async def test_read_long_line_max_size_limit(self):
+        """测试分块读取时超过最大行大小限制"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+
+        # 模拟返回大量数据但没有换行符
+        big_chunk = b'x' * (1024 * 1024)  # 1MB
+
+        async def mock_read(size):
+            return big_chunk  # 持续返回大块数据
+
+        mock_stream.read = mock_read
+
+        deadline = asyncio.get_event_loop().time() + 60
+
+        # 这应该因为超过最大行大小而停止
+        result = await client._read_long_line(mock_stream, deadline)
+
+        # 验证：结果应该被截断
+        # 最大行大小是 32MB
+        assert len(result) <= 33 * 1024 * 1024  # 允许一些余量
+
+    @pytest.mark.asyncio
+    async def test_stream_timeout_handling(self):
+        """测试流读取超时处理"""
+        client = CursorAgentClient()
+
+        mock_stream = AsyncMock()
+
+        async def slow_readline():
+            await asyncio.sleep(10)
+            return b'too slow\n'
+
+        mock_stream.readline = slow_readline
+
+        # 设置很短的截止时间
+        deadline = asyncio.get_event_loop().time() + 0.1
+
+        collected_lines = []
+        with pytest.raises(asyncio.TimeoutError):
+            async for line in client._read_stream_lines(mock_stream, deadline):
+                collected_lines.append(line)
+
+
+# ==================== 集成场景测试 ====================
+
+
 class TestIntegrationScenarios:
     """集成场景测试"""
 

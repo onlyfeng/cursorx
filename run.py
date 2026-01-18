@@ -280,6 +280,13 @@ def parse_args() -> argparse.Namespace:
         help="[mp] 执行者模型",
     )
 
+    parser.add_argument(
+        "--reviewer-model",
+        type=str,
+        default="opus-4.5-thinking",
+        help="[mp] 评审者模型",
+    )
+
     # 流式日志（默认开启）
     stream_log_group = parser.add_mutually_exclusive_group()
     stream_log_group.add_argument(
@@ -629,6 +636,7 @@ class Runner:
         # 多进程选项
         options["planner_model"] = self.args.planner_model
         options["worker_model"] = self.args.worker_model
+        options["reviewer_model"] = getattr(self.args, "reviewer_model", "opus-4.5-thinking")
 
         # 流式日志（自然语言可控制开关）
         # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）
@@ -689,6 +697,10 @@ class Runner:
             enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
+            # 模型配置
+            planner_model=options.get("planner_model", "gpt-5.2-high"),
+            worker_model=options.get("worker_model", "opus-4.5-thinking"),
+            reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
         )
 
         if options["max_iterations"] == -1:
@@ -708,7 +720,7 @@ class Runner:
             strict_review=options.get("strict", False),
             planner_model=options.get("planner_model", "gpt-5.2-high"),
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
-            reviewer_model=options.get("worker_model", "opus-4.5-thinking"),
+            reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
             stream_events_enabled=options.get("stream_log", False),
         )
 

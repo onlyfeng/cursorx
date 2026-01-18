@@ -62,6 +62,10 @@ class OrchestratorConfig(BaseModel):
     # Cloud Agent 配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
     cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    # 各角色模型配置
+    planner_model: str = 'gpt-5.2-high'           # 规划者模型
+    worker_model: str = 'opus-4.5-thinking'       # 执行者模型
+    reviewer_model: str = 'opus-4.5-thinking'     # 评审者模型
 
 
 class Orchestrator:
@@ -99,8 +103,15 @@ class Orchestrator:
         reviewer_cursor_config = config.cursor_config.model_copy(deep=True)
         worker_cursor_config = config.cursor_config.model_copy(deep=True)
 
-        # 记录执行模式
+        # 设置各角色的模型
+        planner_cursor_config.model = config.planner_model
+        reviewer_cursor_config.model = config.reviewer_model
+        worker_cursor_config.model = config.worker_model
+
+        # 记录执行模式和各角色模型
         logger.info(f"编排器使用执行模式: {config.execution_mode.value}")
+        logger.info(f"各角色模型配置 - Planner: {config.planner_model}, "
+                    f"Worker: {config.worker_model}, Reviewer: {config.reviewer_model}")
 
         self.planner = PlannerAgent(PlannerConfig(
             working_directory=config.working_directory,

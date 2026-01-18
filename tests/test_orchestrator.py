@@ -1,6 +1,8 @@
 """测试编排器（Orchestrator）初始化和配置"""
 from unittest.mock import MagicMock
 
+import pytest
+
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from core.base import AgentRole
 from core.state import SystemState
@@ -170,6 +172,86 @@ class TestAgentRegistration:
             assert agent_state.status == AgentStatus.IDLE
             assert agent_state.current_task_id is None
             assert agent_state.error_count == 0
+
+
+class TestModelConfigPerRole:
+    """测试各角色的模型配置"""
+
+    def test_model_config_log_output(self) -> None:
+        """验证初始化时输出各角色模型配置日志"""
+        from io import StringIO
+
+        from loguru import logger
+
+        # 使用 loguru sink 捕获日志
+        log_output = StringIO()
+        handler_id = logger.add(log_output, format="{message}", level="INFO")
+
+        try:
+            config = OrchestratorConfig()
+            Orchestrator(config)
+
+            # 获取捕获的日志
+            log_content = log_output.getvalue()
+
+            # 验证日志包含模型配置信息
+            expected_log = (
+                "各角色模型配置 - Planner: gpt-5.2-high, "
+                "Worker: opus-4.5-thinking, Reviewer: opus-4.5-thinking"
+            )
+            assert expected_log in log_content, (
+                f"未找到预期日志: {expected_log}\n实际日志: {log_content}"
+            )
+        finally:
+            logger.remove(handler_id)
+
+    def test_orchestrator_uses_different_models_per_role(self) -> None:
+        """验证 Planner 使用 gpt-5.2-high，Worker 和 Reviewer 使用 opus-4.5-thinking"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # 验证默认模型配置
+        assert config.planner_model == "gpt-5.2-high"
+        assert config.worker_model == "opus-4.5-thinking"
+        assert config.reviewer_model == "opus-4.5-thinking"
+
+        # 验证 Planner 使用正确的模型
+        assert orchestrator.planner.planner_config.cursor_config.model == "gpt-5.2-high"
+
+        # 验证 Reviewer 使用正确的模型
+        assert orchestrator.reviewer.reviewer_config.cursor_config.model == "opus-4.5-thinking"
+
+        # 验证 Workers 使用正确的模型
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.model == "opus-4.5-thinking"
+
+    def test_orchestrator_custom_model_config(self) -> None:
+        """验证自定义模型配置能够正确传递到各角色"""
+        custom_planner_model = "custom-planner-model"
+        custom_worker_model = "custom-worker-model"
+        custom_reviewer_model = "custom-reviewer-model"
+
+        config = OrchestratorConfig(
+            planner_model=custom_planner_model,
+            worker_model=custom_worker_model,
+            reviewer_model=custom_reviewer_model,
+        )
+        orchestrator = Orchestrator(config)
+
+        # 验证配置值
+        assert config.planner_model == custom_planner_model
+        assert config.worker_model == custom_worker_model
+        assert config.reviewer_model == custom_reviewer_model
+
+        # 验证 Planner 使用自定义模型
+        assert orchestrator.planner.planner_config.cursor_config.model == custom_planner_model
+
+        # 验证 Reviewer 使用自定义模型
+        assert orchestrator.reviewer.reviewer_config.cursor_config.model == custom_reviewer_model
+
+        # 验证所有 Workers 使用自定义模型
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.model == custom_worker_model
 
 
 class TestStreamConfigApplication:
