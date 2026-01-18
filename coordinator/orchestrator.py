@@ -31,12 +31,12 @@ class OrchestratorConfig(BaseModel):
     enable_sub_planners: bool = True   # 是否启用子规划者
     strict_review: bool = False        # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
-    stream_events_enabled: bool = False
+    stream_events_enabled: bool = True   # 默认启用流式日志
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
     # 自动提交配置
-    enable_auto_commit: bool = False   # 是否启用自动提交
+    enable_auto_commit: bool = True    # 默认启用自动提交
     auto_push: bool = False            # 是否自动推送
     commit_on_complete: bool = True    # 仅在完成时提交
     commit_per_iteration: bool = False # 每次迭代都提交

@@ -280,11 +280,20 @@ def parse_args() -> argparse.Namespace:
         help="[mp] 执行者模型",
     )
     
-    # 流式日志
-    parser.add_argument(
+    # 流式日志（默认开启）
+    stream_log_group = parser.add_mutually_exclusive_group()
+    stream_log_group.add_argument(
         "--stream-log",
         action="store_true",
-        help="启用流式日志",
+        dest="stream_log",
+        default=True,
+        help="启用流式日志（默认）",
+    )
+    stream_log_group.add_argument(
+        "--no-stream-log",
+        action="store_false",
+        dest="stream_log",
+        help="禁用流式日志",
     )
     
     # 禁用自动模式分析（直接使用指定模式）
@@ -294,11 +303,20 @@ def parse_args() -> argparse.Namespace:
         help="禁用自动分析，直接使用指定模式",
     )
     
-    # 自动提交相关参数
-    parser.add_argument(
+    # 自动提交相关参数（默认开启）
+    auto_commit_group = parser.add_mutually_exclusive_group()
+    auto_commit_group.add_argument(
         "--auto-commit",
         action="store_true",
-        help="启用自动提交（每次迭代成功后自动 git commit）",
+        dest="auto_commit",
+        default=True,
+        help="启用自动提交（默认）",
+    )
+    auto_commit_group.add_argument(
+        "--no-auto-commit",
+        action="store_false",
+        dest="auto_commit",
+        help="禁用自动提交",
     )
     
     parser.add_argument(
@@ -350,7 +368,7 @@ class TaskAnalyzer:
         ],
     }
     
-    # 选项关键词映射
+    # 选项关键词映射（启用）
     OPTION_KEYWORDS = {
         "skip_online": ["跳过在线", "skip-online", "离线", "不检查更新", "跳过更新"],
         "dry_run": ["仅分析", "dry-run", "预览", "不执行"],
@@ -358,8 +376,16 @@ class TaskAnalyzer:
         "force_update": ["强制更新", "force-update", "强制刷新"],
         "self_update": ["自我更新", "self-update", "更新自身"],
         "use_knowledge": ["使用知识库", "use-knowledge", "启用知识库"],
-        "auto_commit": ["自动提交", "auto-commit", "自动 commit"],
-        "auto_push": ["自动推送", "auto-push", "自动 push"],
+        "auto_commit": ["启用提交", "开启提交", "自动提交", "enable-commit"],
+        "auto_push": ["自动推送", "auto-push", "自动 push", "启用推送"],
+        "stream_log": ["启用流式日志", "开启流式", "stream-log", "详细日志", "实时日志"],
+    }
+    
+    # 禁用选项关键词映射
+    DISABLE_KEYWORDS = {
+        "no_auto_commit": ["禁用提交", "关闭提交", "不提交", "跳过提交", "no-commit", "禁用自动提交"],
+        "no_stream_log": ["禁用流式日志", "关闭流式", "no-stream", "简洁模式", "静默模式"],
+        "no_auto_push": ["禁用推送", "不推送", "关闭推送", "no-push"],
     }
     
     # 无限迭代关键词
@@ -423,11 +449,19 @@ class TaskAnalyzer:
                 reasoning_parts.append(f"检测到 {mode.value} 模式关键词: {matched}")
                 break
         
-        # 检测选项关键词
+        # 检测启用选项关键词
         for option, keywords in self.OPTION_KEYWORDS.items():
             if any(kw.lower() in task_lower for kw in keywords):
                 analysis.options[option] = True
-                reasoning_parts.append(f"检测到选项 {option}")
+                reasoning_parts.append(f"检测到启用选项 {option}")
+        
+        # 检测禁用选项关键词
+        for option, keywords in self.DISABLE_KEYWORDS.items():
+            if any(kw.lower() in task_lower for kw in keywords):
+                # 将 no_xxx 转换为 xxx = False
+                real_option = option.replace("no_", "")
+                analysis.options[real_option] = False
+                reasoning_parts.append(f"检测到禁用选项 {real_option}")
         
         # 检测无限迭代
         if any(kw in task_lower for kw in self.UNLIMITED_KEYWORDS):
@@ -596,12 +630,25 @@ class Runner:
         options["planner_model"] = self.args.planner_model
         options["worker_model"] = self.args.worker_model
         
-        # 流式日志
-        options["stream_log"] = self.args.stream_log
+        # 流式日志（自然语言可控制开关）
+        # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）
+        if "stream_log" in analysis_options:
+            options["stream_log"] = analysis_options["stream_log"]
+        else:
+            options["stream_log"] = self.args.stream_log
         
-        # 自动提交选项
-        auto_commit = analysis_options.get("auto_commit") or getattr(self.args, "auto_commit", False)
-        auto_push = analysis_options.get("auto_push") or getattr(self.args, "auto_push", False)
+        # 自动提交选项（自然语言可控制开关）
+        # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）
+        if "auto_commit" in analysis_options:
+            auto_commit = analysis_options["auto_commit"]
+        else:
+            auto_commit = getattr(self.args, "auto_commit", True)
+        
+        if "auto_push" in analysis_options:
+            auto_push = analysis_options["auto_push"]
+        else:
+            auto_push = getattr(self.args, "auto_push", False)
+        
         commit_per_iteration = getattr(self.args, "commit_per_iteration", False)
         
         options["auto_commit"] = auto_commit

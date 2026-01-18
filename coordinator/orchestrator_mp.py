@@ -37,7 +37,7 @@ class MultiProcessOrchestratorConfig(BaseModel):
     planner_model: str = "gpt-5.2-high"           # 规划者使用 GPT 5.2 High
     worker_model: str = "opus-4.5-thinking"       # 执行者使用 Claude 4.5 Opus (Thinking)
     reviewer_model: str = "opus-4.5-thinking"     # 评审者使用 Claude 4.5 Opus (Thinking)
-    stream_events_enabled: bool = False
+    stream_events_enabled: bool = True   # 默认启用流式日志
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"

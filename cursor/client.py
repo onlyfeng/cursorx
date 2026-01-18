@@ -102,7 +102,7 @@ class CursorAgentConfig(BaseModel):
     stream_partial_output: bool = False
 
     # 流式事件日志配置（仅在 output_format=stream-json 时生效）
-    stream_events_enabled: bool = False
+    stream_events_enabled: bool = True   # 默认启用流式日志
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
