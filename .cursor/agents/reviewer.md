@@ -34,6 +34,7 @@ readonly: true
 - 注入攻击（SQL/XSS）、并发/竞态条件
 - 关键操作缺少错误处理、明确的安全漏洞
 - 接口定义不一致、未声明的依赖、模块导入失败
+- 依赖库版本不一致、动态导入路径错误
 
 ### 中等严重性问题（建议修复）
 - 逻辑错误、性能反模式、可读性问题
@@ -41,35 +42,73 @@ readonly: true
 ### 低严重性问题（可选修复）
 - 风格不一致、缺少注释、可选优化
 
-## 必需验证检查
+## 必需验证检查清单
 
 > 详细验证命令和标准请参考 `.cursor/rules/reviewer.mdc`
 
-审核时必须执行以下验证：
+审核时必须按顺序执行以下验证，每项都必须记录执行结果：
 
-1. **端到端测试验证**: `python tests/test_e2e_basic.py`
-2. **变更文件导入检查**: 验证所有变更的 Python 文件导入正常
-3. **主程序启动验证**: `python run.py --help`
+### 检查清单模板
+
+```markdown
+## 评审检查清单
+
+### 必需检查项（全部必须通过）
+
+- [ ] **1. 端到端测试验证**
+  - 命令: `python tests/test_e2e_basic.py`
+  - 结果: ___（通过/失败）
+  - 详情: ___ 通过 / ___ 失败 / ___ 跳过
+
+- [ ] **2. 变更文件导入检查**
+  - 已检查文件: ___
+  - 结果: ___（全部通过/存在失败）
+  - 失败导入: ___
+
+- [ ] **3. 主程序启动验证（强制）**
+  - 命令: `python run.py --help`
+  - 结果: ___（通过/失败）
+  - 命令行选项解析: ___（正常/异常）
+
+- [ ] **4. 依赖库一致性检查**
+  - requirements.in 与 requirements.txt 一致: ___（是/否）
+  - pyproject.toml 与 requirements.in 一致: ___（是/否）
+  - 版本冲突: ___（无/有：详情）
+
+- [ ] **5. 动态导入路径验证**
+  - 发现动态导入数量: ___
+  - 验证通过路径: ___
+  - 验证失败路径: ___
 
 ### 依赖审核检查
 
-审核代码变更时，必须执行以下依赖相关检查：
+- [ ] **6. 未声明依赖检查**
+  - 命令: `python scripts/check_deps.py`
+  - 未声明的第三方依赖: ___
 
-4. **未声明依赖检查**: 检查代码中是否引入了未在 `requirements.in` 或 `pyproject.toml` 中声明的第三方依赖
-   - 命令: `python scripts/check_deps.py` 或手动检查 import 语句
-   - 重点关注: 新增的 import 语句是否对应已声明的包
+- [ ] **7. 功能重叠依赖检查**
+  - 是否引入功能重叠的依赖: ___（是/否）
+  - 建议替换: ___
 
-5. **功能重叠依赖检查**: 检查是否有功能重叠的依赖可以替代
-   - 避免引入功能相似的重复依赖（如同时使用 requests 和 httpx）
-   - 优先使用项目已有的依赖解决问题
+- [ ] **8. 优先使用已有库检查**
+  - 新增 import 是否优先使用已有库: ___（是/否）
+  - 违规项: ___
 
-6. **模块导入验证**: 验证所有模块可正确导入
-   - 命令: `python -c "import <module_name>"` 逐一验证
-   - 或使用: `python scripts/test_cloud_import.py` 进行批量验证
+### 检查结果汇总
 
-7. **入口脚本验证**: 确认 `run.py` 入口脚本可正常执行
-   - 命令: `python run.py --help`
-   - 确保主入口无导入错误、参数解析正常
+| 检查项 | 状态 | 备注 |
+|--------|------|------|
+| 端到端测试 | ⬜ | |
+| 导入检查 | ⬜ | |
+| run.py --help | ⬜ | |
+| 依赖一致性 | ⬜ | |
+| 动态导入 | ⬜ | |
+| 未声明依赖 | ⬜ | |
+| 功能重叠 | ⬜ | |
+| 已有库优先 | ⬜ | |
+
+**总体状态**: ___（全部通过/存在问题）
+```
 
 ## 使用的工具
 
@@ -79,6 +118,29 @@ readonly: true
 - Git 命令 (git diff, git log, git show 等)
 - 目录浏览 (LS)
 - Shell 命令执行（用于验证检查）
+
+## 验证命令快速参考
+
+```bash
+# 1. 端到端测试
+python tests/test_e2e_basic.py
+
+# 2. 模块导入验证
+python -c "import sys; sys.path.insert(0, '.'); import <module_path>"
+
+# 3. 主程序启动验证（强制）
+python run.py --help
+
+# 4. 依赖一致性检查
+diff <(grep -v '^#' requirements.in | grep -v '^$' | sort) \
+     <(grep -v '^#' requirements.txt | sed 's/==.*//' | sort)
+
+# 5. 动态导入搜索
+grep -rn "importlib.import_module\|__import__\|importlib.util" --include="*.py" .
+
+# 6. 依赖检查脚本
+python scripts/check_deps.py
+```
 
 ## 输出格式
 
@@ -90,6 +152,9 @@ readonly: true
 - `score`: 0-100 评分
 - `issues`: 问题列表（含严重程度、类型、位置、描述、建议）
 - `import_issues`: 导入问题列表
-- `validation_checks`: 验证检查结果
+- `dependency_consistency`: 依赖一致性检查结果
+- `validation_checks`: 验证检查结果（包含所有 8 项检查）
 - `summary`: 整体评价
 - `recommendations`: 改进建议列表
+
+**重要**: 如果检查项 1-5 中任何一项失败，`overall_status` 不能为 `approved`。

@@ -95,6 +95,309 @@ async with httpx.AsyncClient() as client:
 
 ---
 
+### 案例 4: 依赖管理与模块验证核心规则总结
+
+**问题描述**
+
+多个依赖相关问题的根本原因归纳：未在引入新 import 前检查现有依赖、HTTP 客户端选型不统一、提交前未验证模块导入。
+
+**修复提交**: 综合案例 2、3 的修复
+
+**核心规则**
+
+以下三条规则必须在每次代码修改时严格遵守：
+
+#### 规则 1: 引入任何新 import 前必须检查 requirements.txt 已有依赖
+
+```bash
+# 提交前必须执行：检查新增的 import 是否已在依赖中声明
+grep "package_name" requirements.txt
+
+# 或使用依赖检查脚本
+python scripts/check_deps.py
+```
+
+**违反后果**:
+- `ModuleNotFoundError` 导致模块无法导入
+- CI 测试失败，阻塞合并流程
+- 生产环境部署失败
+
+**正确做法**:
+1. 添加新 import 前，先查看 `requirements.txt`
+2. 如已有功能等效的库，使用现有库
+3. 如必须新增，同步更新 `requirements.in` 并运行 `pip-compile`
+
+#### 规则 2: HTTP 客户端统一使用 httpx
+
+```python
+# 错误示例 - 使用未声明的 aiohttp
+import aiohttp  # ❌ 未在 requirements.txt 中声明
+
+async with aiohttp.ClientSession() as session:
+    async with session.get(url) as response:
+        return await response.json()
+
+# 正确示例 - 使用已声明的 httpx
+import httpx  # ✓ 已在 requirements.txt 中声明
+
+async with httpx.AsyncClient() as client:
+    response = await client.get(url)
+    return response.json()
+```
+
+**统一标准**:
+- 同步请求: `httpx.Client()`
+- 异步请求: `httpx.AsyncClient()`
+- 禁止使用: `aiohttp`, `requests`（除非有特殊理由并更新依赖）
+
+#### 规则 3: 提交前必须运行模块导入验证
+
+```bash
+# 提交前必须执行的验证命令
+python -c "import agents; import coordinator; import core; import cursor; print('模块导入验证通过')"
+
+# 或运行完整检查
+python run.py --help
+
+# 或使用综合检查脚本
+./scripts/check_all.sh
+```
+
+**验证流程**:
+1. 每次修改代码后，立即验证受影响模块可导入
+2. 提交前运行 `python run.py --help` 确保入口脚本正常
+3. CI 会自动运行 `tests/test_e2e_imports.py` 验证所有模块导入
+
+#### 规则 4: run.py 验证必须覆盖所有模式（重要！）
+
+静态导入验证和 `--help` 验证是**必要但不充分**的。必须对所有运行模式执行验证：
+
+```bash
+# 必须执行：验证所有模式的导入
+python run.py --mode agent --help
+python run.py --mode plan --help
+python run.py --mode iterate --help
+
+# 一键验证所有模式
+for mode in agent plan iterate; do
+    python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 验证失败"
+done
+```
+
+**为什么 --help 不够？**
+- `--help` 仅验证参数解析，不触发模式特定的导入
+- 条件导入（`if mode == "X": import Y`）不会被执行
+- 延迟导入（函数内部导入）不会被触发
+
+**运行时验证 vs 静态分析**
+
+| 验证方法 | 能发现的问题 | 不能发现的问题 |
+|---------|-------------|---------------|
+| `python -c "import X"` | 顶层导入缺失 | 条件/延迟导入缺失 |
+| `mypy` | 类型错误、未使用导入 | 运行时依赖缺失 |
+| `python run.py --help` | 参数解析错误 | 模式特定导入问题 |
+| `python run.py --mode X` | 特定模式的完整依赖链 | 其他模式的问题 |
+
+**验证策略总结**
+1. **静态分析**：快速发现基础问题（必须）
+2. **入口验证**：确保脚本可启动（必须）
+3. **多模式验证**：覆盖所有运行路径（必须）
+4. **E2E 测试**：验证功能正确性（推荐）
+
+**快速验证命令汇总**:
+
+```bash
+# 1. 检查依赖 (必须)
+python scripts/check_deps.py
+
+# 2. 验证模块导入 (必须)
+python -c "import agents; import coordinator; import core; import cursor"
+
+# 3. 验证入口脚本 (必须)
+python run.py --help
+
+# 4. 验证所有运行模式 (必须！)
+for mode in agent plan iterate; do
+    python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 失败"
+done
+
+# 5. 完整检查 (推荐)
+./scripts/check_all.sh
+```
+
+---
+
+### 案例 5: 模块导入验证未覆盖动态导入场景
+
+**问题描述**
+
+静态的模块导入验证（如 `python -c "import module"`）无法检测到仅在特定运行时条件下触发的导入问题，例如：
+- 条件导入 (`if condition: import xxx`)
+- 延迟导入（函数内部导入）
+- 动态导入 (`importlib.import_module()`)
+- 特定模式/功能分支中的导入
+
+**问题现象**
+```python
+# run.py 中的条件导入
+def run_cloud_mode():
+    from cursor.cloud import CloudClient  # 仅在 cloud 模式下导入
+    ...
+
+# 静态验证通过，但运行时可能失败
+python -c "import run"  # ✓ 通过
+python run.py --mode cloud  # ✗ ImportError: 缺少依赖
+```
+
+**影响范围**
+- CI 测试通过但生产环境失败
+- 特定功能模式无法使用
+- 问题难以在开发阶段发现
+
+**运行时验证与静态分析的区别**
+
+| 验证类型 | 方法 | 覆盖范围 | 局限性 |
+|---------|------|---------|--------|
+| **静态分析** | `python -c "import X"` | 模块顶层导入 | 无法检测条件/动态导入 |
+| **静态分析** | `mypy`/`ruff` | 类型和代码风格 | 不执行代码，无法发现运行时问题 |
+| **运行时验证** | `python run.py --help` | 入口脚本初始化 | 仅覆盖帮助模式路径 |
+| **运行时验证** | `python run.py --mode X` | 特定模式完整路径 | 需要逐个模式测试 |
+| **运行时验证** | `pytest tests/` | 测试覆盖的代码路径 | 依赖测试覆盖率 |
+
+**正确的验证策略**
+
+```bash
+# 1. 静态分析（快速，覆盖基础问题）
+python -c "import agents; import coordinator; import core; import cursor"
+mypy agents/ coordinator/ core/ cursor/
+
+# 2. 入口脚本基础验证
+python run.py --help
+
+# 3. 运行时验证（覆盖所有模式）- 必须！
+python run.py --mode agent --help 2>/dev/null || echo "agent 模式导入失败"
+python run.py --mode plan --help 2>/dev/null || echo "plan 模式导入失败"
+python run.py --mode iterate --help 2>/dev/null || echo "iterate 模式导入失败"
+
+# 4. 完整功能测试
+pytest tests/test_e2e_*.py -v
+```
+
+**经验教训**
+- 静态导入验证是必要但不充分的
+- 必须对所有运行模式执行运行时验证
+- 条件导入的依赖也必须在 requirements.txt 中声明
+- 延迟导入可以解决循环依赖，但不能解决缺失依赖
+
+---
+
+### 案例 6: 多模式入口脚本的依赖管理
+
+**问题描述**
+
+`run.py` 支持多种运行模式（agent、plan、iterate、cloud 等），每种模式可能有不同的依赖路径。仅验证 `--help` 无法确保所有模式的依赖都已正确声明。
+
+**问题现象**
+```python
+# run.py 多模式入口
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["agent", "plan", "iterate", "cloud"])
+    args = parser.parse_args()
+    
+    if args.mode == "agent":
+        from agents import AgentRunner  # 依赖 A
+    elif args.mode == "cloud":
+        from cursor.cloud import CloudClient  # 依赖 B（可能缺失）
+    elif args.mode == "iterate":
+        from scripts.run_iterate import SelfIterator  # 依赖 C
+
+# 验证 --help 不会触发任何模式的导入
+python run.py --help  # ✓ 通过
+python run.py --mode cloud  # ✗ 失败
+```
+
+**影响范围**
+- 部分功能模式不可用
+- 用户报告的问题难以复现
+- CI 未覆盖所有使用场景
+
+**核心规则：run.py 验证必须覆盖所有模式**
+
+```bash
+# 必须执行的多模式验证命令
+MODES="agent plan iterate"
+for mode in $MODES; do
+    echo "验证模式: $mode"
+    python run.py --mode $mode --help || echo "模式 $mode 验证失败"
+done
+```
+
+**修复方案**
+
+1. **在 CI 中添加多模式验证**
+   ```yaml
+   # .github/workflows/ci.yml
+   - name: Validate all run modes
+     run: |
+       python run.py --help
+       python run.py --mode agent --help
+       python run.py --mode plan --help
+       python run.py --mode iterate --help
+   ```
+
+2. **在 check_all.sh 中添加模式验证**
+   ```bash
+   # scripts/check_all.sh
+   echo "验证入口脚本所有模式..."
+   python run.py --help
+   for mode in agent plan iterate; do
+       python run.py --mode $mode --help 2>/dev/null || {
+           echo "错误: 模式 $mode 验证失败"
+           exit 1
+       }
+   done
+   ```
+
+3. **在 pre_commit_check.py 中验证**
+   ```python
+   # scripts/pre_commit_check.py
+   def verify_run_modes():
+       """验证 run.py 所有模式可正常初始化"""
+       modes = ["agent", "plan", "iterate"]
+       for mode in modes:
+           result = subprocess.run(
+               ["python", "run.py", "--mode", mode, "--help"],
+               capture_output=True
+           )
+           if result.returncode != 0:
+               raise RuntimeError(f"模式 {mode} 验证失败")
+   ```
+
+**依赖声明最佳实践**
+
+```python
+# 在模块顶部声明所有可能的依赖（即使是条件使用）
+# 这样静态分析也能发现问题
+
+# 方式 1: 顶层导入（推荐，除非有循环依赖）
+from cursor.cloud import CloudClient
+from scripts.run_iterate import SelfIterator
+
+# 方式 2: 如果必须延迟导入，添加类型注解
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from cursor.cloud import CloudClient  # 仅用于类型检查
+```
+
+**经验教训**
+- 入口脚本必须验证所有支持的模式
+- `--help` 验证是必要但不充分的
+- 每新增一个模式，必须更新验证脚本
+- 考虑使用「启动时预加载」策略，尽早发现问题
+
+---
+
 ## 根因分析
 
 ### 共同问题模式
@@ -106,6 +409,8 @@ async with httpx.AsyncClient() as client:
 | **测试覆盖不足** | 单元测试通过，但集成测试缺失 | 两者都是 | 覆盖率报告、E2E 测试 |
 | **配置不一致** | 不同环境配置差异导致的问题 | - | 配置验证、环境对比 |
 | **循环导入** | 模块间相互导入造成初始化失败 | - | 导入测试、依赖图分析 |
+| **动态导入遗漏** | 条件/延迟导入的依赖未被静态验证发现 | 案例5 | 运行时多模式验证 |
+| **多模式验证缺失** | 入口脚本仅验证部分模式 | 案例6 | 全模式启动测试 |
 
 ### 根本原因
 
@@ -756,4 +1061,4 @@ DeprecationWarning: function X is deprecated
 ---
 
 *文档创建日期: 2026-01-18*
-*最后更新: 2026-01-18（补充接口不一致和依赖未声明的详细解决方案）*
+*最后更新: 2026-01-19（添加案例 5、6: 动态导入与多模式验证；新增规则 4: run.py 多模式验证）*

@@ -462,6 +462,71 @@ check_tests() {
     fi
 }
 
+check_coverage() {
+    print_section "代码覆盖率检查"
+
+    if ! command -v pytest &> /dev/null; then
+        check_skip "pytest 未安装 (pip install pytest)"
+        return 0
+    fi
+
+    # 检查 pytest-cov 是否安装
+    if ! python3 -c "import pytest_cov" 2>/dev/null; then
+        check_skip "pytest-cov 未安装 (pip install pytest-cov)"
+        return 0
+    fi
+
+    if [ "$JSON_OUTPUT" != true ]; then
+        echo -e "  ${BLUE}ℹ${NC} 运行覆盖率检查..."
+    fi
+
+    # 运行带覆盖率的测试
+    # 目标: run.py 及核心模块
+    COV_OUTPUT=$(pytest tests/ --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 2>&1) || true
+    COV_EXIT=$?
+
+    # 提取覆盖率百分比
+    TOTAL_COV=$(echo "$COV_OUTPUT" | grep -E "^TOTAL" | awk '{print $NF}' | tr -d '%')
+
+    if [ -n "$TOTAL_COV" ]; then
+        if [ "$COV_EXIT" -eq 0 ]; then
+            check_pass "代码覆盖率: ${TOTAL_COV}% (阈值: 80%)"
+        else
+            # 检查是否是覆盖率不足导致的失败
+            if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
+                check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)"
+            else
+                # 测试失败但覆盖率可能已计算
+                check_warn "测试有失败，覆盖率: ${TOTAL_COV}%"
+            fi
+        fi
+
+        # 显示详细信息 (非 JSON 模式)
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${BLUE}ℹ${NC} 覆盖率详情:"
+            echo "$COV_OUTPUT" | grep -E "^(Name|TOTAL|run|core|agents|coordinator|cursor|tasks|knowledge|indexing|process)" | head -20 | while read line; do
+                echo "      $line"
+            done
+        fi
+    else
+        check_warn "无法获取覆盖率数据"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo "$COV_OUTPUT" | tail -10
+        fi
+    fi
+
+    # 生成 HTML 报告 (如果需要)
+    if [ "$FULL_CHECK" = true ]; then
+        pytest tests/ --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks --cov=knowledge --cov=indexing --cov=process --cov-report=html --cov-report=xml -q 2>/dev/null || true
+        if [ -d "htmlcov" ]; then
+            check_info "HTML 覆盖率报告: htmlcov/index.html"
+        fi
+        if [ -f "coverage.xml" ]; then
+            check_info "XML 覆盖率报告: coverage.xml"
+        fi
+    fi
+}
+
 check_config() {
     print_section "配置文件检查"
 
@@ -713,12 +778,14 @@ main() {
         check_type_hints
         check_code_style
         check_tests
+        check_coverage
     else
         if [ "$JSON_OUTPUT" != true ]; then
             print_section "跳过的检查 (使用 --full 启用)"
             check_info "类型检查 (mypy)"
             check_info "代码风格检查 (flake8/ruff)"
             check_info "测试运行 (pytest)"
+            check_info "代码覆盖率检查 (pytest-cov, 阈值 80%)"
         fi
     fi
 

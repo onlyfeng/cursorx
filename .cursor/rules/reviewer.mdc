@@ -44,11 +44,14 @@ globs: ["**/reviewer*.py"]
 - 接口定义不一致（如内部类缺少必需属性）
 - 使用未在 requirements.txt 声明的依赖
 - 模块导入失败
+- 依赖库版本不一致
+- 动态导入路径错误
 
 ### 中等严重性（建议修复）
 - 具有不正确行为的逻辑错误
 - 具有可测量影响的性能反模式
 - 代码可读性问题
+- 新增 import 未优先使用 requirements.txt 中已有的库
 
 ### 低严重性（可选修复）
 - 代码风格不一致
@@ -67,10 +70,25 @@ globs: ["**/reviewer*.py"]
 - 对比 requirements.txt 中的声明
 - 报告未声明的第三方依赖
 
+### 优先使用已有库检查
+- 检查新增 import 是否优先使用 requirements.txt 中已有的库
+- 例如：项目已有 httpx，则应使用 httpx 而非 aiohttp
+- 常见场景检查：
+  - HTTP 客户端：优先 httpx（已有）而非 requests/aiohttp
+  - 异步任务：优先 asyncio（标准库）而非引入新框架
+  - 配置解析：优先 pydantic/yaml（已有）而非引入新库
+- 发现违规时标记为中等严重性问题并建议替换方案
+
 ### 模块导入检查
 - 验证导入路径是否正确
 - 检测循环导入问题
 - 运行 python -c "import module" 验证导入
+
+### 动态导入路径检查
+- 搜索动态导入语句：`importlib.import_module`、`__import__`、`importlib.util`
+- 验证动态导入的模块路径是否存在
+- 检查动态导入是否有适当的错误处理（try/except）
+- 确保动态导入不会引入循环依赖
 
 ## 决策标准
 
@@ -107,13 +125,43 @@ python -c "import sys; sys.path.insert(0, '.'); import <module_path>"
 - 导入失败属于高严重性问题
 - 检查是否有缺失的依赖
 
-### 3. 主程序启动验证（必需）
+### 3. 主程序启动验证（必需 - 强制检查）
 ```bash
 python run.py --help
 ```
+- **强制要求**: 每次评审必须执行此验证
 - 验证 run.py 可正常启动
-- 启动失败属于高严重性问题
+- 启动失败属于高严重性问题，状态不能为 complete
 - 确保命令行参数解析正常
+- 验证所有命令行选项可被正确解析
+
+### 4. 依赖库一致性检查（必需）
+```bash
+# 检查 requirements.txt 与 requirements.in 一致性
+diff <(grep -v '^#' requirements.in | grep -v '^$' | sort) <(grep -v '^#' requirements.txt | sed 's/==.*//' | sort)
+
+# 验证依赖可正常安装（干运行）
+pip install --dry-run -r requirements.txt
+```
+- 验证 requirements.txt 由 requirements.in 正确生成
+- 检查 pyproject.toml 与 requirements.in 依赖声明一致
+- 确保没有版本冲突或缺失的依赖
+- 新增第三方包必须同时更新 requirements.in 和 requirements.txt
+- 一致性检查失败属于高严重性问题
+
+### 5. 动态导入路径验证（必需）
+```bash
+# 搜索动态导入语句
+grep -rn "importlib.import_module\|__import__\|importlib.util" --include="*.py" .
+
+# 验证动态导入路径
+python -c "import importlib; importlib.import_module('<dynamic_module_path>')"
+```
+- 检查所有使用 `importlib.import_module`、`__import__`、`importlib.util` 的代码
+- 验证动态导入的模块路径是否正确
+- 检查动态导入是否有适当的错误处理
+- 确保动态导入不会引入循环依赖
+- 动态导入失败属于高严重性问题
 
 ## 输出格式
 
@@ -127,7 +175,7 @@ python run.py --help
   "issues": [
     {
       "severity": "critical|high|medium|low",
-      "type": "bug|security|performance|style|logic|interface|import",
+      "type": "bug|security|performance|style|logic|interface|import|dependency",
       "file": "文件路径",
       "line": "行号",
       "description": "问题描述",
@@ -136,7 +184,7 @@ python run.py --help
   ],
   "import_issues": [
     {
-      "type": "missing_dependency|import_error|circular_import",
+      "type": "missing_dependency|import_error|circular_import|dynamic_import_error",
       "module": "模块名称",
       "file": "文件路径",
       "line": "行号",
@@ -144,6 +192,12 @@ python run.py --help
       "required_package": "需要添加到 requirements.txt 的包名（如适用）"
     }
   ],
+  "dependency_consistency": {
+    "checked": true,
+    "requirements_in_sync": true,
+    "pyproject_in_sync": true,
+    "issues": []
+  },
   "validation_checks": {
     "e2e_test": {
       "executed": true,
@@ -165,6 +219,19 @@ python run.py --help
       "passed": true,
       "command": "python run.py --help",
       "result": "启动结果"
+    },
+    "dependency_consistency_check": {
+      "executed": true,
+      "passed": true,
+      "command": "diff requirements.in requirements.txt",
+      "result": "一致性检查结果"
+    },
+    "dynamic_import_check": {
+      "executed": true,
+      "passed": true,
+      "dynamic_imports_found": 0,
+      "verified_paths": [],
+      "failed_paths": []
     }
   },
   "summary": "整体评价",

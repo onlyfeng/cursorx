@@ -4,8 +4,15 @@
 """
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+# numpy 是可选依赖，用于测试中的 mock
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore
+    HAS_NUMPY = False
 
 from indexing.config import EmbeddingConfig, EmbeddingProvider
 from indexing.embedding import (
@@ -111,6 +118,7 @@ class TestEmbeddingCache:
         assert cache.get("text", "model") is None
 
 
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy 未安装")
 class TestSentenceTransformerEmbedding:
     """测试 SentenceTransformer 嵌入模型（使用 mock）"""
 
@@ -216,6 +224,7 @@ class TestSentenceTransformerEmbedding:
         assert info["dimension"] == 384
 
 
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy 未安装")
 class TestEmbeddingFactory:
     """测试嵌入模型工厂函数"""
 

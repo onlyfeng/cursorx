@@ -7,6 +7,7 @@
 - [开发环境设置](#开发环境设置)
 - [代码修改检查清单](#代码修改检查清单)
 - [快速验证要点](#快速验证要点)
+- [运行时验证 vs 静态分析](#运行时验证-vs-静态分析)
 - [预提交检查流程](#预提交检查流程)
 - [常见问题和解决方案](#常见问题和解决方案)
 - [模块依赖关系图](#模块依赖关系图)
@@ -171,6 +172,82 @@ def create_vector_store():
     return chromadb.Client()
 ```
 
+### 可选依赖处理规范
+
+项目中存在多个可选依赖（如 `torch`、`numpy`、`playwright`、`chromadb` 等），这些依赖可能不在所有环境中安装。为确保代码的健壮性，请遵循以下规范：
+
+#### 1. 模块级可选依赖导入
+
+```python
+# ✅ 正确：使用 try-except 包装可选依赖
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None  # type: ignore
+    HAS_TORCH = False
+
+# ✅ 正确：延迟导入（在函数/方法内部导入）
+def use_torch_feature():
+    try:
+        import torch
+    except ImportError as e:
+        raise ImportError("请安装 torch: pip install torch") from e
+    return torch.tensor([1, 2, 3])
+```
+
+#### 2. 测试文件中的可选依赖
+
+```python
+# ✅ 正确：测试文件中的可选依赖处理
+import pytest
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore
+    HAS_NUMPY = False
+
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy 未安装")
+class TestWithNumpy:
+    def test_numpy_feature(self):
+        result = np.array([1, 2, 3])
+        assert len(result) == 3
+```
+
+#### 3. 运行时可选依赖检查
+
+```python
+# ✅ 正确：在使用前检查依赖是否可用
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    # 返回明确的错误信息，而非让程序崩溃
+    return FetchResult(
+        success=False,
+        error="Playwright 未安装，请运行: pip install playwright"
+    )
+```
+
+#### 4. 项目中的可选依赖列表
+
+| 依赖 | 用途 | 安装命令 |
+|------|------|----------|
+| `torch` | 嵌入模型 GPU 支持 | `pip install torch` |
+| `sentence-transformers` | 本地嵌入模型 | `pip install sentence-transformers` |
+| `chromadb` | 向量存储 | `pip install chromadb` |
+| `playwright` | 网页获取（JS 渲染） | `pip install playwright && playwright install chromium` |
+| `numpy` | 测试 mock（数组生成） | `pip install numpy` |
+
+#### 5. 规范要点
+
+1. **必须使用 try-except**：所有可选依赖导入必须使用 try-except 包装
+2. **提供标志变量**：使用 `HAS_XXX` 布尔变量标识依赖是否可用
+3. **明确错误信息**：当缺少依赖时，提供清晰的安装指令
+4. **测试跳过**：测试中使用 `@pytest.mark.skipif` 优雅跳过依赖缺失的测试
+5. **类型注解**：使用 `# type: ignore` 处理 None 赋值的类型警告
+
 ### 通用检查项
 
 - [ ] 语法正确性：`python -m py_compile file.py`
@@ -206,6 +283,30 @@ python -c "from agents import *; from coordinator import *; from core import *; 
 
 > **强制要求**：每次修改代码后，必须运行 `python -c "import <module>"` 验证修改的模块可正常导入。
 
+#### `python -c` 导入测试的局限性
+
+⚠️ **注意**：`python -c "import module"` 仅验证模块的**顶层导入**，存在以下局限性：
+
+| 局限性 | 说明 | 示例 |
+|--------|------|------|
+| 条件导入 | 仅执行符合条件的分支 | `if TYPE_CHECKING: import xxx` 不会执行 |
+| 延迟导入 | 函数内的导入不会执行 | `def foo(): import bar` 不会触发 |
+| 可选依赖 | try-except 包装的导入失败会被静默处理 | `try: import torch except: pass` |
+| 运行时路径 | 无法检测动态导入错误 | `importlib.import_module(name)` |
+
+**推荐做法**：
+
+```bash
+# 1. 基础导入验证
+python -c "import agents"
+
+# 2. 实际运行验证（更可靠）
+python run.py --help
+
+# 3. 完整测试覆盖
+pytest tests/test_imports.py -v
+```
+
 ### 2. 入口脚本验证（必须）
 
 **提交前必须验证入口脚本可正常执行：**
@@ -216,6 +317,40 @@ python run.py --help
 ```
 
 > **强制要求**：提交前必须运行 `python run.py --help` 验证入口脚本正常工作。
+
+#### 多模式入口脚本验证最佳实践
+
+对于支持多种运行模式的入口脚本（如 `run.py`），仅验证 `--help` 不足以覆盖所有代码路径。推荐以下验证策略：
+
+```bash
+# 1. 帮助信息验证（基础）
+python run.py --help
+
+# 2. 各子命令帮助验证
+python run.py plan --help 2>/dev/null || true
+python run.py execute --help 2>/dev/null || true
+python run.py review --help 2>/dev/null || true
+
+# 3. dry-run 模式验证（如果支持）
+python run.py --dry-run "test task" 2>/dev/null || true
+
+# 4. 配置验证模式
+python run.py --validate-config 2>/dev/null || true
+
+# 5. 版本信息验证
+python run.py --version 2>/dev/null || true
+```
+
+**入口脚本验证检查清单**：
+
+| 验证项 | 命令 | 说明 |
+|--------|------|------|
+| 帮助信息 | `python run.py --help` | 验证参数解析器初始化 |
+| 模块导入 | `python -c "import run"` | 验证脚本本身可导入 |
+| 配置加载 | `python run.py --validate-config` | 验证配置文件解析（如支持） |
+| 依赖检查 | `python run.py --check-deps` | 验证依赖完整性（如支持） |
+
+> **最佳实践**：入口脚本应提供 `--dry-run` 或 `--validate` 选项，用于在不实际执行任务的情况下验证配置和依赖。
 
 ### 3. 完整验证
 
@@ -228,6 +363,79 @@ bash scripts/check_all.sh
 ### 4. 详细说明
 
 遇到问题时，请参阅 [LESSONS_LEARNED.md](LESSONS_LEARNED.md) 获取详细的经验教训和解决方案。
+
+---
+
+## 运行时验证 vs 静态分析
+
+理解运行时验证和静态分析的区别，有助于选择正确的验证策略。
+
+### 验证方法对比
+
+| 方面 | 运行时验证 | 静态分析 |
+|------|-----------|----------|
+| **执行时机** | 代码实际运行时 | 代码编写/提交时 |
+| **覆盖范围** | 仅执行的代码路径 | 所有代码（包括未执行路径） |
+| **依赖要求** | 需要完整运行环境 | 无需运行环境 |
+| **错误类型** | 运行时错误、逻辑错误 | 语法错误、类型错误、导入错误 |
+| **速度** | 较慢（需要启动解释器） | 较快 |
+| **可靠性** | 高（实际执行） | 中（推断分析） |
+
+### 常用工具分类
+
+#### 静态分析工具
+
+```bash
+# 语法检查（不执行代码）
+python -m py_compile file.py
+
+# 类型检查
+mypy file.py --ignore-missing-imports
+
+# 代码风格
+flake8 file.py --max-line-length=120
+ruff check file.py
+
+# 导入分析（静态）
+python -c "import ast; ast.parse(open('file.py').read())"
+```
+
+#### 运行时验证工具
+
+```bash
+# 模块导入（实际执行顶层代码）
+python -c "import module"
+
+# 入口脚本执行
+python run.py --help
+
+# 单元测试
+pytest tests/test_module.py -v
+
+# 集成测试
+pytest tests/test_e2e_*.py -v
+```
+
+### 验证策略推荐
+
+根据修改范围选择验证策略：
+
+| 修改类型 | 推荐验证方法 | 命令 |
+|----------|-------------|------|
+| 修改函数实现 | 单元测试 | `pytest tests/test_xxx.py -v` |
+| 修改模块导出 | 导入验证 + 静态分析 | `python -c "import xxx" && mypy xxx/` |
+| 修改入口脚本 | 多模式运行验证 | `python run.py --help && python run.py --dry-run` |
+| 添加新依赖 | 导入验证 + 集成测试 | `python -c "import xxx" && pytest tests/test_e2e_*.py` |
+| 重构代码结构 | 完整测试套件 | `bash scripts/check_all.sh --full` |
+
+### 验证不足导致的常见问题
+
+| 问题 | 原因 | 预防措施 |
+|------|------|----------|
+| CI 导入失败但本地通过 | 仅做了静态检查，未做运行时验证 | 使用 `python -c "import xxx"` |
+| `--help` 通过但实际运行失败 | 延迟导入错误未被发现 | 增加 `--dry-run` 验证 |
+| 类型检查通过但运行时崩溃 | 动态类型、反射调用 | 增加单元测试覆盖 |
+| 本地通过但 CI 失败 | 缺少可选依赖 | 使用 CI 相同环境测试 |
 
 ---
 
@@ -568,3 +776,49 @@ except ImportError as e:
 | 验证配置 | `python -c "import yaml; yaml.safe_load(open('config.yaml'))"` |
 | 列出模型 | `agent models` |
 | 检查认证 | `agent status` |
+
+### 快速验证命令清单
+
+提交代码前，按以下顺序执行验证命令：
+
+```bash
+# ===== 必选验证（每次提交必做）=====
+
+# 1. 语法检查（静态分析）
+python -m py_compile run.py agents/*.py core/*.py
+
+# 2. 核心模块导入验证（运行时）
+python -c "import agents; import core; import cursor; import coordinator"
+
+# 3. 入口脚本验证（运行时）
+python run.py --help
+
+# ===== 推荐验证（重要修改时执行）=====
+
+# 4. 完整导入测试
+pytest tests/test_imports.py tests/test_e2e_imports.py -v
+
+# 5. 类型检查
+mypy agents/ core/ --ignore-missing-imports
+
+# 6. 单元测试
+pytest tests/ -v --tb=short
+
+# ===== 完整验证（发布前执行）=====
+
+# 7. 全量检查脚本
+bash scripts/check_all.sh --full
+
+# 8. 安全审计
+pip-audit
+```
+
+**一键验证命令**：
+
+```bash
+# 快速验证（约 10 秒）
+python -c "import agents; import core" && python run.py --help && echo "✓ 验证通过"
+
+# 完整验证（约 1-2 分钟）
+bash scripts/check_all.sh --full
+```

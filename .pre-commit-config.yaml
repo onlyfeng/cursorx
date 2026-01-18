@@ -50,6 +50,15 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: check-deps
+        name: 依赖一致性检查
+        entry: python scripts/check_deps.py --ci
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+        always_run: true
+
 # 默认配置
 default_language_version:
   python: python3

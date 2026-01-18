@@ -35,6 +35,8 @@ env/
 
 # Logs
 logs/*.log
+logs/**/*.jsonl
+logs/**/
 *.log
 
 # Environment variables
