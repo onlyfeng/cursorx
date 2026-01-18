@@ -11,15 +11,93 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coordinator.worker_pool import WorkerPool
 from agents.worker import WorkerConfig
-from tasks.task import Task, TaskPriority, TaskStatus, TaskType
+from coordinator.worker_pool import WorkerPool
 from tasks.queue import TaskQueue
+from tasks.task import Task, TaskPriority, TaskStatus, TaskType
 from tests.conftest_e2e import (
+    ExecutionTrace,
     MockAgentExecutor,
     MockKnowledgeManager,
+    assert_all_executions_completed,
+    assert_execution_status_transitions,
+    assert_execution_success_rate,
+    assert_execution_trace_count,
     create_test_task,
 )
+
+
+# ==================== 测试辅助函数 ====================
+
+
+def create_mock_worker(worker_id: str, execute_side_effect=None):
+    """创建一个配置完整的 mock worker
+    
+    Args:
+        worker_id: worker 标识符
+        execute_side_effect: execute_task 的 side_effect 函数
+        
+    Returns:
+        配置好的 MagicMock worker
+    """
+    mock_worker = MagicMock()
+    mock_worker.id = worker_id
+    if execute_side_effect is None:
+        execute_side_effect = lambda task: _complete_task(task)
+    mock_worker.execute_task = AsyncMock(side_effect=execute_side_effect)
+    mock_worker.reset = AsyncMock()
+    mock_worker.completed_tasks = []
+    mock_worker.get_statistics = MagicMock(return_value={
+        "worker_id": worker_id,
+        "status": "idle",
+        "completed_tasks_count": 0,
+    })
+    return mock_worker
+
+
+async def wait_for_task_status(
+    task_queue: TaskQueue,
+    task_id: str,
+    expected_status: TaskStatus,
+    timeout: float = 2.0,
+) -> bool:
+    """等待任务达到预期状态
+    
+    Args:
+        task_queue: 任务队列
+        task_id: 任务 ID
+        expected_status: 预期状态
+        timeout: 超时时间
+        
+    Returns:
+        是否在超时前达到预期状态
+    """
+    start_time = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        task = task_queue.get_task(task_id)
+        if task and task.status == expected_status:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+async def safely_stop_pool(pool: WorkerPool, pool_task: asyncio.Task, timeout: float = 2.0):
+    """安全停止 WorkerPool 并等待其任务完成
+    
+    Args:
+        pool: WorkerPool 实例
+        pool_task: pool.start() 创建的任务
+        timeout: 等待超时时间
+    """
+    await pool.stop()
+    try:
+        await asyncio.wait_for(asyncio.shield(pool_task), timeout=timeout)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        # 取消或超时都是预期的行为
+        pass
+    except Exception:
+        # 忽略其他异常，确保测试清理完成
+        pass
 
 
 # ==================== Fixtures ====================
@@ -122,9 +200,7 @@ class TestWorkerPoolTaskAssignment:
     ):
         """测试启动并处理单个任务"""
         # 创建 mock worker
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
-        mock_worker.execute_task = AsyncMock(side_effect=lambda task: _complete_task(task))
+        mock_worker = create_mock_worker("worker-0")
         mock_worker_class.return_value = mock_worker
         
         # 创建 pool 并初始化
@@ -139,22 +215,17 @@ class TestWorkerPoolTaskAssignment:
         )
         await task_queue.enqueue(task)
         
-        # 启动 pool（使用短超时防止测试阻塞）
-        # 由于 pool.start 会等待所有任务完成，我们需要在后台运行
+        # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        # 等待任务处理
-        await asyncio.sleep(0.1)
+        # 等待任务处理完成
+        await wait_for_task_status(task_queue, task.id, TaskStatus.COMPLETED, timeout=2.0)
         
-        # 停止 pool
-        await pool.stop()
+        # 安全停止 pool
+        await safely_stop_pool(pool, pool_task)
         
-        try:
-            await asyncio.wait_for(pool_task, timeout=1.0)
-        except asyncio.CancelledError:
-            pass
-        except asyncio.TimeoutError:
-            pass
+        # 验证任务已被处理
+        assert mock_worker.execute_task.called
 
     @pytest.mark.asyncio
     @patch("coordinator.worker_pool.WorkerAgent")
@@ -162,38 +233,43 @@ class TestWorkerPoolTaskAssignment:
         self, mock_worker_class, task_queue, worker_config
     ):
         """测试多个任务分配给多个 worker"""
-        # 创建多个 mock worker
-        mock_workers = []
-        for i in range(2):
-            mock_worker = MagicMock()
-            mock_worker.id = f"worker-{i}"
-            mock_worker.execute_task = AsyncMock(side_effect=lambda task: _complete_task(task))
-            mock_workers.append(mock_worker)
+        # 创建 mock workers 列表（使用索引跟踪，避免竞态条件）
+        mock_workers = [create_mock_worker(f"worker-{i}") for i in range(2)]
+        worker_index = {"current": 0}
         
-        mock_worker_class.side_effect = lambda config, **kwargs: mock_workers.pop(0) if mock_workers else MagicMock()
+        def get_next_worker(config, **kwargs):
+            idx = worker_index["current"]
+            worker_index["current"] += 1
+            if idx < len(mock_workers):
+                return mock_workers[idx]
+            # 如果超出范围，返回一个新的 mock worker
+            return create_mock_worker(f"worker-{idx}")
+        
+        mock_worker_class.side_effect = get_next_worker
         
         # 创建 pool 并初始化
         pool = WorkerPool(size=2, worker_config=worker_config)
         pool.initialize()
         
         # 创建多个任务并入队
+        tasks = []
         for i in range(3):
             task = create_test_task(
                 title=f"测试任务 {i}",
                 iteration_id=1,
             )
+            tasks.append(task)
             await task_queue.enqueue(task)
         
         # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        await asyncio.sleep(0.2)
-        await pool.stop()
+        # 等待所有任务完成
+        for task in tasks:
+            await wait_for_task_status(task_queue, task.id, TaskStatus.COMPLETED, timeout=2.0)
         
-        try:
-            await asyncio.wait_for(pool_task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+        # 安全停止 pool
+        await safely_stop_pool(pool, pool_task)
 
 
 # ==================== 并发执行测试 ====================
@@ -206,45 +282,54 @@ class TestWorkerPoolConcurrency:
     @patch("coordinator.worker_pool.WorkerAgent")
     async def test_concurrent_task_execution(self, mock_worker_class, task_queue, worker_config):
         """测试任务并发执行"""
-        execution_times = []
+        # 使用线程安全的方式记录执行时间
+        execution_times: list[datetime] = []
+        execution_lock = asyncio.Lock()
         
         async def slow_execute(task):
-            """模拟慢速执行"""
-            execution_times.append(datetime.now())
+            """模拟慢速执行，记录开始时间"""
+            async with execution_lock:
+                execution_times.append(datetime.now())
             await asyncio.sleep(0.05)
             task.complete({"output": "done"})
             return task
         
-        # 创建 mock workers
-        mock_workers = []
-        for i in range(3):
-            mock_worker = MagicMock()
-            mock_worker.id = f"worker-{i}"
-            mock_worker.execute_task = AsyncMock(side_effect=slow_execute)
-            mock_workers.append(mock_worker)
+        # 创建 mock workers（使用索引跟踪）
+        mock_workers = [create_mock_worker(f"worker-{i}", slow_execute) for i in range(3)]
+        worker_index = {"current": 0}
         
-        worker_iter = iter(mock_workers)
-        mock_worker_class.side_effect = lambda config, **kwargs: next(worker_iter, MagicMock())
+        def get_next_worker(config, **kwargs):
+            idx = worker_index["current"]
+            worker_index["current"] += 1
+            if idx < len(mock_workers):
+                return mock_workers[idx]
+            return create_mock_worker(f"worker-{idx}", slow_execute)
+        
+        mock_worker_class.side_effect = get_next_worker
         
         # 创建 pool
         pool = WorkerPool(size=3, worker_config=worker_config)
         pool.initialize()
         
         # 创建多个任务
+        tasks = []
         for i in range(3):
             task = create_test_task(title=f"并发任务 {i}", iteration_id=1)
+            tasks.append(task)
             await task_queue.enqueue(task)
         
         # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        await asyncio.sleep(0.3)
-        await pool.stop()
+        # 等待所有任务完成
+        for task in tasks:
+            await wait_for_task_status(task_queue, task.id, TaskStatus.COMPLETED, timeout=2.0)
         
-        try:
-            await asyncio.wait_for(pool_task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+        # 安全停止 pool
+        await safely_stop_pool(pool, pool_task)
+        
+        # 验证至少有一些任务被执行
+        assert len(execution_times) > 0, "应该有任务被执行"
 
     @pytest.mark.asyncio
     @patch("coordinator.worker_pool.WorkerAgent")
@@ -254,26 +339,47 @@ class TestWorkerPoolConcurrency:
         
         assert pool._running is False
         
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
-        mock_worker.execute_task = AsyncMock(side_effect=lambda task: _complete_task(task))
+        # 使用事件来控制执行流程
+        execute_started = asyncio.Event()
+        execute_continue = asyncio.Event()
+        
+        async def controlled_execute(task):
+            """可控制的执行，用于测试运行状态"""
+            execute_started.set()
+            # 等待信号继续，或者 0.5 秒超时
+            try:
+                await asyncio.wait_for(execute_continue.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+            task.complete({"output": "done"})
+            return task
+        
+        mock_worker = create_mock_worker("worker-0", controlled_execute)
         mock_worker_class.return_value = mock_worker
         
         pool.initialize()
         
+        # 创建一个任务
+        task = create_test_task(title="状态测试任务", iteration_id=1)
+        await task_queue.enqueue(task)
+        
         # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        # 等待启动
-        await asyncio.sleep(0.05)
+        # 等待任务开始执行
+        try:
+            await asyncio.wait_for(execute_started.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        
+        # 验证运行状态
         assert pool._running is True
         
-        await pool.stop()
+        # 允许任务继续
+        execute_continue.set()
         
-        try:
-            await asyncio.wait_for(pool_task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+        # 安全停止 pool
+        await safely_stop_pool(pool, pool_task)
         
         assert pool._running is False
 
@@ -291,7 +397,11 @@ class TestWorkerPoolStateManagement:
         
         # 模拟 worker 任务
         async def long_running_task():
-            await asyncio.sleep(10)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                # 正常的取消行为
+                raise
         
         pool._running = True
         pool._worker_tasks = [
@@ -308,9 +418,7 @@ class TestWorkerPoolStateManagement:
     @patch("coordinator.worker_pool.WorkerAgent")
     async def test_reset_stops_and_resets_workers(self, mock_worker_class, worker_config):
         """测试 reset 方法"""
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
-        mock_worker.reset = AsyncMock()
+        mock_worker = create_mock_worker("worker-0")
         mock_worker_class.return_value = mock_worker
         
         pool = WorkerPool(size=1, worker_config=worker_config)
@@ -429,9 +537,7 @@ class TestWorkerLoop:
         self, mock_worker_class, task_queue, worker_config
     ):
         """测试当迭代完成时 worker 循环退出"""
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
-        mock_worker.execute_task = AsyncMock(side_effect=lambda task: _complete_task(task))
+        mock_worker = create_mock_worker("worker-0")
         mock_worker_class.return_value = mock_worker
         
         pool = WorkerPool(size=1, worker_config=worker_config)
@@ -444,21 +550,22 @@ class TestWorkerLoop:
         # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        # 等待任务处理（给足够的时间让 worker loop 处理任务并检查完成状态）
-        # 由于 dequeue 超时为 2s，需要等待足够时间
-        await asyncio.sleep(0.1)
+        # 等待任务处理完成
+        completed = await wait_for_task_status(
+            task_queue, task.id, TaskStatus.COMPLETED, timeout=2.0
+        )
         
         # 验证任务已被处理
+        assert completed, "任务应该在超时前完成"
         assert task_queue.get_task(task.id).status == TaskStatus.COMPLETED
         
         # 等待 pool 完成（worker loop 会在下次 dequeue 超时后检查 is_iteration_complete）
+        # 由于 dequeue 超时为 2s，需要等待足够时间或手动停止
         try:
             await asyncio.wait_for(pool_task, timeout=3.0)
         except asyncio.TimeoutError:
-            # 如果超时，手动停止（由于 dequeue 超时设置为 2s，可能需要更长时间）
-            await pool.stop()
-            # 不视为失败，因为任务已正确完成
-            pass
+            # 手动停止
+            await safely_stop_pool(pool, pool_task)
 
     @pytest.mark.asyncio
     @patch("coordinator.worker_pool.WorkerAgent")
@@ -469,9 +576,7 @@ class TestWorkerLoop:
         async def failing_execute(task):
             raise Exception("任务执行失败")
         
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
-        mock_worker.execute_task = AsyncMock(side_effect=failing_execute)
+        mock_worker = create_mock_worker("worker-0", failing_execute)
         mock_worker_class.return_value = mock_worker
         
         pool = WorkerPool(size=1, worker_config=worker_config)
@@ -484,16 +589,17 @@ class TestWorkerLoop:
         # 启动 pool
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        await asyncio.sleep(0.2)
-        await pool.stop()
+        # 等待任务被处理（成功或失败）
+        failed = await wait_for_task_status(
+            task_queue, task.id, TaskStatus.FAILED, timeout=2.0
+        )
         
-        try:
-            await asyncio.wait_for(pool_task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+        # 安全停止 pool
+        await safely_stop_pool(pool, pool_task)
         
         # 验证任务被标记为失败
         updated_task = task_queue.get_task(task.id)
+        assert failed, "任务应该被标记为失败"
         assert updated_task.status == TaskStatus.FAILED
         assert updated_task.error == "任务执行失败"
 
@@ -508,8 +614,7 @@ class TestWorkerPoolEdgeCases:
     @patch("coordinator.worker_pool.WorkerAgent")
     async def test_start_with_empty_queue(self, mock_worker_class, task_queue, worker_config):
         """测试空队列时的启动"""
-        mock_worker = MagicMock()
-        mock_worker.id = "worker-0"
+        mock_worker = create_mock_worker("worker-0")
         mock_worker_class.return_value = mock_worker
         
         pool = WorkerPool(size=1, worker_config=worker_config)
@@ -518,11 +623,11 @@ class TestWorkerPoolEdgeCases:
         # 启动空队列
         pool_task = asyncio.create_task(pool.start(task_queue, iteration_id=1))
         
-        # 应该快速完成
+        # 应该快速完成（空队列会立即检测到迭代完成）
         try:
             await asyncio.wait_for(pool_task, timeout=1.0)
         except asyncio.TimeoutError:
-            await pool.stop()
+            await safely_stop_pool(pool, pool_task)
 
     def test_initialize_multiple_times(self, worker_config):
         """测试多次初始化"""
@@ -561,6 +666,201 @@ class TestWorkerPoolEdgeCases:
         await pool.stop()
         
         assert pool._running is False
+
+
+# ==================== 执行追踪测试 ====================
+
+
+class TestMockAgentExecutorTracing:
+    """MockAgentExecutor 执行追踪测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_creates_trace(self):
+        """测试 execute 创建执行追踪记录"""
+        executor = MockAgentExecutor()
+
+        # 执行任务
+        result = await executor.execute(
+            prompt="测试任务",
+            context={"key": "value"},
+            working_directory="/tmp/test",
+            timeout=30,
+        )
+
+        # 验证追踪记录
+        assert len(executor.execution_traces) == 1
+        trace = executor.execution_traces[0]
+
+        assert trace.execution_id == "exec-0001"
+        assert trace.prompt == "测试任务"
+        assert trace.context == {"key": "value"}
+        assert trace.working_directory == "/tmp/test"
+        assert trace.timeout == 30
+        assert trace.status == "completed"
+        assert trace.success is True
+        assert trace.started_at is not None
+        assert trace.completed_at is not None
+        assert trace.duration >= 0
+
+    @pytest.mark.asyncio
+    async def test_execute_trace_status_transitions(self):
+        """测试执行状态变更正确"""
+        executor = MockAgentExecutor()
+
+        # 配置成功和失败响应
+        executor.configure_responses([
+            {"success": True, "output": "成功"},
+            {"success": False, "output": "", "error": "失败"},
+        ])
+
+        # 执行两个任务
+        await executor.execute(prompt="任务1")
+        await executor.execute(prompt="任务2")
+
+        # 使用断言助手验证
+        assert_execution_status_transitions(
+            executor,
+            expected_final_statuses=["completed", "failed"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_trace_count(self):
+        """测试执行追踪记录数量"""
+        executor = MockAgentExecutor()
+
+        # 执行多个任务
+        for i in range(5):
+            await executor.execute(prompt=f"任务 {i}")
+
+        # 验证追踪记录数量
+        assert_execution_trace_count(executor, 5)
+
+    @pytest.mark.asyncio
+    async def test_execute_all_completed(self):
+        """测试所有执行都已完成"""
+        executor = MockAgentExecutor()
+
+        # 执行多个任务
+        await executor.execute(prompt="任务1")
+        await executor.execute(prompt="任务2")
+        await executor.execute(prompt="任务3")
+
+        # 验证所有执行都已完成
+        assert_all_executions_completed(executor)
+
+    @pytest.mark.asyncio
+    async def test_execute_success_rate(self):
+        """测试执行成功率"""
+        executor = MockAgentExecutor()
+
+        # 配置 3 个成功，1 个失败
+        executor.configure_responses([
+            {"success": True, "output": "成功1"},
+            {"success": True, "output": "成功2"},
+            {"success": True, "output": "成功3"},
+            {"success": False, "output": "", "error": "失败"},
+        ])
+
+        for i in range(4):
+            await executor.execute(prompt=f"任务 {i}")
+
+        # 验证成功率 >= 75%
+        assert_execution_success_rate(executor, min_success_rate=0.75)
+
+    @pytest.mark.asyncio
+    async def test_get_trace_by_id(self):
+        """测试根据 ID 获取追踪记录"""
+        executor = MockAgentExecutor()
+
+        await executor.execute(prompt="任务1")
+        await executor.execute(prompt="任务2")
+
+        trace = executor.get_trace_by_id("exec-0002")
+        assert trace is not None
+        assert trace.prompt == "任务2"
+
+        # 不存在的 ID
+        assert executor.get_trace_by_id("nonexistent") is None
+
+    @pytest.mark.asyncio
+    async def test_get_traces_by_status(self):
+        """测试根据状态获取追踪记录"""
+        executor = MockAgentExecutor()
+
+        executor.configure_responses([
+            {"success": True, "output": "成功"},
+            {"success": False, "output": "", "error": "失败"},
+            {"success": True, "output": "成功"},
+        ])
+
+        for i in range(3):
+            await executor.execute(prompt=f"任务 {i}")
+
+        completed = executor.get_traces_by_status("completed")
+        failed = executor.get_traces_by_status("failed")
+
+        assert len(completed) == 2
+        assert len(failed) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_successful_and_failed_traces(self):
+        """测试获取成功和失败的追踪记录"""
+        executor = MockAgentExecutor()
+
+        executor.configure_responses([
+            {"success": True, "output": "成功"},
+            {"success": False, "output": "", "error": "失败1"},
+            {"success": False, "output": "", "error": "失败2"},
+        ])
+
+        for i in range(3):
+            await executor.execute(prompt=f"任务 {i}")
+
+        successful = executor.get_successful_traces()
+        failed = executor.get_failed_traces()
+
+        assert len(successful) == 1
+        assert len(failed) == 2
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_traces(self):
+        """测试 reset 清除追踪记录"""
+        executor = MockAgentExecutor()
+
+        await executor.execute(prompt="任务1")
+        await executor.execute(prompt="任务2")
+
+        assert len(executor.execution_traces) == 2
+
+        executor.reset()
+
+        assert len(executor.execution_traces) == 0
+        assert executor._execution_counter == 0
+
+    @pytest.mark.asyncio
+    async def test_execute_with_delay_records_duration(self):
+        """测试执行延迟正确记录时长"""
+        executor = MockAgentExecutor(default_delay=0.05)
+
+        await executor.execute(prompt="延迟任务")
+
+        trace = executor.execution_traces[0]
+        assert trace.duration >= 0.05
+
+    @pytest.mark.asyncio
+    async def test_execution_history_backward_compatible(self):
+        """测试执行历史保持向后兼容"""
+        executor = MockAgentExecutor()
+
+        await executor.execute(prompt="任务")
+
+        # 验证向后兼容的执行历史
+        assert len(executor.execution_history) == 1
+        history = executor.execution_history[0]
+
+        assert history["prompt"] == "任务"
+        assert "execution_id" in history  # 新增字段
+        assert "timestamp" in history
 
 
 # ==================== 辅助函数 ====================

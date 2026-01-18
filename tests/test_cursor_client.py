@@ -1,0 +1,1231 @@
+"""CursorAgentClient 测试
+
+覆盖 CursorAgentClient 的核心功能：
+- execute() 成功/失败场景
+- stream_execute() 流式输出 (通过 output_format="stream-json")
+- _build_prompt() 参数构建
+- _build_command() 参数构建 (通过 _try_agent_cli)
+- execute_with_retry() 重试机制
+- check_agent_available() CLI 可用性检查
+- parse_json_output() / parse_stream_json_output() 输出解析
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from cursor.client import (
+    CursorAgentClient,
+    CursorAgentConfig,
+    CursorAgentPool,
+    CursorAgentResult,
+    ModelPresets,
+)
+
+
+# ==================== CursorAgentConfig 测试 ====================
+
+
+class TestCursorAgentConfig:
+    """CursorAgentConfig 配置类测试"""
+
+    def test_default_config(self):
+        """测试默认配置"""
+        config = CursorAgentConfig()
+
+        assert config.agent_path == "agent"
+        assert config.model == "opus-4.5-thinking"
+        assert config.timeout == 300
+        assert config.max_retries == 3
+        assert config.output_format == "text"
+        assert config.non_interactive is True
+        assert config.force_write is False
+
+    def test_custom_config(self):
+        """测试自定义配置"""
+        config = CursorAgentConfig(
+            agent_path="/custom/path/agent",
+            model="gpt-5.2-high",
+            timeout=600,
+            max_retries=5,
+            output_format="json",
+            force_write=True,
+            mode="plan",
+        )
+
+        assert config.agent_path == "/custom/path/agent"
+        assert config.model == "gpt-5.2-high"
+        assert config.timeout == 600
+        assert config.max_retries == 5
+        assert config.output_format == "json"
+        assert config.force_write is True
+        assert config.mode == "plan"
+
+    def test_stream_config(self):
+        """测试流式输出配置"""
+        config = CursorAgentConfig(
+            output_format="stream-json",
+            stream_partial_output=True,
+            stream_events_enabled=True,
+            stream_log_console=False,
+        )
+
+        assert config.output_format == "stream-json"
+        assert config.stream_partial_output is True
+        assert config.stream_events_enabled is True
+        assert config.stream_log_console is False
+
+    def test_cloud_config(self):
+        """测试云端配置"""
+        config = CursorAgentConfig(
+            cloud_enabled=True,
+            cloud_timeout=1200,
+            execution_mode="cloud",
+        )
+
+        assert config.cloud_enabled is True
+        assert config.cloud_timeout == 1200
+        assert config.execution_mode == "cloud"
+
+
+class TestModelPresets:
+    """模型预设测试"""
+
+    def test_planner_preset(self):
+        """测试规划者预设"""
+        config = ModelPresets.PLANNER
+        assert config.model == "gpt-5.2-high"
+        assert config.timeout == 180
+
+    def test_worker_preset(self):
+        """测试执行者预设"""
+        config = ModelPresets.WORKER
+        assert config.model == "opus-4.5-thinking"
+        assert config.timeout == 300
+
+    def test_reviewer_preset(self):
+        """测试评审者预设"""
+        config = ModelPresets.REVIEWER
+        assert config.model == "opus-4.5-thinking"
+        assert config.timeout == 120
+
+
+# ==================== CursorAgentResult 测试 ====================
+
+
+class TestCursorAgentResult:
+    """CursorAgentResult 结果类测试"""
+
+    def test_success_result(self):
+        """测试成功结果"""
+        result = CursorAgentResult(
+            success=True,
+            output="任务完成",
+            exit_code=0,
+            duration=1.5,
+        )
+
+        assert result.success is True
+        assert result.output == "任务完成"
+        assert result.error is None
+        assert result.exit_code == 0
+        assert result.duration == 1.5
+
+    def test_failure_result(self):
+        """测试失败结果"""
+        result = CursorAgentResult(
+            success=False,
+            output="",
+            error="执行超时",
+            exit_code=-1,
+        )
+
+        assert result.success is False
+        assert result.error == "执行超时"
+        assert result.exit_code == -1
+
+    def test_result_with_files(self):
+        """测试包含文件修改的结果"""
+        result = CursorAgentResult(
+            success=True,
+            output="已修改文件",
+            files_modified=["src/main.py", "tests/test_main.py"],
+            command_used="agent -p '...' --model opus-4.5-thinking",
+        )
+
+        assert len(result.files_modified) == 2
+        assert "src/main.py" in result.files_modified
+        assert result.command_used != ""
+
+    def test_result_timestamps(self):
+        """测试结果时间戳"""
+        started = datetime.now()
+        result = CursorAgentResult(
+            success=True,
+            output="",
+            started_at=started,
+        )
+
+        assert result.started_at == started
+        assert result.completed_at is None
+
+
+# ==================== CursorAgentClient 初始化测试 ====================
+
+
+class TestCursorAgentClientInit:
+    """CursorAgentClient 初始化测试"""
+
+    def test_default_init(self):
+        """测试默认初始化"""
+        client = CursorAgentClient()
+
+        assert client.config is not None
+        assert client._session_id is not None
+        assert len(client._session_id) == 16  # 8 bytes hex
+
+    def test_custom_config_init(self):
+        """测试自定义配置初始化"""
+        config = CursorAgentConfig(model="gpt-5.2-high")
+        client = CursorAgentClient(config=config)
+
+        assert client.config.model == "gpt-5.2-high"
+
+    @patch("shutil.which")
+    def test_find_agent_executable_with_which(self, mock_which):
+        """测试通过 which 查找可执行文件"""
+        mock_which.return_value = "/usr/local/bin/agent"
+
+        with patch("os.path.isfile", return_value=True):
+            client = CursorAgentClient()
+            assert client._agent_path == "/usr/local/bin/agent"
+
+    def test_find_agent_executable_fallback(self):
+        """测试可执行文件查找回退"""
+        with patch("shutil.which", return_value=None):
+            with patch("os.path.isfile", return_value=False):
+                client = CursorAgentClient()
+                # 回退到默认路径
+                assert client._agent_path == "agent"
+
+
+# ==================== _build_prompt() 测试 ====================
+
+
+class TestBuildPrompt:
+    """_build_prompt() 方法测试"""
+
+    def test_simple_instruction(self):
+        """测试简单指令"""
+        client = CursorAgentClient()
+        prompt = client._build_prompt("请分析代码")
+
+        assert prompt == "请分析代码"
+
+    def test_instruction_with_context(self):
+        """测试带上下文的指令"""
+        client = CursorAgentClient()
+        context = {
+            "task_id": "task-001",
+            "priority": "high",
+        }
+        prompt = client._build_prompt("请执行任务", context)
+
+        assert "请执行任务" in prompt
+        assert "## 上下文信息" in prompt
+        assert "task_id" in prompt
+        assert "task-001" in prompt
+
+    def test_instruction_with_complex_context(self):
+        """测试带复杂上下文的指令"""
+        client = CursorAgentClient()
+        context = {
+            "files": ["src/main.py", "src/utils.py"],
+            "config": {"debug": True, "verbose": False},
+        }
+        prompt = client._build_prompt("请修改代码", context)
+
+        assert "请修改代码" in prompt
+        assert "```json" in prompt
+        assert "src/main.py" in prompt
+        assert '"debug": true' in prompt
+
+
+# ==================== execute() 成功场景测试 ====================
+
+
+class TestExecuteSuccess:
+    """execute() 成功场景测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_success_with_cli(self):
+        """测试 CLI 执行成功"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"Task completed successfully", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await client.execute("请分析代码")
+
+        assert result.success is True
+        assert result.output == "Task completed successfully"
+        assert result.exit_code == 0
+        assert result.duration > 0
+
+    @pytest.mark.asyncio
+    async def test_execute_with_working_directory(self):
+        """测试指定工作目录执行"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("test", working_directory="/tmp/test")
+
+            # 验证 cwd 参数
+            call_kwargs = mock_exec.call_args.kwargs
+            assert call_kwargs["cwd"] == "/tmp/test"
+
+    @pytest.mark.asyncio
+    async def test_execute_with_context(self):
+        """测试带上下文执行"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"Done", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await client.execute(
+                "请修改文件",
+                context={"file": "main.py"},
+            )
+
+        assert result.success is True
+
+
+# ==================== execute() 失败场景测试 ====================
+
+
+class TestExecuteFailure:
+    """execute() 失败场景测试"""
+
+    @pytest.mark.asyncio
+    async def test_execute_cli_returns_error(self):
+        """测试 CLI 返回错误"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.communicate = AsyncMock(
+            return_value=(b"", b"Error: Invalid command")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await client.execute("无效命令")
+
+        assert result.success is False
+        assert result.exit_code == 1
+        assert "Invalid command" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_timeout(self):
+        """测试执行超时"""
+        config = CursorAgentConfig(timeout=1)
+        client = CursorAgentClient(config=config)
+
+        async def slow_communicate():
+            await asyncio.sleep(10)
+            return (b"", b"")
+
+        mock_process = AsyncMock()
+        mock_process.communicate = slow_communicate
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await client.execute("慢任务", timeout=1)
+
+        assert result.success is False
+        assert "超时" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_cli_not_found(self):
+        """测试 CLI 未找到"""
+        client = CursorAgentClient()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=FileNotFoundError("agent not found"),
+        ):
+            result = await client.execute("测试")
+
+        # 应该回退到模拟模式
+        assert result.success is True
+        assert "[Mock]" in result.output
+
+    @pytest.mark.asyncio
+    async def test_execute_exception(self):
+        """测试执行异常"""
+        client = CursorAgentClient()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=RuntimeError("Unexpected error"),
+        ):
+            result = await client.execute("测试")
+
+        # 回退到模拟模式
+        assert result.success is True
+
+
+# ==================== 流式输出测试 ====================
+
+
+class TestStreamExecute:
+    """流式输出测试 (output_format="stream-json")"""
+
+    @pytest.mark.asyncio
+    async def test_stream_json_output(self):
+        """测试 stream-json 输出格式"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟 stream-json 输出
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "正在分析..."}]}}',
+            '{"type": "result", "duration_ms": 1234}',
+        ]
+        stream_output = "\n".join(stream_lines).encode()
+
+        async def mock_readline():
+            """模拟逐行读取"""
+            for line in stream_lines:
+                yield (line + "\n").encode()
+            yield b""
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            # 禁用流式日志以简化测试
+            client.config.stream_events_enabled = False
+            result = await client.execute("分析代码")
+
+        assert result.success is True
+        assert "正在分析..." in result.output
+
+    @pytest.mark.asyncio
+    async def test_stream_partial_output_config(self):
+        """测试增量流式输出配置"""
+        config = CursorAgentConfig(
+            output_format="stream-json",
+            stream_partial_output=True,
+        )
+        client = CursorAgentClient(config=config)
+
+        assert client.config.stream_partial_output is True
+
+
+# ==================== 命令构建测试 ====================
+
+
+class TestBuildCommand:
+    """命令构建测试 (通过 _try_agent_cli 验证)"""
+
+    @pytest.mark.asyncio
+    async def test_build_command_basic(self):
+        """测试基本命令构建"""
+        config = CursorAgentConfig(
+            model="opus-4.5-thinking",
+            non_interactive=True,
+        )
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("测试")
+
+            # 验证命令参数
+            call_args = mock_exec.call_args.args
+            assert "-p" in call_args
+            assert "--model" in call_args
+            assert "opus-4.5-thinking" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_force(self):
+        """测试带 --force 的命令构建"""
+        config = CursorAgentConfig(force_write=True)
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("修改文件")
+
+            call_args = mock_exec.call_args.args
+            assert "--force" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_mode(self):
+        """测试带 --mode 的命令构建"""
+        config = CursorAgentConfig(mode="plan")
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("规划任务")
+
+            call_args = mock_exec.call_args.args
+            assert "--mode" in call_args
+            assert "plan" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_output_format(self):
+        """测试带 --output-format 的命令构建"""
+        config = CursorAgentConfig(output_format="json")
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b'{"result": "ok"}', b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("测试")
+
+            call_args = mock_exec.call_args.args
+            assert "--output-format" in call_args
+            assert "json" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_resume(self):
+        """测试恢复会话的命令构建"""
+        config = CursorAgentConfig(resume_thread_id="session-123")
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("继续")
+
+            call_args = mock_exec.call_args.args
+            assert "--resume" in call_args
+            assert "session-123" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_api_key(self):
+        """测试 API 密钥环境变量"""
+        config = CursorAgentConfig(api_key="test-key-123")
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            await client.execute("测试")
+
+            # 验证环境变量
+            call_kwargs = mock_exec.call_args.kwargs
+            assert "env" in call_kwargs
+            assert call_kwargs["env"]["CURSOR_API_KEY"] == "test-key-123"
+
+
+# ==================== execute_with_retry() 测试 ====================
+
+
+class TestExecuteWithRetry:
+    """execute_with_retry() 重试机制测试"""
+
+    @pytest.mark.asyncio
+    async def test_retry_success_first_try(self):
+        """测试首次成功"""
+        client = CursorAgentClient()
+
+        with patch.object(
+            client, "execute", new_callable=AsyncMock
+        ) as mock_execute:
+            mock_execute.return_value = CursorAgentResult(
+                success=True, output="成功"
+            )
+
+            result = await client.execute_with_retry("测试")
+
+        assert result.success is True
+        assert mock_execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_success_after_failures(self):
+        """测试失败后重试成功"""
+        config = CursorAgentConfig(max_retries=3, retry_delay=0.1)
+        client = CursorAgentClient(config=config)
+
+        call_count = 0
+
+        async def mock_execute(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                return CursorAgentResult(success=False, error="临时错误")
+            return CursorAgentResult(success=True, output="成功")
+
+        with patch.object(client, "execute", side_effect=mock_execute):
+            result = await client.execute_with_retry("测试")
+
+        assert result.success is True
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_all_failed(self):
+        """测试所有重试都失败"""
+        config = CursorAgentConfig(max_retries=3, retry_delay=0.1)
+        client = CursorAgentClient(config=config)
+
+        with patch.object(
+            client, "execute", new_callable=AsyncMock
+        ) as mock_execute:
+            mock_execute.return_value = CursorAgentResult(
+                success=False, error="持续失败"
+            )
+
+            result = await client.execute_with_retry("测试")
+
+        assert result.success is False
+        assert mock_execute.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_custom_retries(self):
+        """测试自定义重试次数"""
+        client = CursorAgentClient()
+
+        with patch.object(
+            client, "execute", new_callable=AsyncMock
+        ) as mock_execute:
+            mock_execute.return_value = CursorAgentResult(
+                success=False, error="错误"
+            )
+
+            result = await client.execute_with_retry("测试", max_retries=5)
+
+        assert mock_execute.call_count == 5
+
+
+# ==================== check_agent_available() 测试 ====================
+
+
+class TestCheckAgentAvailable:
+    """check_agent_available() 测试"""
+
+    def test_agent_available(self):
+        """测试 agent CLI 可用"""
+        client = CursorAgentClient()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+
+            result = client.check_agent_available()
+
+        assert result is True
+        mock_run.assert_called_once()
+
+    def test_agent_not_available(self):
+        """测试 agent CLI 不可用"""
+        client = CursorAgentClient()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+
+            result = client.check_agent_available()
+
+        assert result is False
+
+    def test_agent_check_exception(self):
+        """测试检查异常"""
+        client = CursorAgentClient()
+
+        with patch(
+            "subprocess.run",
+            side_effect=FileNotFoundError("agent not found"),
+        ):
+            result = client.check_agent_available()
+
+        assert result is False
+
+
+# ==================== 输出解析测试 ====================
+
+
+class TestOutputParsing:
+    """输出解析测试"""
+
+    def test_parse_json_output_success(self):
+        """测试解析成功的 JSON 输出"""
+        output = json.dumps({
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 1234,
+            "result": "任务完成",
+            "session_id": "test-session",
+        })
+
+        result = CursorAgentClient.parse_json_output(output)
+
+        assert result["type"] == "result"
+        assert result["subtype"] == "success"
+        assert result["result"] == "任务完成"
+
+    def test_parse_json_output_invalid(self):
+        """测试解析无效的 JSON 输出"""
+        output = "This is not JSON"
+
+        result = CursorAgentClient.parse_json_output(output)
+
+        assert result["type"] == "error"
+        assert result["result"] == output
+
+    def test_parse_stream_json_output(self):
+        """测试解析 stream-json 输出"""
+        output = """{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}
+{"type": "assistant", "message": {"content": [{"text": "分析中..."}]}}
+{"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "main.py"}}}}
+{"type": "result", "duration_ms": 5000}"""
+
+        events = CursorAgentClient.parse_stream_json_output(output)
+
+        assert len(events) == 4
+        assert events[0]["type"] == "system"
+        assert events[1]["type"] == "assistant"
+        assert events[2]["type"] == "tool_call"
+        assert events[3]["type"] == "result"
+
+    def test_parse_stream_json_output_with_invalid_lines(self):
+        """测试解析包含无效行的 stream-json 输出"""
+        output = """{"type": "system", "subtype": "init"}
+invalid json line
+{"type": "result", "duration_ms": 100}"""
+
+        events = CursorAgentClient.parse_stream_json_output(output)
+
+        # 应该跳过无效行
+        assert len(events) == 2
+        assert events[0]["type"] == "system"
+        assert events[1]["type"] == "result"
+
+
+# ==================== list_models() 测试 ====================
+
+
+class TestListModels:
+    """list_models() 测试"""
+
+    @pytest.mark.asyncio
+    async def test_list_models_success(self):
+        """测试获取模型列表成功"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"gpt-4\nopus-4.5\ngpt-5.2-high\n", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            models = await client.list_models()
+
+        assert len(models) == 3
+        assert "gpt-4" in models
+        assert "opus-4.5" in models
+
+    @pytest.mark.asyncio
+    async def test_list_models_failure(self):
+        """测试获取模型列表失败"""
+        client = CursorAgentClient()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=Exception("Network error"),
+        ):
+            models = await client.list_models()
+
+        assert models == []
+
+    def test_list_models_sync(self):
+        """测试同步获取模型列表"""
+        client = CursorAgentClient()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=b"model-1\nmodel-2\n",
+            )
+
+            models = client.list_models_sync()
+
+        assert len(models) == 2
+
+
+# ==================== list_sessions() 测试 ====================
+
+
+class TestListSessions:
+    """list_sessions() 测试"""
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_success(self):
+        """测试获取会话列表成功"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"session-1\nsession-2\n", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            sessions = await client.list_sessions()
+
+        assert len(sessions) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_failure(self):
+        """测试获取会话列表失败"""
+        client = CursorAgentClient()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=Exception("Error"),
+        ):
+            sessions = await client.list_sessions()
+
+        assert sessions == []
+
+
+# ==================== resume_session() 测试 ====================
+
+
+class TestResumeSession:
+    """resume_session() 测试"""
+
+    @pytest.mark.asyncio
+    async def test_resume_session_with_id(self):
+        """测试恢复指定会话"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"Resumed", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            result = await client.resume_session("session-123")
+
+            call_args = mock_exec.call_args.args
+            assert "--resume" in call_args
+            assert "session-123" in call_args
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_resume_latest_session(self):
+        """测试恢复最新会话"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"Resumed", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            result = await client.resume_session()
+
+            call_args = mock_exec.call_args.args
+            assert "resume" in call_args
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_resume_session_failure(self):
+        """测试恢复会话失败"""
+        client = CursorAgentClient()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=Exception("Session not found"),
+        ):
+            result = await client.resume_session("invalid-session")
+
+        assert result.success is False
+        assert "Session not found" in result.error
+
+
+# ==================== get_status() 测试 ====================
+
+
+class TestGetStatus:
+    """get_status() 测试"""
+
+    @pytest.mark.asyncio
+    async def test_get_status_authenticated(self):
+        """测试已认证状态"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"Logged in as user@example.com", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            status = await client.get_status()
+
+        assert status["authenticated"] is True
+        assert "user@example.com" in status["output"]
+
+    @pytest.mark.asyncio
+    async def test_get_status_not_authenticated(self):
+        """测试未认证状态"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.communicate = AsyncMock(
+            return_value=(b"", b"Not logged in")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            status = await client.get_status()
+
+        assert status["authenticated"] is False
+        assert "Not logged in" in status["error"]
+
+
+# ==================== 静态方法测试 ====================
+
+
+class TestStaticMethods:
+    """静态方法测试"""
+
+    def test_install_instructions(self):
+        """测试安装说明"""
+        instructions = CursorAgentClient.install_instructions()
+
+        assert "curl" in instructions
+        assert "cursor.com/install" in instructions
+
+
+# ==================== CursorAgentPool 测试 ====================
+
+
+class TestCursorAgentPool:
+    """CursorAgentPool 连接池测试"""
+
+    @pytest.mark.asyncio
+    async def test_pool_initialization(self):
+        """测试连接池初始化"""
+        pool = CursorAgentPool(size=3)
+
+        await pool.initialize()
+
+        assert pool._initialized is True
+        assert len(pool._clients) == 3
+        assert pool._available.qsize() == 3
+
+    @pytest.mark.asyncio
+    async def test_pool_acquire_release(self):
+        """测试获取和释放客户端"""
+        pool = CursorAgentPool(size=2)
+        await pool.initialize()
+
+        # 获取客户端
+        client1 = await pool.acquire()
+        assert pool._available.qsize() == 1
+
+        client2 = await pool.acquire()
+        assert pool._available.qsize() == 0
+
+        # 释放客户端
+        await pool.release(client1)
+        assert pool._available.qsize() == 1
+
+        await pool.release(client2)
+        assert pool._available.qsize() == 2
+
+    @pytest.mark.asyncio
+    async def test_pool_acquire_timeout(self):
+        """测试获取客户端超时"""
+        pool = CursorAgentPool(size=1)
+        await pool.initialize()
+
+        # 获取唯一的客户端
+        client = await pool.acquire()
+
+        # 再次获取应该超时
+        with pytest.raises(RuntimeError, match="超时"):
+            await pool.acquire(timeout=0.1)
+
+        # 释放
+        await pool.release(client)
+
+    @pytest.mark.asyncio
+    async def test_pool_execute(self):
+        """测试通过池执行任务"""
+        pool = CursorAgentPool(size=2)
+
+        # Mock execute 方法
+        async def mock_execute(*args, **kwargs):
+            return CursorAgentResult(success=True, output="Pool executed")
+
+        with patch.object(
+            CursorAgentClient,
+            "execute",
+            side_effect=mock_execute,
+        ):
+            result = await pool.execute("测试任务")
+
+        assert result.success is True
+        assert result.output == "Pool executed"
+
+    @pytest.mark.asyncio
+    async def test_pool_with_custom_config(self):
+        """测试自定义配置的连接池"""
+        config = CursorAgentConfig(model="gpt-5.2-high")
+        pool = CursorAgentPool(size=2, config=config)
+        await pool.initialize()
+
+        client = await pool.acquire()
+        assert client.config.model == "gpt-5.2-high"
+
+        await pool.release(client)
+
+    @pytest.mark.asyncio
+    async def test_pool_auto_initialize(self):
+        """测试自动初始化"""
+        pool = CursorAgentPool(size=2)
+        assert pool._initialized is False
+
+        # acquire 会自动初始化
+        client = await pool.acquire()
+        assert pool._initialized is True
+
+        await pool.release(client)
+
+
+# ==================== Mock 执行测试 ====================
+
+
+class TestMockExecution:
+    """模拟执行测试"""
+
+    @pytest.mark.asyncio
+    async def test_mock_execution_fallback(self):
+        """测试模拟执行回退"""
+        client = CursorAgentClient()
+
+        # 模拟 CLI 不可用
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=FileNotFoundError("agent not found"),
+        ):
+            result = await client.execute("测试任务")
+
+        # 应该使用模拟模式
+        assert result.success is True
+        assert "[Mock]" in result.output
+        assert "模拟执行成功" in result.output
+
+    @pytest.mark.asyncio
+    async def test_mock_execution_direct(self):
+        """测试直接调用模拟执行"""
+        client = CursorAgentClient()
+
+        result = await client._mock_execution(
+            prompt="测试提示",
+            working_directory="/tmp",
+        )
+
+        assert result["success"] is True
+        assert "[Mock]" in result["output"]
+        assert result["exit_code"] == 0
+
+
+# ==================== 集成场景测试 ====================
+
+
+class TestIntegrationScenarios:
+    """集成场景测试"""
+
+    @pytest.mark.asyncio
+    async def test_planner_workflow(self):
+        """测试规划者工作流"""
+        config = CursorAgentConfig(
+            model="gpt-5.2-high",
+            mode="plan",
+            output_format="json",
+            force_write=False,
+        )
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(
+                b'{"type": "result", "result": "Plan: 1. Analyze 2. Implement"}',
+                b"",
+            )
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            result = await client.execute("分析项目结构")
+
+            # 验证规划者配置
+            call_args = mock_exec.call_args.args
+            assert "--mode" in call_args
+            assert "plan" in call_args
+            assert "--force" not in call_args
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_worker_workflow(self):
+        """测试执行者工作流"""
+        config = CursorAgentConfig(
+            model="opus-4.5-thinking",
+            mode="code",
+            output_format="text",
+            force_write=True,
+        )
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"File modified successfully", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            result = await client.execute(
+                "修改 src/main.py",
+                context={"files": ["src/main.py"]},
+            )
+
+            # 验证执行者配置
+            call_args = mock_exec.call_args.args
+            assert "--mode" in call_args
+            assert "code" in call_args
+            assert "--force" in call_args
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_concurrent_execution(self):
+        """测试并发执行"""
+        pool = CursorAgentPool(size=3)
+
+        async def mock_execute(*args, **kwargs):
+            await asyncio.sleep(0.1)
+            return CursorAgentResult(success=True, output="Done")
+
+        with patch.object(
+            CursorAgentClient,
+            "execute",
+            side_effect=mock_execute,
+        ):
+            # 并发执行 3 个任务
+            tasks = [
+                pool.execute("任务1"),
+                pool.execute("任务2"),
+                pool.execute("任务3"),
+            ]
+            results = await asyncio.gather(*tasks)
+
+        assert all(r.success for r in results)
+        assert len(results) == 3

@@ -63,6 +63,32 @@ class MockAgentResult(BaseModel):
     session_id: Optional[str] = None
 
 
+class ExecutionTrace(BaseModel):
+    """执行追踪记录
+
+    记录单次执行的详细信息，用于断言和验证。
+    """
+    execution_id: str
+    prompt: str
+    context: Optional[dict[str, Any]] = None
+    working_directory: Optional[str] = None
+    timeout: Optional[int] = None
+
+    # 状态追踪
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    status: str = "pending"  # pending, in_progress, completed, failed
+
+    # 执行结果
+    success: Optional[bool] = None
+    output: Optional[str] = None
+    error: Optional[str] = None
+    files_modified: list[str] = Field(default_factory=list)
+
+    # 执行时长（秒）
+    duration: float = 0.0
+
+
 class MockAgentExecutor:
     """模拟 Agent 执行器
 
@@ -84,6 +110,11 @@ class MockAgentExecutor:
             prompt_contains="分析代码",
             response={"success": True, "output": "代码分析完成"},
         )
+
+        # 获取执行追踪信息
+        traces = executor.execution_traces
+        for trace in traces:
+            print(f"执行 {trace.execution_id}: {trace.status}")
     """
 
     def __init__(
@@ -108,9 +139,13 @@ class MockAgentExecutor:
         self._response_index = 0
         self._prompt_responses: dict[str, dict[str, Any]] = {}
 
-        # 执行记录
+        # 执行记录（向后兼容）
         self._execution_history: list[dict[str, Any]] = []
         self._available = True
+
+        # 增强的执行追踪
+        self._execution_traces: list[ExecutionTrace] = []
+        self._execution_counter = 0
 
     @property
     def executor_type(self) -> str:
@@ -118,13 +153,37 @@ class MockAgentExecutor:
 
     @property
     def execution_history(self) -> list[dict[str, Any]]:
-        """获取执行历史"""
+        """获取执行历史（向后兼容）"""
         return self._execution_history
 
     @property
     def execution_count(self) -> int:
         """获取执行次数"""
         return len(self._execution_history)
+
+    @property
+    def execution_traces(self) -> list[ExecutionTrace]:
+        """获取执行追踪记录列表"""
+        return self._execution_traces
+
+    def get_trace_by_id(self, execution_id: str) -> Optional[ExecutionTrace]:
+        """根据执行 ID 获取追踪记录"""
+        for trace in self._execution_traces:
+            if trace.execution_id == execution_id:
+                return trace
+        return None
+
+    def get_traces_by_status(self, status: str) -> list[ExecutionTrace]:
+        """获取指定状态的追踪记录"""
+        return [t for t in self._execution_traces if t.status == status]
+
+    def get_successful_traces(self) -> list[ExecutionTrace]:
+        """获取成功的执行追踪"""
+        return [t for t in self._execution_traces if t.success is True]
+
+    def get_failed_traces(self) -> list[ExecutionTrace]:
+        """获取失败的执行追踪"""
+        return [t for t in self._execution_traces if t.success is False]
 
     def configure_response(
         self,
@@ -188,6 +247,8 @@ class MockAgentExecutor:
         self._response_index = 0
         self._prompt_responses.clear()
         self._execution_history.clear()
+        self._execution_traces.clear()
+        self._execution_counter = 0
 
     def _get_response(self, prompt: str) -> dict[str, Any]:
         """获取响应配置
@@ -235,13 +296,31 @@ class MockAgentExecutor:
         Returns:
             模拟的执行结果
         """
-        # 记录执行历史
+        # 生成执行 ID
+        self._execution_counter += 1
+        execution_id = f"exec-{self._execution_counter:04d}"
+        started_at = datetime.now()
+
+        # 创建执行追踪记录
+        trace = ExecutionTrace(
+            execution_id=execution_id,
+            prompt=prompt,
+            context=context,
+            working_directory=working_directory,
+            timeout=timeout,
+            started_at=started_at,
+            status="in_progress",
+        )
+        self._execution_traces.append(trace)
+
+        # 记录执行历史（向后兼容）
         self._execution_history.append({
             "prompt": prompt,
             "context": context,
             "working_directory": working_directory,
             "timeout": timeout,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": started_at.isoformat(),
+            "execution_id": execution_id,
         })
 
         # 模拟延迟
@@ -250,15 +329,26 @@ class MockAgentExecutor:
 
         # 获取响应配置
         response = self._get_response(prompt)
+        completed_at = datetime.now()
+        success = response.get("success", True)
+
+        # 更新追踪记录
+        trace.completed_at = completed_at
+        trace.status = "completed" if success else "failed"
+        trace.success = success
+        trace.output = response.get("output", "")
+        trace.error = response.get("error")
+        trace.files_modified = response.get("files_modified", [])
+        trace.duration = (completed_at - started_at).total_seconds()
 
         return AgentResult(
-            success=response.get("success", True),
+            success=success,
             output=response.get("output", ""),
             error=response.get("error"),
-            exit_code=0 if response.get("success", True) else 1,
+            exit_code=0 if success else 1,
             duration=response.get("duration", 0.1),
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
+            started_at=started_at,
+            completed_at=completed_at,
             executor_type="mock",
             files_modified=response.get("files_modified", []),
         )
@@ -960,9 +1050,185 @@ def assert_no_file_modified(executor: MockAgentExecutor) -> None:
     Raises:
         AssertionError: 如果有文件被修改
     """
-    # 这里主要是检查执行历史中没有修改文件的操作
-    # 实际检查需要根据具体实现调整
-    pass
+    for trace in executor.execution_traces:
+        assert len(trace.files_modified) == 0, (
+            f"执行 {trace.execution_id} 不应修改文件，"
+            f"但修改了: {trace.files_modified}"
+        )
+
+
+def assert_execution_trace_count(
+    executor: MockAgentExecutor,
+    expected_count: int,
+) -> None:
+    """断言执行追踪记录数量
+
+    Args:
+        executor: Mock 执行器
+        expected_count: 期望的追踪记录数量
+
+    Raises:
+        AssertionError: 如果数量不匹配
+    """
+    actual_count = len(executor.execution_traces)
+    assert actual_count == expected_count, (
+        f"预期执行追踪记录 {expected_count} 条，实际 {actual_count} 条"
+    )
+
+
+def assert_all_executions_completed(executor: MockAgentExecutor) -> None:
+    """断言所有执行都已完成（成功或失败）
+
+    Args:
+        executor: Mock 执行器
+
+    Raises:
+        AssertionError: 如果有未完成的执行
+    """
+    for trace in executor.execution_traces:
+        assert trace.status in ("completed", "failed"), (
+            f"执行 {trace.execution_id} 状态应为 completed 或 failed，"
+            f"实际: {trace.status}"
+        )
+        assert trace.completed_at is not None, (
+            f"执行 {trace.execution_id} 的完成时间未设置"
+        )
+
+
+def assert_execution_status_transitions(
+    executor: MockAgentExecutor,
+    expected_final_statuses: Optional[list[str]] = None,
+) -> None:
+    """断言执行状态变更正确
+
+    验证每个执行追踪都经历了正确的状态变更：
+    - 开始时设置 started_at
+    - 完成时设置 completed_at
+    - 最终状态为 completed 或 failed
+
+    Args:
+        executor: Mock 执行器
+        expected_final_statuses: 期望的最终状态列表（按顺序）
+
+    Raises:
+        AssertionError: 如果状态变更不正确
+    """
+    traces = executor.execution_traces
+
+    for i, trace in enumerate(traces):
+        # 验证开始时间已设置
+        assert trace.started_at is not None, (
+            f"执行 {trace.execution_id} 的开始时间未设置"
+        )
+
+        # 验证最终状态合法
+        assert trace.status in ("in_progress", "completed", "failed"), (
+            f"执行 {trace.execution_id} 状态不合法: {trace.status}"
+        )
+
+        # 如果已完成，验证完成时间和时长
+        if trace.status in ("completed", "failed"):
+            assert trace.completed_at is not None, (
+                f"执行 {trace.execution_id} 已完成但未设置完成时间"
+            )
+            assert trace.completed_at >= trace.started_at, (
+                f"执行 {trace.execution_id} 完成时间早于开始时间"
+            )
+            assert trace.duration >= 0, (
+                f"执行 {trace.execution_id} 时长为负数: {trace.duration}"
+            )
+
+        # 验证期望的最终状态
+        if expected_final_statuses and i < len(expected_final_statuses):
+            expected = expected_final_statuses[i]
+            assert trace.status == expected, (
+                f"执行 {trace.execution_id} 状态应为 {expected}，"
+                f"实际: {trace.status}"
+            )
+
+
+def assert_execution_success_rate(
+    executor: MockAgentExecutor,
+    min_success_rate: float = 1.0,
+) -> None:
+    """断言执行成功率
+
+    Args:
+        executor: Mock 执行器
+        min_success_rate: 最低成功率（0.0-1.0）
+
+    Raises:
+        AssertionError: 如果成功率低于预期
+    """
+    traces = executor.execution_traces
+    if not traces:
+        return  # 没有执行记录时不做断言
+
+    success_count = len(executor.get_successful_traces())
+    actual_rate = success_count / len(traces)
+
+    assert actual_rate >= min_success_rate, (
+        f"执行成功率应至少为 {min_success_rate:.1%}，"
+        f"实际: {actual_rate:.1%} ({success_count}/{len(traces)})"
+    )
+
+
+def assert_execution_durations(
+    executor: MockAgentExecutor,
+    max_duration: Optional[float] = None,
+    min_duration: Optional[float] = None,
+) -> None:
+    """断言执行时长在预期范围内
+
+    Args:
+        executor: Mock 执行器
+        max_duration: 最大执行时长（秒）
+        min_duration: 最小执行时长（秒）
+
+    Raises:
+        AssertionError: 如果时长超出范围
+    """
+    for trace in executor.execution_traces:
+        if trace.status not in ("completed", "failed"):
+            continue
+
+        if max_duration is not None:
+            assert trace.duration <= max_duration, (
+                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s "
+                f"超过最大限制 {max_duration}s"
+            )
+
+        if min_duration is not None:
+            assert trace.duration >= min_duration, (
+                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s "
+                f"低于最小限制 {min_duration}s"
+            )
+
+
+def assert_execution_prompts_contain(
+    executor: MockAgentExecutor,
+    patterns: list[str],
+) -> None:
+    """断言所有执行的 prompt 中包含指定模式
+
+    Args:
+        executor: Mock 执行器
+        patterns: 每个执行的 prompt 应包含的模式列表
+
+    Raises:
+        AssertionError: 如果 prompt 不包含预期模式
+    """
+    traces = executor.execution_traces
+
+    assert len(traces) >= len(patterns), (
+        f"执行追踪记录 ({len(traces)}) 少于预期模式数 ({len(patterns)})"
+    )
+
+    for i, pattern in enumerate(patterns):
+        assert pattern in traces[i].prompt, (
+            f"执行 {traces[i].execution_id} 的 prompt 应包含 '{pattern}'，"
+            f"实际 prompt: '{traces[i].prompt[:100]}...'"
+        )
 
 
 # ==================== 辅助工具函数 ====================

@@ -381,6 +381,200 @@ class TestWorkerAgentExecute:
             call_args = mock_execute.call_args
             assert call_args.kwargs["timeout"] == worker.worker_config.task_timeout
 
+    # ========== 边界条件测试 ==========
+
+    @pytest.mark.asyncio
+    async def test_execute_empty_instruction(self, worker: WorkerAgent):
+        """测试空指令执行"""
+        mock_result = create_mock_agent_result(success=True, output="无操作")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("")
+
+            # 空指令也应该正常处理
+            mock_execute.assert_called_once()
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_very_long_instruction(self, worker: WorkerAgent):
+        """测试超长指令执行"""
+        long_instruction = "重构代码" * 1000  # 超长指令
+        mock_result = create_mock_agent_result(success=True, output="完成超长任务")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute(long_instruction)
+
+            # 超长指令应正常处理
+            mock_execute.assert_called_once()
+            call_args = mock_execute.call_args
+            assert long_instruction in call_args.kwargs["prompt"]
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_empty_context(self, worker: WorkerAgent):
+        """测试空上下文字典执行"""
+        mock_result = create_mock_agent_result(success=True, output="完成")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("任务", context={})
+
+            mock_execute.assert_called_once()
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_none_context(self, worker: WorkerAgent):
+        """测试 None 上下文执行"""
+        mock_result = create_mock_agent_result(success=True, output="完成")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("任务", context=None)
+
+            mock_execute.assert_called_once()
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_empty_target_files(self, worker: WorkerAgent):
+        """测试目标文件为空列表"""
+        mock_result = create_mock_agent_result(success=True, output="完成")
+
+        context = {
+            "task_id": "task-001",
+            "target_files": [],  # 空文件列表
+        }
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("修改代码", context=context)
+
+            # 空文件列表应正常处理
+            mock_execute.assert_called_once()
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_special_characters_in_instruction(self, worker: WorkerAgent):
+        """测试指令包含特殊字符"""
+        special_instruction = "修复 bug: $HOME/path && rm -rf / | grep 'test' < input > output"
+        mock_result = create_mock_agent_result(success=True, output="完成")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute(special_instruction)
+
+            # 特殊字符应正常传递
+            mock_execute.assert_called_once()
+            call_args = mock_execute.call_args
+            assert special_instruction in call_args.kwargs["prompt"]
+            assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_with_unicode_content(self, worker: WorkerAgent):
+        """测试包含 Unicode 字符的指令"""
+        unicode_instruction = "处理多语言文件: 你好世界 🌍 日本語 العربية"
+        mock_result = create_mock_agent_result(success=True, output="处理完成 ✓")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute(unicode_instruction)
+
+            mock_execute.assert_called_once()
+            call_args = mock_execute.call_args
+            assert unicode_instruction in call_args.kwargs["prompt"]
+            assert result["success"] is True
+            assert "处理完成" in result["output"]
+
+    @pytest.mark.asyncio
+    async def test_execute_with_empty_output(self, worker: WorkerAgent):
+        """测试执行成功但输出为空"""
+        mock_result = create_mock_agent_result(success=True, output="")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("静默任务")
+
+            assert result["success"] is True
+            assert result["output"] == ""
+
+    @pytest.mark.asyncio
+    async def test_execute_with_none_error(self, worker: WorkerAgent):
+        """测试失败但 error 为 None"""
+        mock_result = create_mock_agent_result(
+            success=False,
+            error=None,
+            exit_code=1,
+        )
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("失败任务")
+
+            assert result["success"] is False
+            assert worker.status == AgentStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_execute_multiple_sequential(self, worker: WorkerAgent):
+        """测试连续多次执行任务"""
+        results = [
+            create_mock_agent_result(success=True, output="第一次完成"),
+            create_mock_agent_result(success=True, output="第二次完成"),
+            create_mock_agent_result(success=False, error="第三次失败"),
+        ]
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.side_effect = results
+
+            result1 = await worker.execute("任务1")
+            assert result1["success"] is True
+            assert worker.status == AgentStatus.COMPLETED
+
+            result2 = await worker.execute("任务2")
+            assert result2["success"] is True
+            assert worker.status == AgentStatus.COMPLETED
+
+            result3 = await worker.execute("任务3")
+            assert result3["success"] is False
+            assert worker.status == AgentStatus.FAILED
+
+            assert mock_execute.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_execute_with_nested_context(self, worker: WorkerAgent):
+        """测试嵌套的复杂上下文"""
+        complex_context = {
+            "task_id": "task-001",
+            "target_files": ["src/main.py"],
+            "metadata": {
+                "nested": {
+                    "deep": {"value": 123},
+                },
+                "list": [1, 2, {"inner": "data"}],
+            },
+        }
+        mock_result = create_mock_agent_result(success=True, output="完成")
+
+        with patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_execute:
+            mock_execute.return_value = mock_result
+
+            result = await worker.execute("复杂任务", context=complex_context)
+
+            mock_execute.assert_called_once()
+            # 验证上下文被传递
+            call_args = mock_execute.call_args
+            assert call_args.kwargs["context"] == complex_context
+            assert result["success"] is True
+
 
 # ========== ReviewerAgent 测试 ==========
 
