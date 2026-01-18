@@ -997,9 +997,9 @@ class TestRunMpMode:
         assert config.worker_count == 3
         assert config.enable_sub_planners is True
         assert config.strict_review is False
-        assert config.planning_timeout == 120.0
-        assert config.execution_timeout == 300.0
-        assert config.review_timeout == 60.0
+        assert config.planning_timeout == 300.0
+        assert config.execution_timeout == 500.0
+        assert config.review_timeout == 120.0
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
         assert config.reviewer_model == "opus-4.5-thinking"
@@ -1343,7 +1343,7 @@ class TestRunnerRunMethods:
         """测试 _run_plan 方法超时"""
         import subprocess
         with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=120)
+            mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=300)
 
             options = runner._merge_options({})
             result = await runner._run_plan("超时的规划", options)
@@ -2390,7 +2390,7 @@ mp (多进程模式)"""
 
         with patch("run.subprocess.run") as mock_subprocess:
             mock_subprocess.side_effect = subprocess.TimeoutExpired(
-                cmd="agent", timeout=120
+                cmd="agent", timeout=300
             )
 
             options = runner._merge_options({})

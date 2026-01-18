@@ -996,7 +996,7 @@ class Runner:
                 ["agent", "-p", prompt, "--output-format", "text"],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=300,
                 cwd=str(project_root),
             )
 

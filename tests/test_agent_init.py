@@ -69,7 +69,7 @@ class TestWorkerConfig:
         assert config.name == "worker"
         assert config.working_directory == "."
         assert config.max_concurrent_tasks == 1
-        assert config.task_timeout == 300
+        assert config.task_timeout == 500
         assert config.enable_context_search is False
         assert config.context_search_top_k == 5
         assert config.context_search_min_score == 0.4

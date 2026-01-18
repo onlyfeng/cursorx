@@ -38,9 +38,9 @@ class MultiProcessOrchestratorConfig(BaseModel):
     strict_review: bool = False
 
     # 超时设置
-    planning_timeout: float = 120.0    # 规划超时
-    execution_timeout: float = 300.0   # 单任务执行超时
-    review_timeout: float = 60.0       # 评审超时
+    planning_timeout: float = 300.0    # 规划超时
+    execution_timeout: float = 500.0   # 单任务执行超时
+    review_timeout: float = 120.0      # 评审超时
 
     # 模型配置 - 不同 Agent 使用不同模型
     # 可用模型: gpt-5.2-high, opus-4.5-thinking, gpt-5.2-codex, sonnet-4.5-thinking 等

@@ -58,7 +58,7 @@ async def test_run_plan_timeout():
     """测试规划模式超时处理"""
     import subprocess as sp
     with patch('run.subprocess.run') as mock_subprocess:
-        mock_subprocess.side_effect = sp.TimeoutExpired(cmd='agent', timeout=120)
+        mock_subprocess.side_effect = sp.TimeoutExpired(cmd='agent', timeout=300)
 
         result = await runner._run_plan('超时任务', runner._merge_options({}))
 

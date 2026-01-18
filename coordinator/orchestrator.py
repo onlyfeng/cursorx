@@ -108,6 +108,12 @@ class Orchestrator:
         reviewer_cursor_config.model = config.reviewer_model
         worker_cursor_config.model = config.worker_model
 
+        # 超时设置：
+        # - 规划默认 300s（CursorAgentConfig 默认即为 300s）
+        # - 评审默认 120s（若用户显式修改了 cursor_config.timeout，则尊重用户配置）
+        if config.cursor_config.timeout == 300:
+            reviewer_cursor_config.timeout = 120
+
         # 记录执行模式和各角色模型
         logger.info(f"编排器使用执行模式: {config.execution_mode.value}")
         logger.info(f"各角色模型配置 - Planner: {config.planner_model}, "

@@ -128,15 +128,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--planning-timeout",
         type=float,
-        default=120.0,
+        default=300.0,
         help="规划超时时间（秒）",
     )
 
     parser.add_argument(
         "--execution-timeout",
         type=float,
-        default=300.0,
+        default=500.0,
         help="任务执行超时时间（秒）",
+    )
+
+    parser.add_argument(
+        "--review-timeout",
+        type=float,
+        default=120.0,
+        help="评审超时时间（秒）",
     )
 
     # 模型配置
@@ -403,6 +410,7 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
         strict_review=args.strict,
         planning_timeout=args.planning_timeout,
         execution_timeout=args.execution_timeout,
+        review_timeout=args.review_timeout,
         # 模型配置
         planner_model=args.planner_model,
         worker_model=args.worker_model,

@@ -34,7 +34,7 @@ class WorkerConfig(BaseModel):
     name: str = "worker"
     working_directory: str = "."
     max_concurrent_tasks: int = 1      # 同时处理的任务数（通常为1）
-    task_timeout: int = 300            # 任务超时时间
+    task_timeout: int = 500            # 任务超时时间
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
