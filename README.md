@@ -297,7 +297,47 @@ python scripts/run_iterate.py --dry-run "分析改进点"
 | `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 5 |
 | `--workers` | Worker 池大小 | 3 |
 | `--force-update` | 强制更新知识库 | False |
+| `--orchestrator` | 编排器类型: `mp`=多进程(默认), `basic`=协程模式 | `mp` |
+| `--no-mp` | 禁用多进程编排器，使用基本协程编排器 | False |
+| `--auto-commit` | 迭代完成后自动提交代码更改 | False |
+| `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | False |
 | `-v, --verbose` | 详细输出 | False |
+
+### 多进程并行执行
+
+自我迭代模式 **默认启用多进程并行执行**（`MultiProcessOrchestrator`），可显著提升任务执行效率：
+
+```bash
+# 默认使用多进程编排器（推荐）
+python run.py --mode iterate "优化代码"
+python scripts/run_iterate.py "增加新功能支持"
+
+# 指定使用多进程编排器（显式）
+python run.py --mode iterate --orchestrator mp "任务描述"
+python scripts/run_iterate.py --orchestrator mp "任务描述"
+
+# 禁用多进程，使用协程编排器
+python run.py --mode iterate --no-mp "任务描述"
+python scripts/run_iterate.py --orchestrator basic "任务描述"
+```
+
+### 回退策略
+
+当多进程编排器（MP）启动失败时，系统会 **自动回退** 到基本协程编排器，确保任务继续执行：
+
+| 回退场景 | 说明 |
+|----------|------|
+| 启动超时 | MP 进程创建超时，回退到协程模式 |
+| 进程创建失败 | 系统资源不足等 OSError，回退到协程模式 |
+| 运行时错误 | 事件循环问题等 RuntimeError，回退到协程模式 |
+| 其他异常 | 未预期的启动错误，回退到协程模式 |
+
+回退时会输出警告信息：
+
+```
+⚠ MP 编排器启动失败: <错误原因>
+⚠ 正在回退到基本协程编排器...
+```
 
 ### 工作流程
 

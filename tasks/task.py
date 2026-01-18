@@ -124,3 +124,18 @@ class Task(BaseModel):
             prompt_parts.append(f"\n### 上下文\n```json\n{self.context}\n```")
 
         return "\n".join(prompt_parts)
+
+    def to_commit_entry(self) -> dict[str, Any]:
+        """生成用于提交的统一条目格式
+
+        用于 CommitterAgent.commit_iteration() 的输入，统一字段命名。
+
+        Returns:
+            包含 id, title, description, result 的字典
+        """
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description or self.title,  # 回退策略：若 description 为空则使用 title
+            "result": self.result,
+        }

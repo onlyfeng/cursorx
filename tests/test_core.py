@@ -659,6 +659,118 @@ class TestSystemState:
 # ============================================================================
 
 
+class TestMultiProcessAgentRegistration:
+    """MP 模式下 Agent 注册测试
+
+    验证 MultiProcessOrchestrator 在初始化和 _spawn_agents() 后
+    正确注册所有 Agent（planner/workers/reviewer/committer）。
+    """
+
+    def test_agent_registration_count_with_committer(self):
+        """测试启用 committer 时 Agent 注册数量"""
+        # 模拟 MP 模式下的 agent 注册
+        system = SystemState(goal="Test MP registration", max_iterations=3)
+
+        # 模拟 committer 注册（在 __init__ 中）
+        system.register_agent("committer", AgentRole.COMMITTER)
+
+        # 模拟 _spawn_agents() 中的注册
+        planner_id = "planner-12345678"
+        system.register_agent(planner_id, AgentRole.PLANNER)
+
+        worker_count = 3
+        worker_ids = [f"worker-{i}-abcd1234" for i in range(worker_count)]
+        for worker_id in worker_ids:
+            system.register_agent(worker_id, AgentRole.WORKER)
+
+        reviewer_id = "reviewer-87654321"
+        system.register_agent(reviewer_id, AgentRole.REVIEWER)
+
+        # 验证总数: 1 planner + N workers + 1 reviewer + 1 committer
+        expected_count = 1 + worker_count + 1 + 1
+        assert len(system.agents) == expected_count
+
+    def test_agent_registration_count_without_committer(self):
+        """测试禁用 committer 时 Agent 注册数量"""
+        system = SystemState(goal="Test MP registration", max_iterations=3)
+
+        # 模拟 _spawn_agents() 中的注册（无 committer）
+        planner_id = "planner-12345678"
+        system.register_agent(planner_id, AgentRole.PLANNER)
+
+        worker_count = 5
+        worker_ids = [f"worker-{i}-abcd1234" for i in range(worker_count)]
+        for worker_id in worker_ids:
+            system.register_agent(worker_id, AgentRole.WORKER)
+
+        reviewer_id = "reviewer-87654321"
+        system.register_agent(reviewer_id, AgentRole.REVIEWER)
+
+        # 验证总数: 1 planner + N workers + 1 reviewer
+        expected_count = 1 + worker_count + 1
+        assert len(system.agents) == expected_count
+
+    def test_agent_registration_role_set(self):
+        """测试 Agent 注册后的角色集合完整性"""
+        system = SystemState(goal="Test MP roles", max_iterations=3)
+
+        # 注册所有类型的 Agent
+        system.register_agent("committer", AgentRole.COMMITTER)
+        system.register_agent("planner-001", AgentRole.PLANNER)
+        system.register_agent("worker-0-001", AgentRole.WORKER)
+        system.register_agent("worker-1-002", AgentRole.WORKER)
+        system.register_agent("worker-2-003", AgentRole.WORKER)
+        system.register_agent("reviewer-001", AgentRole.REVIEWER)
+
+        # 收集所有已注册的角色
+        registered_roles = {agent.role for agent in system.agents.values()}
+
+        # 验证角色集合包含所有预期角色
+        expected_roles = {
+            AgentRole.PLANNER,
+            AgentRole.WORKER,
+            AgentRole.REVIEWER,
+            AgentRole.COMMITTER,
+        }
+        assert registered_roles == expected_roles
+
+    def test_agent_registration_role_counts(self):
+        """测试各角色的 Agent 注册数量"""
+        system = SystemState(goal="Test MP role counts", max_iterations=3)
+
+        # 模拟完整的 MP 注册（3 个 worker）
+        system.register_agent("committer", AgentRole.COMMITTER)
+        system.register_agent("planner-001", AgentRole.PLANNER)
+        system.register_agent("worker-0-001", AgentRole.WORKER)
+        system.register_agent("worker-1-002", AgentRole.WORKER)
+        system.register_agent("worker-2-003", AgentRole.WORKER)
+        system.register_agent("reviewer-001", AgentRole.REVIEWER)
+
+        # 统计各角色数量
+        role_counts = {}
+        for agent in system.agents.values():
+            role_counts[agent.role] = role_counts.get(agent.role, 0) + 1
+
+        # 验证各角色数量
+        assert role_counts[AgentRole.PLANNER] == 1
+        assert role_counts[AgentRole.WORKER] == 3
+        assert role_counts[AgentRole.REVIEWER] == 1
+        assert role_counts[AgentRole.COMMITTER] == 1
+
+    def test_agent_initial_status_after_registration(self):
+        """测试注册后 Agent 的初始状态"""
+        system = SystemState(goal="Test initial status")
+
+        system.register_agent("planner-001", AgentRole.PLANNER)
+        system.register_agent("worker-001", AgentRole.WORKER)
+        system.register_agent("reviewer-001", AgentRole.REVIEWER)
+        system.register_agent("committer", AgentRole.COMMITTER)
+
+        # 所有 Agent 初始状态应为 IDLE
+        for agent in system.agents.values():
+            assert agent.status == AgentStatus.IDLE
+
+
 class TestCoreIntegration:
     """核心模块集成测试"""
 

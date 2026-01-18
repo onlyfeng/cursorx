@@ -35,7 +35,13 @@ sys.path.insert(0, str(project_root))
 
 from loguru import logger
 
-from coordinator import Orchestrator, OrchestratorConfig
+from agents.committer import CommitterAgent, CommitterConfig
+from coordinator import (
+    MultiProcessOrchestrator,
+    MultiProcessOrchestratorConfig,
+    Orchestrator,
+    OrchestratorConfig,
+)
 from cursor.client import CursorAgentConfig
 from knowledge import (
     Document,
@@ -286,6 +292,21 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="自定义提交信息前缀（默认使用自动生成的提交信息）",
+    )
+
+    # 编排器选择参数
+    orchestrator_group = parser.add_mutually_exclusive_group()
+    orchestrator_group.add_argument(
+        "--orchestrator",
+        type=str,
+        choices=["mp", "basic"],
+        default="mp",
+        help="编排器类型: mp=多进程(默认), basic=协程模式",
+    )
+    orchestrator_group.add_argument(
+        "--no-mp",
+        action="store_true",
+        help="禁用多进程编排器，使用基本协程编排器（等同于 --orchestrator basic）",
     )
 
     return parser.parse_args()
@@ -922,8 +943,139 @@ class SelfIterator:
                 "error": str(e),
             }
 
+    async def _run_commit_phase(
+        self,
+        iterations_completed: int = 0,
+        tasks_completed: int = 0,
+    ) -> dict[str, Any]:
+        """执行提交阶段（MP 执行路径）
+
+        复用 CommitterAgent 执行 Git 提交操作。
+
+        Args:
+            iterations_completed: 完成的迭代次数
+            tasks_completed: 完成的任务数量
+
+        Returns:
+            提交结果字典，包含:
+            - total_commits: 总提交次数
+            - commit_hashes: 提交哈希列表
+            - commit_messages: 提交信息列表
+            - pushed_commits: 已推送次数
+            - files_changed: 变更文件列表
+        """
+        print_section("提交阶段")
+
+        # 创建 CommitterAgent
+        cursor_config = CursorAgentConfig(working_directory=str(project_root))
+        committer_config = CommitterConfig(
+            working_directory=str(project_root),
+            auto_push=self.args.auto_push,
+            commit_message_style="conventional",
+            cursor_config=cursor_config,
+        )
+        committer = CommitterAgent(committer_config)
+
+        # 检查是否有变更
+        status = committer.check_status()
+        if not status.get("is_repo"):
+            print_warning("当前目录不是 Git 仓库，跳过提交")
+            return {
+                "total_commits": 0,
+                "commit_hashes": [],
+                "commit_messages": [],
+                "pushed_commits": 0,
+                "files_changed": [],
+                "error": "不是 Git 仓库",
+            }
+
+        if not status.get("has_changes"):
+            print_info("没有需要提交的变更")
+            return {
+                "total_commits": 0,
+                "commit_hashes": [],
+                "commit_messages": [],
+                "pushed_commits": 0,
+                "files_changed": [],
+            }
+
+        # 生成或使用提供的提交信息
+        if self.args.commit_message:
+            commit_message = self.args.commit_message
+        else:
+            # 根据执行结果生成提交信息
+            print_info("正在生成提交信息...")
+            commit_message = await committer.generate_commit_message()
+
+        # 添加迭代信息到提交信息
+        if iterations_completed > 0 or tasks_completed > 0:
+            suffix = f"\n\n迭代次数: {iterations_completed}, 完成任务: {tasks_completed}"
+            if not self.args.commit_message:
+                # 自动生成的信息可以直接追加
+                commit_message = commit_message.rstrip() + suffix
+
+        # 执行提交
+        commit_result = committer.commit(commit_message)
+
+        if not commit_result.success:
+            print_error(f"提交失败: {commit_result.error}")
+            return {
+                "total_commits": 0,
+                "commit_hashes": [],
+                "commit_messages": [],
+                "pushed_commits": 0,
+                "files_changed": commit_result.files_changed,
+                "error": commit_result.error,
+            }
+
+        # 提取提交信息第一行用于显示
+        commit_summary = commit_message.split('\n')[0][:50]
+        print_success(f"提交成功: {commit_result.commit_hash[:8]} - {commit_summary}")
+
+        # 可选推送
+        pushed_commits = 0
+        push_error = ""
+        if self.args.auto_push:
+            print_info("正在推送到远程仓库...")
+            push_result = committer.push()
+            if push_result.success:
+                pushed_commits = 1
+                print_success("推送成功")
+            else:
+                push_error = push_result.error
+                print_warning(f"推送失败: {push_error}")
+
+        # 获取提交摘要
+        summary = committer.get_commit_summary()
+
+        result: dict[str, Any] = {
+            "total_commits": summary.get("successful_commits", 1),
+            "commit_hashes": summary.get("commit_hashes", [commit_result.commit_hash]),
+            "commit_messages": [commit_message],
+            "pushed_commits": pushed_commits,
+            "files_changed": summary.get("files_changed", commit_result.files_changed),
+        }
+
+        if push_error:
+            result["push_error"] = push_error
+
+        return result
+
+    def _get_orchestrator_type(self) -> str:
+        """获取编排器类型
+
+        Returns:
+            "mp" 或 "basic"
+        """
+        if getattr(self.args, "no_mp", False):
+            return "basic"
+        return getattr(self.args, "orchestrator", "mp")
+
     async def _run_agent_system(self) -> dict[str, Any]:
         """运行 Agent 系统
+
+        根据配置选择使用多进程编排器（MP）或协程编排器（basic）。
+        MP 启动失败时自动回退到 basic 编排器。
 
         Returns:
             执行结果
@@ -935,10 +1087,198 @@ class SelfIterator:
         if max_iterations == -1:
             print_info("无限迭代模式已启用（按 Ctrl+C 中断）")
 
-        # 创建配置
-        cursor_config = CursorAgentConfig(
-            working_directory=str(project_root),
-        )
+        # 创建知识库管理器
+        manager = KnowledgeManager(name=KB_NAME)
+        await manager.initialize()
+
+        # 确定编排器类型
+        orchestrator_type = self._get_orchestrator_type()
+        use_fallback = False
+        result: dict[str, Any] = {}
+
+        if orchestrator_type == "mp":
+            # 尝试使用多进程编排器
+            result = await self._run_with_mp_orchestrator(max_iterations, manager)
+
+            # 检查是否需要回退
+            if result.get("_fallback_required"):
+                use_fallback = True
+                fallback_reason = result.get("_fallback_reason", "未知错误")
+                print_warning(f"MP 编排器启动失败: {fallback_reason}")
+                print_warning("正在回退到基本协程编排器...")
+                logger.warning(f"MP 编排器回退: {fallback_reason}")
+        else:
+            # 直接使用基本编排器
+            use_fallback = True
+            print_info("使用基本协程编排器（--no-mp 或 --orchestrator basic）")
+
+        if use_fallback:
+            # 使用基本协程编排器
+            result = await self._run_with_basic_orchestrator(max_iterations, manager)
+
+        # 完成后提交阶段
+        if self.args.auto_commit:
+            commits_result = await self._run_commit_phase(
+                result.get("iterations_completed", 0),
+                result.get("total_tasks_completed", 0),
+            )
+            result["commits"] = commits_result
+
+            # 更新 pushed 标志
+            if commits_result.get("pushed_commits", 0) > 0:
+                result["pushed"] = True
+
+        # 显示结果
+        self._print_execution_result(result)
+
+        return result
+
+    async def _build_enhanced_goal(self, goal: str, manager: KnowledgeManager) -> str:
+        """构建增强后的目标（方案 B: 在 goal 构建阶段注入知识库上下文）
+
+        当知识库上下文可用时，将文档内容拼接到 goal 中，提供更丰富的上下文。
+
+        Args:
+            goal: 原始目标
+            manager: 知识库管理器
+
+        Returns:
+            增强后的目标字符串
+        """
+        # 检查是否已经有知识库上下文（从 IterationGoalBuilder 构建的）
+        if self.context.knowledge_context:
+            # 已经通过 goal_builder 注入了，不需要重复注入
+            logger.debug("知识库上下文已在 goal 构建阶段注入，跳过增强")
+            return goal
+
+        # 尝试从知识库搜索相关文档
+        search_query = self.args.requirement
+        if not search_query:
+            # 没有用户需求，无法搜索
+            return goal
+
+        try:
+            # 搜索知识库
+            results = await self.knowledge_updater.get_knowledge_context(search_query, limit=5)
+
+            if not results:
+                logger.debug("知识库搜索无结果，使用原始目标")
+                return goal
+
+            # 构建增强目标
+            context_text = "\n\n## 参考文档（来自知识库，方案 B 注入）\n\n"
+            for i, doc in enumerate(results, 1):
+                context_text += f"### {i}. {doc['title']}\n"
+                # 截断过长内容
+                content = doc['content'][:1000]
+                if len(doc['content']) > 1000:
+                    content += "..."
+                context_text += f"```\n{content}\n```\n\n"
+
+            enhanced_goal = f"{goal}\n{context_text}"
+            print_success(f"知识库增强: 已注入 {len(results)} 个相关文档到目标上下文")
+            logger.info(f"知识库增强（方案 B）: 注入 {len(results)} 个文档，增加 {len(context_text)} 字符")
+
+            return enhanced_goal
+
+        except Exception as e:
+            logger.warning(f"知识库增强失败，使用原始目标: {e}")
+            return goal
+
+    async def _run_with_mp_orchestrator(
+        self,
+        max_iterations: int,
+        manager: KnowledgeManager,
+    ) -> dict[str, Any]:
+        """使用多进程编排器执行
+
+        支持知识库增强：
+        - 方案 B: 在 goal 构建阶段注入知识库上下文（通过 _build_enhanced_goal）
+        - 方案 C: 启用 MP 任务级知识库注入（通过 enable_knowledge_injection 配置）
+
+        Args:
+            max_iterations: 最大迭代次数
+            manager: 知识库管理器
+
+        Returns:
+            执行结果（如果失败，包含 _fallback_required=True）
+        """
+        logger.info("使用 MultiProcessOrchestrator (MP 多进程编排器)")
+        print_info(f"MP 编排器配置: worker_count={self.args.workers}, max_iterations={max_iterations}")
+
+        try:
+            # 方案 B: 在 goal 构建阶段注入知识库上下文
+            enhanced_goal = await self._build_enhanced_goal(self.context.iteration_goal, manager)
+
+            config = MultiProcessOrchestratorConfig(
+                working_directory=str(project_root),
+                max_iterations=max_iterations,
+                worker_count=self.args.workers,
+                # 方案 C: 启用 MP 任务级知识库注入
+                enable_knowledge_search=True,
+                enable_knowledge_injection=True,
+                # 自动提交配置透传
+                enable_auto_commit=self.args.auto_commit,
+                auto_push=self.args.auto_push,
+            )
+
+            # 创建多进程编排器
+            orchestrator = MultiProcessOrchestrator(config)
+            logger.info(f"MP 编排器已创建: worker_count={config.worker_count}, 知识库注入={config.enable_knowledge_injection}")
+
+            # 执行（使用增强后的目标）
+            print_info("开始执行迭代任务...")
+            result = await orchestrator.run(enhanced_goal)
+            return result
+
+        except asyncio.TimeoutError as e:
+            logger.error(f"MP 编排器超时: {e}")
+            return {
+                "_fallback_required": True,
+                "_fallback_reason": f"启动超时: {e}",
+            }
+        except OSError as e:
+            # 进程创建失败（如资源不足）
+            logger.error(f"MP 编排器进程创建失败: {e}")
+            return {
+                "_fallback_required": True,
+                "_fallback_reason": f"进程创建失败: {e}",
+            }
+        except RuntimeError as e:
+            # 运行时错误（如事件循环问题）
+            logger.error(f"MP 编排器运行时错误: {e}")
+            return {
+                "_fallback_required": True,
+                "_fallback_reason": f"运行时错误: {e}",
+            }
+        except Exception as e:
+            # 其他未预期的异常
+            logger.error(f"MP 编排器启动失败: {e}")
+            return {
+                "_fallback_required": True,
+                "_fallback_reason": str(e),
+            }
+
+    async def _run_with_basic_orchestrator(
+        self,
+        max_iterations: int,
+        manager: KnowledgeManager,
+    ) -> dict[str, Any]:
+        """使用基本协程编排器执行
+
+        支持 KnowledgeManager 注入和 auto_commit/auto_push。
+
+        Args:
+            max_iterations: 最大迭代次数
+            manager: 知识库管理器
+
+        Returns:
+            执行结果
+        """
+        logger.info("使用 Orchestrator (基本协程编排器)")
+        print_info(f"协程编排器配置: worker_pool_size={self.args.workers}, max_iterations={max_iterations}")
+
+        cursor_config = CursorAgentConfig(working_directory=str(project_root))
 
         config = OrchestratorConfig(
             working_directory=str(project_root),
@@ -948,21 +1288,23 @@ class SelfIterator:
             # 自动提交配置
             enable_auto_commit=self.args.auto_commit,
             auto_push=self.args.auto_push,
-            commit_on_complete=True,  # 仅在完成时提交
         )
 
-        # 创建知识库管理器
-        manager = KnowledgeManager(name=KB_NAME)
-        await manager.initialize()
-
-        # 创建编排器
+        # 创建编排器，注入知识库管理器
         orchestrator = Orchestrator(config, knowledge_manager=manager)
+        logger.info(f"协程编排器已创建: worker_pool_size={config.worker_pool_size}")
 
         # 执行
         print_info("开始执行迭代任务...")
         result = await orchestrator.run(self.context.iteration_goal)
+        return result
 
-        # 显示结果
+    def _print_execution_result(self, result: dict[str, Any]) -> None:
+        """打印执行结果
+
+        Args:
+            result: 执行结果字典
+        """
         print_section("执行结果")
         print(f"状态: {'成功' if result.get('success') else '未完成'}")
         print(f"迭代次数: {result.get('iterations_completed', 0)}")
@@ -1008,8 +1350,6 @@ class SelfIterator:
                     print_success("推送状态: 已推送到远程仓库")
             else:
                 print_info("无代码更改，未创建提交")
-
-        return result
 
 
 # ============================================================

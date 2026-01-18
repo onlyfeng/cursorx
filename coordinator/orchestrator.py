@@ -13,7 +13,7 @@ from agents.committer import CommitterAgent, CommitterConfig
 from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
 from core.base import AgentRole
-from core.state import IterationStatus, SystemState
+from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState
 from cursor.client import CursorAgentConfig
 from cursor.cloud_client import CloudAuthConfig
 from cursor.executor import ExecutionMode
@@ -387,10 +387,10 @@ class Orchestrator:
 
         logger.info(f"[迭代 {iteration_id}] 评审阶段开始")
 
-        # 收集已完成和失败的任务
+        # 收集已完成和失败的任务（使用统一的 to_commit_entry 格式）
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
         completed_tasks = [
-            {"id": t.id, "title": t.title, "result": t.result}
+            t.to_commit_entry()
             for t in tasks if t.status.value == "completed"
         ]
         failed_tasks = [
@@ -420,35 +420,86 @@ class Orchestrator:
     def _should_commit(self, decision: ReviewDecision) -> bool:
         """判断是否应该执行提交
 
+        提交触发策略遵循以下优先级规则（参见 CommitPolicy 类型定义）：
+
+        触发优先级（从高到低）:
+            1. enable_auto_commit=False 或 committer 未初始化 → 禁用所有自动提交
+            2. commit_per_iteration=True → 每次迭代完成后都提交
+            3. commit_on_complete=True + decision==COMPLETE → 仅在目标完成时提交
+
+        评审决策对提交的影响:
+            - COMPLETE: 允许提交（如果 commit_on_complete=True 或 commit_per_iteration=True）
+            - CONTINUE: 仅当 commit_per_iteration=True 时允许提交
+            - ADJUST: 仅当 commit_per_iteration=True 时允许提交
+            - ABORT: 仅当 commit_per_iteration=True 时允许提交（记录中间进度）
+
         Args:
-            decision: 评审决策
+            decision: 评审决策 (ReviewDecision 枚举)
 
         Returns:
             True 表示应该提交，False 表示跳过
+
+        See Also:
+            - CommitPolicy: 提交策略配置类型
+            - _commit_phase: 执行实际提交的方法
         """
-        # 未启用自动提交
+        # 未启用自动提交或 committer 未初始化
         if not self.config.enable_auto_commit or not self.committer:
             return False
 
-        # 每次迭代都提交
-        if self.config.commit_per_iteration:
-            return True
-
-        # 仅在完成时提交
-        if self.config.commit_on_complete and decision == ReviewDecision.COMPLETE:
-            return True
-
-        return False
+        # 使用 CommitPolicy 进行判断（优先级: commit_per_iteration > commit_on_complete）
+        policy = CommitPolicy(
+            enable_auto_commit=self.config.enable_auto_commit,
+            commit_per_iteration=self.config.commit_per_iteration,
+            commit_on_complete=self.config.commit_on_complete,
+            auto_push=self.config.auto_push,
+        )
+        return policy.should_commit(decision.value)
 
     async def _commit_phase(self, iteration_id: int, decision: ReviewDecision) -> dict[str, Any]:
         """提交阶段
+
+        从 TaskQueue 收集已完成任务，构建 CommitContext，执行 Git 提交。
+
+        提交输入（CommitContext）:
+            从 TaskQueue.get_tasks_by_iteration() 获取已完成任务，必须包含：
+            - id: 任务唯一标识符
+            - title: 任务标题（用于生成 commit message）
+            - result: 任务执行结果（包含变更详情）
+
+            可选字段:
+            - description: 任务描述（增强 commit message 可读性）
+
+        错误处理:
+            - commit 失败: result.success=False, error 记录到 commit_result["error"]
+            - 无变更: result.success=True, commit_hash=None, message="No changes to commit"
+            - push 失败: result.success 取决于 commit 是否成功，push_error 记录错误信息
+            - 提交失败不影响主流程 result.success，仅记录到 iteration 状态
+
+        IterationState 字段填充:
+            - iteration.commit_hash: Git 提交哈希（无变更时为空字符串）
+            - iteration.commit_message: 提交信息
+            - iteration.pushed: 是否已推送到远程
+            - iteration.commit_files: 变更的文件列表
 
         Args:
             iteration_id: 迭代 ID
             decision: 评审决策
 
         Returns:
-            提交结果
+            提交结果字典:
+            {
+                "success": bool,           # 提交是否成功
+                "commit_hash": str | None, # Git 提交哈希
+                "message": str,            # 提交信息或错误描述
+                "files_changed": list[str],# 变更的文件列表
+                "pushed": bool,            # 是否已推送
+                "push_error": str | None,  # 推送错误信息（如有）
+            }
+
+        See Also:
+            - CommitContext: 提交上下文数据类型
+            - CommitPolicy: 提交策略配置类型
         """
         if not self.committer:
             return {"success": False, "error": "Committer not initialized"}
@@ -458,28 +509,49 @@ class Orchestrator:
 
         logger.info(f"[迭代 {iteration_id}] 提交阶段开始")
 
-        # 收集已完成的任务
+        # 收集已完成的任务（使用统一的 to_commit_entry 格式）
+        # to_commit_entry() 返回: id, title, description, result
+        # description 回退策略：若为空则使用 title
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
         completed_tasks = [
-            {"id": t.id, "title": t.title, "result": t.result}
+            t.to_commit_entry()
             for t in tasks if t.status.value == "completed"
         ]
 
-        # 执行提交
-        commit_result = await self.committer.commit_iteration(
+        # 构建 CommitContext（用于文档化和验证）
+        commit_context = CommitContext(
             iteration_id=iteration_id,
             tasks_completed=completed_tasks,
             review_decision=decision.value,
             auto_push=self.config.auto_push,
         )
 
-        # 记录提交结果到 iteration
+        # 验证任务数据完整性
+        validation_errors = commit_context.validate_tasks()
+        if validation_errors:
+            logger.warning(f"[迭代 {iteration_id}] 任务数据验证警告: {validation_errors}")
+
+        # 执行提交
+        commit_result = await self.committer.commit_iteration(
+            iteration_id=commit_context.iteration_id,
+            tasks_completed=commit_context.tasks_completed,
+            review_decision=commit_context.review_decision,
+            auto_push=commit_context.auto_push,
+        )
+
+        # 记录提交结果到 iteration（填充 IterationState 字段）
         iteration.commit_hash = commit_result.get('commit_hash', '')
         iteration.commit_message = commit_result.get('message', '')
         iteration.pushed = commit_result.get('pushed', False)
         iteration.commit_files = commit_result.get('files_changed', [])
 
+        # 记录错误信息到 iteration（commit 失败或 push 失败均不中断主流程）
         success = commit_result.get("success", False)
+        if not success:
+            iteration.commit_error = commit_result.get('error', 'Unknown commit error')
+        if commit_result.get("push_error"):
+            iteration.push_error = commit_result.get('push_error')
+
         result_status = "success" if success else "failed"
 
         logger.info(f"[迭代 {iteration_id}] 提交完成: {result_status}")
@@ -487,6 +559,10 @@ class Orchestrator:
             logger.info(f"[迭代 {iteration_id}] 提交哈希: {commit_result.get('commit_hash')}")
         if commit_result.get("pushed"):
             logger.info(f"[迭代 {iteration_id}] 已推送到远程仓库")
+        if iteration.commit_error:
+            logger.warning(f"[迭代 {iteration_id}] 提交失败: {iteration.commit_error}")
+        if iteration.push_error:
+            logger.warning(f"[迭代 {iteration_id}] 推送失败: {iteration.push_error}")
 
         return commit_result
 
@@ -498,7 +574,40 @@ class Orchestrator:
         logger.debug("已重置，准备下一轮迭代")
 
     def _generate_final_result(self) -> dict[str, Any]:
-        """生成最终结果"""
+        """生成最终结果
+
+        输出结构（用于测试断言）:
+            {
+                "success": bool,                    # 目标是否完成
+                "goal": str,                        # 用户目标
+                "iterations_completed": int,        # 完成的迭代数
+                "total_tasks_created": int,         # 创建的任务总数
+                "total_tasks_completed": int,       # 完成的任务总数
+                "total_tasks_failed": int,          # 失败的任务总数
+                "final_score": float,               # 最终评审得分
+                "review_summary": dict,             # 评审摘要
+                "worker_stats": dict,               # Worker 统计
+                "commits": dict,                    # 提交摘要（来自 CommitterAgent）
+                "pushed": bool,                     # 是否有提交被推送到远程
+                "iterations": [                     # 各迭代详情
+                    {
+                        "id": int,                  # 迭代 ID
+                        "status": str,              # 迭代状态
+                        "tasks_created": int,       # 本轮创建任务数
+                        "tasks_completed": int,     # 本轮完成任务数
+                        "tasks_failed": int,        # 本轮失败任务数
+                        "review_passed": bool,      # 评审是否通过
+                        "commit_hash": str | None,  # Git 提交哈希
+                        "commit_message": str | None, # 提交信息
+                        "commit_pushed": bool,      # 是否已推送
+                    },
+                    ...
+                ],
+            }
+
+        Returns:
+            包含完整执行结果的字典
+        """
         review_summary = self.reviewer.get_review_summary()
         worker_stats = self.worker_pool.get_statistics()
 
@@ -529,6 +638,12 @@ class Orchestrator:
                     "tasks_completed": it.tasks_completed,
                     "tasks_failed": it.tasks_failed,
                     "review_passed": it.review_passed,
+                    # commit 字段（与 orchestrator_mp 保持一致）
+                    "commit_hash": it.commit_hash,
+                    "commit_message": it.commit_message,
+                    "commit_pushed": it.pushed,
+                    "commit_error": it.commit_error,
+                    "push_error": it.push_error,
                 }
                 for it in self.state.iterations
             ],

@@ -9,9 +9,12 @@ from typing import Any
 from loguru import logger
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent))
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
+from agents.committer import CommitterAgent, CommitterConfig
 from coordinator.orchestrator_mp import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+from cursor.client import CursorAgentConfig
 
 
 def parse_max_iterations(value: str) -> int:
@@ -193,6 +196,26 @@ def parse_args() -> argparse.Namespace:
         help="stream-json 原始日志目录",
     )
 
+    # 自动提交相关参数
+    parser.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="任务完成后自动提交代码更改",
+    )
+
+    parser.add_argument(
+        "--auto-push",
+        action="store_true",
+        help="自动推送到远程仓库（需配合 --auto-commit 使用）",
+    )
+
+    parser.add_argument(
+        "--commit-message",
+        type=str,
+        default="",
+        help="自定义提交信息前缀（默认使用自动生成的提交信息）",
+    )
+
     return parser.parse_args()
 
 
@@ -239,6 +262,129 @@ def resolve_stream_log_config(args: argparse.Namespace, config_data: dict[str, A
     }
 
 
+async def run_commit_phase(
+    working_directory: str,
+    auto_push: bool = False,
+    commit_message_prefix: str = "",
+    iterations_completed: int = 0,
+    tasks_completed: int = 0,
+) -> dict[str, Any]:
+    """执行提交阶段
+
+    Args:
+        working_directory: 工作目录
+        auto_push: 是否推送到远程
+        commit_message_prefix: 提交信息前缀
+        iterations_completed: 完成的迭代次数
+        tasks_completed: 完成的任务数量
+
+    Returns:
+        提交结果字典，包含:
+        - total_commits: 总提交次数
+        - commit_hashes: 提交哈希列表
+        - commit_messages: 提交信息列表
+        - pushed_commits: 已推送次数
+        - files_changed: 变更文件列表
+    """
+    logger.info("=" * 50)
+    logger.info("提交阶段")
+    logger.info("=" * 50)
+
+    # 创建 CommitterAgent
+    cursor_config = CursorAgentConfig(working_directory=working_directory)
+    committer_config = CommitterConfig(
+        working_directory=working_directory,
+        auto_push=auto_push,
+        commit_message_style="conventional",
+        cursor_config=cursor_config,
+    )
+    committer = CommitterAgent(committer_config)
+
+    # 检查是否有变更
+    status = committer.check_status()
+    if not status.get("is_repo"):
+        logger.warning("当前目录不是 Git 仓库，跳过提交")
+        return {
+            "total_commits": 0,
+            "commit_hashes": [],
+            "commit_messages": [],
+            "pushed_commits": 0,
+            "files_changed": [],
+            "error": "不是 Git 仓库",
+        }
+
+    if not status.get("has_changes"):
+        logger.info("没有需要提交的变更")
+        return {
+            "total_commits": 0,
+            "commit_hashes": [],
+            "commit_messages": [],
+            "pushed_commits": 0,
+            "files_changed": [],
+        }
+
+    # 生成或使用提供的提交信息
+    if commit_message_prefix:
+        commit_message = commit_message_prefix
+    else:
+        # 根据执行结果生成提交信息
+        commit_message = await committer.generate_commit_message()
+
+    # 添加迭代信息到提交信息
+    if iterations_completed > 0 or tasks_completed > 0:
+        suffix = f"\n\n迭代次数: {iterations_completed}, 完成任务: {tasks_completed}"
+        if not commit_message_prefix:
+            # 自动生成的信息可以直接追加
+            commit_message = commit_message.rstrip() + suffix
+        else:
+            # 用户自定义信息保持原样
+            commit_message = commit_message_prefix
+
+    # 执行提交
+    commit_result = committer.commit(commit_message)
+
+    if not commit_result.success:
+        logger.error(f"提交失败: {commit_result.error}")
+        return {
+            "total_commits": 0,
+            "commit_hashes": [],
+            "commit_messages": [],
+            "pushed_commits": 0,
+            "files_changed": commit_result.files_changed,
+            "error": commit_result.error,
+        }
+
+    logger.info(f"提交成功: {commit_result.commit_hash[:8]} - {commit_message.split(chr(10))[0][:50]}")
+
+    # 可选推送
+    pushed_commits = 0
+    push_error = ""
+    if auto_push:
+        push_result = committer.push()
+        if push_result.success:
+            pushed_commits = 1
+            logger.info("推送成功")
+        else:
+            push_error = push_result.error
+            logger.warning(f"推送失败: {push_error}")
+
+    # 获取提交摘要
+    summary = committer.get_commit_summary()
+
+    result = {
+        "total_commits": summary.get("successful_commits", 1),
+        "commit_hashes": summary.get("commit_hashes", [commit_result.commit_hash]),
+        "commit_messages": [commit_message],
+        "pushed_commits": pushed_commits,
+        "files_changed": summary.get("files_changed", commit_result.files_changed),
+    }
+
+    if push_error:
+        result["push_error"] = push_error
+
+    return result
+
+
 async def run_orchestrator(args: argparse.Namespace) -> dict:
     """运行编排器"""
     config_data = load_yaml_config(Path(__file__).with_name("config.yaml"))
@@ -272,8 +418,28 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     logger.info(f"  - 执行者: {config.worker_model}")
     logger.info(f"  - 评审者: {config.reviewer_model}")
 
+    if args.auto_commit:
+        logger.info("自动提交: 启用")
+        if args.auto_push:
+            logger.info("自动推送: 启用")
+
     orchestrator = MultiProcessOrchestrator(config)
     result = await orchestrator.run(args.goal)
+
+    # 完成后提交阶段
+    if args.auto_commit:
+        commits_result = await run_commit_phase(
+            working_directory=args.directory,
+            auto_push=args.auto_push,
+            commit_message_prefix=args.commit_message,
+            iterations_completed=result.get("iterations_completed", 0),
+            tasks_completed=result.get("total_tasks_completed", 0),
+        )
+        result["commits"] = commits_result
+
+        # 更新 pushed 标志（与协程版 Orchestrator 对齐）
+        if commits_result.get("pushed_commits", 0) > 0:
+            result["pushed"] = True
 
     return result
 
@@ -307,6 +473,47 @@ def print_result(result: dict) -> None:
         for it in result['iterations']:
             status_emoji = "✓" if it.get('review_passed') else "→"
             print(f"  {status_emoji} 迭代 {it['id']}: {it['tasks_completed']}/{it['tasks_created']} 任务完成")
+
+    # 提交信息
+    commits_info = result.get('commits', {})
+    if commits_info:
+        print("\n提交信息:")
+        total_commits = commits_info.get('total_commits', 0)
+        if total_commits > 0:
+            print(f"  提交数量: {total_commits}")
+
+            # 显示提交哈希
+            commit_hashes = commits_info.get('commit_hashes', [])
+            if commit_hashes:
+                for i, hash_val in enumerate(commit_hashes[-3:], 1):  # 显示最近3个
+                    short_hash = hash_val[:8] if len(hash_val) > 8 else hash_val
+                    print(f"  提交 {i}: {short_hash}")
+
+            # 显示提交信息摘要
+            commit_messages = commits_info.get('commit_messages', [])
+            if commit_messages:
+                print("  提交信息摘要:")
+                for msg in commit_messages[-3:]:  # 显示最近3条
+                    # 截取第一行作为摘要
+                    summary = msg.split('\n')[0][:60]
+                    print(f"    - {summary}")
+
+            # 显示变更文件数量
+            files_changed = commits_info.get('files_changed', [])
+            if files_changed:
+                print(f"  变更文件: {len(files_changed)} 个")
+
+            # 显示推送状态
+            pushed_commits = commits_info.get('pushed_commits', 0)
+            if pushed_commits > 0:
+                print(f"  推送状态: 已推送 {pushed_commits} 个提交到远程仓库")
+            elif commits_info.get('push_error'):
+                print(f"  推送状态: 推送失败 - {commits_info['push_error']}")
+        else:
+            if commits_info.get('error'):
+                print(f"  错误: {commits_info['error']}")
+            else:
+                print("  无代码更改，未创建提交")
 
     print("=" * 60)
 

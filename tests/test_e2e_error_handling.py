@@ -527,7 +527,7 @@ class TestCommitErrors:
     async def test_commit_without_changes(
         self, orchestrator_with_commit: Orchestrator
     ) -> None:
-        """无变更提交"""
+        """无变更提交 - 不应中断主流程，错误应记录到 iteration"""
         orchestrator = orchestrator_with_commit
 
         mock_plan_result = {
@@ -554,6 +554,9 @@ class TestCommitErrors:
         mock_commit_result = {
             "success": False,
             "error": "没有需要提交的变更",
+            "message": "",
+            "files_changed": [],
+            "pushed": False,
         }
 
         with patch.object(
@@ -588,11 +591,21 @@ class TestCommitErrors:
                             # 验证提交被调用但返回无变更
                             mock_commit.assert_called_once()
 
+                            # 验证主流程未中断，目标仍然完成
+                            assert result["success"] is True
+
+                            # 验证 commit_error 被正确记录到 iteration
+                            assert len(result["iterations"]) == 1
+                            iteration_result = result["iterations"][0]
+                            assert iteration_result["commit_error"] == "没有需要提交的变更"
+                            assert iteration_result["commit_hash"] == ""
+                            assert iteration_result["commit_pushed"] is False
+
     @pytest.mark.asyncio
     async def test_commit_conflict(
         self, orchestrator_with_commit: Orchestrator
     ) -> None:
-        """提交冲突处理"""
+        """提交冲突处理 - 不应中断主流程，错误应记录到 iteration"""
         orchestrator = orchestrator_with_commit
 
         mock_plan_result = {
@@ -619,6 +632,9 @@ class TestCommitErrors:
         mock_commit_result = {
             "success": False,
             "error": "合并冲突: 无法自动合并",
+            "message": "",
+            "files_changed": ["conflict.py"],
+            "pushed": False,
         }
 
         with patch.object(
@@ -649,14 +665,23 @@ class TestCommitErrors:
 
                             result = await orchestrator.run("冲突提交测试")
 
-                            # 验证冲突被正确记录
+                            # 验证提交被调用
                             mock_commit.assert_called_once()
+
+                            # 验证主流程未中断，目标仍然完成
+                            assert result["success"] is True
+
+                            # 验证 commit_error 被正确记录到 iteration
+                            assert len(result["iterations"]) == 1
+                            iteration_result = result["iterations"][0]
+                            assert iteration_result["commit_error"] == "合并冲突: 无法自动合并"
+                            assert iteration_result["commit_pushed"] is False
 
     @pytest.mark.asyncio
     async def test_push_failure(
         self, orchestrator_with_commit: Orchestrator
     ) -> None:
-        """推送失败处理"""
+        """推送失败处理 - 提交成功但 pushed=False，push_error 应记录到 iteration"""
         orchestrator = orchestrator_with_commit
         orchestrator.config.auto_push = True
 
@@ -683,7 +708,7 @@ class TestCommitErrors:
         # 提交成功但推送失败
         mock_commit_result = {
             "success": True,
-            "commit_hash": "abc123",
+            "commit_hash": "abc123def456",
             "message": "feat: 实现功能",
             "files_changed": ["push_fail.py"],
             "pushed": False,
@@ -718,8 +743,30 @@ class TestCommitErrors:
 
                             result = await orchestrator.run("推送失败测试")
 
-                            # 提交成功但推送失败应该正确记录
+                            # 验证提交被调用
                             mock_commit.assert_called_once()
+
+                            # 验证主流程未中断，目标仍然完成
+                            assert result["success"] is True
+
+                            # 验证 iteration 中记录了正确的信息
+                            assert len(result["iterations"]) == 1
+                            iteration_result = result["iterations"][0]
+
+                            # 提交成功时 commit_error 应为 None
+                            assert iteration_result["commit_error"] is None
+
+                            # commit_hash 应被记录
+                            assert iteration_result["commit_hash"] == "abc123def456"
+
+                            # pushed 应为 False
+                            assert iteration_result["commit_pushed"] is False
+
+                            # push_error 应被记录
+                            assert iteration_result["push_error"] == "远程仓库拒绝: 权限不足"
+
+                            # 最终结果的 pushed 字段应为 False（无成功推送的提交）
+                            assert result["pushed"] is False
 
 
 class TestBoundaryConditions:

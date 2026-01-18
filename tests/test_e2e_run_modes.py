@@ -247,6 +247,121 @@ class TestMPMode:
                 assert config_call[1].get("worker_count") == 8 or \
                        config_call.kwargs.get("worker_count") == 8
 
+    @pytest.mark.asyncio
+    async def test_mp_mode_commit_config_passthrough(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 MP 模式提交配置透传"""
+        # 设置提交相关参数
+        mock_args.auto_commit = True
+        mock_args.auto_push = True
+        mock_args.commit_per_iteration = True
+
+        runner = Runner(mock_args)
+        analysis = TaskAnalysis(
+            mode=RunMode.MP,
+            goal="带提交配置的 MP 任务",
+            options={
+                "auto_commit": True,
+                "auto_push": True,
+                "commit_per_iteration": True,
+            },
+            reasoning="测试提交配置透传",
+        )
+
+        mock_result = {
+            "success": True,
+            "goal": "带提交配置的 MP 任务",
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        with patch("coordinator.MultiProcessOrchestrator") as MockMPOrchestrator:
+            with patch("coordinator.MultiProcessOrchestratorConfig") as MockConfig:
+                mock_instance = MagicMock()
+                mock_instance.run = AsyncMock(return_value=mock_result)
+                MockMPOrchestrator.return_value = mock_instance
+                MockConfig.return_value = MagicMock()
+
+                result = await runner.run(analysis)
+
+                # 验证配置中的提交相关参数
+                config_call = MockConfig.call_args
+                assert config_call is not None
+
+                # 验证 enable_auto_commit 透传
+                assert config_call.kwargs.get("enable_auto_commit") is True, \
+                    "enable_auto_commit 应该透传为 True"
+
+                # 验证 auto_push 透传
+                assert config_call.kwargs.get("auto_push") is True, \
+                    "auto_push 应该透传为 True"
+
+                # 验证 commit_per_iteration 透传
+                assert config_call.kwargs.get("commit_per_iteration") is True, \
+                    "commit_per_iteration 应该透传为 True"
+
+                # 验证 commit_on_complete 语义（当 commit_per_iteration=True 时为 False）
+                assert config_call.kwargs.get("commit_on_complete") is False, \
+                    "commit_on_complete 应该为 False（因为 commit_per_iteration=True）"
+
+    @pytest.mark.asyncio
+    async def test_mp_mode_commit_config_defaults(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 MP 模式提交配置默认值"""
+        # 使用默认提交参数
+        mock_args.auto_commit = False
+        mock_args.auto_push = False
+        mock_args.commit_per_iteration = False
+
+        runner = Runner(mock_args)
+        analysis = TaskAnalysis(
+            mode=RunMode.MP,
+            goal="默认提交配置的 MP 任务",
+            reasoning="测试默认提交配置",
+        )
+
+        mock_result = {
+            "success": True,
+            "goal": "默认提交配置的 MP 任务",
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+        }
+
+        with patch("coordinator.MultiProcessOrchestrator") as MockMPOrchestrator:
+            with patch("coordinator.MultiProcessOrchestratorConfig") as MockConfig:
+                mock_instance = MagicMock()
+                mock_instance.run = AsyncMock(return_value=mock_result)
+                MockMPOrchestrator.return_value = mock_instance
+                MockConfig.return_value = MagicMock()
+
+                result = await runner.run(analysis)
+
+                # 验证配置中的默认提交参数
+                config_call = MockConfig.call_args
+                assert config_call is not None
+
+                # 验证 enable_auto_commit 默认值（从 CLI 传递 False）
+                assert config_call.kwargs.get("enable_auto_commit") is False, \
+                    "enable_auto_commit 应该透传 CLI 的 False 值"
+
+                # 验证 auto_push 默认值
+                assert config_call.kwargs.get("auto_push") is False, \
+                    "auto_push 应该为 False"
+
+                # 验证 commit_per_iteration 默认值
+                assert config_call.kwargs.get("commit_per_iteration") is False, \
+                    "commit_per_iteration 应该为 False"
+
+                # 验证 commit_on_complete 语义（当 commit_per_iteration=False 时为 True）
+                assert config_call.kwargs.get("commit_on_complete") is True, \
+                    "commit_on_complete 应该为 True（因为 commit_per_iteration=False）"
+
 
 # ==================== TestKnowledgeMode ====================
 
@@ -539,6 +654,210 @@ class TestIterateMode:
             iterate_args = call_args[0][0]
             assert iterate_args.auto_commit is True
             assert iterate_args.auto_push is True
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_mp_orchestrator_called(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 iterate 模式内部调用 MultiProcessOrchestrator"""
+        from scripts.run_iterate import SelfIterator
+
+        # 创建 IterateArgs 模拟
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试 MP 编排器"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = False
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试 MP 编排器调用"
+
+        mock_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig") as MockConfig:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    # 设置 KnowledgeManager mock
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_result)
+                    MockMP.return_value = mock_orch
+                    MockConfig.return_value = MagicMock()
+
+                    result = await iterator._run_agent_system()
+
+                    # 断言 MultiProcessOrchestrator 被调用
+                    MockMP.assert_called_once()
+
+                    # 验证 run 方法被调用
+                    mock_orch.run.assert_called_once()
+                    assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_commits_written_to_result(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 iterate 模式 auto_commit=True 时 commits 写入结果"""
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试提交结果"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = True  # 启用自动提交
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试提交结果目标"
+
+        mock_run_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        mock_commits = {
+            "total_commits": 1,
+            "commit_hashes": ["deadbeef123"],
+            "commit_messages": ["feat: 测试提交"],
+            "pushed_commits": 0,
+            "files_changed": ["src/main.py"],
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig"):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    # 设置 KnowledgeManager mock
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_run_result)
+                    MockMP.return_value = mock_orch
+
+                    # Mock _run_commit_phase
+                    with patch.object(
+                        iterator, "_run_commit_phase", new_callable=AsyncMock
+                    ) as mock_commit:
+                        mock_commit.return_value = mock_commits
+
+                        result = await iterator._run_agent_system()
+
+                        # 验证 _run_commit_phase 被调用
+                        mock_commit.assert_called_once()
+
+                        # 验证 commits 写入结果
+                        assert "commits" in result
+                        assert result["commits"]["total_commits"] == 1
+                        assert result["commits"]["commit_hashes"] == ["deadbeef123"]
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_committer_agent_integration(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 iterate 模式 CommitterAgent 集成"""
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试 CommitterAgent"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = True
+                self.auto_push = True  # 也测试推送
+                self.commit_per_iteration = False
+                self.commit_message = "自定义提交信息"
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+
+        with patch("scripts.run_iterate.CommitterAgent") as MockCommitter:
+            with patch("scripts.run_iterate.CommitterConfig"):
+                mock_agent = MagicMock()
+
+                # 模拟有变更
+                mock_agent.check_status.return_value = {
+                    "is_repo": True,
+                    "has_changes": True,
+                }
+
+                # 模拟提交成功
+                mock_commit_result = MagicMock()
+                mock_commit_result.success = True
+                mock_commit_result.commit_hash = "commit123"
+                mock_commit_result.files_changed = ["file.py"]
+                mock_commit_result.error = None
+                mock_agent.commit.return_value = mock_commit_result
+
+                # 模拟推送成功
+                mock_push_result = MagicMock()
+                mock_push_result.success = True
+                mock_push_result.error = None
+                mock_agent.push.return_value = mock_push_result
+
+                # 模拟 get_commit_summary
+                mock_agent.get_commit_summary.return_value = {
+                    "successful_commits": 1,
+                    "commit_hashes": ["commit123"],
+                    "files_changed": ["file.py"],
+                }
+
+                MockCommitter.return_value = mock_agent
+
+                result = await iterator._run_commit_phase(1, 2)
+
+                # 验证 CommitterAgent 被创建
+                MockCommitter.assert_called_once()
+
+                # 验证 commit 被调用
+                mock_agent.commit.assert_called_once()
+
+                # 验证使用了自定义提交信息
+                commit_call_args = mock_agent.commit.call_args
+                assert "自定义提交信息" in commit_call_args[0][0]
+
+                # 验证 push 被调用
+                mock_agent.push.assert_called_once()
+
+                # 验证返回结果
+                assert result["total_commits"] == 1
+                assert result["pushed_commits"] == 1
 
 
 # ==================== TestAutoMode ====================

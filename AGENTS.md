@@ -469,6 +469,61 @@ Planner (规划者) → TaskQueue → Workers (执行者) → Reviewer (评审�
      └────────────── 迭代循环 ←───────────────────────────┘
 ```
 
+## 自我迭代模式
+
+自我迭代模式（iterate）**默认启用多进程并行执行**（`MultiProcessOrchestrator`），支持高效的任务并行处理。
+
+### 编排器选择
+
+| 编排器 | 参数 | 说明 |
+|--------|------|------|
+| `MultiProcessOrchestrator` | `--orchestrator mp`（默认） | 多进程并行，适合复杂任务 |
+| `Orchestrator` | `--orchestrator basic` 或 `--no-mp` | 协程模式，适合简单任务或资源受限环境 |
+
+### 运行示例
+
+```bash
+# 默认使用多进程编排器（推荐）
+python run.py --mode iterate "优化代码"
+python scripts/run_iterate.py "增加新功能支持"
+
+# 显式指定多进程编排器
+python run.py --mode iterate --orchestrator mp "任务描述" --workers 5
+
+# 禁用多进程，使用协程编排器
+python run.py --mode iterate --no-mp "任务描述"
+python scripts/run_iterate.py --orchestrator basic "任务描述"
+
+# 配合自动提交
+python run.py --mode iterate --auto-commit --auto-push "完成功能"
+```
+
+### 回退策略
+
+当 MP 编排器启动失败时，系统 **自动回退** 到协程编排器：
+
+- **启动超时**: 进程创建超时
+- **资源不足**: OSError（如进程数限制）
+- **运行时错误**: 事件循环问题等
+- **其他异常**: 未预期的启动错误
+
+回退提示：
+```
+⚠ MP 编排器启动失败: <错误原因>
+⚠ 正在回退到基本协程编排器...
+```
+
+### 参数参考
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--orchestrator` | 编排器类型: `mp`/`basic` | `mp` |
+| `--no-mp` | 禁用多进程编排器 | False |
+| `--workers` | Worker 池大小 | 3 |
+| `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 5 |
+| `--auto-commit` | 迭代完成后自动提交 | False |
+| `--auto-push` | 自动推送到远程仓库 | False |
+
 ## Agent 角色定义
 
 ### Planner (规划者)

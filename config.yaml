@@ -81,6 +81,17 @@ worker:
   task_timeout: 300         # 任务超时时间（秒）
   max_concurrent_tasks: 1   # 同时处理的任务数
 
+  # Worker 进程内知识库集成（可选）
+  # 启用后，Worker 会在处理任务时自动搜索知识库并注入相关文档
+  knowledge_integration:
+    enabled: false                              # 是否启用知识库集成
+    search_mode: keyword                        # 搜索模式: keyword, semantic, hybrid
+    max_docs: 3                                 # 每任务最大注入文档数
+    min_score: 0.3                              # 最低相关度阈值
+    storage_path: .cursor/knowledge             # 知识库存储路径
+    enable_vector_index: false                  # 是否启用向量索引（语义搜索需要）
+    log_stats: true                             # 是否记录统计数据（检索耗时、payload 大小）
+
 # 评审者配置
 reviewer:
   strict_mode: false        # 严格模式

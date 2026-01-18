@@ -700,7 +700,13 @@ class CommitterAgent(BaseAgent):
             task_descriptions = []
             for task in tasks_completed:
                 task_id = task.get("task_id", task.get("id", "unknown"))
-                description = task.get("description", task.get("name", ""))
+                # description 回退策略：description -> title -> name -> 空
+                description = (
+                    task.get("description")
+                    or task.get("title")
+                    or task.get("name")
+                    or ""
+                )
                 if description:
                     task_descriptions.append(f"  - [{task_id}] {description}")
                 else:

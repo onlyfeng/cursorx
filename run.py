@@ -265,6 +265,46 @@ def parse_args() -> argparse.Namespace:
         help="[knowledge] 自我更新模式",
     )
 
+    # 知识库注入参数（MP 模式）
+    knowledge_injection_group = parser.add_mutually_exclusive_group()
+    knowledge_injection_group.add_argument(
+        "--enable-knowledge-injection",
+        action="store_true",
+        dest="enable_knowledge_injection",
+        default=True,
+        help="[mp] 启用知识库注入（默认）",
+    )
+    knowledge_injection_group.add_argument(
+        "--no-knowledge-injection",
+        action="store_false",
+        dest="enable_knowledge_injection",
+        help="[mp] 禁用知识库注入",
+    )
+
+    parser.add_argument(
+        "--knowledge-top-k",
+        type=int,
+        default=3,
+        metavar="N",
+        help="[mp] 知识库注入时使用的最大文档数 (默认: 3)",
+    )
+
+    parser.add_argument(
+        "--knowledge-max-chars-per-doc",
+        type=int,
+        default=1200,
+        metavar="N",
+        help="[mp] 知识库注入时单文档最大字符数 (默认: 1200)",
+    )
+
+    parser.add_argument(
+        "--knowledge-max-total-chars",
+        type=int,
+        default=3000,
+        metavar="N",
+        help="[mp] 知识库注入时总字符上限 (默认: 3000)",
+    )
+
     # 多进程模式专用参数
     parser.add_argument(
         "--planner-model",
@@ -336,6 +376,21 @@ def parse_args() -> argparse.Namespace:
         "--commit-per-iteration",
         action="store_true",
         help="每次迭代都提交（默认仅在全部完成时提交）",
+    )
+
+    # 编排器选择参数（用于 iterate 模式）
+    orchestrator_group = parser.add_mutually_exclusive_group()
+    orchestrator_group.add_argument(
+        "--orchestrator",
+        type=str,
+        choices=["mp", "basic"],
+        default="mp",
+        help="[iterate] 编排器类型: mp=多进程(默认), basic=协程模式",
+    )
+    orchestrator_group.add_argument(
+        "--no-mp",
+        action="store_true",
+        help="[iterate] 禁用多进程编排器，使用基本协程编排器",
     )
 
     return parser.parse_args()
@@ -663,6 +718,22 @@ class Runner:
         options["auto_push"] = auto_push and auto_commit  # auto_push 需要 auto_commit
         options["commit_per_iteration"] = commit_per_iteration
 
+        # 编排器选项（用于 iterate 模式）
+        options["orchestrator"] = getattr(self.args, "orchestrator", "mp")
+        options["no_mp"] = getattr(self.args, "no_mp", False)
+
+        # 知识库注入选项（用于 MP 模式）
+        options["enable_knowledge_injection"] = getattr(
+            self.args, "enable_knowledge_injection", True
+        )
+        options["knowledge_top_k"] = getattr(self.args, "knowledge_top_k", 3)
+        options["knowledge_max_chars_per_doc"] = getattr(
+            self.args, "knowledge_max_chars_per_doc", 1200
+        )
+        options["knowledge_max_total_chars"] = getattr(
+            self.args, "knowledge_max_total_chars", 3000
+        )
+
         return options
 
     def _get_mode_name(self, mode: RunMode) -> str:
@@ -677,6 +748,60 @@ class Runner:
             RunMode.ASK: "问答模式",
         }
         return names.get(mode, mode.value)
+
+    async def _search_knowledge_docs(self, query: str) -> list[dict[str, Any]]:
+        """搜索知识库文档
+
+        Args:
+            query: 搜索查询
+
+        Returns:
+            知识库文档列表，每个文档包含 title, url, content 字段
+        """
+        try:
+            from knowledge import KnowledgeStorage
+
+            storage = KnowledgeStorage()
+            await storage.initialize()
+            results = await storage.search(query, limit=5)
+
+            knowledge_docs: list[dict[str, Any]] = []
+            for result in results:
+                doc = await storage.load_document(result.doc_id)
+                if doc:
+                    knowledge_docs.append({
+                        "title": doc.title,
+                        "url": doc.url,
+                        "content": doc.content[:2000],
+                    })
+            return knowledge_docs
+        except Exception as e:
+            logger.warning(f"知识库搜索失败: {e}")
+            return []
+
+    def _build_enhanced_goal(self, goal: str, knowledge_docs: list[dict[str, Any]]) -> str:
+        """构建增强后的目标（将知识库文档拼接到 goal）
+
+        Args:
+            goal: 原始目标
+            knowledge_docs: 知识库文档列表
+
+        Returns:
+            增强后的目标字符串
+        """
+        if not knowledge_docs:
+            return goal
+
+        context_text = "\n\n## 参考文档（来自知识库）\n\n"
+        for i, doc in enumerate(knowledge_docs, 1):
+            context_text += f"### {i}. {doc['title']}\n"
+            # 截断过长内容
+            content = doc['content'][:1000]
+            if len(doc['content']) > 1000:
+                content += "..."
+            context_text += f"```\n{content}\n```\n\n"
+
+        return f"{goal}\n{context_text}"
 
     async def _run_basic(self, goal: str, options: dict) -> dict:
         """运行基本模式"""
@@ -710,8 +835,26 @@ class Runner:
         return await orchestrator.run(goal)
 
     async def _run_mp(self, goal: str, options: dict) -> dict:
-        """运行多进程模式"""
+        """运行多进程模式
+
+        支持知识库增强：
+        - 方案 B: 当指定 --search-knowledge 时，搜索知识库并将文档拼接到 goal
+        - 方案 C: 通过 enable_knowledge_search 配置启用 MP 任务级知识库注入
+        """
         from coordinator import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+
+        # 方案 B: 搜索知识库并增强 goal
+        enhanced_goal = goal
+        search_query = options.get("search_knowledge")
+        if search_query:
+            knowledge_docs = await self._search_knowledge_docs(search_query)
+            if knowledge_docs:
+                enhanced_goal = self._build_enhanced_goal(goal, knowledge_docs)
+                print_success(f"已从知识库加载 {len(knowledge_docs)} 个相关文档")
+
+        # 方案 C: 当指定 --search-knowledge 时，同时启用 MP 任务级知识库注入
+        # 否则保持默认行为（enable_knowledge_search=True 但仅对 Cursor 相关任务生效）
+        enable_knowledge_search = options.get("use_knowledge", True) if search_query else True
 
         config = MultiProcessOrchestratorConfig(
             working_directory=options["directory"],
@@ -722,13 +865,26 @@ class Runner:
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
             reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
             stream_events_enabled=options.get("stream_log", False),
+            # 自动提交配置透传
+            enable_auto_commit=options.get("auto_commit", True),
+            auto_push=options.get("auto_push", False),
+            commit_per_iteration=options.get("commit_per_iteration", False),
+            # commit_on_complete 语义：当 commit_per_iteration=False 时默认仅在完成时提交
+            commit_on_complete=not options.get("commit_per_iteration", False),
+            # 知识库配置（方案 C）
+            enable_knowledge_search=enable_knowledge_search,
+            # 知识库注入配置
+            enable_knowledge_injection=options.get("enable_knowledge_injection", True),
+            knowledge_top_k=options.get("knowledge_top_k", 3),
+            knowledge_max_chars_per_doc=options.get("knowledge_max_chars_per_doc", 1200),
+            knowledge_max_total_chars=options.get("knowledge_max_total_chars", 3000),
         )
 
         if options["max_iterations"] == -1:
             print_info("无限迭代模式已启用（按 Ctrl+C 中断）")
 
         orchestrator = MultiProcessOrchestrator(config)
-        return await orchestrator.run(goal)
+        return await orchestrator.run(enhanced_goal)
 
     async def _run_knowledge(self, goal: str, options: dict) -> dict:
         """运行知识库增强模式"""
@@ -806,6 +962,9 @@ class Runner:
                 self.auto_push = opts.get("auto_push", False)
                 self.commit_per_iteration = opts.get("commit_per_iteration", False)
                 self.commit_message = opts.get("commit_message", "")
+                # 编排器选项
+                self.orchestrator = opts.get("orchestrator", "mp")
+                self.no_mp = opts.get("no_mp", False)
 
         iterate_args = IterateArgs(goal, options)
         iterator = SelfIterator(iterate_args)

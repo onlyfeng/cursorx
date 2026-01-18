@@ -25,12 +25,8 @@ if TYPE_CHECKING:
     from indexing import SemanticSearch
     from knowledge import KnowledgeManager
 
-# Cursor 相关关键词，用于自动检测是否需要知识库上下文
-CURSOR_KEYWORDS = [
-    "cursor", "agent", "cli", "mcp", "hook", "subagent", "skill",
-    "stream-json", "output-format", "cursor-agent", "--force", "--print",
-    "cursor.com", "cursor api", "cursor 命令", "cursor 工具",
-]
+# 从共享模块导入 Cursor 关键词检测（避免重复定义）
+from core.knowledge import CURSOR_KEYWORDS, is_cursor_related
 
 
 class WorkerConfig(BaseModel):
@@ -162,18 +158,6 @@ class WorkerAgent(BaseAgent):
         self._knowledge_search_enabled = self.worker_config.enable_knowledge_search
         if self._knowledge_search_enabled:
             logger.info(f"[{self.id}] 知识库搜索已启用")
-
-    def _is_cursor_related(self, text: str) -> bool:
-        """检测文本是否与 Cursor 相关
-
-        Args:
-            text: 要检测的文本
-
-        Returns:
-            是否与 Cursor 相关
-        """
-        text_lower = text.lower()
-        return any(keyword.lower() in text_lower for keyword in CURSOR_KEYWORDS)
 
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行任务指令
@@ -359,8 +343,8 @@ class WorkerAgent(BaseAgent):
         # 构建搜索查询
         query = f"{task.title}. {task.description}" if task.description else task.title
 
-        # 检查是否与 Cursor 相关
-        if not self._is_cursor_related(query) and not self._is_cursor_related(task.instruction):
+        # 检查是否与 Cursor 相关（使用共享模块的检测函数）
+        if not is_cursor_related(query) and not is_cursor_related(task.instruction):
             return []
 
         try:
