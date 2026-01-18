@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
+import httpx
 import yaml
 
 
@@ -342,18 +342,18 @@ class EgressIPManager:
         
         for url in urls:
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            return EgressIPConfig(
-                                ip_ranges=data.get("ip_ranges", data.get("ranges", [])),
-                                last_updated=time.time(),
-                                source=url,
-                                version=data.get("version", ""),
-                                cache_file=self.cache_file,
-                                cache_ttl=self.cache_ttl,
-                            )
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(url)
+                    if response.status_code == 200:
+                        data = response.json()
+                        return EgressIPConfig(
+                            ip_ranges=data.get("ip_ranges", data.get("ranges", [])),
+                            last_updated=time.time(),
+                            source=url,
+                            version=data.get("version", ""),
+                            cache_file=self.cache_file,
+                            cache_ttl=self.cache_ttl,
+                        )
             except Exception as e:
                 print(f"警告: 无法从 {url} 获取 IP 范围: {e}")
                 continue
