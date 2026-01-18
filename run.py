@@ -1018,8 +1018,19 @@ async def async_main() -> int:
 
 def main() -> None:
     """主函数"""
+    import gc
+    import warnings
+
+    # 抑制子进程清理时的事件循环关闭警告
+    # 这是 Python 3.10+ 的已知问题，不影响程序功能
+    warnings.filterwarnings(
+        "ignore",
+        message=".*Event loop is closed.*",
+        category=RuntimeWarning,
+    )
+
     try:
-        # 使用自定义事件循环运行，避免子进程清理时的事件循环关闭错误
+        # 使用自定义事件循环运行
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -1032,7 +1043,12 @@ def main() -> None:
             # 等待所有任务完成
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            # 关闭异步生成器
             loop.run_until_complete(loop.shutdown_asyncgens())
+            # 关闭默认执行器
+            loop.run_until_complete(loop.shutdown_default_executor())
+            # 强制垃圾回收，在循环关闭前清理子进程对象
+            gc.collect()
             loop.close()
         sys.exit(exit_code)
     except KeyboardInterrupt:
@@ -1041,4 +1057,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # 设置异常钩子抑制子进程清理错误
+    def _subprocess_exception_handler(loop, context):
+        """忽略子进程清理时的事件循环关闭错误"""
+        if "Event loop is closed" in str(context.get("message", "")):
+            return
+        loop.default_exception_handler(context)
+
     main()
