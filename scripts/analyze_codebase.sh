@@ -14,9 +14,9 @@ agent -p --output-format "$OUTPUT_FORMAT" \
   - 主要模块和组件
   - 技术栈和依赖
   - 架构模式
-  
+
   注意：不要编写任何代码，只提供分析。
-  
+
   以 JSON 格式输出：
   {
     \"structure\": \"项目结构描述\",

@@ -8,46 +8,45 @@
 """
 
 # 导入异常类和错误处理工具
-from .cloud.exceptions import (
-    CloudAgentError,
-    RateLimitError,
-    NetworkError,
-    TaskError,
-    AuthErrorCode,
-    AuthError,
-    handle_http_error,
-)
-from .cloud.retry import (
-    RetryConfig,
-    with_retry,
-    retry_async,
-)
-
 # 导入认证模块
 from .cloud.auth import (
-    AuthToken,
     AuthStatus,
+    AuthToken,
     CloudAuthConfig,
     CloudAuthManager,
     get_api_key,
+    require_auth,
     verify_auth,
     verify_auth_sync,
-    require_auth,
-)
-
-# 导入任务管理模块
-from .cloud.task import (
-    TaskStatus,
-    TaskResult,
-    CloudTaskClient,
-    CloudTaskOptions,
-    CloudTask,
 )
 
 # 导入 Cloud Agent 客户端
 from .cloud.client import (
-    CursorCloudClient,
     CloudAgentResult,
+    CursorCloudClient,
+)
+from .cloud.exceptions import (
+    AuthError,
+    AuthErrorCode,
+    CloudAgentError,
+    NetworkError,
+    RateLimitError,
+    TaskError,
+    handle_http_error,
+)
+from .cloud.retry import (
+    RetryConfig,
+    retry_async,
+    with_retry,
+)
+
+# 导入任务管理模块
+from .cloud.task import (
+    CloudTask,
+    CloudTaskClient,
+    CloudTaskOptions,
+    TaskResult,
+    TaskStatus,
 )
 
 # 导入流式事件类型

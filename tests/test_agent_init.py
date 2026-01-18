@@ -3,11 +3,10 @@
 验证各 Agent 类能正确初始化，检查配置类的默认值和必填项
 """
 import pytest
-from pydantic import ValidationError
 
-from agents.planner import PlannerConfig, PlannerAgent
-from agents.worker import WorkerConfig, WorkerAgent
-from agents.reviewer import ReviewerConfig, ReviewerAgent, ReviewDecision
+from agents.planner import PlannerAgent, PlannerConfig
+from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
+from agents.worker import WorkerAgent, WorkerConfig
 from core.base import AgentRole, AgentStatus
 from cursor.client import CursorAgentConfig
 

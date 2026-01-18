@@ -1,5 +1,5 @@
 ---
-description: 评审者 Agent 规则
+description: 评审者 Agent 规则 - 验证检查与评审标准的权威定义
 globs: ["**/reviewer*.py"]
 ---
 
@@ -12,6 +12,7 @@ globs: ["**/reviewer*.py"]
 1. **不要编写任何代码** - 你只负责评审
 2. **客观评估** - 基于事实而非假设
 3. **输出 JSON 格式** - 便于系统解析
+4. **建设性反馈** - 指出问题的同时提供改进建议
 
 ## 评审维度
 
@@ -31,6 +32,46 @@ globs: ["**/reviewer*.py"]
    - 关键代码是否有注释
    - API 是否有文档
 
+## 问题严重性分级
+
+### 高严重性（必须修复）
+- 空值/未定义解引用
+- 资源泄漏（未关闭的文件或连接）
+- 注入攻击（SQL/XSS）
+- 并发/竞态条件
+- 关键操作缺少错误处理
+- 明确的安全漏洞
+- 接口定义不一致（如内部类缺少必需属性）
+- 使用未在 requirements.txt 声明的依赖
+- 模块导入失败
+
+### 中等严重性（建议修复）
+- 具有不正确行为的逻辑错误
+- 具有可测量影响的性能反模式
+- 代码可读性问题
+
+### 低严重性（可选修复）
+- 代码风格不一致
+- 缺少注释
+- 可选优化
+
+## 高严重性问题检查方法
+
+### 接口定义一致性
+- 检查内部类是否实现了所有必需属性
+- 验证类型注解与接口定义是否匹配
+- 使用 grep 搜索类定义并对比接口要求
+
+### 依赖声明完整性
+- 扫描 import 语句：grep -r "^import\|^from" --include="*.py"
+- 对比 requirements.txt 中的声明
+- 报告未声明的第三方依赖
+
+### 模块导入检查
+- 验证导入路径是否正确
+- 检测循环导入问题
+- 运行 python -c "import module" 验证导入
+
 ## 决策标准
 
 - **complete**: 得分 >= 90，所有功能完成
@@ -40,6 +81,95 @@ globs: ["**/reviewer*.py"]
 
 ## 允许的操作
 
-- 读取文件内容
-- 运行 git diff, git status
-- 运行测试命令（只看结果）
+- 读取文件内容 (Read)
+- 代码搜索 (Grep/Glob)
+- Git 命令 (git diff, git log, git show, git status)
+- 目录浏览 (LS)
+- Shell 命令执行（用于验证检查）
+
+## 必需验证检查
+
+审核时必须执行以下验证步骤：
+
+### 1. 端到端测试验证（必需）
+```bash
+python tests/test_e2e_basic.py
+```
+- 必须执行此测试并记录结果
+- 测试失败时状态不能为 complete
+- 记录测试结果（通过/失败/跳过的用例数）
+
+### 2. 变更文件导入检查（必需）
+```bash
+python -c "import sys; sys.path.insert(0, '.'); import <module_path>"
+```
+- 对所有变更的 Python 文件验证导入
+- 导入失败属于高严重性问题
+- 检查是否有缺失的依赖
+
+### 3. 主程序启动验证（必需）
+```bash
+python run.py --help
+```
+- 验证 run.py 可正常启动
+- 启动失败属于高严重性问题
+- 确保命令行参数解析正常
+
+## 输出格式
+
+评审结果需包含以下字段：
+
+```json
+{
+  "review_id": "唯一标识",
+  "overall_status": "approved|changes_requested|needs_review",
+  "score": 0-100,
+  "issues": [
+    {
+      "severity": "critical|high|medium|low",
+      "type": "bug|security|performance|style|logic|interface|import",
+      "file": "文件路径",
+      "line": "行号",
+      "description": "问题描述",
+      "suggestion": "改进建议"
+    }
+  ],
+  "import_issues": [
+    {
+      "type": "missing_dependency|import_error|circular_import",
+      "module": "模块名称",
+      "file": "文件路径",
+      "line": "行号",
+      "description": "问题描述",
+      "required_package": "需要添加到 requirements.txt 的包名（如适用）"
+    }
+  ],
+  "validation_checks": {
+    "e2e_test": {
+      "executed": true,
+      "passed": true,
+      "command": "python tests/test_e2e_basic.py",
+      "result": "测试结果摘要",
+      "tests_passed": 0,
+      "tests_failed": 0,
+      "tests_skipped": 0
+    },
+    "import_check": {
+      "executed": true,
+      "passed": true,
+      "files_checked": ["变更文件列表"],
+      "failed_imports": []
+    },
+    "run_py_check": {
+      "executed": true,
+      "passed": true,
+      "command": "python run.py --help",
+      "result": "启动结果"
+    }
+  },
+  "summary": "整体评价",
+  "recommendations": ["改进建议列表"]
+}
+```
+
+**注意**: 如果任何验证检查失败，overall_status 不能为 "approved"。

@@ -5,7 +5,7 @@ from .state import AgentState, SystemState
 
 __all__ = [
     "AgentRole",
-    "AgentStatus", 
+    "AgentStatus",
     "BaseAgent",
     "Message",
     "MessageType",

@@ -1,0 +1,67 @@
+# Pre-commit hooks 配置
+# 安装: pip install pre-commit && pre-commit install
+# 手动运行: pre-commit run --all-files
+
+repos:
+  # 基础代码检查 hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: 移除行尾空白
+      - id: end-of-file-fixer
+        name: 确保文件以换行结尾
+      - id: check-yaml
+        name: 检查 YAML 语法
+      - id: check-json
+        name: 检查 JSON 语法
+
+  # Ruff - 快速 Python linter 和 formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        name: Ruff 代码检查
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        name: Ruff 代码格式化
+
+  # MyPy - Python 类型检查
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        name: MyPy 类型检查
+        additional_dependencies:
+          - pydantic>=2.5.0
+          - types-PyYAML
+          - types-aiofiles
+        args: [--ignore-missing-imports, --no-strict-optional]
+        exclude: ^tests/
+
+  # 本地自定义检查脚本
+  - repo: local
+    hooks:
+      - id: pre-commit-check
+        name: 项目预提交检查
+        entry: python scripts/pre_commit_check.py --quick
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+# 默认配置
+default_language_version:
+  python: python3
+
+# 排除文件/目录
+exclude: |
+  (?x)^(
+    \.git/|
+    \.venv/|
+    __pycache__|
+    \.mypy_cache/|
+    \.ruff_cache/|
+    logs/|
+    \.cursor/
+  )$

@@ -13,13 +13,14 @@ stream-json 输出格式:
 import asyncio
 import difflib
 import json
-from typing import AsyncIterator, Callable, Optional, List
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from datetime import datetime
-from loguru import logger
+from typing import Callable, List, Optional
 
+from loguru import logger
 
 # ============== 差异格式化工具函数 ==============
 
@@ -30,28 +31,28 @@ def format_diff(
     context_lines: int = 3,
 ) -> str:
     """生成统一差异格式 (unified diff)
-    
+
     Args:
         old_string: 原内容
         new_string: 新内容
         file_path: 文件路径
         context_lines: 上下文行数
-        
+
     Returns:
         统一差异格式的字符串
     """
     old_lines = old_string.splitlines(keepends=True)
     new_lines = new_string.splitlines(keepends=True)
-    
+
     # 确保最后一行有换行符
     if old_lines and not old_lines[-1].endswith('\n'):
         old_lines[-1] += '\n'
     if new_lines and not new_lines[-1].endswith('\n'):
         new_lines[-1] += '\n'
-    
+
     from_file = f"a/{file_path}" if file_path else "a/file"
     to_file = f"b/{file_path}" if file_path else "b/file"
-    
+
     diff = difflib.unified_diff(
         old_lines,
         new_lines,
@@ -59,27 +60,27 @@ def format_diff(
         tofile=to_file,
         n=context_lines,
     )
-    
+
     return "".join(diff)
 
 
 def format_inline_diff(old_string: str, new_string: str) -> str:
     """生成行内差异格式，使用 +/- 标记
-    
+
     Args:
         old_string: 原内容
         new_string: 新内容
-        
+
     Returns:
         带有 +/- 标记的差异字符串
     """
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
-    
+
     result: List[str] = []
-    
+
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
-    
+
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for line in old_lines[i1:i2]:
@@ -95,18 +96,18 @@ def format_inline_diff(old_string: str, new_string: str) -> str:
                 result.append(f"- {line}")
             for line in new_lines[j1:j2]:
                 result.append(f"+ {line}")
-    
+
     return "\n".join(result)
 
 
 def format_colored_diff(old_string: str, new_string: str, use_ansi: bool = True) -> str:
     """生成带颜色的差异格式（终端显示用）
-    
+
     Args:
         old_string: 原内容
         new_string: 新内容
         use_ansi: 是否使用 ANSI 颜色码
-        
+
     Returns:
         带颜色标记的差异字符串
     """
@@ -114,14 +115,14 @@ def format_colored_diff(old_string: str, new_string: str, use_ansi: bool = True)
     RED = "\033[31m" if use_ansi else ""
     GREEN = "\033[32m" if use_ansi else ""
     RESET = "\033[0m" if use_ansi else ""
-    
+
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
-    
+
     result: List[str] = []
-    
+
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
-    
+
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for line in old_lines[i1:i2]:
@@ -137,29 +138,29 @@ def format_colored_diff(old_string: str, new_string: str, use_ansi: bool = True)
                 result.append(f"{RED}- {line}{RESET}")
             for line in new_lines[j1:j2]:
                 result.append(f"{GREEN}+ {line}{RESET}")
-    
+
     return "\n".join(result)
 
 
 def get_diff_stats(old_string: str, new_string: str) -> dict:
     """获取差异统计信息
-    
+
     Args:
         old_string: 原内容
         new_string: 新内容
-        
+
     Returns:
         包含统计信息的字典
     """
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
-    
+
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
-    
+
     insertions = 0
     deletions = 0
     modifications = 0
-    
+
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "delete":
             deletions += (i2 - i1)
@@ -169,7 +170,7 @@ def get_diff_stats(old_string: str, new_string: str) -> dict:
             deletions += (i2 - i1)
             insertions += (j2 - j1)
             modifications += 1
-    
+
     return {
         "old_lines": len(old_lines),
         "new_lines": len(new_lines),
@@ -184,24 +185,24 @@ class StreamEventType(str, Enum):
     """流式事件类型"""
     # 系统事件
     SYSTEM_INIT = "system_init"       # 系统初始化
-    
+
     # 助手消息
     ASSISTANT = "assistant"           # 助手消息（增量文本）
-    
+
     # 工具调用
     TOOL_STARTED = "tool_started"     # 工具调用开始
     TOOL_COMPLETED = "tool_completed" # 工具调用完成
-    
+
     # 差异/编辑事件
     DIFF = "diff"                     # 差异事件（通用）
     DIFF_STARTED = "diff_started"     # 差异操作开始
     DIFF_COMPLETED = "diff_completed" # 差异操作完成
     EDIT = "edit"                     # 编辑事件
-    
+
     # 结果
     RESULT = "result"                 # 最终结果
     ERROR = "error"                   # 错误
-    
+
     # 兼容旧类型
     MESSAGE = "message"
     PROGRESS = "progress"
@@ -216,7 +217,7 @@ class ToolCallInfo:
     args: dict = field(default_factory=dict)
     result: dict = field(default_factory=dict)
     success: bool = False
-    
+
     # 差异相关字段
     old_string: str = ""      # 替换前的内容
     new_string: str = ""      # 替换后的内容
@@ -232,11 +233,11 @@ class DiffInfo:
     line_start: int = 0       # 起始行号
     line_end: int = 0         # 结束行号
     operation: str = "replace" # 操作类型: replace, insert, delete
-    
+
     def get_unified_diff(self) -> str:
         """生成统一差异格式"""
         return format_diff(self.old_string, self.new_string, self.path)
-    
+
     def get_inline_diff(self) -> str:
         """生成行内差异格式"""
         return format_inline_diff(self.old_string, self.new_string)
@@ -249,20 +250,20 @@ class StreamEvent:
     subtype: str = ""
     data: dict = field(default_factory=dict)
     timestamp: Optional[float] = None
-    
+
     # 具体信息
     model: str = ""                           # 模型名称 (system_init)
     content: str = ""                         # 文本内容 (assistant)
     tool_call: Optional[ToolCallInfo] = None  # 工具调用 (tool_*)
     diff_info: Optional[DiffInfo] = None      # 差异信息 (diff_*)
     duration_ms: int = 0                      # 耗时毫秒 (result)
-    
+
     def get_formatted_diff(self, colored: bool = False) -> str:
         """获取格式化的差异输出
-        
+
         Args:
             colored: 是否使用颜色
-            
+
         Returns:
             格式化的差异字符串
         """
@@ -273,7 +274,7 @@ class StreamEvent:
                     self.diff_info.new_string,
                 )
             return self.diff_info.get_unified_diff()
-        
+
         if self.tool_call and self.tool_call.is_diff:
             if colored:
                 return format_colored_diff(
@@ -285,7 +286,7 @@ class StreamEvent:
                 self.tool_call.new_string,
                 self.tool_call.path,
             )
-        
+
         return ""
 
 
@@ -482,7 +483,7 @@ def _extract_diff_info(tool_call: ToolCallInfo) -> Optional[DiffInfo]:
     """从工具调用中提取差异信息"""
     if not tool_call.is_diff:
         return None
-    
+
     return DiffInfo(
         path=tool_call.path,
         old_string=tool_call.old_string,
@@ -493,15 +494,15 @@ def _extract_diff_info(tool_call: ToolCallInfo) -> Optional[DiffInfo]:
 
 def parse_diff_event(data: dict) -> DiffInfo:
     """解析 diff 类型的事件数据
-    
+
     Args:
         data: 事件数据字典
-        
+
     Returns:
         DiffInfo 对象
     """
     diff_info = DiffInfo()
-    
+
     # 直接从 data 中提取差异信息
     diff_info.path = data.get("path", "")
     diff_info.old_string = data.get("old_string", data.get("oldString", ""))
@@ -509,7 +510,7 @@ def parse_diff_event(data: dict) -> DiffInfo:
     diff_info.line_start = data.get("line_start", data.get("lineStart", 0))
     diff_info.line_end = data.get("line_end", data.get("lineEnd", 0))
     diff_info.operation = data.get("operation", "replace")
-    
+
     # 尝试从 diff 子对象中提取
     if "diff" in data:
         diff_data = data["diff"]
@@ -518,7 +519,7 @@ def parse_diff_event(data: dict) -> DiffInfo:
         diff_info.new_string = diff_data.get("new_string", diff_data.get("newString", diff_info.new_string))
         diff_info.line_start = diff_data.get("line_start", diff_data.get("lineStart", diff_info.line_start))
         diff_info.line_end = diff_data.get("line_end", diff_data.get("lineEnd", diff_info.line_end))
-    
+
     # 尝试从 changes 数组中提取（某些格式）
     if "changes" in data:
         changes = data["changes"]
@@ -527,20 +528,20 @@ def parse_diff_event(data: dict) -> DiffInfo:
             if isinstance(first_change, dict):
                 diff_info.old_string = first_change.get("removed", diff_info.old_string)
                 diff_info.new_string = first_change.get("added", diff_info.new_string)
-    
+
     return diff_info
 
 
 class StreamingClient:
     """流式输出客户端
-    
+
     使用 --output-format stream-json --stream-partial-output
     实时跟踪 Agent 执行进度
     """
-    
+
     def __init__(self, agent_path: str = "agent"):
         self.agent_path = agent_path
-    
+
     async def execute_streaming(
         self,
         prompt: str,
@@ -550,14 +551,14 @@ class StreamingClient:
         timeout: int = 300,
     ) -> AsyncIterator[StreamEvent]:
         """流式执行 Agent 任务
-        
+
         Args:
             prompt: 任务提示
             model: 模型名称
             working_directory: 工作目录
             on_event: 事件回调函数
             timeout: 超时时间
-            
+
         Yields:
             StreamEvent: 流式事件
         """
@@ -568,16 +569,16 @@ class StreamingClient:
             "--output-format", "stream-json",
             "--stream-partial-output",
         ]
-        
+
         logger.debug(f"启动流式执行: {model}")
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=working_directory,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        
+
         try:
             # 逐行读取流式输出
             async for line in self._read_lines(process.stdout, timeout):
@@ -586,10 +587,10 @@ class StreamingClient:
                     if on_event:
                         on_event(event)
                     yield event
-            
+
             # 等待进程结束
             await process.wait()
-            
+
             # 发送完成事件
             complete_event = StreamEvent(
                 type=StreamEventType.COMPLETE,
@@ -598,7 +599,7 @@ class StreamingClient:
             if on_event:
                 on_event(complete_event)
             yield complete_event
-            
+
         except asyncio.TimeoutError:
             process.kill()
             error_event = StreamEvent(
@@ -612,7 +613,7 @@ class StreamingClient:
                 data={"error": str(e)},
             )
             yield error_event
-    
+
     async def _read_lines(
         self,
         stream: asyncio.StreamReader,
@@ -620,12 +621,12 @@ class StreamingClient:
     ) -> AsyncIterator[str]:
         """逐行读取流"""
         deadline = asyncio.get_event_loop().time() + timeout
-        
+
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 raise asyncio.TimeoutError()
-            
+
             try:
                 line = await asyncio.wait_for(
                     stream.readline(),
@@ -636,7 +637,7 @@ class StreamingClient:
                 yield line.decode("utf-8", errors="replace").strip()
             except asyncio.TimeoutError:
                 continue
-    
+
     def _parse_stream_line(self, line: str) -> Optional[StreamEvent]:
         """解析流式输出行"""
         return parse_stream_event(line)
@@ -644,15 +645,15 @@ class StreamingClient:
 
 class ProgressTracker:
     """进度跟踪器
-    
+
     用于跟踪和显示 Agent 执行进度
     """
-    
+
     def __init__(self, verbose: bool = False, show_diff: bool = True):
         self.verbose = verbose
         self.show_diff = show_diff
         self.events: list[StreamEvent] = []
-        
+
         # 统计信息
         self.model: str = ""
         self.accumulated_text: str = ""
@@ -664,21 +665,21 @@ class ProgressTracker:
         self.errors: list[str] = []
         self.duration_ms: int = 0
         self.is_complete: bool = False
-    
+
     def on_event(self, event: StreamEvent) -> None:
         """处理事件"""
         self.events.append(event)
-        
+
         if event.type == StreamEventType.SYSTEM_INIT:
             self.model = event.model
             if self.verbose:
                 logger.info(f"🤖 使用模型: {self.model}")
-        
+
         elif event.type == StreamEventType.ASSISTANT:
             self.accumulated_text += event.content
             if self.verbose:
                 print(f"\r📝 生成中: {len(self.accumulated_text)} 字符", end="", flush=True)
-        
+
         elif event.type == StreamEventType.TOOL_STARTED:
             self.tool_count += 1
             if event.tool_call:
@@ -692,7 +693,7 @@ class ProgressTracker:
                 elif tool.tool_type == "shell":
                     if self.verbose:
                         print(f"\n💻 工具 #{self.tool_count}: 执行命令")
-        
+
         elif event.type == StreamEventType.TOOL_COMPLETED:
             if event.tool_call:
                 tool = event.tool_call
@@ -708,14 +709,14 @@ class ProgressTracker:
                         lines = tool.result.get("totalLines", 0)
                         if self.verbose:
                             print(f"   ✅ 已读取 {lines} 行")
-        
+
         elif event.type == StreamEventType.DIFF_STARTED:
             self.diff_count += 1
             if event.tool_call:
                 tool = event.tool_call
                 if self.verbose:
                     print(f"\n✏️ 编辑 #{self.diff_count}: {tool.path}")
-        
+
         elif event.type == StreamEventType.DIFF_COMPLETED:
             if event.tool_call:
                 tool = event.tool_call
@@ -729,7 +730,7 @@ class ProgressTracker:
                                 event.diff_info.new_string,
                             )
                             print(f"   📊 +{stats['insertions']} -{stats['deletions']} 行")
-        
+
         elif event.type == StreamEventType.DIFF:
             self.diff_count += 1
             if event.diff_info:
@@ -741,19 +742,19 @@ class ProgressTracker:
                     if self.show_diff:
                         stats = get_diff_stats(diff_info.old_string, diff_info.new_string)
                         print(f"   📊 +{stats['insertions']} -{stats['deletions']} 行")
-        
+
         elif event.type == StreamEventType.RESULT:
             self.duration_ms = event.duration_ms
             self.is_complete = True
             if self.verbose:
                 print(f"\n\n🎯 完成, 耗时 {self.duration_ms}ms")
                 print(f"📊 统计: {self.tool_count} 个工具, 生成 {len(self.accumulated_text)} 字符")
-        
+
         elif event.type == StreamEventType.ERROR:
             error = event.data.get("error", "未知错误")
             self.errors.append(error)
             logger.error(f"❌ 错误: {error}")
-    
+
     def get_summary(self) -> dict:
         """获取执行摘要"""
         return {
@@ -876,14 +877,14 @@ class StreamEventLogger:
             tool_type = tool.tool_type if tool else "edit"
             path = tool.path if tool and tool.path else ""
             extra = f" {path}" if path else ""
-            
+
             if event.type == StreamEventType.DIFF_COMPLETED and event.diff_info:
                 stats = get_diff_stats(
                     event.diff_info.old_string,
                     event.diff_info.new_string,
                 )
                 extra += f" (+{stats['insertions']} -{stats['deletions']})"
-            
+
             return f"[{timestamp}] [{self._prefix}] 编辑{status}: {tool_type}{extra}"
 
         if event.type == StreamEventType.DIFF:

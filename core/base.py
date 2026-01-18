@@ -1,10 +1,11 @@
 """Agent 基类定义"""
+import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+
 from loguru import logger
-import uuid
+from pydantic import BaseModel, Field
 
 
 class AgentRole(str, Enum):
@@ -32,49 +33,49 @@ class AgentConfig(BaseModel):
     max_retries: int = 3
     timeout: int = 300  # 秒
     working_directory: str = "."
-    
+
     # Cursor Agent 相关配置
     cursor_agent_mode: bool = True  # 使用 Cursor Agent 模式
 
 
 class BaseAgent(ABC):
     """Agent 基类
-    
+
     所有 Agent（Planner/Worker/Reviewer）都继承此类
     """
-    
+
     def __init__(self, config: AgentConfig):
         self.config = config
         self.id = f"{config.role.value}-{uuid.uuid4().hex[:8]}"
         self.status = AgentStatus.IDLE
         self._context: dict[str, Any] = {}
-    
+
     @property
     def role(self) -> AgentRole:
         return self.config.role
-    
+
     @property
     def name(self) -> str:
         return self.config.name
-    
+
     @abstractmethod
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行指令
-        
+
         Args:
             instruction: 要执行的指令
             context: 上下文信息
-            
+
         Returns:
             执行结果
         """
         pass
-    
+
     @abstractmethod
     async def reset(self) -> None:
         """重置 Agent 状态"""
         pass
-    
+
     def update_status(self, status: AgentStatus) -> None:
         """更新状态"""
         previous = self.status
@@ -84,18 +85,18 @@ class BaseAgent(ABC):
                 logger.info(f"[{self.id}] 状态切换: {previous.value} -> {status.value}")
             except Exception as e:
                 logger.warning(f"[{self.id}] 记录状态失败: {e}")
-    
+
     def set_context(self, key: str, value: Any) -> None:
         """设置上下文"""
         self._context[key] = value
-    
+
     def get_context(self, key: str, default: Any = None) -> Any:
         """获取上下文"""
         return self._context.get(key, default)
-    
+
     def clear_context(self) -> None:
         """清除上下文"""
         self._context.clear()
-    
+
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} id={self.id} status={self.status.value}>"

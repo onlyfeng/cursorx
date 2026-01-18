@@ -1,6 +1,6 @@
 """任务系统"""
-from .task import Task, TaskStatus, TaskPriority, TaskType
 from .queue import TaskQueue
+from .task import Task, TaskPriority, TaskStatus, TaskType
 
 __all__ = [
     "Task",

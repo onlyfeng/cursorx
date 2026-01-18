@@ -1,6 +1,6 @@
 #!/bin/bash
 # afterFileEdit hook - 文件编辑后触发
-# 
+#
 # 可用变量:
 # - $file_path: 被编辑的文件路径
 # - $old_string: 文件修改前的内容（用于 diff）

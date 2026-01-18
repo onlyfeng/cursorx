@@ -9,55 +9,54 @@
 
 用法:
     from cursor.cloud import CloudAuthManager, CursorCloudClient
-    
+
     # 认证管理
     auth = CloudAuthManager()
     status = await auth.authenticate()
-    
+
     # Cloud Agent
     client = CursorCloudClient()
     result = await client.execute("& 实现功能")
 """
 
 # ========== 异常类和错误处理工具 ==========
-from .exceptions import (
-    CloudAgentError,
-    RateLimitError,
-    NetworkError,
-    TaskError,
-    AuthError,
-    AuthErrorCode,
-    handle_http_error,
-)
-
-# ========== 重试工具 ==========
-from .retry import RetryConfig, with_retry, retry_async
-
 # ========== 认证管理 ==========
 from .auth import (
-    AuthToken,
     AuthStatus,
+    AuthToken,
     CloudAuthConfig,
     CloudAuthManager,
     get_api_key,
+    require_auth,
     verify_auth,
     verify_auth_sync,
-    require_auth,
-)
-
-# ========== 任务管理 ==========
-from .task import (
-    TaskStatus,
-    TaskResult,
-    CloudTaskClient,
-    CloudTaskOptions,
-    CloudTask,
 )
 
 # ========== Cloud Agent 客户端 ==========
 from .client import (
-    CursorCloudClient,
     CloudAgentResult,
+    CursorCloudClient,
+)
+from .exceptions import (
+    AuthError,
+    AuthErrorCode,
+    CloudAgentError,
+    NetworkError,
+    RateLimitError,
+    TaskError,
+    handle_http_error,
+)
+
+# ========== 重试工具 ==========
+from .retry import RetryConfig, retry_async, with_retry
+
+# ========== 任务管理 ==========
+from .task import (
+    CloudTask,
+    CloudTaskClient,
+    CloudTaskOptions,
+    TaskResult,
+    TaskStatus,
 )
 
 # ========== 别名（统一命名风格）==========

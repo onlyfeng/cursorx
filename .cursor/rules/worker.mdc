@@ -42,6 +42,48 @@ globs: ["**/worker*.py"]
 - `python manage.py runserver` - 服务器
 - `read -p "input:"` - 需要输入
 
+## 验证步骤（必须执行）
+
+### 1. 代码修改后导入验证
+```bash
+# 验证 Python 模块可正常导入
+python -c "import module_name"
+
+# 验证语法正确性
+python -m py_compile path/to/file.py
+```
+
+### 2. 依赖声明检查
+- 新增 import 时，检查 requirements.txt 是否已声明依赖
+- 如未声明，添加依赖并指定版本
+```bash
+# 检查依赖是否已声明
+grep "package_name" requirements.txt
+
+# 检查依赖是否已安装
+pip show package_name
+```
+
+### 3. 签名变更影响分析
+- 修改类/函数签名时，**必须**搜索所有调用处
+- 更新所有受影响的调用代码
+```bash
+# 搜索所有调用处
+rg "function_name|ClassName" -t py
+
+# 或使用 grep
+grep -rn "function_name" --include="*.py" .
+```
+
+### 4. 快速测试验证
+```bash
+# 运行相关测试
+pytest tests/test_module.py -v
+
+# 批量语法检查
+python -m compileall path/to/directory
+```
+
 ## 编码规范
 
 1. 保持现有代码风格
@@ -54,3 +96,4 @@ globs: ["**/worker*.py"]
 - 代码能够正常运行
 - 没有明显的语法错误
 - 完成任务描述中的所有要求
+- **验证步骤全部通过**

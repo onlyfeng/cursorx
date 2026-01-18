@@ -16,12 +16,80 @@ permissions:
   contents: read
   issues: write
 
+env:
+  PYTHON_VERSION: '3.11'
+
 jobs:
+  # 依赖检查 Job
+  dependency-check:
+    runs-on: ubuntu-latest
+    name: 依赖版本检查
+
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
+
+      - name: 安装 pip-tools
+        run: pip install --upgrade pip pip-tools
+
+      - name: 使用 pip-sync 安装锁定依赖
+        run: |
+          # 使用 pip-sync 确保环境与 requirements.txt 完全一致
+          pip-sync requirements.txt
+
+      - name: 验证依赖安装
+        run: |
+          # 检查依赖一致性
+          pip check
+          # 验证关键包已安装
+          python -c "import pydantic; import loguru; print('核心依赖验证通过')"
+
+      - name: 运行依赖检查
+        id: deps_check
+        run: |
+          python scripts/check_deps.py --format json --output deps-report.json --ci || echo "has_errors=true" >> $GITHUB_OUTPUT
+          python scripts/check_deps.py --format md --output deps-report.md --ci
+
+      - name: 上传依赖报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report
+          path: |
+            deps-report.json
+            deps-report.md
+
+      - name: 评论 PR（如有问题）
+        if: steps.deps_check.outputs.has_errors == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('deps-report.md', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## 🔍 依赖检查报告\n\n' + report
+            });
+
   code-review:
     runs-on: ubuntu-latest
+    needs: dependency-check
     # 跳过草稿 PR 的自动代码审查
     if: github.event.pull_request.draft == false
-    
+
     steps:
       - name: 检出代码仓库
         uses: actions/checkout@v4
@@ -64,7 +132,7 @@ jobs:
           - 获取现有评论：gh pr view --json comments
           - 获取差异：gh pr diff
           - 获取带有补丁的更改文件：gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq ".[] | {filename,patch}"
-          
+
           仅分析以下问题：
           - 空值/未定义解引用
           - 资源泄漏（未关闭的文件或连接）
@@ -73,5 +141,5 @@ jobs:
           - 关键操作缺少错误处理
           - 具有不正确行为的明显逻辑错误
           - 明确的安全漏洞
-          
+
           避免重复：如果相同或相近行上已存在类似反馈，则跳过。'

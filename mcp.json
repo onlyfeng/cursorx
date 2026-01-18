@@ -11,7 +11,7 @@
     },
     "fetch": {
       "description": "HTTP 请求 - 获取网页内容（无需 GUI）",
-      "command": "npx", 
+      "command": "npx",
       "args": ["@anthropic/mcp-server-fetch"],
       "enabled": true
     },

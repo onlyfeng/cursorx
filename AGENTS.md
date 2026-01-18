@@ -1,5 +1,9 @@
 # 多 Agent 系统规则
 
+[![CI](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/ci.yml)
+[![Lint](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/lint.yml/badge.svg)](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/lint.yml)
+[![Security](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/security.yml/badge.svg)](https://github.com/YOUR_USERNAME/cursorx/actions/workflows/security.yml)
+
 本项目是一个基于规划者-执行者模式的多 Agent 系统。
 
 ## 安装与配置
@@ -351,7 +355,7 @@ agent --resume "thread-id" -p "继续之前的任务"
 agent ls
 ```
 
-**重要**: 
+**重要**:
 - 不带 `--force`: 仅提议更改而不应用
 - 带 `--force`: 允许直接修改文件，无需确认
 
@@ -577,3 +581,82 @@ NDJSON 格式，每行一个 JSON 对象，用于实时进度跟踪：
 - **Planner**: JSON 格式任务计划
 - **Worker**: text 格式执行摘要
 - **Reviewer**: JSON 格式评审结果
+
+## CI/CD
+
+本项目配置了完整的 CI/CD 流水线，确保代码质量和安全性。
+
+### 工作流列表
+
+| 工作流 | 文件 | 说明 |
+|--------|------|------|
+| CI | `ci.yml` | 多版本 Python 测试、覆盖率统计 |
+| Lint | `lint.yml` | flake8、ruff、mypy 代码检查 |
+| PR Check | `pr-check.yml` | PR 综合检查（复用 CI 和 Lint） |
+| Security | `security.yml` | 依赖安全审计 (pip-audit) |
+
+### 触发条件
+
+| 事件 | CI | Lint | PR Check | Security |
+|------|----|----- |----------|----------|
+| Push 到 main/master | ✓ | ✓ | - | - |
+| Push 到 feature/**、fix/** | ✓ | ✓ | - | - |
+| Pull Request | ✓ | ✓ | ✓ | ✓ (仅当修改依赖文件) |
+| 定时任务 (每周一) | - | - | - | ✓ |
+| 手动触发 | - | - | - | ✓ |
+
+### 本地预提交检查
+
+推荐使用 pre-commit 在提交前自动执行代码检查：
+
+```bash
+# 安装 pre-commit
+pip install pre-commit
+
+# 安装 git hooks（仅需执行一次）
+pre-commit install
+
+# 手动运行所有检查
+pre-commit run --all-files
+
+# 跳过 hooks（不推荐）
+git commit --no-verify -m "message"
+```
+
+Pre-commit 会自动执行：
+- 移除行尾空白、确保文件换行结尾
+- YAML/JSON 语法检查
+- Ruff 代码检查与格式化
+- MyPy 类型检查
+
+### 手动触发工作流
+
+通过 GitHub Actions 界面手动触发：
+
+1. 进入 GitHub 仓库 → Actions 标签页
+2. 选择要运行的工作流（如 Security Audit）
+3. 点击 "Run workflow" 按钮
+4. 选择分支后点击 "Run workflow" 确认
+
+或使用 GitHub CLI：
+
+```bash
+# 手动触发 security 工作流
+gh workflow run security.yml
+
+# 指定分支
+gh workflow run security.yml --ref main
+
+# 查看工作流运行状态
+gh run list --workflow=security.yml
+```
+
+### 本地完整检查
+
+```bash
+# 运行与 CI 相同的完整检查
+bash scripts/check_all.sh --full
+
+# 快速检查（仅关键项）
+bash scripts/check_all.sh
+```

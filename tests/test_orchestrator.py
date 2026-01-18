@@ -1,10 +1,9 @@
 """测试编排器（Orchestrator）初始化和配置"""
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
-from core.state import SystemState
 from core.base import AgentRole
+from core.state import SystemState
 from cursor.client import CursorAgentConfig
 
 

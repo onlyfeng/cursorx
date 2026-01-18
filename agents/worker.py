@@ -4,20 +4,21 @@
 支持语义搜索增强的上下文获取
 支持知识库自动搜索（Cursor 相关问题）
 """
-from typing import Any, Optional, TYPE_CHECKING
-from pydantic import BaseModel, Field
-from loguru import logger
+from typing import TYPE_CHECKING, Any, Optional
 
-from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
-from tasks.task import Task
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from core.base import AgentConfig, AgentRole, AgentStatus, BaseAgent
 from cursor.client import CursorAgentConfig
-from cursor.executor import (
-    AgentExecutorFactory,
-    ExecutionMode,
-    CLIAgentExecutor,
-    AgentExecutor,
-)
 from cursor.cloud_client import CloudAuthConfig
+from cursor.executor import (
+    AgentExecutor,
+    AgentExecutorFactory,
+    CLIAgentExecutor,
+    ExecutionMode,
+)
+from tasks.task import Task
 
 # 可选的语义搜索支持
 if TYPE_CHECKING:
@@ -60,14 +61,14 @@ class WorkerConfig(BaseModel):
 
 class WorkerAgent(BaseAgent):
     """执行者 Agent
-    
+
     职责:
     1. 从任务队列领取任务
     2. 专注执行分配的任务
     3. 完成后提交变更
     4. 不与其他执行者协调
     """
-    
+
     # 执行者系统提示
     SYSTEM_PROMPT = """你是一个代码执行者。你的职责是:
 
@@ -83,7 +84,7 @@ class WorkerAgent(BaseAgent):
 - 完成后简要总结所做的修改
 
 请执行以下任务:"""
-    
+
     def __init__(
         self,
         config: WorkerConfig,
@@ -98,14 +99,14 @@ class WorkerAgent(BaseAgent):
         super().__init__(agent_config)
         self.worker_config = config
         self._apply_stream_config(self.worker_config.cursor_config)
-        
+
         # 使用 AgentExecutorFactory 创建执行器
         self._executor: AgentExecutor = AgentExecutorFactory.create(
             mode=config.execution_mode,
             cli_config=config.cursor_config,
             cloud_auth_config=config.cloud_auth_config,
         )
-        
+
         # 保留 cursor_client 属性以保持向后兼容
         if isinstance(self._executor, CLIAgentExecutor):
             self.cursor_client = self._executor.client
@@ -113,22 +114,22 @@ class WorkerAgent(BaseAgent):
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
             self.cursor_client = CursorAgentClient(config.cursor_config)
-        
+
         self.current_task: Optional[Task] = None
         self.completed_tasks: list[str] = []
-        
+
         # 语义搜索增强（可选）
         self._semantic_search: Optional["SemanticSearch"] = semantic_search
         self._search_enabled = config.enable_context_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 上下文搜索已启用")
-        
+
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
         self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
         self._knowledge_search_enabled = config.enable_knowledge_search and knowledge_manager is not None
         if self._knowledge_search_enabled:
             logger.info(f"[{config.name}] 知识库搜索已启用")
-        
+
         logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
 
     def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
@@ -139,10 +140,10 @@ class WorkerAgent(BaseAgent):
         if cursor_config.stream_events_enabled:
             cursor_config.output_format = "stream-json"
             cursor_config.stream_partial_output = True
-    
+
     def set_semantic_search(self, search: "SemanticSearch") -> None:
         """设置语义搜索引擎（延迟初始化）
-        
+
         Args:
             search: SemanticSearch 实例
         """
@@ -150,10 +151,10 @@ class WorkerAgent(BaseAgent):
         self._search_enabled = self.worker_config.enable_context_search
         if self._search_enabled:
             logger.info(f"[{self.id}] 上下文搜索已启用")
-    
+
     def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
         """设置知识库管理器（延迟初始化）
-        
+
         Args:
             manager: KnowledgeManager 实例
         """
@@ -161,36 +162,36 @@ class WorkerAgent(BaseAgent):
         self._knowledge_search_enabled = self.worker_config.enable_knowledge_search
         if self._knowledge_search_enabled:
             logger.info(f"[{self.id}] 知识库搜索已启用")
-    
+
     def _is_cursor_related(self, text: str) -> bool:
         """检测文本是否与 Cursor 相关
-        
+
         Args:
             text: 要检测的文本
-            
+
         Returns:
             是否与 Cursor 相关
         """
         text_lower = text.lower()
         return any(keyword.lower() in text_lower for keyword in CURSOR_KEYWORDS)
-    
+
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行任务指令
-        
+
         Args:
             instruction: 任务指令
             context: 上下文信息
-            
+
         Returns:
             执行结果
         """
         self.update_status(AgentStatus.RUNNING)
         logger.info(f"[{self.id}] 开始执行: {instruction[:100]}...")
-        
+
         try:
             # 构建执行 prompt
             prompt = self._build_execution_prompt(instruction, context)
-            
+
             # 调用执行器执行
             result = await self._executor.execute(
                 prompt=prompt,
@@ -198,7 +199,7 @@ class WorkerAgent(BaseAgent):
                 context=context,
                 timeout=self.worker_config.task_timeout,
             )
-            
+
             if result.success:
                 self.update_status(AgentStatus.COMPLETED)
                 logger.info(f"[{self.id}] 执行成功")
@@ -215,27 +216,27 @@ class WorkerAgent(BaseAgent):
                     "error": result.error,
                     "output": result.output,
                 }
-                
+
         except Exception as e:
             logger.exception(f"[{self.id}] 执行异常: {e}")
             self.update_status(AgentStatus.FAILED)
             return {"success": False, "error": str(e)}
-    
+
     async def execute_task(self, task: Task) -> Task:
         """执行任务对象
-        
+
         Args:
             task: 任务对象
-            
+
         Returns:
             更新后的任务对象
         """
         self.current_task = task
         task.start()
         task.assigned_to = self.id
-        
+
         logger.info(f"[{self.id}] 执行任务: {task.id} - {task.title}")
-        
+
         # 构建任务上下文
         context = {
             "task_id": task.id,
@@ -243,28 +244,28 @@ class WorkerAgent(BaseAgent):
             "target_files": task.target_files,
             **task.context,
         }
-        
+
         # 使用语义搜索获取相关上下文（可选增强）
         if self._search_enabled:
             search_context = await self._search_task_context(task)
             if search_context:
                 context["reference_code"] = search_context
                 logger.info(f"[{self.id}] 找到 {len(search_context)} 个参考代码片段")
-        
+
         # 使用知识库搜索获取 Cursor 相关上下文（自动检测）
         if self._knowledge_search_enabled:
             knowledge_context = await self._search_knowledge_context(task)
             if knowledge_context:
                 context["knowledge_docs"] = knowledge_context
                 logger.info(f"[{self.id}] 从知识库补充 {len(knowledge_context)} 个文档上下文")
-        
+
         # 执行任务
         result = await self.execute(task.instruction, context)
-        
+
         if result.get("success"):
             # 检查是否需要建议中间提交
             suggest_commit, changed_files_count = await self._should_suggest_commit()
-            
+
             task.complete({
                 "output": result.get("output", ""),
                 "duration": result.get("duration", 0),
@@ -273,7 +274,7 @@ class WorkerAgent(BaseAgent):
                 "changed_files_count": changed_files_count,
             })
             self.completed_tasks.append(task.id)
-            
+
             if suggest_commit:
                 logger.info(f"[{self.id}] 任务完成: {task.id}，建议中间提交（{changed_files_count} 个文件更改）")
             else:
@@ -281,28 +282,28 @@ class WorkerAgent(BaseAgent):
         else:
             task.fail(result.get("error", "未知错误"))
             logger.error(f"[{self.id}] 任务失败: {task.id} - {result.get('error')}")
-        
+
         self.current_task = None
         return task
-    
+
     async def _search_task_context(self, task: Task) -> list[dict[str, Any]]:
         """搜索任务相关的上下文代码
-        
+
         根据任务描述和目标文件搜索相关代码作为参考
-        
+
         Args:
             task: 任务对象
-            
+
         Returns:
             相关代码片段列表
         """
         if not self._semantic_search:
             return []
-        
+
         try:
             # 构建搜索查询：结合任务标题和描述
             query = f"{task.title}. {task.description}" if task.description else task.title
-            
+
             # 优先在目标文件中搜索
             if task.target_files:
                 results = await self._semantic_search.search_in_files(
@@ -318,7 +319,7 @@ class WorkerAgent(BaseAgent):
                     top_k=self.worker_config.context_search_top_k,
                     min_score=self.worker_config.context_search_min_score,
                 )
-            
+
             # 构建参考代码列表
             reference_code = []
             for result in results:
@@ -331,54 +332,54 @@ class WorkerAgent(BaseAgent):
                     "content": chunk.content,
                     "score": result.score,
                 })
-            
+
             return reference_code
-            
+
         except Exception as e:
             logger.warning(f"[{self.id}] 上下文搜索失败: {e}")
             return []
-    
+
     async def _search_knowledge_context(self, task: Task) -> list[dict[str, Any]]:
         """从知识库搜索任务相关的文档上下文
-        
+
         当任务与 Cursor 相关时，自动搜索知识库补充上下文。
         支持两种模式：
         1. 关键词搜索模式（默认）：快速、轻量
         2. CLI ask 模式：通过 --mode=ask 执行只读查询，获取更智能的回答
-        
+
         Args:
             task: 任务对象
-            
+
         Returns:
             相关知识库文档列表
         """
         if not self._knowledge_manager:
             return []
-        
+
         # 构建搜索查询
         query = f"{task.title}. {task.description}" if task.description else task.title
-        
+
         # 检查是否与 Cursor 相关
         if not self._is_cursor_related(query) and not self._is_cursor_related(task.instruction):
             return []
-        
+
         try:
             logger.info(f"[{self.id}] 检测到 Cursor 相关任务，搜索知识库...")
-            
+
             knowledge_docs = []
-            
+
             # 如果启用了 CLI ask 模式，使用 ask_with_cli 进行增强查询
             if self.worker_config.enable_cli_ask_mode:
                 ask_result = await self._query_knowledge_with_cli_ask(query)
                 if ask_result:
                     knowledge_docs.append(ask_result)
-            
+
             # 同时进行关键词搜索获取原始文档上下文
             results = self._knowledge_manager.search(
                 query=query,
                 max_results=self.worker_config.knowledge_search_top_k,
             )
-            
+
             # 构建知识库上下文列表
             for result in results:
                 doc = self._knowledge_manager.get_document(result.doc_id)
@@ -390,33 +391,33 @@ class WorkerAgent(BaseAgent):
                         "score": result.score,
                         "source": "cursor-docs",
                     })
-            
+
             if knowledge_docs:
                 logger.info(f"[{self.id}] 从知识库找到 {len(knowledge_docs)} 个相关文档/回答")
-            
+
             return knowledge_docs
-            
+
         except Exception as e:
             logger.warning(f"[{self.id}] 知识库搜索失败: {e}")
             return []
-    
+
     async def _query_knowledge_with_cli_ask(self, query: str) -> Optional[dict[str, Any]]:
         """使用 CLI ask 模式查询知识库
-        
+
         通过 Cursor CLI 的 --mode=ask 执行只读查询，获取基于知识库的智能回答。
-        
+
         Args:
             query: 查询问题
-            
+
         Returns:
             查询结果字典，失败返回 None
         """
         if not self._knowledge_manager:
             return None
-        
+
         try:
             logger.info(f"[{self.id}] 使用 CLI ask 模式查询知识库...")
-            
+
             result = await self._knowledge_manager.ask_with_cli(
                 question=query,
                 max_context_docs=self.worker_config.knowledge_search_top_k,
@@ -424,7 +425,7 @@ class WorkerAgent(BaseAgent):
                 model=self.worker_config.cli_ask_model,
                 working_directory=self.worker_config.working_directory,
             )
-            
+
             if result.success and result.answer:
                 logger.info(f"[{self.id}] CLI ask 查询成功，耗时 {result.duration:.2f}s")
                 return {
@@ -440,25 +441,25 @@ class WorkerAgent(BaseAgent):
                 if result.error:
                     logger.warning(f"[{self.id}] CLI ask 查询失败: {result.error}")
                 return None
-                
+
         except Exception as e:
             logger.warning(f"[{self.id}] CLI ask 查询异常: {e}")
             return None
-    
+
     async def _should_suggest_commit(self) -> tuple[bool, int]:
         """检查是否应该建议中间提交
-        
+
         通过检查 git status 获取更改文件数，根据阈值判断是否建议提交。
-        
+
         Returns:
             (should_commit, changed_files_count): 是否建议提交，更改文件数
         """
         if not self.worker_config.enable_intermediate_commit:
             return False, 0
-        
+
         try:
             import subprocess
-            
+
             # 执行 git status --porcelain 获取更改文件列表
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -467,26 +468,26 @@ class WorkerAgent(BaseAgent):
                 text=True,
                 timeout=10,
             )
-            
+
             if result.returncode != 0:
                 logger.warning(f"[{self.id}] git status 执行失败: {result.stderr}")
                 return False, 0
-            
+
             # 统计更改文件数（每行一个文件）
             lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
             changed_files_count = len(lines)
-            
+
             # 判断是否超过阈值
             threshold = self.worker_config.intermediate_commit_threshold
             should_commit = changed_files_count >= threshold
-            
+
             if should_commit:
                 logger.info(
                     f"[{self.id}] 更改文件数 ({changed_files_count}) 达到阈值 ({threshold})，建议提交"
                 )
-            
+
             return should_commit, changed_files_count
-            
+
         except subprocess.TimeoutExpired:
             logger.warning(f"[{self.id}] git status 执行超时")
             return False, 0
@@ -496,19 +497,19 @@ class WorkerAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[{self.id}] 检查提交建议失败: {e}")
             return False, 0
-    
+
     def _build_execution_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
         """构建执行 prompt"""
         parts = [
             self.SYSTEM_PROMPT,
             f"\n## 任务指令\n{instruction}",
         ]
-        
+
         if context:
             if "target_files" in context and context["target_files"]:
                 files = "\n".join(f"- {f}" for f in context["target_files"])
                 parts.append(f"\n## 涉及文件\n{files}")
-            
+
             # 添加参考代码（语义搜索结果）
             if "reference_code" in context and context["reference_code"]:
                 reference_code = context["reference_code"]
@@ -521,18 +522,18 @@ class WorkerAgent(BaseAgent):
                     )
                 if len(reference_code) > 3:
                     parts.append(f"\n... 还有 {len(reference_code) - 3} 个参考代码片段未显示")
-            
+
             # 添加知识库文档（Cursor 相关问题自动搜索结果）
             if "knowledge_docs" in context and context["knowledge_docs"]:
                 knowledge_docs = context["knowledge_docs"]
-                
+
                 # 分离 CLI ask 结果和普通文档
                 cli_ask_docs = [d for d in knowledge_docs if d.get("source") == "cli-ask"]
                 regular_docs = [d for d in knowledge_docs if d.get("source") != "cli-ask"]
-                
+
                 # 优先展示 CLI ask 查询结果（智能回答）
                 if cli_ask_docs:
-                    parts.append(f"\n## 知识库智能回答（CLI Ask 模式）")
+                    parts.append("\n## 知识库智能回答（CLI Ask 模式）")
                     for doc in cli_ask_docs:
                         context_used = doc.get("context_used", [])
                         context_info = f"（参考了 {len(context_used)} 个文档）" if context_used else ""
@@ -541,7 +542,7 @@ class WorkerAgent(BaseAgent):
                             f"\n{context_info}"
                             f"\n```\n{doc.get('content', '')[:1200]}\n```"
                         )
-                
+
                 # 展示普通文档上下文
                 if regular_docs:
                     parts.append(f"\n## 参考文档（来自 Cursor 知识库，共 {len(regular_docs)} 个）")
@@ -554,18 +555,18 @@ class WorkerAgent(BaseAgent):
                         )
                     if len(regular_docs) > 3:
                         parts.append(f"\n... 还有 {len(regular_docs) - 3} 个参考文档未显示")
-            
+
             # 添加其他上下文（排除已处理的字段）
             exclude_keys = ("task_id", "task_type", "target_files", "reference_code", "knowledge_docs")
             other_context = {k: v for k, v in context.items() if k not in exclude_keys}
             if other_context:
                 import json
                 parts.append(f"\n## 上下文信息\n```json\n{json.dumps(other_context, ensure_ascii=False, indent=2)}\n```")
-        
+
         parts.append("\n请开始执行任务:")
-        
+
         return "\n".join(parts)
-    
+
     async def reset(self) -> None:
         """重置执行者状态"""
         self.update_status(AgentStatus.IDLE)
@@ -573,7 +574,7 @@ class WorkerAgent(BaseAgent):
         self.clear_context()
         # 不清除 completed_tasks，保留历史记录
         logger.debug(f"[{self.id}] 状态已重置")
-    
+
     def get_statistics(self) -> dict[str, Any]:
         """获取执行统计"""
         return {

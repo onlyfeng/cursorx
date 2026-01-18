@@ -14,10 +14,10 @@ PROMPT="${1:-分析项目结构并在 analysis.txt 中生成摘要报告}"
 agent -p --force --output-format stream-json --stream-partial-output \
   "$PROMPT" | \
   while IFS= read -r line; do
-    
+
     type=$(echo "$line" | jq -r '.type // empty')
     subtype=$(echo "$line" | jq -r '.subtype // empty')
-    
+
     case "$type" in
       "system")
         if [ "$subtype" = "init" ]; then
@@ -25,16 +25,16 @@ agent -p --force --output-format stream-json --stream-partial-output \
           echo "🤖 使用模型: $model"
         fi
         ;;
-        
+
       "assistant")
         # 累积增量文本以实现流畅的进度显示
         content=$(echo "$line" | jq -r '.message.content[0].text // empty')
         accumulated_text="$accumulated_text$content"
-        
+
         # 显示实时进度(每次字符增量时更新)
         printf "\r📝 生成中: %d 字符" ${#accumulated_text}
         ;;
-        
+
       "tool_call")
         if [ "$subtype" = "started" ]; then
           tool_count=$((tool_count + 1))
@@ -63,7 +63,7 @@ agent -p --force --output-format stream-json --stream-partial-output \
           fi
         fi
         ;;
-        
+
       "result")
         duration=$(echo "$line" | jq -r '.duration_ms // 0')
         end_time=$(date +%s)
@@ -71,7 +71,7 @@ agent -p --force --output-format stream-json --stream-partial-output \
         echo -e "\n\n🎯 完成, 耗时 ${duration}ms (总计 ${total_time}s)"
         echo "📊 最终统计: $tool_count 个工具, 生成 ${#accumulated_text} 字符"
         ;;
-        
+
       "error")
         error_msg=$(echo "$line" | jq -r '.error // "未知错误"')
         echo -e "\n❌ 错误: $error_msg"

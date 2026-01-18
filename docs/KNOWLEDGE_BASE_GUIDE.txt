@@ -220,13 +220,13 @@ A2: 安装可选依赖：
     pip install sentence-transformers chromadb
 
 Q3: 搜索结果不准确
-A3: 
+A3:
     - 尝试使用不同的搜索模式（semantic, hybrid）
     - 调整 --min-score 参数
     - 确保文档内容足够丰富
 
 Q4: 如何查看知识库统计
-A4: 
+A4:
     python scripts/knowledge_cli.py stats
 
 Q5: 如何清空知识库
@@ -234,7 +234,7 @@ A5: 逐个删除文档，或删除存储目录：
     rm -rf .cursor/knowledge/
 
 Q6: 添加 URL 失败
-A6: 
+A6:
     - 检查 URL 是否有效
     - 确保网络连接正常
     - 某些网站可能需要特殊处理
@@ -311,13 +311,13 @@ A6:
 
     # 查询 CLI 命令行参数
     python scripts/test_cursor_knowledge.py query "CLI 参数"
-    
+
     # 查询斜杠命令
     python scripts/test_cursor_knowledge.py query "斜杠命令"
-    
+
     # 查询模型列表
     python scripts/test_cursor_knowledge.py query "模型"
-    
+
     # 查询认证方法
     python scripts/test_cursor_knowledge.py query "登录 认证"
 

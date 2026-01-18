@@ -1,7 +1,8 @@
 """索引模块配置定义"""
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EmbeddingProvider(str, Enum):
@@ -31,22 +32,22 @@ class ChunkStrategy(str, Enum):
 
 class EmbeddingConfig(BaseModel):
     """Embedding 模型配置
-    
+
     配置用于生成向量嵌入的模型参数
     """
     provider: EmbeddingProvider = EmbeddingProvider.OPENAI
     model_name: str = "text-embedding-3-small"  # 模型名称
     dimension: int = 1536                       # 向量维度
     batch_size: int = 100                       # 批量处理大小
-    
+
     # API 配置（用于远程服务）
     api_key: Optional[str] = None               # API 密钥
     api_base: Optional[str] = None              # API 基础 URL
-    
+
     # 本地模型配置
     model_path: Optional[str] = None            # 本地模型路径
     device: str = "cpu"                         # 运行设备（cpu/cuda）
-    
+
     # 性能配置
     max_retries: int = 3                        # 最大重试次数
     timeout: int = 30                           # 超时时间（秒）
@@ -56,23 +57,23 @@ class EmbeddingConfig(BaseModel):
 
 class ChunkConfig(BaseModel):
     """代码分块配置
-    
+
     配置代码分块的策略和参数
     """
     strategy: ChunkStrategy = ChunkStrategy.AST_BASED
-    
+
     # 分块大小控制
     chunk_size: int = 1500                      # 目标分块大小（字符数）
     chunk_overlap: int = 200                    # 分块重叠大小
     min_chunk_size: int = 100                   # 最小分块大小
     max_chunk_size: int = 3000                  # 最大分块大小
-    
+
     # AST 分块配置
     split_functions: bool = True                # 是否按函数分块
     split_classes: bool = True                  # 是否按类分块
     include_imports: bool = True                # 是否在分块中包含导入语句
     include_docstrings: bool = True             # 是否包含文档字符串
-    
+
     # 语言特定配置
     supported_languages: list[str] = Field(
         default_factory=lambda: ["python", "javascript", "typescript", "go", "rust"]
@@ -83,20 +84,20 @@ class ChunkConfig(BaseModel):
 
 class VectorStoreConfig(BaseModel):
     """向量存储配置
-    
+
     配置向量数据库的连接和存储参数
     """
     store_type: VectorStoreType = VectorStoreType.MEMORY
-    
+
     # 存储路径（用于持久化存储）
     persist_directory: Optional[str] = None     # 持久化目录
     collection_name: str = "code_index"         # 集合名称
-    
+
     # 连接配置（用于远程存储）
     host: Optional[str] = None                  # 服务器地址
     port: Optional[int] = None                  # 端口
     api_key: Optional[str] = None               # API 密钥
-    
+
     # 索引配置
     metric: str = "cosine"                      # 相似度度量（cosine/euclidean/dot）
     ef_construction: int = 200                  # HNSW 构建参数
@@ -108,18 +109,18 @@ class VectorStoreConfig(BaseModel):
 
 class IndexConfig(BaseModel):
     """索引总配置
-    
+
     整合所有索引相关的配置
     """
     # 子配置
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     chunking: ChunkConfig = Field(default_factory=ChunkConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
-    
+
     # 索引元数据
     index_name: str = "default"                 # 索引名称
     description: str = ""                       # 索引描述
-    
+
     # 文件过滤
     include_patterns: list[str] = Field(
         default_factory=lambda: ["**/*.py", "**/*.js", "**/*.ts", "**/*.go", "**/*.rs"]
@@ -134,13 +135,13 @@ class IndexConfig(BaseModel):
             "**/build/**"
         ]
     )
-    
+
     # 并发配置
     max_workers: int = 4                        # 最大并发数
-    
+
     # 增量索引
     incremental: bool = True                    # 是否启用增量索引
-    
+
     def get_embedding_dimension(self) -> int:
         """获取向量维度"""
         return self.embedding.dimension

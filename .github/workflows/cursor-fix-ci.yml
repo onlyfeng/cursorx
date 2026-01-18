@@ -7,26 +7,61 @@ name: 修复 CI 失败
 
 on:
   workflow_run:
-    workflows: ["CI"]  # 替换为你的 CI 工作流名称
+    workflows: ["CI"]
     types:
       - completed
+    branches-ignore:
+      - main
+      - master
+
+# 并发控制：同一分支只运行一个修复任务
+concurrency:
+  group: fix-ci-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
 
+env:
+  PYTHON_VERSION: '3.11'
+
 jobs:
   fix-ci:
     runs-on: ubuntu-latest
-    # 仅在 CI 失败时运行
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
-    
+    # 仅在 CI 失败时运行，且排除 main/master 分支
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch != 'main' &&
+      github.event.workflow_run.head_branch != 'master'
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.in
+            requirements-test.in
+
+      - name: 安装 pip-tools 和项目依赖
+        run: |
+          pip install --upgrade pip pip-tools
+          # 使用 pip-sync 确保环境与 requirements.txt 完全一致
+          pip-sync requirements.txt
+
+      - name: 验证依赖安装
+        run: |
+          pip check
+          python -c "import pydantic; import loguru; print('依赖验证通过')"
 
       - name: 安装 Cursor CLI
         run: |
@@ -57,13 +92,13 @@ jobs:
 
           失败日志位于: ${{ steps.get-logs.outputs.logs_file }}
           分支: ${{ github.event.workflow_run.head_branch }}
-          
+
           请执行以下步骤:
           1. 读取失败日志，理解失败原因
           2. 分析相关代码文件
           3. 进行必要的修复
           4. 验证修复是否解决了问题
-          
+
           注意:
           - 只修复导致 CI 失败的问题
           - 不要进行不相关的改动
@@ -86,6 +121,6 @@ jobs:
           git commit -m "fix: 自动修复 CI 失败
 
           由 Cursor Agent 自动生成的修复。
-          
+
           原始失败运行: ${{ github.event.workflow_run.html_url }}"
           git push origin ${{ github.event.workflow_run.head_branch }}

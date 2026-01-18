@@ -1,7 +1,7 @@
 """协调层"""
 from .orchestrator import Orchestrator, OrchestratorConfig
-from .worker_pool import WorkerPool
 from .orchestrator_mp import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+from .worker_pool import WorkerPool
 
 __all__ = [
     # 原版（协程）

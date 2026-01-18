@@ -9,41 +9,39 @@
 6. AgentExecutorFactory 创建正确的 Executor
 """
 import asyncio
-import json
 import os
-import pytest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # 推荐: 从 cursor 顶层包导入（统一入口）
 from cursor import (
+    # 执行器
+    AgentExecutorFactory,
+    AgentResult,
+    AskAgentExecutor,
     # 认证相关
     AuthError,
     AuthErrorCode,
     AuthStatus,
     AuthToken,
+    AutoAgentExecutor,
+    CLIAgentExecutor,
+    CloudAgentExecutor,
     CloudAuthConfig,
     CloudAuthManager,
-    get_api_key,
-    require_auth,
-    verify_auth,
     # 任务管理
     CloudTask,
     CloudTaskClient,
     CloudTaskOptions,
     CursorCloudClient,
+    ExecutionMode,
+    PlanAgentExecutor,
     TaskResult,
     TaskStatus,
-    # 执行器
-    AgentExecutorFactory,
-    AgentResult,
-    AutoAgentExecutor,
-    CLIAgentExecutor,
-    CloudAgentExecutor,
-    PlanAgentExecutor,
-    AskAgentExecutor,
-    ExecutionMode,
-    execute_agent,
+    get_api_key,
+    require_auth,
 )
 
 # 兼容性: 也可以从子模块直接导入

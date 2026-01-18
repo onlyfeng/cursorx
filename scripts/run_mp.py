@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """规划者-执行者 多Agent系统 主入口（多进程版本）"""
-import asyncio
 import argparse
+import asyncio
 import sys
-from typing import Any
 from pathlib import Path
+from typing import Any
+
 from loguru import logger
 
 # 添加项目根目录到 Python 路径
@@ -15,19 +16,19 @@ from coordinator.orchestrator_mp import MultiProcessOrchestrator, MultiProcessOr
 
 def parse_max_iterations(value: str) -> int:
     """解析最大迭代次数参数
-    
+
     Args:
         value: 参数值，可以是数字、MAX、-1 或 0
-        
+
     Returns:
         迭代次数，-1 表示无限迭代
     """
     value_upper = value.upper().strip()
-    
+
     # MAX 或 -1 或 0 表示无限迭代
     if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
         return -1
-    
+
     try:
         num = int(value)
         # -1 或 0 也表示无限迭代
@@ -49,7 +50,7 @@ def setup_logging(verbose: bool = False) -> None:
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
         level=level,
     )
-    
+
     # 文件日志
     Path("logs").mkdir(exist_ok=True)
     logger.add(
@@ -75,66 +76,66 @@ def parse_args() -> argparse.Namespace:
   python main_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
         """,
     )
-    
+
     parser.add_argument(
         "goal",
         type=str,
         help="要完成的目标",
     )
-    
+
     parser.add_argument(
         "-d", "--directory",
         type=str,
         default=".",
         help="工作目录 (默认: 当前目录)",
     )
-    
+
     parser.add_argument(
         "-w", "--workers",
         type=int,
         default=3,
         help="Worker 进程数量 (默认: 3)",
     )
-    
+
     parser.add_argument(
         "-m", "--max-iterations",
         type=str,
         default="10",
         help="最大迭代次数 (默认: 10，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
     )
-    
+
     parser.add_argument(
         "--strict",
         action="store_true",
         help="启用严格评审模式",
     )
-    
+
     parser.add_argument(
         "--no-sub-planners",
         action="store_true",
         help="禁用子规划者",
     )
-    
+
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="详细输出",
     )
-    
+
     parser.add_argument(
         "--planning-timeout",
         type=float,
         default=120.0,
         help="规划超时时间（秒）",
     )
-    
+
     parser.add_argument(
         "--execution-timeout",
         type=float,
         default=300.0,
         help="任务执行超时时间（秒）",
     )
-    
+
     # 模型配置
     parser.add_argument(
         "--planner-model",
@@ -142,7 +143,7 @@ def parse_args() -> argparse.Namespace:
         default="gpt-5.2-high",
         help="规划者使用的模型 (默认: gpt-5.2-high)",
     )
-    
+
     parser.add_argument(
         "--worker-model",
         type=str,
@@ -191,7 +192,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="stream-json 原始日志目录",
     )
-    
+
     return parser.parse_args()
 
 
@@ -265,15 +266,15 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
         stream_log_detail_dir=stream_config["detail_dir"],
         stream_log_raw_dir=stream_config["raw_dir"],
     )
-    
+
     logger.info("模型配置:")
     logger.info(f"  - 规划者: {config.planner_model}")
     logger.info(f"  - 执行者: {config.worker_model}")
     logger.info(f"  - 评审者: {config.reviewer_model}")
-    
+
     orchestrator = MultiProcessOrchestrator(config)
     result = await orchestrator.run(args.goal)
-    
+
     return result
 
 
@@ -282,16 +283,16 @@ def print_result(result: dict) -> None:
     print("\n" + "=" * 60)
     print("执行结果（多进程模式）")
     print("=" * 60)
-    
+
     print(f"\n状态: {'成功' if result.get('success') else '未完成'}")
     print(f"目标: {result.get('goal', 'N/A')}")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
-    
+
     print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
-    
+
     # 进程信息
     process_info = result.get('process_info', {})
     if process_info:
@@ -299,14 +300,14 @@ def print_result(result: dict) -> None:
         for agent_id, info in process_info.items():
             status = "存活" if info.get('alive') else "已停止"
             print(f"  - {info.get('type', 'unknown')}: PID {info.get('pid', 'N/A')} ({status})")
-    
+
     # 迭代详情
     if result.get('iterations'):
         print("\n迭代详情:")
         for it in result['iterations']:
             status_emoji = "✓" if it.get('review_passed') else "→"
             print(f"  {status_emoji} 迭代 {it['id']}: {it['tasks_completed']}/{it['tasks_created']} 任务完成")
-    
+
     print("=" * 60)
 
 
@@ -314,17 +315,17 @@ def main() -> None:
     """主函数"""
     args = parse_args()
     setup_logging(args.verbose)
-    
+
     logger.info("规划者-执行者 多Agent系统（多进程版本）启动")
     logger.info(f"目标: {args.goal}")
     logger.info(f"Worker 进程数: {args.workers}")
-    
+
     try:
         result = asyncio.run(run_orchestrator(args))
         print_result(result)
-        
+
         sys.exit(0 if result.get("success") else 1)
-        
+
     except KeyboardInterrupt:
         logger.info("用户中断")
         sys.exit(130)

@@ -2,60 +2,62 @@
 
 提供文档管理、分块、向量化和检索功能
 """
+from .fetcher import (
+    ContentFormat,
+    FetchConfig,
+    FetchMethod,
+    FetchResult,
+    WebFetcher,
+    fetch_url,
+    fetch_urls,
+)
+from .manager import AskResult, KnowledgeManager
 from .models import (
-    # 枚举类型
-    FetchStatus,
-    FetchPriority,
+    Document,
     # 数据模型
     DocumentChunk,
-    Document,
+    FetchPriority,
+    # 枚举类型
+    FetchStatus,
+    FetchTask,
     KnowledgeBase,
     KnowledgeBaseStats,
-    FetchTask,
 )
 from .parser import (
-    # 数据结构
-    ParsedContent,
+    ChunkSplitter,
+    ContentCleaner,
     # 解析器
     HTMLParser,
-    ContentCleaner,
     MarkdownConverter,
-    ChunkSplitter,
+    # 数据结构
+    ParsedContent,
+)
+from .semantic_search import (
+    HybridSearchConfig,
+    KnowledgeSemanticSearch,
 )
 from .storage import (
     IndexEntry,
-    StorageConfig,
-    SearchResult,
     KnowledgeStorage,
-)
-from .fetcher import (
-    WebFetcher,
-    FetchConfig,
-    FetchResult,
-    FetchMethod,
-    ContentFormat,
-    fetch_url,
-    fetch_urls,
+    SearchResult,
+    StorageConfig,
 )
 from .vector import (
     KnowledgeVectorConfig,
     KnowledgeVectorStore,
     VectorSearchResult,
 )
-from .vector_store import (
-    KnowledgeVectorStore as ChromaVectorStore,
-    VectorSearchResult as ChromaVectorSearchResult,
-)
 from .vector_adapter import (
-    DocumentChunkConfig,
     DocumentChunkAdapter,
+    DocumentChunkConfig,
     DocumentTextChunker,
 )
-from .semantic_search import (
-    KnowledgeSemanticSearch,
-    HybridSearchConfig,
+from .vector_store import (
+    KnowledgeVectorStore as ChromaVectorStore,
 )
-from .manager import KnowledgeManager, AskResult
+from .vector_store import (
+    VectorSearchResult as ChromaVectorSearchResult,
+)
 
 __all__ = [
     # 枚举类型
@@ -115,27 +117,27 @@ async def semantic_search(
     search_mode: str = "hybrid",
 ) -> list[SearchResult]:
     """模块级别的语义搜索便捷函数
-    
+
     提供简单的接口来执行语义搜索，无需直接操作底层组件。
-    
+
     Args:
         query: 搜索查询文本
         knowledge_base: KnowledgeManager 实例
         max_results: 最大返回结果数，默认 10
         min_score: 最小相似度分数，默认 0.3
         search_mode: 搜索模式，可选 'keyword', 'semantic', 'hybrid'，默认 'hybrid'
-        
+
     Returns:
         按相似度降序排列的搜索结果列表
-        
+
     Example:
         ```python
         from knowledge import KnowledgeManager, semantic_search
-        
+
         manager = KnowledgeManager()
         await manager.initialize()
         await manager.add_url("https://example.com")
-        
+
         results = await semantic_search("查询内容", manager)
         for result in results:
             print(f"{result.title}: {result.score}")

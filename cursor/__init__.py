@@ -1,76 +1,83 @@
 """Cursor Agent 集成层"""
 from .client import CursorAgentClient, CursorAgentConfig, CursorAgentPool, CursorAgentResult, ModelPresets
 from .cloud_client import (
-    # 异常层次结构
-    CloudAgentError,
-    RateLimitError,
-    NetworkError,
-    TaskError,
     AuthError,
     AuthErrorCode,
-    # 重试工具
-    RetryConfig,
-    with_retry,
-    retry_async,
-    handle_http_error,
+    AuthStatus,
+    AuthToken,
+    # 异常层次结构
+    CloudAgentError,
+    CloudAgentResult,
+    CloudAuthConfig,
     # 认证管理
     CloudAuthManager,
-    CloudAuthConfig,
-    AuthToken,
-    AuthStatus,
-    get_api_key,
-    verify_auth,
-    verify_auth_sync,
-    require_auth,
+    CloudTask,
     # 任务管理
     CloudTaskClient,
-    TaskStatus,
-    TaskResult,
+    CloudTaskOptions,
     # Cloud Agent（& 前缀推送到云端）
     CursorCloudClient,
-    CloudTask,
-    CloudTaskOptions,
-    CloudAgentResult,
+    NetworkError,
+    RateLimitError,
+    # 重试工具
+    RetryConfig,
+    TaskError,
+    TaskResult,
+    TaskStatus,
+    get_api_key,
+    handle_http_error,
+    require_auth,
+    retry_async,
+    verify_auth,
+    verify_auth_sync,
+    with_retry,
 )
 from .executor import (
     AgentExecutor,
+    AgentExecutorFactory,
     AgentResult,
-    ExecutionMode,
+    AskAgentExecutor,
+    AutoAgentExecutor,
     CLIAgentExecutor,
     CloudAgentExecutor,
-    AutoAgentExecutor,
+    ExecutionMode,
     PlanAgentExecutor,
-    AskAgentExecutor,
-    AgentExecutorFactory,
     execute_agent,
     execute_agent_sync,
 )
 from .mcp import MCPManager, MCPServer, MCPTool, ensure_mcp_servers_enabled
-from .streaming import (
-    StreamingClient,
-    StreamEvent,
-    StreamEventType,
-    ProgressTracker,
-    ToolCallInfo,
-    StreamEventLogger,
-    parse_stream_event,
-    # 差异相关
-    DiffInfo,
-    format_diff,
-    format_inline_diff,
-    format_colored_diff,
-    get_diff_stats,
-    parse_diff_event,
-)
 from .network import (
+    APACHE,
+    CLOUDFLARE,
+    IPTABLES,
+    JSON,
+    NGINX,
+    UFW,
     EgressIPConfig,
     EgressIPManager,
     FirewallFormat,
+    export_firewall_rules,
     fetch_egress_ip_ranges,
     is_allowed_ip,
-    export_firewall_rules,
+)
+from .network import (
     get_manager as get_network_manager,
-    IPTABLES, NGINX, APACHE, UFW, CLOUDFLARE, JSON,
+)
+from .streaming import (
+    # 差异相关
+    DiffInfo,
+    ProgressTracker,
+    StreamEvent,
+    StreamEventLogger,
+    StreamEventType,
+    StreamingClient,
+    ToolCallInfo,
+    format_colored_diff,
+    format_diff,
+    format_inline_diff,
+    get_diff_stats,
+    parse_diff_event,
+    parse_stream_event,
 )
 
 # 别名（兼容性，统一命名风格）

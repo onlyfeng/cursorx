@@ -16,7 +16,7 @@ echo "🔧 开始实现任务: $TASK"
 # 使用 --force 允许修改文件
 agent -p --force --output-format text \
   "$TASK
-  
+
   请完成这个任务并确保：
   - 代码可以正常运行
   - 遵循现有代码风格

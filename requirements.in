@@ -1,0 +1,43 @@
+# ============================================================
+# 核心运行时依赖源文件
+# 使用 pip-compile 生成锁定的 requirements.txt
+# 命令: pip-compile requirements.in -o requirements.txt
+# ============================================================
+
+# 异步支持
+asyncio-pool>=0.6.0
+aiofiles>=23.2.1
+
+# 数据模型与验证
+pydantic>=2.5.0
+
+# 进程管理
+psutil>=5.9.0
+
+# 日志
+loguru>=0.7.2
+
+# 配置管理
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# 类型支持
+typing-extensions>=4.9.0
+
+# HTML/网页处理
+beautifulsoup4>=4.12.0  # HTML 解析
+html2text>=2024.1.0     # HTML 转 Markdown
+lxml>=5.0.0             # 高性能 XML/HTML 解析器
+
+# HTTP 客户端
+httpx>=0.27.0           # 异步 HTTP 客户端
+websockets>=12.0        # WebSocket 实时连接支持
+
+# ============================================================
+# ML/向量搜索依赖 (可选，用于语义搜索功能)
+# 取消注释以启用向量搜索功能
+# ============================================================
+# sentence-transformers>=2.2.0  # 文本嵌入向量生成
+# chromadb>=0.4.0               # 向量数据库
+# tiktoken>=0.5.0               # OpenAI 分词器
+# hnswlib>=0.7.0                # 轻量级向量索引

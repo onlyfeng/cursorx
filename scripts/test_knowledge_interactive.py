@@ -15,11 +15,11 @@
 """
 import argparse
 import asyncio
+import shutil
 import sys
 import tempfile
-import shutil
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 # 添加项目根目录到 Python 路径
@@ -27,14 +27,12 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from knowledge import (  # noqa: E402
+    ChunkSplitter,
+    Document,
     KnowledgeManager,
     KnowledgeStorage,
-    Document,
     SearchResult,
-    ChunkSplitter,
 )
-from knowledge.vector import KnowledgeVectorConfig  # noqa: E402
-
 
 # ============================================================
 # 测试数据
@@ -321,10 +319,10 @@ def print_info(text: str):
 
 class KnowledgeBaseTester:
     """知识库测试器"""
-    
+
     def __init__(self, use_temp_storage: bool = True):
         """初始化测试器
-        
+
         Args:
             use_temp_storage: 是否使用临时存储（测试后删除）
         """
@@ -333,11 +331,11 @@ class KnowledgeBaseTester:
         self.manager: Optional[KnowledgeManager] = None
         self.storage: Optional[KnowledgeStorage] = None
         self.test_results: list[dict] = []
-    
+
     async def setup(self):
         """初始化测试环境"""
         print_section("初始化测试环境")
-        
+
         if self.use_temp_storage:
             self.temp_dir = tempfile.mkdtemp(prefix="kb_test_")
             print_info(f"使用临时存储: {self.temp_dir}")
@@ -345,28 +343,28 @@ class KnowledgeBaseTester:
         else:
             print_info("使用项目默认存储")
             self.storage = KnowledgeStorage()
-        
+
         await self.storage.initialize()
         print_success("存储初始化完成")
-        
+
         self.manager = KnowledgeManager(name="test-kb")
         await self.manager.initialize()
         print_success("KnowledgeManager 初始化完成")
-    
+
     async def cleanup(self):
         """清理测试环境"""
         if self.use_temp_storage and self.temp_dir:
             print_info(f"清理临时目录: {self.temp_dir}")
             shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
+
     async def add_demo_documents(self) -> int:
         """添加演示文档
-        
+
         Returns:
             成功添加的文档数
         """
         print_section("添加演示文档")
-        
+
         success_count = 0
         for i, doc_data in enumerate(DEMO_DOCUMENTS, 1):
             doc = Document(
@@ -376,11 +374,11 @@ class KnowledgeBaseTester:
                 content=doc_data["content"],
                 metadata={"source": "demo", "category": "技术文档"},
             )
-            
+
             # 添加到 manager
             self.manager._knowledge_base.add_document(doc)
             self.manager._url_to_doc_id[doc.url] = doc.id
-            
+
             # 保存到存储
             success, message = await self.storage.save_document(doc)
             if success:
@@ -388,20 +386,20 @@ class KnowledgeBaseTester:
                 print_success(f"[{i}/{len(DEMO_DOCUMENTS)}] {doc.title}")
             else:
                 print_warning(f"[{i}/{len(DEMO_DOCUMENTS)}] {doc.title}: {message}")
-        
+
         print(f"\n添加完成: {success_count}/{len(DEMO_DOCUMENTS)} 个文档")
         return success_count
-    
+
     async def test_document_storage(self) -> bool:
         """测试文档存储功能
-        
+
         Returns:
             测试是否通过
         """
         print_section("测试文档存储")
-        
+
         passed = True
-        
+
         # 1. 检查文档数量
         entries = await self.storage.list_documents()
         if len(entries) >= len(DEMO_DOCUMENTS):
@@ -409,7 +407,7 @@ class KnowledgeBaseTester:
         else:
             print_error(f"文档数量不足: 期望 {len(DEMO_DOCUMENTS)}，实际 {len(entries)}")
             passed = False
-        
+
         # 2. 测试文档加载
         if entries:
             doc = await self.storage.load_document(entries[0].doc_id)
@@ -418,7 +416,7 @@ class KnowledgeBaseTester:
             else:
                 print_error("文档加载失败")
                 passed = False
-        
+
         # 3. 测试统计信息
         stats = await self.storage.get_stats()
         if stats["document_count"] > 0:
@@ -426,30 +424,30 @@ class KnowledgeBaseTester:
         else:
             print_error("统计信息异常")
             passed = False
-        
+
         self.test_results.append({
             "name": "文档存储",
             "passed": passed,
         })
-        
+
         return passed
-    
+
     async def test_keyword_search(self) -> bool:
         """测试关键词搜索
-        
+
         Returns:
             测试是否通过
         """
         print_section("测试关键词搜索")
-        
+
         passed = True
-        
+
         for test in TEST_QUERIES:
             query = test["query"]
             expected_doc = test["expected_doc"]
-            
+
             results = await self.storage.search(query, limit=5)
-            
+
             if results:
                 # 检查是否找到了预期的文档
                 found = any(expected_doc in r.title for r in results)
@@ -460,41 +458,41 @@ class KnowledgeBaseTester:
             else:
                 print_error(f"查询 '{query[:30]}...' -> 无结果")
                 passed = False
-        
+
         self.test_results.append({
             "name": "关键词搜索",
             "passed": passed,
         })
-        
+
         return passed
-    
+
     async def test_search_accuracy(self) -> dict:
         """测试搜索准确性
-        
+
         Returns:
             准确性统计
         """
         print_section("测试搜索准确性")
-        
+
         total_queries = len(TEST_QUERIES)
         correct_matches = 0
         keyword_matches = 0
-        
+
         for test in TEST_QUERIES:
             query = test["query"]
             expected_keywords = test["expected_keywords"]
             expected_doc = test["expected_doc"]
-            
+
             results = await self.storage.search(query, limit=3)
-            
+
             if results:
                 top_result = results[0]
-                
+
                 # 检查是否找到预期文档
                 doc_match = expected_doc in top_result.title
                 if doc_match:
                     correct_matches += 1
-                
+
                 # 加载文档内容检查关键词
                 doc = await self.storage.load_document(top_result.doc_id)
                 if doc:
@@ -503,99 +501,99 @@ class KnowledgeBaseTester:
                     kw_ratio = len(found_keywords) / len(expected_keywords)
                     if kw_ratio >= 0.5:
                         keyword_matches += 1
-                    
+
                     status = "✓" if doc_match else "○"
                     print(f"  {status} {query[:40]}")
                     print(f"      -> {top_result.title} (分数: {top_result.score:.2f})")
                     print(f"      关键词匹配: {len(found_keywords)}/{len(expected_keywords)}")
-        
+
         accuracy = correct_matches / total_queries if total_queries > 0 else 0
         keyword_accuracy = keyword_matches / total_queries if total_queries > 0 else 0
-        
-        print(f"\n准确性统计:")
+
+        print("\n准确性统计:")
         print(f"  文档匹配准确率: {accuracy:.1%} ({correct_matches}/{total_queries})")
         print(f"  关键词匹配率: {keyword_accuracy:.1%} ({keyword_matches}/{total_queries})")
-        
+
         passed = accuracy >= 0.6  # 60% 以上视为通过
-        
+
         self.test_results.append({
             "name": "搜索准确性",
             "passed": passed,
             "accuracy": accuracy,
         })
-        
+
         return {
             "accuracy": accuracy,
             "keyword_accuracy": keyword_accuracy,
             "correct_matches": correct_matches,
             "total_queries": total_queries,
         }
-    
+
     async def test_chunk_splitting(self) -> bool:
         """测试文档分块功能
-        
+
         Returns:
             测试是否通过
         """
         print_section("测试文档分块")
-        
+
         passed = True
         splitter = ChunkSplitter(chunk_size=200, overlap=20)
-        
+
         for doc_data in DEMO_DOCUMENTS[:2]:
             chunks = splitter.split(doc_data["content"], source_doc=f"test-{doc_data['title']}")
-            
+
             if chunks:
                 print_success(f"'{doc_data['title'][:30]}' -> {len(chunks)} 个分块")
-                
+
                 # 验证分块元数据
                 for chunk in chunks:
                     if "chunk_index" not in chunk.metadata:
-                        print_error(f"分块缺少元数据")
+                        print_error("分块缺少元数据")
                         passed = False
                         break
             else:
                 print_error(f"'{doc_data['title'][:30]}' 分块失败")
                 passed = False
-        
+
         self.test_results.append({
             "name": "文档分块",
             "passed": passed,
         })
-        
+
         return passed
-    
+
     async def interactive_query(self):
         """交互式查询模式"""
         print_section("交互式查询模式")
         print_info("输入问题进行查询，输入 'q' 或 'quit' 退出\n")
-        
+
         while True:
             try:
                 query = input(f"{Colors.CYAN}问题> {Colors.NC}").strip()
-                
+
                 if query.lower() in ("q", "quit", "exit"):
                     print_info("退出交互模式")
                     break
-                
+
                 if not query:
                     continue
-                
+
                 # 执行搜索
                 results = await self.storage.search(query, limit=5)
-                
+
                 if results:
                     print(f"\n找到 {len(results)} 个相关结果:\n")
-                    
+
                     for i, result in enumerate(results, 1):
                         print(f"{Colors.GREEN}{i}. {result.title}{Colors.NC}")
                         print(f"   分数: {result.score:.2f} | 类型: {result.match_type}")
-                        
+
                         # 显示摘要
                         if result.snippet:
                             snippet = result.snippet.replace('\n', ' ')[:150]
                             print(f"   摘要: {snippet}...")
-                        
+
                         # 加载完整内容并显示相关段落
                         doc = await self.storage.load_document(result.doc_id)
                         if doc:
@@ -607,51 +605,51 @@ class KnowledgeBaseTester:
                                 if any(kw in para.lower() for kw in query_lower.split()):
                                     relevant_para = para.strip()
                                     break
-                            
+
                             if relevant_para:
                                 if len(relevant_para) > 200:
                                     relevant_para = relevant_para[:200] + "..."
                                 print(f"   {Colors.YELLOW}相关内容:{Colors.NC}")
                                 print(f"   {relevant_para}")
-                        
+
                         print()
                 else:
                     print_warning("未找到相关结果\n")
-                
+
             except KeyboardInterrupt:
                 print("\n")
                 print_info("退出交互模式")
                 break
             except EOFError:
                 break
-    
+
     async def direct_query(self, query: str) -> list[SearchResult]:
         """直接查询
-        
+
         Args:
             query: 查询文本
-            
+
         Returns:
             搜索结果
         """
         print_section(f"查询: {query}")
-        
+
         results = await self.storage.search(query, limit=5)
-        
+
         if results:
             print(f"\n找到 {len(results)} 个相关结果:\n")
-            
+
             for i, result in enumerate(results, 1):
                 print(f"{Colors.GREEN}{i}. {result.title}{Colors.NC}")
                 print(f"   分数: {result.score:.2f}")
-                
+
                 # 加载完整内容
                 doc = await self.storage.load_document(result.doc_id)
                 if doc:
                     # 提取相关段落
                     paragraphs = doc.content.split('\n\n')
                     query_lower = query.lower()
-                    
+
                     print(f"   {Colors.YELLOW}相关内容:{Colors.NC}")
                     shown = 0
                     for para in paragraphs:
@@ -663,7 +661,7 @@ class KnowledgeBaseTester:
                                 para_text = para_text[:300] + "..."
                             print(f"   {para_text}")
                             shown += 1
-                    
+
                     if shown == 0:
                         # 显示前两段
                         for para in paragraphs[:2]:
@@ -672,36 +670,36 @@ class KnowledgeBaseTester:
                                 if len(para_text) > 200:
                                     para_text = para_text[:200] + "..."
                                 print(f"   {para_text}")
-                
+
                 print()
         else:
             print_warning("未找到相关结果")
-        
+
         return results
-    
+
     def print_summary(self):
         """打印测试摘要"""
         print_header("测试结果摘要")
-        
+
         total = len(self.test_results)
         passed = sum(1 for r in self.test_results if r["passed"])
         failed = total - passed
-        
+
         for result in self.test_results:
             status = f"{Colors.GREEN}✓ 通过{Colors.NC}" if result["passed"] else f"{Colors.RED}✗ 失败{Colors.NC}"
             extra = ""
             if "accuracy" in result:
                 extra = f" (准确率: {result['accuracy']:.1%})"
             print(f"  {result['name']}: {status}{extra}")
-        
+
         print(f"\n{'=' * 40}")
         print(f"总计: {passed}/{total} 通过")
-        
+
         if failed == 0:
             print(f"{Colors.GREEN}{Colors.BOLD}所有测试通过！知识库功能正常。{Colors.NC}")
         else:
             print(f"{Colors.YELLOW}有 {failed} 个测试未通过，请检查相关功能。{Colors.NC}")
-        
+
         return failed == 0
 
 
@@ -713,21 +711,21 @@ async def run_auto_test():
     """运行自动测试"""
     print_header("知识库自动测试")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
+
     tester = KnowledgeBaseTester(use_temp_storage=True)
-    
+
     try:
         await tester.setup()
         await tester.add_demo_documents()
-        
+
         await tester.test_document_storage()
         await tester.test_keyword_search()
         await tester.test_search_accuracy()
         await tester.test_chunk_splitting()
-        
+
         success = tester.print_summary()
         return 0 if success else 1
-        
+
     finally:
         await tester.cleanup()
 
@@ -736,28 +734,28 @@ async def run_demo_mode():
     """运行演示模式"""
     print_header("知识库演示模式")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
+
     tester = KnowledgeBaseTester(use_temp_storage=True)
-    
+
     try:
         await tester.setup()
         await tester.add_demo_documents()
-        
+
         print_section("演示查询")
-        
+
         demo_queries = [
             "Python 编程",
             "Docker 容器",
             "机器学习",
         ]
-        
+
         for query in demo_queries:
             await tester.direct_query(query)
             print()
-        
+
         print_info("演示完成。使用 --interactive 模式可以自由提问。")
         return 0
-        
+
     finally:
         await tester.cleanup()
 
@@ -766,16 +764,16 @@ async def run_interactive_mode():
     """运行交互模式"""
     print_header("知识库交互测试")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
+
     tester = KnowledgeBaseTester(use_temp_storage=True)
-    
+
     try:
         await tester.setup()
         await tester.add_demo_documents()
-        
+
         await tester.interactive_query()
         return 0
-        
+
     finally:
         await tester.cleanup()
 
@@ -783,14 +781,14 @@ async def run_interactive_mode():
 async def run_query_mode(query: str):
     """运行查询模式"""
     tester = KnowledgeBaseTester(use_temp_storage=True)
-    
+
     try:
         await tester.setup()
         await tester.add_demo_documents()
-        
+
         results = await tester.direct_query(query)
         return 0 if results else 1
-        
+
     finally:
         await tester.cleanup()
 
@@ -798,12 +796,12 @@ async def run_query_mode(query: str):
 async def run_with_real_storage(query: Optional[str] = None):
     """使用真实存储运行"""
     print_header("知识库查询 (使用项目存储)")
-    
+
     tester = KnowledgeBaseTester(use_temp_storage=False)
-    
+
     try:
         await tester.setup()
-        
+
         # 检查是否有文档
         entries = await tester.storage.list_documents()
         if not entries:
@@ -811,16 +809,16 @@ async def run_with_real_storage(query: Optional[str] = None):
             print_info("使用: python scripts/knowledge_cli.py add <url>")
             print_info("或者: python scripts/test_knowledge_interactive.py --demo")
             return 1
-        
+
         print_info(f"知识库中有 {len(entries)} 个文档\n")
-        
+
         if query:
             results = await tester.direct_query(query)
             return 0 if results else 1
         else:
             await tester.interactive_query()
             return 0
-            
+
     except Exception as e:
         print_error(f"错误: {e}")
         return 1
@@ -841,7 +839,7 @@ def main():
   %(prog)s --real --query "问题"    # 查询真实存储
         """,
     )
-    
+
     parser.add_argument(
         "--auto", "-a",
         action="store_true",
@@ -862,9 +860,9 @@ def main():
         action="store_true",
         help="使用项目真实存储（而非临时存储）",
     )
-    
+
     args = parser.parse_args()
-    
+
     try:
         if args.real:
             exit_code = asyncio.run(run_with_real_storage(args.query))
@@ -876,9 +874,9 @@ def main():
             exit_code = asyncio.run(run_query_mode(args.query))
         else:
             exit_code = asyncio.run(run_interactive_mode())
-        
+
         sys.exit(exit_code)
-        
+
     except KeyboardInterrupt:
         print("\n操作已取消")
         sys.exit(130)

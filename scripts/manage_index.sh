@@ -1,6 +1,6 @@
 #!/bin/bash
 # 代码索引管理脚本
-# 
+#
 # 提供便捷的命令行接口来管理代码索引
 #
 # 使用方法:
@@ -66,14 +66,14 @@ check_python() {
         echo "请安装 Python 3.8+"
         exit 1
     fi
-    
+
     # 检查必要的依赖
     python3 -c "import sentence_transformers" 2>/dev/null || {
         echo -e "${YELLOW}警告: sentence-transformers 未安装${NC}"
         echo "运行: pip install sentence-transformers"
         exit 1
     }
-    
+
     python3 -c "import chromadb" 2>/dev/null || {
         echo -e "${YELLOW}警告: chromadb 未安装${NC}"
         echo "运行: pip install chromadb"
@@ -94,7 +94,7 @@ main() {
         show_help
         exit 0
     fi
-    
+
     # 处理帮助选项
     case "$1" in
         -h|--help)
@@ -102,14 +102,14 @@ main() {
             exit 0
             ;;
     esac
-    
+
     # 检查环境
     check_python
-    
+
     # 运行命令
     local command="$1"
     shift
-    
+
     case "$command" in
         build)
             echo -e "${BLUE}构建代码索引...${NC}"

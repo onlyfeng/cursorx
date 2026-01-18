@@ -13,7 +13,7 @@ agent -p --output-format text \
   - 潜在的 bug 或问题
   - 安全性考虑
   - 最佳实践合规性
-  
+
   注意：不要编写任何代码，只提供审查意见。"
 
 if [ $? -eq 0 ]; then

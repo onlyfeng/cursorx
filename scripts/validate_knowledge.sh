@@ -61,9 +61,9 @@ check_python() {
 # 检查依赖
 check_dependencies() {
     echo -e "${BLUE}检查依赖...${NC}"
-    
+
     cd "$PROJECT_ROOT"
-    
+
     # 检查核心依赖
     python3 -c "import knowledge" 2>/dev/null || {
         echo -e "${YELLOW}警告: knowledge 模块导入失败，尝试安装依赖...${NC}"
@@ -75,10 +75,10 @@ check_dependencies() {
 quick_validation() {
     echo -e "${BLUE}运行快速验证...${NC}"
     echo ""
-    
+
     cd "$PROJECT_ROOT"
     PYTHONPATH=. python3 tests/test_knowledge_validation.py
-    
+
     return $?
 }
 
@@ -86,16 +86,16 @@ quick_validation() {
 run_pytest() {
     local test_file="$1"
     local verbose="$2"
-    
+
     cd "$PROJECT_ROOT"
     export PYTHONPATH=.
-    
+
     if [ "$verbose" = "true" ]; then
         python3 -m pytest $test_file -v --tb=short
     else
         python3 -m pytest $test_file --tb=short
     fi
-    
+
     return $?
 }
 
@@ -103,7 +103,7 @@ run_pytest() {
 main() {
     local mode="quick"
     local verbose="false"
-    
+
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -142,17 +142,17 @@ main() {
                 ;;
         esac
     done
-    
+
     echo "=============================================="
     echo -e "${BLUE}知识库验证${NC}"
     echo "=============================================="
     echo ""
-    
+
     check_python
     check_dependencies
-    
+
     local exit_code=0
-    
+
     case $mode in
         quick)
             quick_validation || exit_code=$?
@@ -183,7 +183,7 @@ main() {
             run_pytest "tests/" "$verbose" || exit_code=$?
             ;;
     esac
-    
+
     echo ""
     if [ $exit_code -eq 0 ]; then
         echo -e "${GREEN}=============================================="
@@ -194,7 +194,7 @@ main() {
         echo -e "验证完成 - 存在失败的测试"
         echo -e "==============================================${NC}"
     fi
-    
+
     return $exit_code
 }
 

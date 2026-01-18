@@ -11,12 +11,13 @@ from typing import Any, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .base import CodeChunk, EmbeddingModel, SearchResult as BaseSearchResult, VectorStore
+from .base import CodeChunk, EmbeddingModel, VectorStore
+from .base import SearchResult as BaseSearchResult
 
 
 class SearchOptions(BaseModel):
     """搜索选项配置
-    
+
     Attributes:
         top_k: 返回结果数量
         min_score: 最低相似度阈值 (0-1)
@@ -37,9 +38,9 @@ class SearchOptions(BaseModel):
 
 class SearchResultWithContext(BaseModel):
     """带上下文的搜索结果
-    
+
     扩展基础搜索结果，添加上下文信息和便捷访问属性
-    
+
     Attributes:
         content: 匹配的代码块内容
         file_path: 文件路径
@@ -68,7 +69,7 @@ class SearchResultWithContext(BaseModel):
     language: str = "unknown"
     chunk_type: str = "unknown"
     metadata: dict[str, Any] = Field(default_factory=dict)
-    
+
     @classmethod
     def from_base_result(
         cls,
@@ -78,13 +79,13 @@ class SearchResultWithContext(BaseModel):
         context_end_line: Optional[int] = None,
     ) -> "SearchResultWithContext":
         """从基础搜索结果创建带上下文的结果
-        
+
         Args:
             result: 基础搜索结果
             context: 上下文代码
             context_start_line: 上下文起始行
             context_end_line: 上下文结束行
-            
+
         Returns:
             SearchResultWithContext 实例
         """
@@ -104,13 +105,13 @@ class SearchResultWithContext(BaseModel):
             chunk_type=chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
             metadata={**chunk.metadata, **result.metadata},
         )
-    
+
     def get_display_name(self) -> str:
         """获取显示名称"""
         if self.name:
             return self.name
         return f"{self.file_path}:{self.start_line}-{self.end_line}"
-    
+
     def get_location(self) -> str:
         """获取位置字符串"""
         return f"{self.file_path}:{self.start_line}-{self.end_line}"
@@ -119,7 +120,7 @@ class SearchResultWithContext(BaseModel):
 @dataclass
 class SearchStats:
     """搜索统计信息
-    
+
     Attributes:
         total_results: 总结果数（过滤前）
         filtered_results: 过滤后结果数
@@ -136,24 +137,24 @@ class SearchStats:
 
 class SemanticSearch:
     """语义搜索引擎
-    
+
     基于向量嵌入的代码语义搜索，支持多种搜索模式：
     - 基本语义搜索
     - 带上下文的搜索
     - 限定文件范围搜索
     - 混合搜索（语义 + 关键词）
-    
+
     Attributes:
         embedding_model: 嵌入模型实例
         vector_store: 向量存储实例
-    
+
     Example:
         >>> search = SemanticSearch(embedding_model, vector_store)
         >>> results = await search.search("用户认证逻辑", top_k=5)
         >>> for r in results:
         ...     print(f"{r.file_path}:{r.start_line} - {r.score:.2f}")
     """
-    
+
     def __init__(
         self,
         embedding_model: EmbeddingModel,
@@ -161,7 +162,7 @@ class SemanticSearch:
         default_options: Optional[SearchOptions] = None,
     ):
         """初始化语义搜索引擎
-        
+
         Args:
             embedding_model: 嵌入模型实例，用于将查询转换为向量
             vector_store: 向量存储实例，用于相似度搜索
@@ -170,26 +171,26 @@ class SemanticSearch:
         self._embedding_model = embedding_model
         self._vector_store = vector_store
         self._default_options = default_options or SearchOptions()
-        
+
         # 用于读取文件上下文的缓存
         self._file_cache: dict[str, list[str]] = {}
-        
+
         logger.info(
             f"语义搜索引擎已初始化: "
             f"embedding={embedding_model.model_name}, "
             f"dimension={embedding_model.dimension}"
         )
-    
+
     @property
     def embedding_model(self) -> EmbeddingModel:
         """嵌入模型"""
         return self._embedding_model
-    
+
     @property
     def vector_store(self) -> VectorStore:
         """向量存储"""
         return self._vector_store
-    
+
     async def search(
         self,
         query: str,
@@ -199,16 +200,16 @@ class SemanticSearch:
         language_filter: Optional[list[str]] = None,
     ) -> list[BaseSearchResult]:
         """基本语义搜索
-        
+
         将查询文本转换为向量，在向量存储中搜索最相似的代码块
-        
+
         Args:
             query: 查询文本（自然语言描述或代码片段）
             top_k: 返回结果数量，默认使用 default_options
             min_score: 最低相似度阈值，默认使用 default_options
             file_filter: 文件路径过滤列表
             language_filter: 编程语言过滤列表
-            
+
         Returns:
             搜索结果列表，按相似度降序排列
         """
@@ -217,13 +218,13 @@ class SemanticSearch:
         _min_score = min_score if min_score is not None else self._default_options.min_score
         _file_filter = file_filter if file_filter is not None else self._default_options.file_filter
         _language_filter = language_filter if language_filter is not None else self._default_options.language_filter
-        
+
         # 生成查询向量
         query_embedding = await self._embedding_model.embed_text(query)
-        
+
         # 构建过滤条件
         filter_dict = self._build_filter_dict(_file_filter, _language_filter)
-        
+
         # 执行向量搜索
         results = await self._vector_store.search(
             query_embedding=query_embedding,
@@ -231,28 +232,28 @@ class SemanticSearch:
             filter_dict=filter_dict,
             threshold=_min_score if _min_score > 0 else None,
         )
-        
+
         logger.debug(f"搜索完成: query='{query[:50]}...', results={len(results)}")
         return results
-    
+
     async def search_with_context(
         self,
         query: str,
         options: Optional[SearchOptions] = None,
     ) -> list[SearchResultWithContext]:
         """带上下文的语义搜索
-        
+
         返回匹配结果及其周围的上下文代码
-        
+
         Args:
             query: 查询文本
             options: 搜索选项，包含 context_lines 等配置
-            
+
         Returns:
             带上下文的搜索结果列表
         """
         opts = options or self._default_options
-        
+
         # 先执行基本搜索
         base_results = await self.search(
             query=query,
@@ -261,7 +262,7 @@ class SemanticSearch:
             file_filter=opts.file_filter,
             language_filter=opts.language_filter,
         )
-        
+
         # 为每个结果添加上下文
         results_with_context = []
         for result in base_results:
@@ -271,7 +272,7 @@ class SemanticSearch:
                 end_line=result.chunk.end_line,
                 context_lines=opts.context_lines,
             )
-            
+
             result_with_ctx = SearchResultWithContext.from_base_result(
                 result=result,
                 context=context,
@@ -279,9 +280,9 @@ class SemanticSearch:
                 context_end_line=ctx_end,
             )
             results_with_context.append(result_with_ctx)
-        
+
         return results_with_context
-    
+
     async def search_in_files(
         self,
         query: str,
@@ -290,22 +291,22 @@ class SemanticSearch:
         min_score: Optional[float] = None,
     ) -> list[BaseSearchResult]:
         """限定文件范围的语义搜索
-        
+
         只在指定的文件列表中搜索
-        
+
         Args:
             query: 查询文本
             file_paths: 限定的文件路径列表
             top_k: 返回结果数量
             min_score: 最低相似度阈值
-            
+
         Returns:
             搜索结果列表
         """
         if not file_paths:
             logger.warning("文件列表为空，返回空结果")
             return []
-        
+
         # 使用文件路径作为过滤条件
         return await self.search(
             query=query,
@@ -313,7 +314,7 @@ class SemanticSearch:
             min_score=min_score,
             file_filter=file_paths,
         )
-    
+
     async def hybrid_search(
         self,
         query: str,
@@ -322,24 +323,24 @@ class SemanticSearch:
         keyword_weight: float = 0.3,
     ) -> list[SearchResultWithContext]:
         """混合搜索：结合语义搜索和关键词匹配
-        
+
         综合语义相似度和关键词匹配度计算最终分数
-        
+
         Args:
             query: 查询文本（用于语义搜索）
             keywords: 关键词列表（用于关键词匹配）
             options: 搜索选项
             keyword_weight: 关键词匹配权重 (0-1)，语义权重 = 1 - keyword_weight
-            
+
         Returns:
             混合排序的搜索结果列表
         """
         opts = options or self._default_options
-        
+
         # 如果没有指定关键词，从查询中提取
         if keywords is None:
             keywords = self._extract_keywords(query)
-        
+
         # 执行语义搜索（获取更多结果用于重排序）
         search_top_k = min(opts.top_k * 3, 50)  # 获取更多候选
         base_results = await self.search(
@@ -349,23 +350,23 @@ class SemanticSearch:
             file_filter=opts.file_filter,
             language_filter=opts.language_filter,
         )
-        
+
         # 计算混合分数
         scored_results: list[tuple[BaseSearchResult, float]] = []
         for result in base_results:
             semantic_score = result.score
             keyword_score = self._compute_keyword_score(result.chunk.content, keywords)
-            
+
             # 加权平均
             hybrid_score = (
                 (1 - keyword_weight) * semantic_score +
                 keyword_weight * keyword_score
             )
             scored_results.append((result, hybrid_score))
-        
+
         # 按混合分数排序
         scored_results.sort(key=lambda x: x[1], reverse=True)
-        
+
         # 取 top_k 结果并添加上下文
         final_results: list[SearchResultWithContext] = []
         for result, hybrid_score in scored_results[:opts.top_k]:
@@ -375,7 +376,7 @@ class SemanticSearch:
                 end_line=result.chunk.end_line,
                 context_lines=opts.context_lines,
             )
-            
+
             result_with_ctx = SearchResultWithContext.from_base_result(
                 result=result,
                 context=context,
@@ -389,9 +390,9 @@ class SemanticSearch:
                 result.chunk.content, keywords
             )
             final_results.append(result_with_ctx)
-        
+
         return final_results
-    
+
     async def search_similar(
         self,
         code_chunk: CodeChunk,
@@ -399,34 +400,34 @@ class SemanticSearch:
         exclude_self: bool = True,
     ) -> list[BaseSearchResult]:
         """搜索与给定代码块相似的代码
-        
+
         Args:
             code_chunk: 参考代码块
             top_k: 返回结果数量
             exclude_self: 是否排除自身
-            
+
         Returns:
             相似代码块列表
         """
         # 确保代码块有嵌入向量
         if not code_chunk.has_embedding():
             await self._embedding_model.embed_chunk(code_chunk)
-        
+
         # 搜索相似代码
         results = await self._vector_store.search(
             query_embedding=code_chunk.embedding,
             top_k=top_k + 1 if exclude_self else top_k,
         )
-        
+
         # 排除自身
         if exclude_self:
             results = [
                 r for r in results
                 if r.chunk.chunk_id != code_chunk.chunk_id
             ][:top_k]
-        
+
         return results
-    
+
     async def search_by_function_name(
         self,
         function_name: str,
@@ -434,12 +435,12 @@ class SemanticSearch:
         top_k: int = 10,
     ) -> list[BaseSearchResult]:
         """按函数/方法名搜索
-        
+
         Args:
             function_name: 函数名
             exact_match: 是否精确匹配
             top_k: 返回结果数量
-            
+
         Returns:
             匹配的代码块列表
         """
@@ -448,37 +449,37 @@ class SemanticSearch:
             query = f"def {function_name}("
         else:
             query = f"function {function_name} implementation"
-        
+
         # 执行搜索
         results = await self.search(query=query, top_k=top_k * 2)
-        
+
         # 如果精确匹配，过滤结果
         if exact_match:
             results = [
                 r for r in results
                 if r.chunk.name == function_name
             ]
-        
+
         return results[:top_k]
-    
+
     # ==================== 内部方法 ====================
-    
+
     def _build_filter_dict(
         self,
         file_filter: Optional[list[str]],
         language_filter: Optional[list[str]],
     ) -> Optional[dict[str, Any]]:
         """构建向量存储的过滤条件
-        
+
         Args:
             file_filter: 文件路径过滤
             language_filter: 语言过滤
-            
+
         Returns:
             过滤条件字典，如果无过滤则返回 None
         """
         conditions = []
-        
+
         if file_filter:
             if len(file_filter) == 1:
                 # 单个文件，精确匹配或前缀匹配
@@ -492,20 +493,20 @@ class SemanticSearch:
             else:
                 # 多个文件，使用 $in
                 conditions.append({"file_path": {"$in": file_filter}})
-        
+
         if language_filter:
             if len(language_filter) == 1:
                 conditions.append({"language": language_filter[0]})
             else:
                 conditions.append({"language": {"$in": language_filter}})
-        
+
         if not conditions:
             return None
         elif len(conditions) == 1:
             return conditions[0]
         else:
             return {"$and": conditions}
-    
+
     async def _get_context(
         self,
         file_path: str,
@@ -514,57 +515,57 @@ class SemanticSearch:
         context_lines: int,
     ) -> tuple[Optional[str], Optional[int], Optional[int]]:
         """获取代码块的上下文
-        
+
         Args:
             file_path: 文件路径
             start_line: 代码块起始行
             end_line: 代码块结束行
             context_lines: 上下文行数
-            
+
         Returns:
             (上下文代码, 上下文起始行, 上下文结束行)
         """
         if context_lines <= 0:
             return None, None, None
-        
+
         try:
             # 读取文件（使用缓存）
             lines = await self._read_file_lines(file_path)
             if not lines:
                 return None, None, None
-            
+
             # 计算上下文范围
             ctx_start = max(1, start_line - context_lines)
             ctx_end = min(len(lines), end_line + context_lines)
-            
+
             # 提取上下文（行号从 1 开始）
             context_lines_list = lines[ctx_start - 1:ctx_end]
             context = "\n".join(context_lines_list)
-            
+
             return context, ctx_start, ctx_end
-            
+
         except Exception as e:
             logger.warning(f"读取上下文失败: {file_path}, error={e}")
             return None, None, None
-    
+
     async def _read_file_lines(self, file_path: str) -> list[str]:
         """读取文件行（带缓存）
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             文件行列表
         """
         # 检查缓存
         if file_path in self._file_cache:
             return self._file_cache[file_path]
-        
+
         try:
             path = Path(file_path)
             if not path.exists():
                 return []
-            
+
             # 异步读取文件
             loop = asyncio.get_event_loop()
             content = await loop.run_in_executor(
@@ -572,30 +573,30 @@ class SemanticSearch:
                 lambda: path.read_text(encoding="utf-8", errors="ignore")
             )
             lines = content.splitlines()
-            
+
             # 缓存结果（限制缓存大小）
             if len(self._file_cache) < 100:
                 self._file_cache[file_path] = lines
-            
+
             return lines
-            
+
         except Exception as e:
             logger.warning(f"读取文件失败: {file_path}, error={e}")
             return []
-    
+
     def _extract_keywords(self, query: str) -> list[str]:
         """从查询中提取关键词
-        
+
         Args:
             query: 查询文本
-            
+
         Returns:
             关键词列表
         """
         # 简单的关键词提取：分词 + 过滤停用词
         # 匹配英文单词、驼峰命名、下划线命名等
         words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*|[\u4e00-\u9fff]+', query)
-        
+
         # 过滤短词和常见停用词
         stopwords = {
             'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
@@ -610,12 +611,12 @@ class SemanticSearch:
             'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
             'because', 'until', 'while', 'this', 'that', 'these', 'those',
         }
-        
+
         keywords = [
             w.lower() for w in words
             if len(w) > 2 and w.lower() not in stopwords
         ]
-        
+
         # 去重并保持顺序
         seen = set()
         unique_keywords = []
@@ -623,39 +624,39 @@ class SemanticSearch:
             if kw not in seen:
                 seen.add(kw)
                 unique_keywords.append(kw)
-        
+
         return unique_keywords
-    
+
     def _compute_keyword_score(
         self,
         content: str,
         keywords: list[str],
     ) -> float:
         """计算关键词匹配分数
-        
+
         Args:
             content: 代码内容
             keywords: 关键词列表
-            
+
         Returns:
             匹配分数 (0-1)
         """
         if not keywords:
             return 0.0
-        
+
         content_lower = content.lower()
         matched = sum(1 for kw in keywords if kw in content_lower)
-        
+
         return matched / len(keywords)
-    
+
     def clear_cache(self) -> None:
         """清空文件缓存"""
         self._file_cache.clear()
         logger.debug("文件缓存已清空")
-    
+
     def get_stats(self) -> dict[str, Any]:
         """获取搜索引擎统计信息
-        
+
         Returns:
             统计信息字典
         """
@@ -673,12 +674,12 @@ async def create_semantic_search(
     default_options: Optional[SearchOptions] = None,
 ) -> SemanticSearch:
     """工厂函数：创建语义搜索引擎
-    
+
     Args:
         embedding_model: 嵌入模型实例
         vector_store: 向量存储实例
         default_options: 默认搜索选项
-        
+
     Returns:
         SemanticSearch 实例
     """

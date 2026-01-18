@@ -15,13 +15,13 @@ for image in "$DIR"/*."$EXT"; do
   if [ -f "$image" ]; then
     count=$((count + 1))
     echo "[$count] 正在处理: $image"
-    
+
     # 生成描述文件
     output_file="${image%.$EXT}.description.txt"
-    
+
     agent -p --output-format text \
       "描述图像内容: $image" > "$output_file"
-    
+
     echo "    ✅ 已生成: $output_file"
   fi
 done

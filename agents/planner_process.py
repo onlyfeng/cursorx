@@ -5,26 +5,26 @@
 import asyncio
 import json
 import re
-from typing import Any, Optional
 from multiprocessing import Queue
+from typing import Any, Optional
 
 from loguru import logger
 
-from process.worker import AgentWorkerProcess
-from process.message_queue import ProcessMessage, ProcessMessageType
 from cursor.client import CursorAgentClient, CursorAgentConfig
-from tasks.task import Task, TaskType, TaskPriority
+from process.message_queue import ProcessMessage, ProcessMessageType
+from process.worker import AgentWorkerProcess
+from tasks.task import Task, TaskPriority, TaskType
 
 
 class PlannerAgentProcess(AgentWorkerProcess):
     """规划者 Agent 进程
-    
+
     独立进程中运行的规划者，负责：
     1. 接收规划请求
     2. 调用 Cursor Agent 进行规划
     3. 返回任务列表
     """
-    
+
     SYSTEM_PROMPT = """你是一个代码项目规划者。
 
 重要：不要编写任何代码，不要编辑任何文件。你只负责分析和规划。
@@ -72,7 +72,7 @@ Shell 命令限制:
   ]
 }
 ```"""
-    
+
     def __init__(
         self,
         agent_id: str,
@@ -84,7 +84,7 @@ Shell 命令限制:
         super().__init__(agent_id, agent_type, inbox, outbox, config)
         self.cursor_client: Optional[CursorAgentClient] = None
         self.current_request_id: Optional[str] = None
-    
+
     def on_start(self) -> None:
         """进程启动初始化"""
         # 创建 agent CLI 客户端 - 使用 GPT 5.2-high 模型进行规划
@@ -108,37 +108,37 @@ Shell 命令限制:
         )
         self.cursor_client = CursorAgentClient(cursor_config)
         logger.info(f"[{self.agent_id}] 规划者初始化完成 (模型: {cursor_config.model}, force: False)")
-    
+
     def on_stop(self) -> None:
         """进程停止清理"""
         logger.info(f"[{self.agent_id}] 规划者停止")
-    
+
     def handle_message(self, message: ProcessMessage) -> None:
         """处理业务消息"""
         if message.type == ProcessMessageType.PLAN_REQUEST:
             # 在新的事件循环中执行异步任务
             asyncio.run(self._handle_plan_request(message))
-    
+
     async def _handle_plan_request(self, message: ProcessMessage) -> None:
         """处理规划请求"""
         self.current_request_id = message.id
-        
+
         goal = message.payload.get("goal", "")
         context = message.payload.get("context", {})
         iteration_id = message.payload.get("iteration_id", 0)
-        
+
         logger.info(f"[{self.agent_id}] 收到规划请求: {goal[:50]}...")
-        
+
         try:
             # 构建规划 prompt
             prompt = self._build_planning_prompt(goal, context)
-            
+
             # 调用 Cursor Agent
             result = await self.cursor_client.execute(
                 instruction=prompt,
                 context=context,
             )
-            
+
             if not result.success:
                 self._send_plan_result(
                     success=False,
@@ -146,16 +146,16 @@ Shell 命令限制:
                     correlation_id=message.id,
                 )
                 return
-            
+
             # 解析规划结果
             plan_data = self._parse_planning_result(result.output)
-            
+
             # 转换为任务列表
             tasks = []
             for task_data in plan_data.get("tasks", []):
                 task = self._create_task(task_data, iteration_id)
                 tasks.append(task.model_dump())
-            
+
             self._send_plan_result(
                 success=True,
                 analysis=plan_data.get("analysis", ""),
@@ -163,9 +163,9 @@ Shell 命令限制:
                 sub_planners_needed=plan_data.get("sub_planners_needed", []),
                 correlation_id=message.id,
             )
-            
+
             logger.info(f"[{self.agent_id}] 规划完成，生成 {len(tasks)} 个任务")
-            
+
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 规划异常: {e}")
             self._send_plan_result(
@@ -175,17 +175,17 @@ Shell 命令限制:
             )
         finally:
             self.current_request_id = None
-    
+
     def _build_planning_prompt(self, goal: str, context: dict) -> str:
         """构建规划 prompt"""
         parts = [
             self.SYSTEM_PROMPT,
             f"\n## 用户目标\n{goal}",
         ]
-        
+
         if context.get("codebase_info"):
             parts.append(f"\n## 代码库信息\n{context['codebase_info']}")
-        
+
         if context.get("previous_review"):
             review = context["previous_review"]
             parts.append("\n## 上次评审反馈")
@@ -193,11 +193,11 @@ Shell 命令限制:
                 parts.append("\n".join(f"- {s}" for s in review["suggestions"]))
             if review.get("next_focus"):
                 parts.append(f"\n重点关注: {review['next_focus']}")
-        
+
         parts.append("\n请分析并输出任务规划:")
-        
+
         return "\n".join(parts)
-    
+
     def _parse_planning_result(self, output: str) -> dict[str, Any]:
         """解析规划结果"""
         # 尝试提取 JSON 块
@@ -207,13 +207,13 @@ Shell 命令限制:
                 return json.loads(json_match.group(1))
             except json.JSONDecodeError:
                 pass
-        
+
         # 尝试直接解析
         try:
             return json.loads(output)
         except json.JSONDecodeError:
             pass
-        
+
         # 解析失败
         logger.warning(f"[{self.agent_id}] 无法解析规划结果为 JSON")
         return {
@@ -221,7 +221,7 @@ Shell 命令限制:
             "tasks": [],
             "sub_planners_needed": [],
         }
-    
+
     def _create_task(self, task_data: dict, iteration_id: int) -> Task:
         """创建任务对象"""
         task_type_map = {
@@ -233,14 +233,14 @@ Shell 命令限制:
             "test": TaskType.TEST,
             "document": TaskType.DOCUMENT,
         }
-        
+
         priority_map = {
             "low": TaskPriority.LOW,
             "normal": TaskPriority.NORMAL,
             "high": TaskPriority.HIGH,
             "critical": TaskPriority.CRITICAL,
         }
-        
+
         return Task(
             title=task_data.get("title", "未命名任务"),
             description=task_data.get("description", ""),
@@ -251,7 +251,7 @@ Shell 命令限制:
             created_by=self.agent_id,
             iteration_id=iteration_id,
         )
-    
+
     def _send_plan_result(
         self,
         success: bool,
@@ -273,7 +273,7 @@ Shell 命令限制:
             },
             correlation_id=correlation_id,
         )
-    
+
     def get_status(self) -> dict:
         """获取当前状态"""
         return {

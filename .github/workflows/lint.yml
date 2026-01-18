@@ -1,0 +1,145 @@
+# 代码质量检查工作流
+# 专注于代码风格、类型检查和质量分析
+
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_call:
+    # 允许被其他工作流调用
+
+jobs:
+  # flake8 严重错误检查 - 必须通过
+  flake8-critical:
+    name: flake8 严重错误
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 flake8
+        run: pip install flake8
+
+      - name: 检查严重错误 (E9, F63, F7, F82)
+        run: |
+          # E9: Runtime errors (SyntaxError, IndentationError, etc.)
+          # F63: Invalid print function call
+          # F7: Syntax errors in type annotations
+          # F82: Undefined names
+          flake8 --count --select=E9,F63,F7,F82 --show-source --statistics .
+
+  # ruff 快速检查 - 推荐使用
+  ruff:
+    name: ruff 检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 ruff
+        run: pip install ruff
+
+      - name: ruff 检查
+        run: |
+          # 使用 ruff 进行快速代码检查
+          echo "=== Ruff 检查结果 ==="
+          ruff check . --output-format=grouped || true
+          
+          # 统计问题数量
+          ISSUES=$(ruff check . --quiet 2>&1 | wc -l)
+          echo ""
+          echo "发现 $ISSUES 个问题"
+          
+          # 严重错误导致失败
+          ruff check . --select=E,F --ignore=E501
+
+  # mypy 类型检查 - 核心模块
+  mypy:
+    name: mypy 类型检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+          # 安装项目依赖以支持类型检查
+          pip install -r requirements.txt
+
+      - name: mypy 类型检查 (core/ 和 agents/)
+        run: |
+          echo "=== mypy 类型检查 ==="
+          mypy core/ agents/ \
+            --ignore-missing-imports \
+            --no-error-summary \
+            --show-error-codes \
+            --pretty || {
+              echo ""
+              echo "⚠️ 类型检查有警告，但不影响构建"
+              exit 0
+            }
+
+  # 代码风格警告 - 可选失败
+  style-warnings:
+    name: 代码风格警告
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装检查工具
+        run: pip install flake8 ruff
+
+      - name: flake8 代码风格检查
+        run: |
+          echo "=== flake8 代码风格警告 ==="
+          # 代码风格检查（不计入失败）
+          flake8 --count --exit-zero \
+            --max-complexity=10 \
+            --max-line-length=120 \
+            --statistics . || true
+          echo ""
+          echo "以上为代码风格建议，不影响构建结果"
+
+      - name: ruff 格式建议
+        run: |
+          echo "=== ruff 格式建议 ==="
+          ruff check . --exit-zero --output-format=grouped || true
+          echo ""
+          echo "运行 'ruff check . --fix' 可自动修复部分问题"

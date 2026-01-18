@@ -4,18 +4,19 @@
 """
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
-from loguru import logger
 
-from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from core.base import AgentConfig, AgentRole, AgentStatus, BaseAgent
 from cursor.client import CursorAgentConfig
-from cursor.executor import (
-    AgentExecutorFactory,
-    ExecutionMode,
-    CLIAgentExecutor,
-    AgentExecutor,
-)
 from cursor.cloud_client import CloudAuthConfig
+from cursor.executor import (
+    AgentExecutor,
+    AgentExecutorFactory,
+    CLIAgentExecutor,
+    ExecutionMode,
+)
 
 
 class ReviewDecision(str, Enum):
@@ -41,14 +42,14 @@ class ReviewerConfig(BaseModel):
 
 class ReviewerAgent(BaseAgent):
     """评审者 Agent
-    
+
     职责:
     1. 评估迭代完成情况
     2. 判断是否达成目标
     3. 决定是否继续迭代
     4. 提供改进建议
     """
-    
+
     # 评审者系统提示
     SYSTEM_PROMPT = """你是一个代码评审者。你的职责是:
 
@@ -91,7 +92,7 @@ class ReviewerAgent(BaseAgent):
   }
 }
 ```"""
-    
+
     def __init__(self, config: ReviewerConfig):
         agent_config = AgentConfig(
             role=AgentRole.REVIEWER,
@@ -101,14 +102,14 @@ class ReviewerAgent(BaseAgent):
         super().__init__(agent_config)
         self.reviewer_config = config
         self._apply_stream_config(self.reviewer_config.cursor_config)
-        
+
         # 使用 AgentExecutorFactory 创建执行器
         self._executor: AgentExecutor = AgentExecutorFactory.create(
             mode=config.execution_mode,
             cli_config=config.cursor_config,
             cloud_auth_config=config.cloud_auth_config,
         )
-        
+
         # 保留 cursor_client 属性以保持向后兼容
         if isinstance(self._executor, CLIAgentExecutor):
             self.cursor_client = self._executor.client
@@ -116,67 +117,67 @@ class ReviewerAgent(BaseAgent):
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
             self.cursor_client = CursorAgentClient(config.cursor_config)
-        
+
         self.review_history: list[dict] = []
-        
+
         logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
-    
+
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行评审
-        
+
         Args:
             instruction: 评审指令（通常是用户目标）
             context: 上下文（包含迭代信息、任务完成情况等）
-            
+
         Returns:
             评审结果
         """
         self.update_status(AgentStatus.RUNNING)
         logger.info(f"[{self.id}] 开始评审...")
-        
+
         try:
             # 构建评审 prompt
             prompt = self._build_review_prompt(instruction, context)
-            
+
             # 调用执行器执行评审
             result = await self._executor.execute(
                 prompt=prompt,
                 working_directory=self.reviewer_config.working_directory,
                 context=context,
             )
-            
+
             if not result.success:
                 logger.error(f"[{self.id}] 评审执行失败: {result.error}")
                 self.update_status(AgentStatus.FAILED)
                 return {
-                    "success": False, 
+                    "success": False,
                     "error": result.error,
                     "decision": ReviewDecision.CONTINUE,
                 }
-            
+
             # 解析评审结果
             review_result = self._parse_review_result(result.output)
-            
+
             # 记录评审历史
             self.review_history.append(review_result)
-            
+
             self.update_status(AgentStatus.COMPLETED)
             logger.info(f"[{self.id}] 评审完成: {review_result.get('decision', 'unknown')}")
-            
+
             return {
                 "success": True,
                 **review_result,
             }
-            
+
         except Exception as e:
             logger.exception(f"[{self.id}] 评审异常: {e}")
             self.update_status(AgentStatus.FAILED)
             return {
-                "success": False, 
+                "success": False,
                 "error": str(e),
                 "decision": ReviewDecision.CONTINUE,
             }
-    
+
     async def review_iteration(
         self,
         goal: str,
@@ -186,14 +187,14 @@ class ReviewerAgent(BaseAgent):
         previous_reviews: Optional[list[dict]] = None,
     ) -> dict[str, Any]:
         """评审一次迭代
-        
+
         Args:
             goal: 用户目标
             iteration_id: 迭代 ID
             tasks_completed: 已完成的任务列表
             tasks_failed: 失败的任务列表
             previous_reviews: 之前的评审结果
-            
+
         Returns:
             评审结果
         """
@@ -204,55 +205,55 @@ class ReviewerAgent(BaseAgent):
             "completion_rate": len(tasks_completed) / max(len(tasks_completed) + len(tasks_failed), 1),
             "previous_reviews": previous_reviews or self.review_history,
         }
-        
+
         return await self.execute(goal, context)
-    
+
     def _build_review_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
         """构建评审 prompt"""
         parts = [
             self.SYSTEM_PROMPT,
             f"\n## 用户目标\n{instruction}",
         ]
-        
+
         if context:
             if "iteration_id" in context:
                 parts.append(f"\n## 当前迭代\n第 {context['iteration_id']} 轮迭代")
-            
+
             if "tasks_completed" in context:
                 completed = context["tasks_completed"]
                 if completed:
-                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('result', {}).get('output', '')[:100]}" 
+                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('result', {}).get('output', '')[:100]}"
                                          for t in completed)
                     parts.append(f"\n## 已完成任务 ({len(completed)} 个)\n{tasks_str}")
                 else:
                     parts.append("\n## 已完成任务\n无")
-            
+
             if "tasks_failed" in context:
                 failed = context["tasks_failed"]
                 if failed:
-                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}" 
+                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}"
                                          for t in failed)
                     parts.append(f"\n## 失败任务 ({len(failed)} 个)\n{tasks_str}")
-            
+
             if "completion_rate" in context:
                 parts.append(f"\n## 完成率\n{context['completion_rate']:.1%}")
-            
+
             if "previous_reviews" in context and context["previous_reviews"]:
                 prev = context["previous_reviews"][-1]  # 只看上一次评审
                 parts.append(f"\n## 上次评审\n- 决策: {prev.get('decision', 'N/A')}\n- 得分: {prev.get('score', 'N/A')}")
-        
+
         if self.reviewer_config.strict_mode:
             parts.append("\n## 评审模式\n严格模式：请使用更高的标准进行评审")
-        
+
         parts.append("\n请进行评审并输出结果:")
-        
+
         return "\n".join(parts)
-    
+
     def _parse_review_result(self, output: str) -> dict[str, Any]:
         """解析评审结果"""
         import json
         import re
-        
+
         # 尝试提取 JSON 块
         json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
         if json_match:
@@ -264,7 +265,7 @@ class ReviewerAgent(BaseAgent):
                 return result
             except (json.JSONDecodeError, ValueError):
                 pass
-        
+
         # 尝试直接解析
         try:
             result = json.loads(output)
@@ -273,7 +274,7 @@ class ReviewerAgent(BaseAgent):
             return result
         except (json.JSONDecodeError, ValueError):
             pass
-        
+
         # 解析失败，返回默认继续
         logger.warning(f"[{self.id}] 无法解析评审结果，默认继续迭代")
         return {
@@ -291,22 +292,22 @@ class ReviewerAgent(BaseAgent):
         if cursor_config.stream_events_enabled:
             cursor_config.output_format = "stream-json"
             cursor_config.stream_partial_output = True
-    
+
     async def reset(self) -> None:
         """重置评审者状态"""
         self.update_status(AgentStatus.IDLE)
         self.clear_context()
         # 不清除 review_history，保留评审历史
         logger.debug(f"[{self.id}] 状态已重置")
-    
+
     def get_review_summary(self) -> dict[str, Any]:
         """获取评审总结"""
         if not self.review_history:
             return {"total_reviews": 0}
-        
+
         scores = [r.get("score", 0) for r in self.review_history if "score" in r]
         decisions = [r.get("decision") for r in self.review_history if "decision" in r]
-        
+
         return {
             "total_reviews": len(self.review_history),
             "average_score": sum(scores) / len(scores) if scores else 0,

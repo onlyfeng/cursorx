@@ -12,10 +12,10 @@ system:
 models:
   # 规划者模型 - GPT 5.2 High 擅长高层规划和任务分解
   planner: gpt-5.2-high
-  
+
   # 执行者模型 - Claude 4.5 Opus (Thinking) 擅长代码生成
   worker: opus-4.5-thinking
-  
+
   # 评审者模型 - Claude 4.5 Opus (Thinking) 擅长代码审查
   reviewer: opus-4.5-thinking
 
@@ -50,13 +50,13 @@ agent_cli:
 cloud_agent:
   enabled: false                              # 是否启用 Cloud Agent
   execution_mode: cli                         # 执行模式: cli | cloud | auto
-  
+
   # Cloud API 配置
   api_base_url: "https://api.cursor.com"      # API 基础 URL
   # api_key: ""                               # API 密钥（推荐使用环境变量 CURSOR_API_KEY 或 CURSOR_CLOUD_API_KEY）
   timeout: 300                                # 请求超时时间（秒）
   max_retries: 3                              # 最大重试次数
-  
+
   # 出口 IP 验证配置（用于验证请求来源）
   egress_ip_cache_ttl: 3600                   # 出口 IP 缓存有效期（秒），默认 1 小时
   egress_ip_api_url: ""                       # 自定义 IP 范围 API URL（可选，留空使用默认）

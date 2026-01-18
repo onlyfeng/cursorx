@@ -30,24 +30,24 @@ class FirewallFormat(Enum):
 class EgressIPConfig:
     """
     出口 IP 配置类
-    
+
     存储和管理 Cursor Cloud Agent 的出口 IP 范围列表。
     """
-    
+
     ip_ranges: list[str] = field(default_factory=list)
     last_updated: float = 0.0
     source: str = ""
     version: str = ""
-    
+
     # 缓存配置
     cache_file: Optional[Path] = None
     cache_ttl: int = 3600  # 默认 1 小时
-    
+
     def __post_init__(self):
         """初始化后处理：解析 IP 网络"""
         self._networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         self._parse_networks()
-    
+
     def _parse_networks(self) -> None:
         """解析 IP 范围为网络对象"""
         self._networks = []
@@ -58,19 +58,19 @@ class EgressIPConfig:
             except ValueError as e:
                 # 跳过无效的 IP 范围
                 print(f"警告: 无效的 IP 范围 '{ip_range}': {e}")
-    
+
     @property
     def networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
         """获取已解析的网络对象列表"""
         return self._networks
-    
+
     def is_allowed_ip(self, ip: str) -> bool:
         """
         验证 IP 是否在允许范围内
-        
+
         Args:
             ip: 要验证的 IP 地址
-            
+
         Returns:
             bool: IP 是否在允许的范围内
         """
@@ -82,13 +82,13 @@ class EgressIPConfig:
             return False
         except ValueError:
             return False
-    
+
     def is_cache_valid(self) -> bool:
         """检查缓存是否仍然有效"""
         if not self.last_updated:
             return False
         return (time.time() - self.last_updated) < self.cache_ttl
-    
+
     def to_dict(self) -> dict:
         """转换为字典格式"""
         return {
@@ -97,7 +97,7 @@ class EgressIPConfig:
             "source": self.source,
             "version": self.version,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict, cache_file: Optional[Path] = None, cache_ttl: int = 3600) -> "EgressIPConfig":
         """从字典创建实例"""
@@ -109,7 +109,7 @@ class EgressIPConfig:
             cache_file=cache_file,
             cache_ttl=cache_ttl,
         )
-    
+
     def save_cache(self) -> bool:
         """保存到本地缓存文件"""
         if not self.cache_file:
@@ -119,37 +119,37 @@ class EgressIPConfig:
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
             return True
-        except IOError as e:
+        except OSError as e:
             print(f"警告: 无法保存缓存文件: {e}")
             return False
-    
+
     @classmethod
     def load_cache(cls, cache_file: Path, cache_ttl: int = 3600) -> Optional["EgressIPConfig"]:
         """从本地缓存文件加载"""
         if not cache_file.exists():
             return None
         try:
-            with open(cache_file, "r", encoding="utf-8") as f:
+            with open(cache_file, encoding="utf-8") as f:
                 data = json.load(f)
             config = cls.from_dict(data, cache_file=cache_file, cache_ttl=cache_ttl)
             if config.is_cache_valid():
                 return config
             return None
-        except (IOError, json.JSONDecodeError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             print(f"警告: 无法加载缓存文件: {e}")
             return None
-    
+
     def export_firewall_rules(self, format: FirewallFormat, **kwargs) -> str:
         """
         导出为防火墙规则格式
-        
+
         Args:
             format: 防火墙格式类型
             **kwargs: 额外参数
                 - chain: iptables 链名（默认 INPUT）
                 - port: 目标端口（可选）
                 - comment: 规则注释
-                
+
         Returns:
             str: 格式化的防火墙规则
         """
@@ -167,20 +167,20 @@ class EgressIPConfig:
             return json.dumps(self.ip_ranges, indent=2)
         else:
             raise ValueError(f"不支持的格式: {format}")
-    
+
     def _export_iptables(self, chain: str = "INPUT", port: Optional[int] = None, comment: str = "Cursor Cloud Agent") -> str:
         """导出为 iptables 格式"""
         lines = [f"# {comment}", f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
-        
+
         port_spec = f"-p tcp --dport {port} " if port else ""
-        
+
         for ip_range in self.ip_ranges:
             lines.append(
                 f"iptables -A {chain} -s {ip_range} {port_spec}-j ACCEPT -m comment --comment \"{comment}\""
             )
-        
+
         return "\n".join(lines)
-    
+
     def _export_nginx(self, **kwargs) -> str:
         """导出为 nginx allow 格式"""
         lines = [
@@ -188,15 +188,15 @@ class EgressIPConfig:
             f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             "",
         ]
-        
+
         for ip_range in self.ip_ranges:
             lines.append(f"allow {ip_range};")
-        
+
         lines.append("")
         lines.append("# deny all;  # 取消注释以拒绝其他 IP")
-        
+
         return "\n".join(lines)
-    
+
     def _export_apache(self, **kwargs) -> str:
         """导出为 Apache .htaccess 格式"""
         lines = [
@@ -205,14 +205,14 @@ class EgressIPConfig:
             "",
             "<RequireAny>",
         ]
-        
+
         for ip_range in self.ip_ranges:
             lines.append(f"    Require ip {ip_range}")
-        
+
         lines.append("</RequireAny>")
-        
+
         return "\n".join(lines)
-    
+
     def _export_ufw(self, port: Optional[int] = None, comment: str = "Cursor Cloud Agent", **kwargs) -> str:
         """导出为 UFW 格式"""
         lines = [
@@ -220,14 +220,14 @@ class EgressIPConfig:
             f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             "",
         ]
-        
+
         port_spec = f" to any port {port}" if port else ""
-        
+
         for ip_range in self.ip_ranges:
             lines.append(f"ufw allow from {ip_range}{port_spec} comment '{comment}'")
-        
+
         return "\n".join(lines)
-    
+
     def _export_cloudflare(self, **kwargs) -> str:
         """导出为 Cloudflare IP Access Rules 格式（JSON）"""
         rules = []
@@ -240,21 +240,21 @@ class EgressIPConfig:
                 },
                 "notes": "Cursor Cloud Agent",
             })
-        
+
         return json.dumps(rules, indent=2)
 
 
 class EgressIPManager:
     """
     出口 IP 管理器
-    
+
     负责获取、缓存和验证 Cursor Cloud Agent 的出口 IP 范围。
     """
-    
+
     # Cursor API 端点（假设的 API URL）
     CURSOR_API_URL = "https://api.cursor.com/v1/egress-ips"
     CURSOR_FALLBACK_URL = "https://cursor.com/.well-known/egress-ips.json"
-    
+
     # 已知的 Cursor Cloud Agent 出口 IP 范围（备用）
     KNOWN_IP_RANGES = [
         # Cursor Cloud 基础设施（示例，实际需从 API 获取）
@@ -263,7 +263,7 @@ class EgressIPManager:
         "104.196.0.0/14",     # Google Cloud
         "35.186.0.0/16",      # Google Cloud
     ]
-    
+
     def __init__(
         self,
         cache_dir: Optional[Path] = None,
@@ -272,49 +272,49 @@ class EgressIPManager:
     ):
         """
         初始化管理器
-        
+
         Args:
             cache_dir: 缓存目录路径
             cache_ttl: 缓存有效期（秒）
             config_path: 配置文件路径
         """
         self.cache_ttl = cache_ttl
-        
+
         # 设置缓存目录
         if cache_dir:
             self.cache_dir = cache_dir
         else:
             self.cache_dir = Path.home() / ".cursor" / "cache"
-        
+
         self.cache_file = self.cache_dir / "egress_ips.json"
-        
+
         # 从配置文件加载设置
         if config_path:
             self._load_config(config_path)
-        
+
         self._config: Optional[EgressIPConfig] = None
-    
+
     def _load_config(self, config_path: Path) -> None:
         """从 YAML 配置文件加载设置"""
         if not config_path.exists():
             return
-        
+
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = yaml.safe_load(f)
-            
+
             cloud_config = config.get("cloud_agent", {})
             self.cache_ttl = cloud_config.get("egress_ip_cache_ttl", self.cache_ttl)
         except Exception as e:
             print(f"警告: 无法加载配置文件: {e}")
-    
+
     async def fetch_egress_ip_ranges(self, force_refresh: bool = False) -> EgressIPConfig:
         """
         从 Cursor API 获取最新的出口 IP 范围
-        
+
         Args:
             force_refresh: 是否强制刷新（忽略缓存）
-            
+
         Returns:
             EgressIPConfig: IP 配置对象
         """
@@ -324,22 +324,22 @@ class EgressIPManager:
             if cached:
                 self._config = cached
                 return cached
-        
+
         # 尝试从 API 获取
         config = await self._fetch_from_api()
-        
+
         if config:
             self._config = config
             config.save_cache()
             return config
-        
+
         # 使用备用 IP 范围
         return self._get_fallback_config()
-    
+
     async def _fetch_from_api(self) -> Optional[EgressIPConfig]:
         """从 Cursor API 获取 IP 范围"""
         urls = [self.CURSOR_API_URL, self.CURSOR_FALLBACK_URL]
-        
+
         for url in urls:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -357,13 +357,13 @@ class EgressIPManager:
             except Exception as e:
                 print(f"警告: 无法从 {url} 获取 IP 范围: {e}")
                 continue
-        
+
         return None
-    
+
     def _load_from_cache(self) -> Optional[EgressIPConfig]:
         """从本地缓存加载"""
         return EgressIPConfig.load_cache(self.cache_file, self.cache_ttl)
-    
+
     def _get_fallback_config(self) -> EgressIPConfig:
         """获取备用配置"""
         return EgressIPConfig(
@@ -374,41 +374,41 @@ class EgressIPManager:
             cache_file=self.cache_file,
             cache_ttl=self.cache_ttl,
         )
-    
+
     def is_allowed_ip(self, ip: str) -> bool:
         """
         验证 IP 是否在允许范围内
-        
+
         Args:
             ip: 要验证的 IP 地址
-            
+
         Returns:
             bool: IP 是否允许
         """
         if not self._config:
             # 如果没有配置，使用备用配置
             self._config = self._get_fallback_config()
-        
+
         return self._config.is_allowed_ip(ip)
-    
+
     def get_config(self) -> Optional[EgressIPConfig]:
         """获取当前配置"""
         return self._config
-    
+
     def export_rules(self, format: FirewallFormat, **kwargs) -> str:
         """
         导出防火墙规则
-        
+
         Args:
             format: 防火墙格式
             **kwargs: 额外参数
-            
+
         Returns:
             str: 格式化的规则
         """
         if not self._config:
             self._config = self._get_fallback_config()
-        
+
         return self._config.export_firewall_rules(format, **kwargs)
 
 
@@ -423,12 +423,12 @@ def get_manager(
 ) -> EgressIPManager:
     """
     获取全局 IP 管理器实例
-    
+
     Args:
         cache_dir: 缓存目录
         cache_ttl: 缓存有效期
         config_path: 配置文件路径
-        
+
     Returns:
         EgressIPManager: 管理器实例
     """
@@ -445,10 +445,10 @@ def get_manager(
 async def fetch_egress_ip_ranges(force_refresh: bool = False) -> EgressIPConfig:
     """
     获取 Cursor Cloud Agent 出口 IP 范围
-    
+
     Args:
         force_refresh: 是否强制刷新
-        
+
     Returns:
         EgressIPConfig: IP 配置
     """
@@ -459,10 +459,10 @@ async def fetch_egress_ip_ranges(force_refresh: bool = False) -> EgressIPConfig:
 def is_allowed_ip(ip: str) -> bool:
     """
     验证 IP 是否在 Cursor Cloud Agent 允许范围内
-    
+
     Args:
         ip: 要验证的 IP 地址
-        
+
     Returns:
         bool: 是否允许
     """
@@ -473,11 +473,11 @@ def is_allowed_ip(ip: str) -> bool:
 def export_firewall_rules(format: FirewallFormat, **kwargs) -> str:
     """
     导出防火墙规则
-    
+
     Args:
         format: 防火墙格式
         **kwargs: 额外参数
-        
+
     Returns:
         str: 格式化的规则
     """

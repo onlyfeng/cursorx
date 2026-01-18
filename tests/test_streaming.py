@@ -1,6 +1,6 @@
 import json
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from cursor.streaming import (
     StreamEvent,

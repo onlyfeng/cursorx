@@ -2,12 +2,12 @@
 
 每个 Agent 作为独立进程运行
 """
-from multiprocessing import Process, Queue
-from typing import Optional
-from abc import abstractmethod
+import os
 import signal
 import sys
-import os
+from abc import abstractmethod
+from multiprocessing import Process, Queue
+from typing import Optional
 
 from loguru import logger
 
@@ -16,10 +16,10 @@ from .message_queue import ProcessMessage, ProcessMessageType
 
 class AgentWorkerProcess(Process):
     """Agent 工作进程基类
-    
+
     每个 Agent 实例作为独立进程运行
     """
-    
+
     def __init__(
         self,
         agent_id: str,
@@ -35,30 +35,30 @@ class AgentWorkerProcess(Process):
         self.outbox = outbox    # 发送消息的队列（到协调器）
         self.config = config
         self._running = False
-    
+
     def run(self) -> None:
         """进程主循环"""
         # 设置信号处理
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
-        
+
         # 配置进程内日志
         self._setup_logging()
-        
+
         logger.info(f"[{self.agent_id}] 进程启动 (PID: {os.getpid()})")
-        
+
         self._running = True
-        
+
         try:
             # 初始化
             self.on_start()
-            
+
             # 发送就绪消息
             self._send_message(ProcessMessageType.STATUS_RESPONSE, {
                 "status": "ready",
                 "pid": os.getpid(),
             })
-            
+
             # 主循环
             while self._running:
                 try:
@@ -70,13 +70,13 @@ class AgentWorkerProcess(Process):
                         # 队列超时是正常的，继续循环
                         if "Empty" not in str(type(e)):
                             logger.error(f"[{self.agent_id}] 消息处理异常: {e}")
-                    
+
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 进程异常: {e}")
         finally:
             self.on_stop()
             logger.info(f"[{self.agent_id}] 进程退出")
-    
+
     def _setup_logging(self) -> None:
         """配置进程内日志"""
         logger.remove()
@@ -86,31 +86,31 @@ class AgentWorkerProcess(Process):
             level="DEBUG",
         )
         logger.configure(extra={"agent_id": self.agent_id[:12]})
-    
+
     def _handle_shutdown(self, signum, frame) -> None:
         """处理关闭信号"""
         logger.info(f"[{self.agent_id}] 收到关闭信号")
         self._running = False
-    
+
     def _handle_message(self, message: ProcessMessage) -> None:
         """处理接收到的消息"""
         logger.debug(f"[{self.agent_id}] 收到消息: {message.type.value}")
-        
+
         if message.type == ProcessMessageType.SHUTDOWN:
             self._running = False
             return
-        
+
         if message.type == ProcessMessageType.HEARTBEAT:
             self._send_message(ProcessMessageType.HEARTBEAT, {"alive": True})
             return
-        
+
         if message.type == ProcessMessageType.STATUS_REQUEST:
             self._send_message(ProcessMessageType.STATUS_RESPONSE, self.get_status())
             return
-        
+
         # 分发给具体处理方法
         self.handle_message(message)
-    
+
     def _send_message(
         self,
         msg_type: ProcessMessageType,
@@ -125,22 +125,22 @@ class AgentWorkerProcess(Process):
             correlation_id=correlation_id,
         )
         self.outbox.put(message)
-    
+
     @abstractmethod
     def on_start(self) -> None:
         """进程启动时的初始化"""
         pass
-    
+
     @abstractmethod
     def on_stop(self) -> None:
         """进程停止时的清理"""
         pass
-    
+
     @abstractmethod
     def handle_message(self, message: ProcessMessage) -> None:
         """处理业务消息"""
         pass
-    
+
     @abstractmethod
     def get_status(self) -> dict:
         """获取当前状态"""

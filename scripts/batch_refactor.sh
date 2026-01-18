@@ -12,10 +12,10 @@ echo "📝 重构内容: $REFACTOR_PROMPT"
 
 find . -name "$PATTERN" -type f | while read file; do
   echo "处理: $file"
-  
+
   agent -p --force --output-format text \
     "对文件 $file 进行以下重构: $REFACTOR_PROMPT"
-  
+
   if [ $? -eq 0 ]; then
     echo "  ✅ $file 完成"
   else

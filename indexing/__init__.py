@@ -5,55 +5,56 @@
 from .base import (
     ChunkType,
     CodeChunk,
-    SearchResult,
-    EmbeddingModel,
-    VectorStore,
     CodeChunker,
-)
-from .config import (
-    EmbeddingProvider,
-    VectorStoreType,
-    ChunkStrategy,
-    EmbeddingConfig,
-    ChunkConfig,
-    VectorStoreConfig,
-    IndexConfig,
-)
-from .embedding import (
-    SentenceTransformerEmbedding,
-    EmbeddingCache,
-    create_embedding_model,
-    get_available_models,
-    MODEL_CONFIGS,
-    DEFAULT_MODEL,
+    EmbeddingModel,
+    SearchResult,
+    VectorStore,
 )
 from .chunker import (
-    SemanticCodeChunker,
-    ChunkContext,
     EXTENSION_LANGUAGE_MAP,
+    ChunkContext,
+    SemanticCodeChunker,
     chunk_file,
     chunk_text,
 )
-from .vector_store import (
-    ChromaVectorStore,
-    create_vector_store,
-    DEFAULT_PERSIST_DIR,
-    DEFAULT_COLLECTION_NAME,
+from .config import (
+    ChunkConfig,
+    ChunkStrategy,
+    EmbeddingConfig,
+    EmbeddingProvider,
+    IndexConfig,
+    VectorStoreConfig,
+    VectorStoreType,
+)
+from .embedding import (
+    DEFAULT_MODEL,
+    MODEL_CONFIGS,
+    EmbeddingCache,
+    SentenceTransformerEmbedding,
+    create_embedding_model,
+    get_available_models,
 )
 from .indexer import (
+    CodebaseIndexer,
     FileState,
     IndexProgress,
-    ProgressCallback,
     IndexStateManager,
-    CodebaseIndexer,
+    ProgressCallback,
 )
 from .search import (
-    SemanticSearch,
     SearchOptions,
     SearchResultWithContext,
     SearchStats,
+    SemanticSearch,
     create_semantic_search,
 )
+from .vector_store import (
+    DEFAULT_COLLECTION_NAME,
+    DEFAULT_PERSIST_DIR,
+    ChromaVectorStore,
+    create_vector_store,
+)
+
 
 # CLI 入口点（延迟导入避免循环依赖）
 def run_cli():

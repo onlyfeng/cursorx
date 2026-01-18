@@ -13,29 +13,31 @@ CLI 用法:
 - 评审任务: opus-4.5-thinking (擅长代码审查)
 """
 import asyncio
-import subprocess
 import json
 import os
 import shutil
-from typing import Any, Optional, AsyncIterator
-from pydantic import BaseModel, Field
-from loguru import logger
+import subprocess
+from collections.abc import AsyncIterator
 from datetime import datetime
+from typing import Any, Optional
+
+from loguru import logger
+from pydantic import BaseModel, Field
 
 from cursor.streaming import StreamEventLogger, StreamEventType, parse_stream_event
 
 
 class CursorAgentConfig(BaseModel):
     """Cursor Agent 配置
-    
+
     安装:
         curl https://cursor.com/install -fsS | bash
-    
+
     身份验证:
         export CURSOR_API_KEY=your_api_key_here
-    
+
     CLI 参数说明 (参考: https://cursor.com/cn/docs/cli/reference/parameters):
-    
+
     全局选项:
     - -p / --print: 非交互模式，输出到控制台
     - -m / --model <model>: 指定模型
@@ -51,7 +53,7 @@ class CursorAgentConfig(BaseModel):
     - -b / --background: 后台模式
     - --fullscreen: 全屏模式
     - --list-models: 列出所有可用模型
-    
+
     命令:
     - agent login: 登录 Cursor
     - agent logout: 登出
@@ -60,8 +62,8 @@ class CursorAgentConfig(BaseModel):
     - agent mcp: 管理 MCP 服务器
     - agent ls: 列出并恢复会话
     - agent resume: 恢复最新会话
-    
-    注意: 
+
+    注意:
     - 非交互模式下 Agent 具有完全写入权限
     - 不带 --force: 仅提议更改
     - 带 --force: 直接修改文件
@@ -69,25 +71,25 @@ class CursorAgentConfig(BaseModel):
     """
     # agent CLI 路径（通过 curl https://cursor.com/install -fsS | bash 安装）
     agent_path: str = "agent"
-    
+
     # API 密钥（可选，也可通过环境变量 CURSOR_API_KEY 设置）
     api_key: Optional[str] = None
-    
+
     # 工作目录
     working_directory: str = "."
-    
+
     # 超时设置
     timeout: int = 300  # 秒
-    
+
     # 重试设置
     max_retries: int = 3
     retry_delay: float = 2.0
-    
+
     # 模型设置
     # 规划类任务推荐: gpt-5.2-high
     # 编码类任务推荐: opus-4.5-thinking
     model: str = "opus-4.5-thinking"
-    
+
     # 输出格式 (--output-format)
     # - "text": 纯文本输出，仅返回最终答案（推荐用于 Worker）
     # - "json": 结构化输出，便于脚本解析（推荐用于 Planner/Reviewer）
@@ -95,7 +97,7 @@ class CursorAgentConfig(BaseModel):
     # - "stream-json": NDJSON 格式，消息级别进度跟踪
     #   事件类型: system/init, user, assistant, tool_call, result
     output_format: str = "text"
-    
+
     # 是否启用增量流式传输（--stream-partial-output）
     # 配合 stream-json 使用，可以增量流式传输变更内容
     # 每条消息会有多个 assistant 事件，需要拼接 message.content[].text
@@ -109,57 +111,57 @@ class CursorAgentConfig(BaseModel):
     stream_agent_id: Optional[str] = None
     stream_agent_role: Optional[str] = None
     stream_agent_name: Optional[str] = None
-    
+
     # 是否使用非交互模式（-p 参数）
     # 非交互模式下，Agent 具有完全写入权限
     non_interactive: bool = True
-    
+
     # 是否强制修改文件（--force）
     # - True: 允许直接修改文件，无需确认（Worker 使用）
     # - False: 仅提议更改而不应用（Planner/Reviewer 使用）
     force_write: bool = False
-    
+
     # 会话 ID（用于恢复之前的对话）
     resume_thread_id: Optional[str] = None
-    
+
     # 后台模式（--background）
     background: bool = False
-    
+
     # 全屏模式（--fullscreen）
     fullscreen: bool = False
-    
+
     # Agent 工作模式（--mode）
     # - "plan": 规划模式，仅分析和规划，不修改文件（适合 Planner）
     # - "ask": 询问模式，回答问题和提供建议（适合咨询场景）
     # - "code": 编码模式，执行代码修改任务（适合 Worker）
     # - None: 不指定模式，使用默认行为
     mode: Optional[str] = None
-    
+
     # 执行模式
     # - "cli": 通过本地 Cursor CLI 执行
     # - "cloud": 通过 Cloud API 执行
     # - "auto": 自动选择，Cloud 优先，不可用时回退到 CLI
     execution_mode: str = "auto"
-    
+
     # ========== Cloud Agent 配置 ==========
     # 参考: https://cursor.com/cn/docs/cloud-agent
-    
+
     # 是否启用 Cloud Agent（使用 & 前缀推送任务到云端）
     cloud_enabled: bool = False
-    
+
     # Cloud Agent API 端点
     cloud_api_base: str = "https://api.cursor.com"
     cloud_agents_endpoint: str = "/v1/agents"
-    
+
     # Cloud Agent 超时（云端任务通常需要更长时间）
     cloud_timeout: int = 600  # 10 分钟
-    
+
     # 轮询间隔（秒）- 用于检查云端任务状态
     cloud_poll_interval: float = 2.0
-    
+
     # 云端任务重试
     cloud_max_retries: int = 3
-    
+
     # 是否自动检测 & 前缀并推送到云端
     auto_detect_cloud_prefix: bool = True
 
@@ -172,13 +174,13 @@ class ModelPresets:
         model="gpt-5.2-high",
         timeout=180,
     )
-    
+
     # 执行者模型 - Opus 4.5 Thinking 擅长编码
     WORKER = CursorAgentConfig(
         model="opus-4.5-thinking",
         timeout=300,
     )
-    
+
     # 评审者模型 - Opus 4.5 Thinking 擅长代码审查
     REVIEWER = CursorAgentConfig(
         model="opus-4.5-thinking",
@@ -195,7 +197,7 @@ class CursorAgentResult(BaseModel):
     duration: float = 0.0  # 秒
     started_at: datetime = Field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
-    
+
     # 额外信息
     files_modified: list[str] = Field(default_factory=list)
     command_used: str = ""
@@ -203,27 +205,27 @@ class CursorAgentResult(BaseModel):
 
 class CursorAgentClient:
     """Cursor Agent 客户端
-    
+
     封装对 Cursor agent CLI 的调用
     参考: https://cursor.com/cn/docs/cli/overview
-    
+
     用法:
     - 非交互模式: agent -p "prompt" --model "model" --output-format text
     - 交互模式: agent "prompt"
     """
-    
+
     def __init__(self, config: Optional[CursorAgentConfig] = None):
         self.config = config or CursorAgentConfig()
         self._agent_path = self._find_agent_executable()
         self._session_id = os.urandom(8).hex()
-    
+
     def _find_agent_executable(self) -> str:
         """查找 agent 可执行文件"""
         # 优先使用配置的路径
         if self.config.agent_path != "agent":
             if os.path.isfile(self.config.agent_path):
                 return self.config.agent_path
-        
+
         # 尝试常见路径
         possible_paths = [
             # 通过 which 查找
@@ -235,15 +237,15 @@ class CursorAgentClient:
             # macOS
             "/usr/local/bin/agent",
         ]
-        
+
         for path in possible_paths:
             if path and os.path.isfile(path):
                 logger.debug(f"找到 agent CLI: {path}")
                 return path
-        
+
         # 回退到默认（依赖 PATH）
         return self.config.agent_path
-    
+
     async def execute(
         self,
         instruction: str,
@@ -252,24 +254,24 @@ class CursorAgentClient:
         timeout: Optional[int] = None,
     ) -> CursorAgentResult:
         """执行 Cursor Agent 任务
-        
+
         Args:
             instruction: 给 Agent 的指令
             working_directory: 工作目录
             context: 上下文信息
             timeout: 超时时间
-            
+
         Returns:
             执行结果
         """
         work_dir = working_directory or self.config.working_directory
         timeout_sec = timeout or self.config.timeout
-        
+
         # 构建完整的 prompt
         full_prompt = self._build_prompt(instruction, context)
-        
+
         started_at = datetime.now()
-        
+
         try:
             # 尝试不同的调用方式
             result = await self._execute_cursor_agent(
@@ -277,10 +279,10 @@ class CursorAgentClient:
                 working_directory=work_dir,
                 timeout=timeout_sec,
             )
-            
+
             completed_at = datetime.now()
             duration = (completed_at - started_at).total_seconds()
-            
+
             return CursorAgentResult(
                 success=result["success"],
                 output=result.get("output", ""),
@@ -292,7 +294,7 @@ class CursorAgentClient:
                 files_modified=result.get("files_modified", []),
                 command_used=result.get("command", ""),
             )
-            
+
         except asyncio.TimeoutError:
             logger.error(f"Cursor Agent 执行超时 ({timeout_sec}s)")
             return CursorAgentResult(
@@ -310,11 +312,11 @@ class CursorAgentClient:
                 exit_code=-1,
                 started_at=started_at,
             )
-    
+
     def _build_prompt(self, instruction: str, context: Optional[dict[str, Any]] = None) -> str:
         """构建完整的 prompt"""
         parts = [instruction]
-        
+
         if context:
             parts.append("\n\n## 上下文信息")
             for key, value in context.items():
@@ -322,9 +324,9 @@ class CursorAgentClient:
                     parts.append(f"\n### {key}\n```json\n{json.dumps(value, ensure_ascii=False, indent=2)}\n```")
                 else:
                     parts.append(f"\n### {key}\n{value}")
-        
+
         return "\n".join(parts)
-    
+
     async def _execute_cursor_agent(
         self,
         prompt: str,
@@ -332,18 +334,18 @@ class CursorAgentClient:
         timeout: int,
     ) -> dict[str, Any]:
         """执行 agent CLI
-        
+
         使用 agent -p "prompt" --model "model" --output-format text
         """
         # 尝试调用 agent CLI
         result = await self._try_agent_cli(prompt, working_directory, timeout)
         if result:
             return result
-        
+
         # 回退：模拟模式（开发/测试用）
         logger.warning("无法调用 agent CLI，使用模拟模式")
         return await self._mock_execution(prompt, working_directory)
-    
+
     async def _try_agent_cli(
         self,
         prompt: str,
@@ -351,59 +353,59 @@ class CursorAgentClient:
         timeout: int,
     ) -> Optional[dict[str, Any]]:
         """调用 agent CLI
-        
-        命令格式: 
+
+        命令格式:
         - 非交互: agent -p "prompt" --model "model" --output-format json
         - 恢复会话: agent --resume "thread-id" -p "prompt"
-        
+
         参考: https://cursor.com/cn/docs/cli/overview
-        
+
         注意: 非交互模式下，Agent 具有完全写入权限
         """
         # 构建命令参数
         cmd = [self._agent_path]
-        
+
         # 恢复会话（如果指定）
         if self.config.resume_thread_id:
             cmd.extend(["--resume", self.config.resume_thread_id])
-        
+
         # 非交互模式使用 -p 参数（有完全写入权限）
         if self.config.non_interactive:
             cmd.extend(["-p", prompt])
         else:
             cmd.append(prompt)
-        
+
         # 添加模型参数
         if self.config.model:
             cmd.extend(["--model", self.config.model])
-        
+
         # 添加工作模式 (plan/ask/code)
         if self.config.mode:
             cmd.extend(["--mode", self.config.mode])
-        
+
         # 添加输出格式
         # text: 纯文本输出
         # json: 结构化输出，便于解析
         # stream-json: 消息级别进度跟踪
         if self.config.output_format:
             cmd.extend(["--output-format", self.config.output_format])
-        
+
         # 增量流式传输（配合 stream-json 使用）
         if self.config.stream_partial_output:
             cmd.append("--stream-partial-output")
-        
+
         # 强制修改文件（允许直接修改，无需确认）
         if self.config.force_write:
             cmd.append("--force")
-        
+
         try:
             logger.debug(f"执行命令: agent -p '...' --model {self.config.model}")
-            
+
             # 构建环境变量（支持 API 密钥）
             env = os.environ.copy()
             if self.config.api_key:
                 env["CURSOR_API_KEY"] = self.config.api_key
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=working_directory,
@@ -443,7 +445,7 @@ class CursorAgentClient:
                 cmd_desc += f" --mode {self.config.mode}"
             if self.config.force_write:
                 cmd_desc += " --force"
-            
+
             return {
                 "success": process.returncode == 0,
                 "output": output,
@@ -451,7 +453,7 @@ class CursorAgentClient:
                 "exit_code": process.returncode,
                 "command": cmd_desc,
             }
-            
+
         except FileNotFoundError:
             logger.error(f"找不到 agent CLI: {self._agent_path}")
             logger.info("请先安装: curl https://cursor.com/install -fsS | bash")
@@ -605,7 +607,7 @@ class CursorAgentClient:
         """收集流输出到缓冲区"""
         async for line in self._read_stream_lines(stream, deadline, strip_line=False):
             buffer.append(line)
-    
+
     async def _mock_execution(
         self,
         prompt: str,
@@ -615,10 +617,10 @@ class CursorAgentClient:
         logger.info("[Mock] 模拟执行 Cursor Agent")
         logger.debug(f"[Mock] 工作目录: {working_directory}")
         logger.debug(f"[Mock] 指令: {prompt[:200]}...")
-        
+
         # 模拟一些处理时间
         await asyncio.sleep(0.5)
-        
+
         return {
             "success": True,
             "output": f"[Mock] 已处理任务:\n{prompt[:100]}...\n\n模拟执行成功。",
@@ -626,7 +628,7 @@ class CursorAgentClient:
             "exit_code": 0,
             "command": "mock",
         }
-    
+
     async def execute_with_retry(
         self,
         instruction: str,
@@ -637,21 +639,21 @@ class CursorAgentClient:
         """带重试的执行"""
         retries = max_retries or self.config.max_retries
         last_result = None
-        
+
         for attempt in range(retries):
             result = await self.execute(instruction, working_directory, context)
-            
+
             if result.success:
                 return result
-            
+
             last_result = result
             logger.warning(f"Cursor Agent 执行失败 (尝试 {attempt + 1}/{retries}): {result.error}")
-            
+
             if attempt < retries - 1:
                 await asyncio.sleep(self.config.retry_delay * (2 ** attempt))  # 指数退避
-        
+
         return last_result or CursorAgentResult(success=False, error="所有重试均失败")
-    
+
     def check_agent_available(self) -> bool:
         """检查 agent CLI 是否可用"""
         try:
@@ -663,15 +665,15 @@ class CursorAgentClient:
             return result.returncode == 0
         except Exception:
             return False
-    
+
     @staticmethod
     def install_instructions() -> str:
         """返回安装说明"""
         return "curl https://cursor.com/install -fsS | bash"
-    
+
     async def list_models(self) -> list[str]:
         """列出所有可用模型
-        
+
         使用 agent models 或 agent --list-models
         """
         try:
@@ -680,21 +682,21 @@ class CursorAgentClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
             stdout, _ = await asyncio.wait_for(
                 process.communicate(),
                 timeout=30,
             )
-            
+
             output = stdout.decode("utf-8", errors="replace")
             # 解析模型列表（每行一个模型）
             models = [line.strip() for line in output.split("\n") if line.strip()]
             return models
-            
+
         except Exception as e:
             logger.error(f"获取模型列表失败: {e}")
             return []
-    
+
     def list_models_sync(self) -> list[str]:
         """同步版本：列出所有可用模型"""
         try:
@@ -703,7 +705,7 @@ class CursorAgentClient:
                 capture_output=True,
                 timeout=30,
             )
-            
+
             if result.returncode == 0:
                 output = result.stdout.decode("utf-8", errors="replace")
                 models = [line.strip() for line in output.split("\n") if line.strip()]
@@ -712,10 +714,10 @@ class CursorAgentClient:
         except Exception as e:
             logger.error(f"获取模型列表失败: {e}")
             return []
-    
+
     async def list_sessions(self) -> list[dict[str, Any]]:
         """列出所有会话
-        
+
         使用 agent ls 命令
         """
         try:
@@ -724,12 +726,12 @@ class CursorAgentClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
             stdout, _ = await asyncio.wait_for(
                 process.communicate(),
                 timeout=30,
             )
-            
+
             output = stdout.decode("utf-8", errors="replace")
             # 解析会话列表
             sessions = []
@@ -737,14 +739,14 @@ class CursorAgentClient:
                 if line.strip():
                     sessions.append({"raw": line.strip()})
             return sessions
-            
+
         except Exception as e:
             logger.error(f"获取会话列表失败: {e}")
             return []
-    
+
     async def resume_session(self, session_id: Optional[str] = None) -> CursorAgentResult:
         """恢复会话
-        
+
         Args:
             session_id: 会话 ID，如果为 None 则恢复最新会话
         """
@@ -754,32 +756,32 @@ class CursorAgentClient:
                 cmd.extend(["--resume", session_id])
             else:
                 cmd.append("resume")
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=self.config.timeout,
             )
-            
+
             return CursorAgentResult(
                 success=process.returncode == 0,
                 output=stdout.decode("utf-8", errors="replace"),
                 error=stderr.decode("utf-8", errors="replace") if process.returncode != 0 else None,
                 exit_code=process.returncode,
             )
-            
+
         except Exception as e:
             logger.error(f"恢复会话失败: {e}")
             return CursorAgentResult(success=False, error=str(e), exit_code=-1)
-    
+
     async def get_status(self) -> dict[str, Any]:
         """获取认证状态
-        
+
         使用 agent status 命令
         """
         try:
@@ -788,26 +790,26 @@ class CursorAgentClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
+
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=30,
             )
-            
+
             return {
                 "authenticated": process.returncode == 0,
                 "output": stdout.decode("utf-8", errors="replace"),
                 "error": stderr.decode("utf-8", errors="replace") if process.returncode != 0 else None,
             }
-            
+
         except Exception as e:
             logger.error(f"获取状态失败: {e}")
             return {"authenticated": False, "error": str(e)}
-    
+
     @staticmethod
     def parse_json_output(output: str) -> dict[str, Any]:
         """解析 JSON 格式的输出
-        
+
         JSON 输出格式:
         {
             "type": "result",
@@ -822,11 +824,11 @@ class CursorAgentClient:
             return json.loads(output)
         except json.JSONDecodeError:
             return {"type": "error", "result": output}
-    
+
     @staticmethod
     def parse_stream_json_output(output: str) -> list[dict[str, Any]]:
         """解析 stream-json 格式的输出 (NDJSON)
-        
+
         每行是一个 JSON 对象，事件类型包括:
         - system/init: 会话初始化
         - user: 用户消息
@@ -847,47 +849,47 @@ class CursorAgentClient:
 
 class CursorAgentPool:
     """Cursor Agent 连接池
-    
+
     管理多个 Cursor Agent 客户端实例
     用于并行执行多个任务
     """
-    
+
     def __init__(self, size: int = 3, config: Optional[CursorAgentConfig] = None):
         self.size = size
         self.config = config or CursorAgentConfig()
         self._clients: list[CursorAgentClient] = []
         self._available: asyncio.Queue = asyncio.Queue()
         self._initialized = False
-    
+
     async def initialize(self) -> None:
         """初始化连接池"""
         if self._initialized:
             return
-        
+
         for i in range(self.size):
             client = CursorAgentClient(self.config)
             self._clients.append(client)
             await self._available.put(client)
-        
+
         self._initialized = True
         logger.info(f"Cursor Agent 连接池已初始化: {self.size} 个客户端")
-    
+
     async def acquire(self, timeout: Optional[float] = None) -> CursorAgentClient:
         """获取一个可用的客户端"""
         if not self._initialized:
             await self.initialize()
-        
+
         try:
             if timeout:
                 return await asyncio.wait_for(self._available.get(), timeout=timeout)
             return await self._available.get()
         except asyncio.TimeoutError:
             raise RuntimeError("获取 Cursor Agent 客户端超时")
-    
+
     async def release(self, client: CursorAgentClient) -> None:
         """释放客户端回池"""
         await self._available.put(client)
-    
+
     async def execute(
         self,
         instruction: str,

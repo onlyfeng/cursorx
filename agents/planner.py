@@ -3,20 +3,21 @@
 负责探索代码库、分解任务、派生子规划者
 支持语义搜索增强的代码库探索
 """
-from typing import Any, Optional, Union, TYPE_CHECKING
-from pydantic import BaseModel, Field
-from loguru import logger
+from typing import TYPE_CHECKING, Any, Optional
 
-from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
-from tasks.task import Task, TaskType, TaskPriority
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from core.base import AgentConfig, AgentRole, AgentStatus, BaseAgent
 from cursor.client import CursorAgentConfig
-from cursor.executor import (
-    AgentExecutorFactory,
-    ExecutionMode,
-    CLIAgentExecutor,
-    AgentExecutor,
-)
 from cursor.cloud_client import CloudAuthConfig
+from cursor.executor import (
+    AgentExecutor,
+    AgentExecutorFactory,
+    CLIAgentExecutor,
+    ExecutionMode,
+)
+from tasks.task import Task, TaskPriority, TaskType
 
 # 可选的语义搜索支持
 if TYPE_CHECKING:
@@ -44,14 +45,14 @@ class PlannerConfig(BaseModel):
 
 class PlannerAgent(BaseAgent):
     """规划者 Agent
-    
+
     职责:
     1. 探索代码库结构
     2. 分析用户目标
     3. 分解为可执行的子任务
     4. 必要时派生子规划者处理特定区域
     """
-    
+
     # 规划者系统提示
     SYSTEM_PROMPT = """你是一个代码项目规划者。你的职责是:
 
@@ -89,7 +90,7 @@ class PlannerAgent(BaseAgent):
   ]
 }
 ```"""
-    
+
     def __init__(self, config: PlannerConfig, semantic_search: Optional["SemanticSearch"] = None):
         agent_config = AgentConfig(
             role=AgentRole.PLANNER,
@@ -98,18 +99,18 @@ class PlannerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.planner_config = config
-        
+
         # 应用 plan 模式配置（--mode=plan 仅分析不修改文件）
         self._apply_plan_mode_config(self.planner_config.cursor_config)
         self._apply_stream_config(self.planner_config.cursor_config)
-        
+
         # 使用 AgentExecutorFactory 创建执行器
         self._executor: AgentExecutor = AgentExecutorFactory.create(
             mode=config.execution_mode,
             cli_config=config.cursor_config,
             cloud_auth_config=config.cloud_auth_config,
         )
-        
+
         # 保留 cursor_client 属性以保持向后兼容
         if isinstance(self._executor, CLIAgentExecutor):
             self.cursor_client = self._executor.client
@@ -117,22 +118,22 @@ class PlannerAgent(BaseAgent):
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
             self.cursor_client = CursorAgentClient(config.cursor_config)
-        
+
         self.sub_planners: list["PlannerAgent"] = []
-        
+
         # 语义搜索增强（可选）
         self._semantic_search: Optional["SemanticSearch"] = semantic_search
         self._search_enabled = config.enable_semantic_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 语义搜索已启用")
-        
+
         logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
         if config.use_plan_mode:
             logger.debug(f"[{config.name}] 已启用 plan 模式（--mode=plan）")
 
     def _apply_plan_mode_config(self, cursor_config: CursorAgentConfig) -> None:
         """应用 plan 模式配置
-        
+
         plan 模式特点:
         - 使用 --mode=plan 参数
         - 仅分析和规划，不修改文件
@@ -155,10 +156,10 @@ class PlannerAgent(BaseAgent):
         if cursor_config.stream_events_enabled:
             cursor_config.output_format = "stream-json"
             cursor_config.stream_partial_output = True
-    
+
     def set_semantic_search(self, search: "SemanticSearch") -> None:
         """设置语义搜索引擎（延迟初始化）
-        
+
         Args:
             search: SemanticSearch 实例
         """
@@ -166,54 +167,54 @@ class PlannerAgent(BaseAgent):
         self._search_enabled = self.planner_config.enable_semantic_search
         if self._search_enabled:
             logger.info(f"[{self.id}] 语义搜索已启用")
-    
+
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行规划任务
-        
+
         Args:
             instruction: 用户目标或规划指令
             context: 上下文（包含已有分析结果等）
-            
+
         Returns:
             规划结果，包含任务列表和子规划者建议
         """
         self.update_status(AgentStatus.RUNNING)
         logger.info(f"[{self.id}] 开始规划: {instruction[:100]}...")
-        
+
         try:
             # 使用语义搜索探索代码库（可选增强）
             search_context = None
             if self._search_enabled:
                 search_context = await self._explore_with_semantic_search(instruction)
                 logger.info(f"[{self.id}] 语义搜索找到 {len(search_context.get('related_code', []))} 个相关代码片段")
-            
+
             # 合并上下文
             merged_context = context.copy() if context else {}
             if search_context:
                 merged_context["semantic_search_results"] = search_context
-            
+
             # 构建规划 prompt
             prompt = self._build_planning_prompt(instruction, merged_context)
-            
+
             # 调用执行器执行规划
             result = await self._executor.execute(
                 prompt=prompt,
                 working_directory=self.planner_config.working_directory,
                 context=merged_context,
             )
-            
+
             if not result.success:
                 error_detail = result.error or f"exit_code={result.exit_code}, output={result.output[:200] if result.output else 'empty'}"
                 logger.error(f"[{self.id}] 规划失败: {error_detail}")
                 self.update_status(AgentStatus.FAILED)
                 return {"success": False, "error": error_detail, "tasks": []}
-            
+
             # 解析规划结果
             plan_result = self._parse_planning_result(result.output)
-            
+
             self.update_status(AgentStatus.COMPLETED)
             logger.info(f"[{self.id}] 规划完成, 生成 {len(plan_result.get('tasks', []))} 个任务")
-            
+
             return {
                 "success": True,
                 "analysis": plan_result.get("analysis", ""),
@@ -221,24 +222,24 @@ class PlannerAgent(BaseAgent):
                 "sub_planners_needed": plan_result.get("sub_planners_needed", []),
                 "search_context": search_context,  # 返回搜索结果供后续使用
             }
-            
+
         except Exception as e:
             logger.exception(f"[{self.id}] 规划异常: {e}")
             self.update_status(AgentStatus.FAILED)
             return {"success": False, "error": str(e), "tasks": []}
-    
+
     async def _explore_with_semantic_search(self, instruction: str) -> dict[str, Any]:
         """使用语义搜索探索代码库
-        
+
         Args:
             instruction: 用户目标指令
-            
+
         Returns:
             搜索结果上下文
         """
         if not self._semantic_search:
             return {}
-        
+
         try:
             # 执行语义搜索
             results = await self._semantic_search.search(
@@ -246,7 +247,7 @@ class PlannerAgent(BaseAgent):
                 top_k=self.planner_config.semantic_search_top_k,
                 min_score=self.planner_config.semantic_search_min_score,
             )
-            
+
             # 构建相关代码片段列表
             related_code = []
             for result in results:
@@ -260,23 +261,23 @@ class PlannerAgent(BaseAgent):
                     "content_preview": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
                     "score": result.score,
                 })
-            
+
             return {
                 "related_code": related_code,
                 "total_found": len(results),
             }
-            
+
         except Exception as e:
             logger.warning(f"[{self.id}] 语义搜索失败: {e}")
             return {}
-    
+
     def _build_planning_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
         """构建规划 prompt"""
         parts = [
             self.SYSTEM_PROMPT,
             f"\n## 用户目标\n{instruction}",
         ]
-        
+
         if context:
             if "codebase_info" in context:
                 parts.append(f"\n## 代码库信息\n{context['codebase_info']}")
@@ -284,7 +285,7 @@ class PlannerAgent(BaseAgent):
                 parts.append(f"\n## 前序分析\n{context['previous_analysis']}")
             if "constraints" in context:
                 parts.append(f"\n## 约束条件\n{context['constraints']}")
-            
+
             # 添加语义搜索结果
             if "semantic_search_results" in context:
                 search_results = context["semantic_search_results"]
@@ -299,14 +300,14 @@ class PlannerAgent(BaseAgent):
                         )
                     if len(related_code) > 5:
                         parts.append(f"\n... 还有 {len(related_code) - 5} 个相关代码片段未显示")
-        
+
         parts.append("\n请分析并输出任务规划:")
-        
+
         return "\n".join(parts)
-    
+
     def _parse_planning_result(self, output: str) -> dict[str, Any]:
         """解析规划结果
-        
+
         支持多种输出格式:
         1. plan 模式 JSON 输出: {"type": "result", "result": "..."}
         2. 包含 ```json``` 代码块的文本
@@ -315,9 +316,9 @@ class PlannerAgent(BaseAgent):
         """
         import json
         import re
-        
+
         content = output
-        
+
         # 处理 plan 模式的 JSON 输出格式
         # {"type": "result", "subtype": "success", "result": "<规划内容>", ...}
         try:
@@ -328,7 +329,7 @@ class PlannerAgent(BaseAgent):
                 logger.debug(f"[{self.id}] 从 plan 模式 JSON 输出中提取规划内容")
         except json.JSONDecodeError:
             pass
-        
+
         # 尝试提取 JSON 块（Markdown 代码块格式）
         json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if json_match:
@@ -336,7 +337,7 @@ class PlannerAgent(BaseAgent):
                 return json.loads(json_match.group(1))
             except json.JSONDecodeError:
                 pass
-        
+
         # 尝试直接解析为 JSON
         try:
             parsed = json.loads(content)
@@ -345,7 +346,7 @@ class PlannerAgent(BaseAgent):
                 return parsed
         except json.JSONDecodeError:
             pass
-        
+
         # 解析失败，返回原始输出作为分析
         logger.warning(f"[{self.id}] 无法解析规划结果为 JSON，使用原始文本")
         return {
@@ -353,21 +354,21 @@ class PlannerAgent(BaseAgent):
             "tasks": [],
             "sub_planners_needed": [],
         }
-    
+
     async def spawn_sub_planner(self, area: str, context: Optional[dict] = None) -> "PlannerAgent":
         """派生子规划者
-        
+
         Args:
             area: 需要深入规划的区域
             context: 上下文信息
-            
+
         Returns:
             子规划者实例
         """
         if len(self.sub_planners) >= self.planner_config.max_sub_planners:
             logger.warning(f"[{self.id}] 已达到最大子规划者数量限制")
             raise ValueError("已达到最大子规划者数量限制")
-        
+
         sub_config = PlannerConfig(
             name=f"{self.config.name}-sub-{len(self.sub_planners)}",
             working_directory=self.planner_config.working_directory,
@@ -384,7 +385,7 @@ class PlannerAgent(BaseAgent):
             semantic_search_top_k=self.planner_config.semantic_search_top_k,
             semantic_search_min_score=self.planner_config.semantic_search_min_score,
         )
-        
+
         # 创建子规划者并传递语义搜索实例
         sub_planner = PlannerAgent(sub_config, semantic_search=self._semantic_search)
         sub_planner.set_context("parent_planner", self.id)
@@ -392,12 +393,12 @@ class PlannerAgent(BaseAgent):
         if context:
             for k, v in context.items():
                 sub_planner.set_context(k, v)
-        
+
         self.sub_planners.append(sub_planner)
         logger.info(f"[{self.id}] 派生子规划者: {sub_planner.id} 负责区域: {area}")
-        
+
         return sub_planner
-    
+
     def create_task_from_plan(self, task_data: dict, iteration_id: int) -> Task:
         """从规划结果创建任务"""
         task_type_map = {
@@ -409,14 +410,14 @@ class PlannerAgent(BaseAgent):
             "test": TaskType.TEST,
             "document": TaskType.DOCUMENT,
         }
-        
+
         priority_map = {
             "low": TaskPriority.LOW,
             "normal": TaskPriority.NORMAL,
             "high": TaskPriority.HIGH,
             "critical": TaskPriority.CRITICAL,
         }
-        
+
         return Task(
             title=task_data.get("title", "未命名任务"),
             description=task_data.get("description", ""),
@@ -428,7 +429,7 @@ class PlannerAgent(BaseAgent):
             created_by=self.id,
             iteration_id=iteration_id,
         )
-    
+
     async def reset(self) -> None:
         """重置规划者状态"""
         self.update_status(AgentStatus.IDLE)

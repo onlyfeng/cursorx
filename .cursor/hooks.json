@@ -1,6 +1,12 @@
 {
   "version": 1,
   "hooks": {
+    "beforeCommit": [
+      {
+        "command": "./hooks/pre_commit.sh --quick",
+        "description": "提交前快速检查（语法和导入）"
+      }
+    ],
     "beforeShellExecution": [
       {
         "command": "./hooks/audit.sh",
@@ -41,6 +47,10 @@
       {
         "command": "./hooks/audit.sh",
         "description": "记录 agent 结束"
+      },
+      {
+        "command": "./hooks/pre_commit.sh",
+        "description": "Agent 结束前执行预提交检查"
       }
     ]
   }

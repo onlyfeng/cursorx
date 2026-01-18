@@ -3,25 +3,25 @@
 作为独立进程运行的执行者
 """
 import asyncio
-from typing import Optional
 from multiprocessing import Queue
+from typing import Optional
 
 from loguru import logger
 
-from process.worker import AgentWorkerProcess
-from process.message_queue import ProcessMessage, ProcessMessageType
 from cursor.client import CursorAgentClient, CursorAgentConfig
+from process.message_queue import ProcessMessage, ProcessMessageType
+from process.worker import AgentWorkerProcess
 
 
 class WorkerAgentProcess(AgentWorkerProcess):
     """执行者 Agent 进程
-    
+
     独立进程中运行的执行者，负责：
     1. 接收任务
     2. 调用 Cursor Agent 执行任务
     3. 返回执行结果
     """
-    
+
     SYSTEM_PROMPT = """你是一个代码执行者。你的职责是:
 
 1. 专注完成分配给你的具体任务
@@ -49,7 +49,7 @@ Shell 命令限制（重要）:
 - 完成后简要总结所做的修改
 
 请执行以下任务:"""
-    
+
     def __init__(
         self,
         agent_id: str,
@@ -63,7 +63,7 @@ Shell 命令限制（重要）:
         self.current_task_id: Optional[str] = None
         self.completed_tasks: list[str] = []
         self.failed_tasks: list[str] = []
-    
+
     def on_start(self) -> None:
         """进程启动初始化"""
         # 创建 agent CLI 客户端 - 使用 opus-4.5-thinking 进行编码
@@ -87,49 +87,49 @@ Shell 命令限制（重要）:
         )
         self.cursor_client = CursorAgentClient(cursor_config)
         logger.info(f"[{self.agent_id}] 执行者初始化完成 (模型: {cursor_config.model}, force: True)")
-    
+
     def on_stop(self) -> None:
         """进程停止清理"""
         logger.info(f"[{self.agent_id}] 执行者停止，完成 {len(self.completed_tasks)} 个任务")
-    
+
     def handle_message(self, message: ProcessMessage) -> None:
         """处理业务消息"""
         if message.type == ProcessMessageType.TASK_ASSIGN:
             asyncio.run(self._handle_task(message))
-    
+
     async def _handle_task(self, message: ProcessMessage) -> None:
         """处理任务"""
         task_data = message.payload.get("task", {})
         task_id = task_data.get("id", "unknown")
-        
+
         self.current_task_id = task_id
-        
+
         logger.info(f"[{self.agent_id}] 开始执行任务: {task_id}")
-        
+
         try:
             # 构建执行 prompt
             prompt = self._build_execution_prompt(task_data)
-            
+
             # 构建上下文
             context = {
                 "task_id": task_id,
                 "task_type": task_data.get("type", "custom"),
                 "target_files": task_data.get("target_files", []),
             }
-            
+
             # 发送进度消息
             self._send_message(ProcessMessageType.TASK_PROGRESS, {
                 "task_id": task_id,
                 "status": "executing",
                 "progress": 0,
             })
-            
+
             # 调用 Cursor Agent 执行
             result = await self.cursor_client.execute(
                 instruction=prompt,
                 context=context,
             )
-            
+
             if result.success:
                 self.completed_tasks.append(task_id)
                 self._send_message(ProcessMessageType.TASK_RESULT, {
@@ -149,7 +149,7 @@ Shell 命令限制（重要）:
                     "output": result.output,
                 }, correlation_id=message.id)
                 logger.error(f"[{self.agent_id}] 任务失败: {task_id} - {result.error}")
-                
+
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 任务执行异常: {e}")
             self.failed_tasks.append(task_id)
@@ -160,7 +160,7 @@ Shell 命令限制（重要）:
             }, correlation_id=message.id)
         finally:
             self.current_task_id = None
-    
+
     def _build_execution_prompt(self, task_data: dict) -> str:
         """构建执行 prompt"""
         parts = [
@@ -169,15 +169,15 @@ Shell 命令限制（重要）:
             f"\n### 描述\n{task_data.get('description', '')}",
             f"\n### 具体指令\n{task_data.get('instruction', '')}",
         ]
-        
+
         target_files = task_data.get("target_files", [])
         if target_files:
             parts.append("\n### 涉及文件\n" + "\n".join(f"- {f}" for f in target_files))
-        
+
         parts.append("\n请开始执行任务:")
-        
+
         return "\n".join(parts)
-    
+
     def get_status(self) -> dict:
         """获取当前状态"""
         return {

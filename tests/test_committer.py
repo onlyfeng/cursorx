@@ -3,28 +3,27 @@
 测试 Git 操作相关功能：检查状态、生成提交信息、提交、回退
 使用临时 git 仓库进行隔离测试
 """
-import os
 import subprocess
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.committer import CommitterAgent, CommitterConfig, CommitResult
+from agents.committer import CommitResult, CommitterAgent, CommitterConfig
 from core.base import AgentRole, AgentStatus
 
 
 @pytest.fixture
 def temp_git_repo(tmp_path: Path) -> Generator[Path, None, None]:
     """创建临时 git 仓库用于测试
-    
+
     Yields:
         临时仓库路径
     """
     repo_path = tmp_path / "test_repo"
     repo_path.mkdir()
-    
+
     # 初始化 git 仓库
     subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
     subprocess.run(
@@ -35,7 +34,7 @@ def temp_git_repo(tmp_path: Path) -> Generator[Path, None, None]:
         ["git", "config", "user.name", "Test User"],
         cwd=repo_path, check=True, capture_output=True
     )
-    
+
     # 创建初始提交
     initial_file = repo_path / "README.md"
     initial_file.write_text("# Test Repo\n")
@@ -44,7 +43,7 @@ def temp_git_repo(tmp_path: Path) -> Generator[Path, None, None]:
         ["git", "commit", "-m", "Initial commit"],
         cwd=repo_path, check=True, capture_output=True
     )
-    
+
     yield repo_path
 
 
@@ -69,7 +68,7 @@ class TestCommitterConfig:
     def test_default_values(self):
         """测试默认值"""
         config = CommitterConfig()
-        
+
         assert config.name == "committer"
         assert config.working_directory == "."
         assert config.auto_push is False
@@ -88,7 +87,7 @@ class TestCommitterConfig:
             include_files=["*.py"],
             exclude_files=[".env", "*.log"],
         )
-        
+
         assert config.name == "my-committer"
         assert config.working_directory == "/tmp/repo"
         assert config.auto_push is True
@@ -103,7 +102,7 @@ class TestCommitterAgentInit:
     def test_default_init(self, committer_config: CommitterConfig):
         """测试默认配置初始化"""
         agent = CommitterAgent(committer_config)
-        
+
         assert agent.role == AgentRole.WORKER
         assert agent.name == "test-committer"
         assert agent.status == AgentStatus.IDLE
@@ -112,7 +111,7 @@ class TestCommitterAgentInit:
     def test_id_format(self, committer_config: CommitterConfig):
         """测试 Agent ID 格式"""
         agent = CommitterAgent(committer_config)
-        
+
         # ID 格式：{role}-{random_hex}
         assert agent.id.startswith("worker-")
         assert len(agent.id) > len("worker-")
@@ -126,7 +125,7 @@ class TestCheckStatus:
     ):
         """测试干净仓库返回空更改列表"""
         status = committer.check_status()
-        
+
         assert status["is_repo"] is True
         assert status["has_changes"] is False
         assert status["staged"] == []
@@ -141,9 +140,9 @@ class TestCheckStatus:
         # 修改已有文件
         readme = temp_git_repo / "README.md"
         readme.write_text("# Updated Test Repo\nWith more content.\n")
-        
+
         status = committer.check_status()
-        
+
         assert status["is_repo"] is True
         assert status["has_changes"] is True
         assert "README.md" in status["modified"]
@@ -155,9 +154,9 @@ class TestCheckStatus:
         # 创建新文件
         new_file = temp_git_repo / "new_file.txt"
         new_file.write_text("New content\n")
-        
+
         status = committer.check_status()
-        
+
         assert status["is_repo"] is True
         assert status["has_changes"] is True
         assert "new_file.txt" in status["untracked"]
@@ -173,9 +172,9 @@ class TestCheckStatus:
             ["git", "add", "staged.txt"],
             cwd=temp_git_repo, check=True, capture_output=True
         )
-        
+
         status = committer.check_status()
-        
+
         assert status["is_repo"] is True
         assert status["has_changes"] is True
         assert "staged.txt" in status["staged"]
@@ -184,9 +183,9 @@ class TestCheckStatus:
         """测试非 git 仓库目录"""
         config = CommitterConfig(working_directory=str(tmp_path))
         agent = CommitterAgent(config)
-        
+
         status = agent.check_status()
-        
+
         assert status["is_repo"] is False
         assert "error" in status
 
@@ -202,17 +201,17 @@ class TestGenerateCommitMessage:
         # 修改文件创建 diff
         readme = temp_git_repo / "README.md"
         readme.write_text("# Updated Test Repo\n\nNew feature added.\n")
-        
+
         # Mock cursor_client 返回生成的提交信息
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.output = "feat(docs): 更新 README 文档"
-        
+
         with patch.object(
             committer.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ):
             message = await committer.generate_commit_message()
-        
+
         assert message == "feat(docs): 更新 README 文档"
 
     @pytest.mark.asyncio
@@ -228,16 +227,16 @@ diff --git a/test.py b/test.py
 +def hello(): pass
 """
         files = ["test.py"]
-        
+
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.output = "feat: 添加 hello 函数"
-        
+
         with patch.object(
             committer.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ):
             message = await committer.generate_commit_message(diff=diff, files=files)
-        
+
         assert message == "feat: 添加 hello 函数"
 
     @pytest.mark.asyncio
@@ -248,12 +247,12 @@ diff --git a/test.py b/test.py
         mock_result = MagicMock()
         mock_result.success = False
         mock_result.output = None
-        
+
         with patch.object(
             committer.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ):
             message = await committer.generate_commit_message(diff="some diff")
-        
+
         # 默认使用 conventional 风格
         assert message == "chore: 更新"
 
@@ -267,16 +266,16 @@ diff --git a/test.py b/test.py
             commit_message_style="simple",
         )
         agent = CommitterAgent(config)
-        
+
         mock_result = MagicMock()
         mock_result.success = False
         mock_result.output = None
-        
+
         with patch.object(
             agent.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ):
             message = await agent.generate_commit_message(diff="some diff")
-        
+
         assert message == "更新"
 
     @pytest.mark.asyncio
@@ -289,7 +288,7 @@ diff --git a/test.py b/test.py
             committer, "_get_diff", return_value=""
         ):
             message = await committer.generate_commit_message()
-        
+
         assert message == "chore: 更新"
 
 
@@ -303,9 +302,9 @@ class TestCommit:
         # 创建新文件
         new_file = temp_git_repo / "feature.py"
         new_file.write_text("def feature(): pass\n")
-        
+
         result = committer.commit("feat: 添加新功能")
-        
+
         assert result.success is True
         assert result.commit_hash != ""
         assert result.message == "feat: 添加新功能"
@@ -319,9 +318,9 @@ class TestCommit:
         (temp_git_repo / "file1.py").write_text("# file1\n")
         (temp_git_repo / "file2.py").write_text("# file2\n")
         (temp_git_repo / "file3.py").write_text("# file3\n")
-        
+
         result = committer.commit("feat: 添加多个文件")
-        
+
         assert result.success is True
         assert len(result.files_changed) == 3
 
@@ -332,9 +331,9 @@ class TestCommit:
         # 创建多个文件
         (temp_git_repo / "include.py").write_text("# include\n")
         (temp_git_repo / "exclude.py").write_text("# exclude\n")
-        
+
         result = committer.commit("feat: 只提交 include.py", files=["include.py"])
-        
+
         assert result.success is True
         assert "include.py" in result.files_changed
         # exclude.py 应该仍未提交
@@ -350,15 +349,15 @@ class TestCommit:
             exclude_files=[".env", "*.secret", "*.log"],
         )
         agent = CommitterAgent(config)
-        
+
         # 创建多个文件，包括应被排除的
         (temp_git_repo / "code.py").write_text("# code\n")
         (temp_git_repo / ".env").write_text("SECRET=xxx\n")
         (temp_git_repo / "data.secret").write_text("secret data\n")
         (temp_git_repo / "app.log").write_text("log content\n")
-        
+
         result = agent.commit("feat: 添加代码")
-        
+
         assert result.success is True
         assert "code.py" in result.files_changed
         # 排除的文件不应被提交
@@ -371,7 +370,7 @@ class TestCommit:
     ):
         """测试无变更时提交失败"""
         result = committer.commit("test: 无变更提交")
-        
+
         assert result.success is False
         assert "没有需要提交的变更" in result.error
 
@@ -384,12 +383,12 @@ class TestCommit:
             exclude_files=["*.txt"],
         )
         agent = CommitterAgent(config)
-        
+
         # 只创建会被排除的文件
         (temp_git_repo / "file.txt").write_text("content\n")
-        
+
         result = agent.commit("test: 所有文件被排除")
-        
+
         assert result.success is False
         assert "没有可提交的文件" in result.error
 
@@ -404,16 +403,16 @@ class TestRollback:
         # 创建并提交一个文件
         (temp_git_repo / "rollback_test.py").write_text("# test\n")
         committer.commit("feat: 测试回退")
-        
+
         # 获取当前 HEAD
         initial_head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=temp_git_repo, capture_output=True, text=True
         ).stdout.strip()
-        
+
         # 执行软回退
         result = committer.rollback(mode="soft", commit="HEAD~1")
-        
+
         assert result.success is True
         # 检查 HEAD 已变更
         new_head = subprocess.run(
@@ -430,9 +429,9 @@ class TestRollback:
         # 创建并提交一个文件
         (temp_git_repo / "mixed_test.py").write_text("# mixed\n")
         committer.commit("feat: mixed 测试")
-        
+
         result = committer.rollback(mode="mixed", commit="HEAD~1")
-        
+
         assert result.success is True
 
     def test_rollback_hard(
@@ -443,12 +442,12 @@ class TestRollback:
         test_file = temp_git_repo / "hard_test.py"
         test_file.write_text("# hard\n")
         committer.commit("feat: hard 测试")
-        
+
         # 确认文件存在
         assert test_file.exists()
-        
+
         result = committer.rollback(mode="hard", commit="HEAD~1")
-        
+
         assert result.success is True
         # 文件应该被删除
         assert not test_file.exists()
@@ -461,10 +460,10 @@ class TestRollback:
         readme = temp_git_repo / "README.md"
         original_content = readme.read_text()
         readme.write_text("Modified content\n")
-        
+
         # 使用 checkout 模式还原
         result = committer.rollback(mode="checkout", files=["README.md"])
-        
+
         assert result.success is True
         assert readme.read_text() == original_content
         assert "README.md" in result.files_changed
@@ -474,7 +473,7 @@ class TestRollback:
     ):
         """测试无效的回退模式"""
         result = committer.rollback(mode="invalid")
-        
+
         assert result.success is False
         assert "不支持的回退模式" in result.error
 
@@ -485,22 +484,22 @@ class TestRollback:
         # 创建多个提交
         (temp_git_repo / "commit1.py").write_text("# 1\n")
         committer.commit("feat: commit 1")
-        
+
         # 记录这个提交的 hash
         first_commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=temp_git_repo, capture_output=True, text=True
         ).stdout.strip()
-        
+
         (temp_git_repo / "commit2.py").write_text("# 2\n")
         committer.commit("feat: commit 2")
-        
+
         (temp_git_repo / "commit3.py").write_text("# 3\n")
         committer.commit("feat: commit 3")
-        
+
         # 回退到第一个提交
         result = committer.rollback(mode="soft", commit=first_commit)
-        
+
         assert result.success is True
         assert result.commit_hash == first_commit
 
@@ -515,7 +514,7 @@ class TestMatchExcludePattern:
             exclude_files=[".env"],
         )
         agent = CommitterAgent(config)
-        
+
         assert agent._match_exclude_pattern(".env") is True
         assert agent._match_exclude_pattern("src/.env") is True
         assert agent._match_exclude_pattern(".env.local") is False
@@ -527,7 +526,7 @@ class TestMatchExcludePattern:
             exclude_files=["*.key", "*.pem"],
         )
         agent = CommitterAgent(config)
-        
+
         assert agent._match_exclude_pattern("server.key") is True
         assert agent._match_exclude_pattern("ssl/cert.pem") is True
         assert agent._match_exclude_pattern("keyfile.txt") is False
@@ -539,7 +538,7 @@ class TestMatchExcludePattern:
             exclude_files=["*.secret"],
         )
         agent = CommitterAgent(config)
-        
+
         assert agent._match_exclude_pattern("config/db.secret") is True
         assert agent._match_exclude_pattern("deep/nested/path/api.secret") is True
 
@@ -550,7 +549,7 @@ class TestCommitResult:
     def test_default_values(self):
         """测试默认值"""
         result = CommitResult(success=True)
-        
+
         assert result.success is True
         assert result.commit_hash == ""
         assert result.message == ""
@@ -567,7 +566,7 @@ class TestCommitResult:
             files_changed=["file1.py", "file2.py"],
             pushed=True,
         )
-        
+
         assert result.success is True
         assert result.commit_hash == "abc123"
         assert result.message == "feat: new feature"
@@ -580,7 +579,7 @@ class TestCommitResult:
             success=False,
             error="提交失败: 权限不足",
         )
-        
+
         assert result.success is False
         assert result.error == "提交失败: 权限不足"
 
@@ -594,10 +593,10 @@ class TestAgentReset:
         # 设置状态
         committer.set_context("test_key", "test_value")
         committer.update_status(AgentStatus.RUNNING)
-        
+
         # 重置
         await committer.reset()
-        
+
         assert committer.status == AgentStatus.IDLE
         assert committer.get_context("test_key") is None
 
@@ -612,17 +611,17 @@ class TestCommitIteration:
         """测试正常迭代提交"""
         # 创建新文件
         (temp_git_repo / "iteration.py").write_text("# iteration test\n")
-        
+
         # Mock cursor_client 生成提交信息
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.output = "feat: 添加迭代功能"
-        
+
         with patch.object(
             committer.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ):
             result = await committer.execute("提交迭代更新")
-        
+
         assert result["success"] is True
         assert result["commit_hash"] != ""
         assert "iteration.py" in result["files_changed"]
@@ -635,19 +634,19 @@ class TestCommitIteration:
         """测试带自动推送的迭代提交"""
         # 创建新文件
         (temp_git_repo / "push_test.py").write_text("# push test\n")
-        
+
         # Mock cursor_client 生成提交信息
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.output = "feat: 添加推送测试"
-        
+
         # Mock push 方法（因为没有远程仓库）
         mock_push_result = CommitResult(
             success=True,
             commit_hash="abc123",
             pushed=True,
         )
-        
+
         with patch.object(
             committer.cursor_client, "execute", new=AsyncMock(return_value=mock_result)
         ), patch.object(
@@ -657,7 +656,7 @@ class TestCommitIteration:
                 "提交并推送",
                 context={"auto_push": True}
             )
-        
+
         assert result["success"] is True
         assert result["pushed"] is True
 
@@ -668,7 +667,7 @@ class TestCommitIteration:
         """测试无变更时的处理"""
         # 不创建任何新文件，仓库是干净的
         result = await committer.execute("尝试提交空变更")
-        
+
         assert result["success"] is False
         assert "没有需要提交的变更" in result["error"]
 
@@ -681,7 +680,7 @@ class TestGetCommitSummary:
     ):
         """测试无提交时的摘要"""
         summary = committer.get_commit_summary()
-        
+
         assert summary["total_commits"] == 0
         assert summary["successful_commits"] == 0
         assert summary["failed_commits"] == 0
@@ -696,15 +695,15 @@ class TestGetCommitSummary:
         # 执行多次提交
         (temp_git_repo / "file1.py").write_text("# file 1\n")
         committer.commit("feat: 添加 file1")
-        
+
         (temp_git_repo / "file2.py").write_text("# file 2\n")
         committer.commit("feat: 添加 file2")
-        
+
         (temp_git_repo / "file3.py").write_text("# file 3\n")
         committer.commit("feat: 添加 file3")
-        
+
         summary = committer.get_commit_summary()
-        
+
         assert summary["total_commits"] == 3
         assert summary["successful_commits"] == 3
         assert summary["failed_commits"] == 0
@@ -723,17 +722,17 @@ class TestGetCommitSummary:
         # 成功提交
         (temp_git_repo / "success.py").write_text("# success\n")
         committer.commit("feat: 成功提交")
-        
+
         # 尝试无变更提交（会失败）
         result = committer.commit("feat: 空提交")
         assert result.success is False
-        
+
         # 再次成功提交
         (temp_git_repo / "success2.py").write_text("# success 2\n")
         committer.commit("feat: 再次成功")
-        
+
         summary = committer.get_commit_summary()
-        
+
         assert summary["total_commits"] == 3
         assert summary["successful_commits"] == 2
         assert summary["failed_commits"] == 1

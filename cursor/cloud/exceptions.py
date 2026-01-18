@@ -9,9 +9,10 @@
 - handle_http_error: HTTP 错误处理工具
 """
 import asyncio
-from typing import Any, Optional
 from datetime import datetime
 from enum import Enum
+from typing import Any, Optional
+
 from loguru import logger
 
 # 检查 aiohttp 可用性
@@ -26,16 +27,16 @@ except ImportError:
 
 class CloudAgentError(Exception):
     """Cloud Agent 错误基类
-    
+
     所有 Cloud Agent 相关错误的基类，提供统一的错误处理接口。
-    
+
     Attributes:
         message: 错误消息
         details: 额外的错误详情
         timestamp: 错误发生时间
         retry_after: 建议重试等待时间（秒）
     """
-    
+
     def __init__(
         self,
         message: str,
@@ -47,15 +48,15 @@ class CloudAgentError(Exception):
         self.details = details or {}
         self.timestamp = datetime.now()
         self.retry_after = retry_after
-    
+
     def __str__(self) -> str:
         return f"[{self.__class__.__name__}] {self.message}"
-    
+
     @property
     def user_friendly_message(self) -> str:
         """返回用户友好的错误消息"""
         return self.message
-    
+
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
@@ -69,16 +70,16 @@ class CloudAgentError(Exception):
 
 class RateLimitError(CloudAgentError):
     """限流错误（HTTP 429）
-    
+
     当请求频率超过限制时抛出，包含 Retry-After 信息。
-    
+
     Attributes:
         retry_after: 需要等待的秒数（从 Retry-After 头解析）
         limit: 请求限制
         remaining: 剩余请求数
         reset_time: 限制重置时间
     """
-    
+
     def __init__(
         self,
         message: str = "请求过于频繁，已被限流",
@@ -92,12 +93,12 @@ class RateLimitError(CloudAgentError):
         self.limit = limit
         self.remaining = remaining
         self.reset_time = reset_time
-        
+
         logger.warning(
             f"限流错误: {message}, retry_after={retry_after}s, "
             f"limit={limit}, remaining={remaining}"
         )
-    
+
     @property
     def user_friendly_message(self) -> str:
         """返回用户友好的错误消息"""
@@ -107,7 +108,7 @@ class RateLimitError(CloudAgentError):
                 f"请在 {self.retry_after:.1f} 秒后重试。"
             )
         return "请求过于频繁，已被限流。请稍后重试。"
-    
+
     @classmethod
     def from_response_headers(
         cls,
@@ -116,12 +117,12 @@ class RateLimitError(CloudAgentError):
         body: Optional[str] = None,
     ) -> "RateLimitError":
         """从 HTTP 响应头解析限流错误
-        
+
         Args:
             status_code: HTTP 状态码
             headers: 响应头
             body: 响应体
-            
+
         Returns:
             RateLimitError 实例
         """
@@ -142,12 +143,12 @@ class RateLimitError(CloudAgentError):
                         retry_after = 60.0  # 默认 60 秒
                 except Exception:
                     retry_after = 60.0  # 解析失败，默认 60 秒
-        
+
         # 解析其他限流相关头
         limit = None
         remaining = None
         reset_time = None
-        
+
         # X-RateLimit-Limit
         limit_raw = headers.get("X-RateLimit-Limit") or headers.get("x-ratelimit-limit")
         if limit_raw:
@@ -155,7 +156,7 @@ class RateLimitError(CloudAgentError):
                 limit = int(limit_raw)
             except ValueError:
                 pass
-        
+
         # X-RateLimit-Remaining
         remaining_raw = headers.get("X-RateLimit-Remaining") or headers.get("x-ratelimit-remaining")
         if remaining_raw:
@@ -163,7 +164,7 @@ class RateLimitError(CloudAgentError):
                 remaining = int(remaining_raw)
             except ValueError:
                 pass
-        
+
         # X-RateLimit-Reset
         reset_raw = headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset")
         if reset_raw:
@@ -172,7 +173,7 @@ class RateLimitError(CloudAgentError):
                 reset_time = datetime.fromtimestamp(reset_timestamp)
             except ValueError:
                 pass
-        
+
         # 构建详细信息
         details = {
             "status_code": status_code,
@@ -180,9 +181,9 @@ class RateLimitError(CloudAgentError):
         }
         if body:
             details["body"] = body[:500]  # 截断响应体
-        
+
         message = body if body else "请求过于频繁，已被限流"
-        
+
         return cls(
             message=message,
             retry_after=retry_after,
@@ -195,14 +196,14 @@ class RateLimitError(CloudAgentError):
 
 class NetworkError(CloudAgentError):
     """网络错误
-    
+
     包括连接超时、DNS 解析失败、SSL 错误等网络层面的问题。
-    
+
     Attributes:
         error_type: 网络错误类型（timeout, dns, ssl, connection, etc.）
         original_error: 原始异常
     """
-    
+
     def __init__(
         self,
         message: str,
@@ -214,13 +215,13 @@ class NetworkError(CloudAgentError):
         super().__init__(message, details, retry_after)
         self.error_type = error_type
         self.original_error = original_error
-        
+
         # 记录网络错误日志
         logger.error(
             f"网络错误 [{error_type}]: {message}",
             exc_info=original_error,
         )
-    
+
     @property
     def user_friendly_message(self) -> str:
         """返回用户友好的错误消息"""
@@ -233,7 +234,7 @@ class NetworkError(CloudAgentError):
             "connection_reset": "连接被重置。请稍后重试。",
         }
         return messages.get(self.error_type, f"网络连接失败: {self.message}")
-    
+
     @classmethod
     def from_exception(
         cls,
@@ -241,13 +242,13 @@ class NetworkError(CloudAgentError):
         context: str = "",
     ) -> "NetworkError":
         """从异常创建 NetworkError
-        
+
         自动检测异常类型并设置对应的 error_type。
-        
+
         Args:
             error: 原始异常
             context: 上下文描述
-            
+
         Returns:
             NetworkError 实例
         """
@@ -255,7 +256,7 @@ class NetworkError(CloudAgentError):
         error_type = "unknown"
         message = str(error)
         retry_after = None
-        
+
         # 检测异常类型
         if isinstance(error, asyncio.TimeoutError):
             error_type = "timeout"
@@ -277,7 +278,7 @@ class NetworkError(CloudAgentError):
         elif "connection" in error_str:
             error_type = "connection"
             retry_after = 5.0
-        
+
         # aiohttp 特定异常
         if AIOHTTP_AVAILABLE:
             if isinstance(error, aiohttp.ClientConnectorError):
@@ -288,7 +289,7 @@ class NetworkError(CloudAgentError):
                 retry_after = 5.0
             elif isinstance(error, aiohttp.ClientError):
                 error_type = "client_error"
-        
+
         return cls(
             message=f"{context}: {message}" if context else message,
             error_type=error_type,
@@ -300,15 +301,15 @@ class NetworkError(CloudAgentError):
 
 class TaskError(CloudAgentError):
     """任务执行错误
-    
+
     任务执行过程中的错误，包括任务失败、取消、超时等。
-    
+
     Attributes:
         task_id: 任务 ID
         task_status: 任务状态
         exit_code: 进程退出码（如果适用）
     """
-    
+
     def __init__(
         self,
         message: str,
@@ -321,17 +322,17 @@ class TaskError(CloudAgentError):
         self.task_id = task_id
         self.task_status = task_status
         self.exit_code = exit_code
-        
+
         logger.error(
             f"任务错误 [task_id={task_id}, status={task_status}]: {message}"
         )
-    
+
     @property
     def user_friendly_message(self) -> str:
         """返回用户友好的错误消息"""
         # 延迟导入避免循环依赖
         from .task import TaskStatus
-        
+
         if self.task_status == TaskStatus.TIMEOUT:
             return f"任务执行超时: {self.message}"
         elif self.task_status == TaskStatus.CANCELLED:
@@ -356,13 +357,13 @@ class AuthErrorCode(Enum):
 
 class AuthError(CloudAgentError):
     """认证错误异常
-    
+
     继承自 CloudAgentError，提供认证相关的错误处理。
-    
+
     Attributes:
         code: 认证错误代码
     """
-    
+
     def __init__(
         self,
         message: str,
@@ -371,16 +372,16 @@ class AuthError(CloudAgentError):
     ):
         super().__init__(message, details)
         self.code = code
-        
+
         # 记录认证错误日志
         if code in (AuthErrorCode.INVALID_API_KEY, AuthErrorCode.EXPIRED_TOKEN):
             logger.warning(f"认证错误 [{code.value}]: {message}")
         else:
             logger.error(f"认证错误 [{code.value}]: {message}")
-    
+
     def __str__(self) -> str:
         return f"[{self.code.value}] {self.message}"
-    
+
     @property
     def user_friendly_message(self) -> str:
         """返回用户友好的错误消息"""
@@ -417,7 +418,7 @@ class AuthError(CloudAgentError):
             ),
         }
         return messages.get(self.code, str(self))
-    
+
     @classmethod
     def from_http_status(
         cls,
@@ -425,11 +426,11 @@ class AuthError(CloudAgentError):
         body: Optional[str] = None,
     ) -> "AuthError":
         """从 HTTP 状态码创建认证错误
-        
+
         Args:
             status_code: HTTP 状态码
             body: 响应体
-            
+
         Returns:
             AuthError 实例
         """
@@ -462,35 +463,35 @@ def handle_http_error(
     context: str = "",
 ) -> CloudAgentError:
     """处理 HTTP 错误响应，返回对应的异常
-    
+
     根据 HTTP 状态码创建适当的异常类型：
     - 401/403: AuthError
     - 429: RateLimitError
     - 5xx: NetworkError (服务器错误)
     - 其他: CloudAgentError
-    
+
     Args:
         status_code: HTTP 状态码
         headers: 响应头
         body: 响应体
         context: 上下文描述
-        
+
     Returns:
         对应的异常实例
     """
     headers = headers or {}
-    
+
     # 401/403 认证错误
     if status_code in (401, 403):
         error = AuthError.from_http_status(status_code, body)
         logger.warning(f"认证错误 [{context}]: {error.user_friendly_message}")
         return error
-    
+
     # 429 限流错误
     if status_code == 429:
         error = RateLimitError.from_response_headers(status_code, headers, body)
         return error
-    
+
     # 5xx 服务器错误
     if 500 <= status_code < 600:
         error = NetworkError(
@@ -500,7 +501,7 @@ def handle_http_error(
             retry_after=5.0,  # 服务器错误建议 5 秒后重试
         )
         return error
-    
+
     # 其他错误
     return CloudAgentError(
         message=body or f"请求失败 (HTTP {status_code})",
