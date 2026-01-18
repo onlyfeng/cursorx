@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""规划者-执行者 多Agent系统 主入口"""
+"""规划者-执行者 多Agent系统 主入口（多进程版本）"""
 import asyncio
 import argparse
 import sys
@@ -10,8 +10,34 @@ from loguru import logger
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from coordinator import Orchestrator, OrchestratorConfig
-from cursor.client import CursorAgentConfig
+from coordinator.orchestrator_mp import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+
+
+def parse_max_iterations(value: str) -> int:
+    """解析最大迭代次数参数
+    
+    Args:
+        value: 参数值，可以是数字、MAX、-1 或 0
+        
+    Returns:
+        迭代次数，-1 表示无限迭代
+    """
+    value_upper = value.upper().strip()
+    
+    # MAX 或 -1 或 0 表示无限迭代
+    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
+        return -1
+    
+    try:
+        num = int(value)
+        # -1 或 0 也表示无限迭代
+        if num <= 0:
+            return -1
+        return num
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
+        )
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -23,8 +49,11 @@ def setup_logging(verbose: bool = False) -> None:
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
         level=level,
     )
+    
+    # 文件日志
+    Path("logs").mkdir(exist_ok=True)
     logger.add(
-        "logs/agent_{time}.log",
+        "logs/agent_mp_{time}.log",
         rotation="10 MB",
         retention="7 days",
         level="DEBUG",
@@ -34,13 +63,16 @@ def setup_logging(verbose: bool = False) -> None:
 def parse_args() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description="规划者-执行者 多Agent系统",
+        description="规划者-执行者 多Agent系统（多进程版本）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python main.py "实现一个 REST API 服务"
-  python main.py "重构 src 目录下的代码" --workers 5
-  python main.py "添加单元测试" --strict --max-iterations 5
+  python main_mp.py "实现一个 REST API 服务"
+  python main_mp.py "重构 src 目录下的代码" --workers 5
+  python main_mp.py "添加单元测试" --strict --max-iterations 5
+
+模型配置示例:
+  python main_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
         """,
     )
     
@@ -61,14 +93,14 @@ def parse_args() -> argparse.Namespace:
         "-w", "--workers",
         type=int,
         default=3,
-        help="Worker 池大小 (默认: 3)",
+        help="Worker 进程数量 (默认: 3)",
     )
     
     parser.add_argument(
         "-m", "--max-iterations",
-        type=int,
-        default=10,
-        help="最大迭代次数 (默认: 10)",
+        type=str,
+        default="10",
+        help="最大迭代次数 (默认: 10，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
     )
     
     parser.add_argument(
@@ -90,9 +122,32 @@ def parse_args() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="使用模拟模式（测试用）",
+        "--planning-timeout",
+        type=float,
+        default=120.0,
+        help="规划超时时间（秒）",
+    )
+    
+    parser.add_argument(
+        "--execution-timeout",
+        type=float,
+        default=300.0,
+        help="任务执行超时时间（秒）",
+    )
+    
+    # 模型配置
+    parser.add_argument(
+        "--planner-model",
+        type=str,
+        default="gpt-5.2-high",
+        help="规划者使用的模型 (默认: gpt-5.2-high)",
+    )
+    
+    parser.add_argument(
+        "--worker-model",
+        type=str,
+        default="opus-4.5-thinking",
+        help="执行者使用的模型 (默认: opus-4.5-thinking)",
     )
 
     stream_group = parser.add_mutually_exclusive_group()
@@ -188,35 +243,35 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     config_data = load_yaml_config(Path(__file__).with_name("config.yaml"))
     stream_config = resolve_stream_log_config(args, config_data)
 
-    # 创建配置
-    cursor_config = CursorAgentConfig(
+    # 解析最大迭代次数
+    max_iterations = parse_max_iterations(args.max_iterations)
+    if max_iterations == -1:
+        logger.info("无限迭代模式已启用（按 Ctrl+C 中断）")
+
+    config = MultiProcessOrchestratorConfig(
         working_directory=args.directory,
-        stream_events_enabled=stream_config["enabled"],
-        stream_log_console=stream_config["console"],
-        stream_log_detail_dir=stream_config["detail_dir"],
-        stream_log_raw_dir=stream_config["raw_dir"],
-    )
-    
-    config = OrchestratorConfig(
-        working_directory=args.directory,
-        max_iterations=args.max_iterations,
-        worker_pool_size=args.workers,
+        max_iterations=max_iterations,
+        worker_count=args.workers,
         enable_sub_planners=not args.no_sub_planners,
         strict_review=args.strict,
-        cursor_config=cursor_config,
+        planning_timeout=args.planning_timeout,
+        execution_timeout=args.execution_timeout,
+        # 模型配置
+        planner_model=args.planner_model,
+        worker_model=args.worker_model,
+        reviewer_model=args.worker_model,  # 评审者与执行者使用相同模型
         stream_events_enabled=stream_config["enabled"],
         stream_log_console=stream_config["console"],
         stream_log_detail_dir=stream_config["detail_dir"],
         stream_log_raw_dir=stream_config["raw_dir"],
     )
     
-    # 如果是模拟模式，替换 Cursor 客户端
-    if args.mock:
-        logger.info("使用模拟模式")
-        # 这里可以注入 Mock 客户端
+    logger.info("模型配置:")
+    logger.info(f"  - 规划者: {config.planner_model}")
+    logger.info(f"  - 执行者: {config.worker_model}")
+    logger.info(f"  - 评审者: {config.reviewer_model}")
     
-    # 创建并运行编排器
-    orchestrator = Orchestrator(config)
+    orchestrator = MultiProcessOrchestrator(config)
     result = await orchestrator.run(args.goal)
     
     return result
@@ -225,20 +280,27 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
 def print_result(result: dict) -> None:
     """打印执行结果"""
     print("\n" + "=" * 60)
-    print("执行结果")
+    print("执行结果（多进程模式）")
     print("=" * 60)
     
     print(f"\n状态: {'成功' if result.get('success') else '未完成'}")
     print(f"目标: {result.get('goal', 'N/A')}")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
+    
     print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
     
-    if result.get('final_score'):
-        print(f"\n最终评分: {result['final_score']:.1f}")
+    # 进程信息
+    process_info = result.get('process_info', {})
+    if process_info:
+        print("\n进程信息:")
+        for agent_id, info in process_info.items():
+            status = "存活" if info.get('alive') else "已停止"
+            print(f"  - {info.get('type', 'unknown')}: PID {info.get('pid', 'N/A')} ({status})")
     
+    # 迭代详情
     if result.get('iterations'):
         print("\n迭代详情:")
         for it in result['iterations']:
@@ -253,14 +315,14 @@ def main() -> None:
     args = parse_args()
     setup_logging(args.verbose)
     
-    logger.info("规划者-执行者 多Agent系统 启动")
+    logger.info("规划者-执行者 多Agent系统（多进程版本）启动")
     logger.info(f"目标: {args.goal}")
+    logger.info(f"Worker 进程数: {args.workers}")
     
     try:
         result = asyncio.run(run_orchestrator(args))
         print_result(result)
         
-        # 根据结果设置退出码
         sys.exit(0 if result.get("success") else 1)
         
     except KeyboardInterrupt:

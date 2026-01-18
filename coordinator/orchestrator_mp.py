@@ -77,6 +77,19 @@ class MultiProcessOrchestrator:
         # 待处理的消息响应
         self._pending_responses: dict[str, asyncio.Future] = {}
     
+    def _should_continue_iteration(self) -> bool:
+        """判断是否应该继续迭代
+        
+        Returns:
+            True 表示继续迭代，False 表示停止
+        """
+        # 无限迭代模式（max_iterations == -1）
+        if self.config.max_iterations == -1:
+            return True
+        
+        # 正常模式：检查是否达到最大迭代次数
+        return self.state.current_iteration < self.state.max_iterations
+    
     def _spawn_agents(self) -> None:
         """创建并启动所有 Agent 进程"""
         # 创建 Planner - 使用 GPT 5.2-high
@@ -157,6 +170,10 @@ class MultiProcessOrchestrator:
         logger.info("多进程编排器启动")
         logger.info(f"目标: {goal}")
         logger.info(f"Worker 数量: {self.config.worker_count}")
+        if self.config.max_iterations == -1:
+            logger.info("最大迭代: 无限制（直到完成或用户中断）")
+        else:
+            logger.info(f"最大迭代: {self.config.max_iterations}")
         logger.info("=" * 60)
         
         try:
@@ -170,9 +187,9 @@ class MultiProcessOrchestrator:
             # 3. 启动消息处理循环
             message_task = asyncio.create_task(self._message_loop())
             
-            # 4. 执行主循环
+            # 4. 执行主循环（max_iterations == -1 表示无限迭代）
             try:
-                while self.state.current_iteration < self.state.max_iterations:
+                while self._should_continue_iteration():
                     # 开始新迭代
                     iteration = self.state.start_new_iteration()
                     logger.info(f"\n{'='*50}")

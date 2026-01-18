@@ -72,38 +72,84 @@ export CURSOR_API_KEY=your_api_key_here
 
 ### 运行系统
 
+使用统一入口脚本 `run.py`，支持自然语言任务描述：
+
 ```bash
-# 基本用法（协程模式）
-python main.py "实现一个 REST API 服务"
+# 自动模式（Agent 分析任务选择最佳运行模式）
+python run.py "实现一个 REST API 服务"
+python run.py "启动自我迭代，跳过在线更新，优化代码"
+python run.py "使用多进程并行重构 src 目录下的代码"
 
-# 指定工作目录
-python main.py "重构代码" -d /path/to/project
+# 显式指定模式
+python run.py --mode basic "实现功能"
+python run.py --mode mp "重构代码" --workers 5
+python run.py --mode knowledge "查询 CLI 参数用法"
+python run.py --mode iterate --skip-online "更新支持"
 
-# 多进程模式
-python main_mp.py "添加单元测试" --workers 5
-
-# 严格评审模式
-python main.py "优化性能" --strict --max-iterations 5
+# 无限迭代直到完成
+python run.py "持续优化" --max-iterations MAX
 ```
+
+### 运行模式
+
+| 模式 | 说明 | 别名 |
+|------|------|------|
+| `basic` | 基本协程模式（规划-执行-审核） | `default`, `simple` |
+| `mp` | 多进程模式（并行执行） | `multiprocess`, `parallel` |
+| `knowledge` | 知识库增强模式（自动搜索相关文档） | `kb`, `docs` |
+| `iterate` | 自我迭代模式（检查更新、更新知识库） | `self-iterate`, `self`, `update` |
+| `auto` | 自动分析模式（Agent 分析任务选择模式） | `smart` |
 
 ### 命令行参数
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `goal` | 要完成的目标 | (必填) |
+| `task` | 任务描述（支持自然语言） | (必填) |
+| `--mode, -M` | 运行模式 | `auto` |
 | `-d, --directory` | 工作目录 | `.` |
 | `-w, --workers` | Worker 数量 | 3 |
-| `-m, --max-iterations` | 最大迭代次数 | 10 |
+| `-m, --max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 10 |
 | `--strict` | 严格评审模式 | False |
-| `--no-sub-planners` | 禁用子规划者 | False |
 | `-v, --verbose` | 详细输出 | False |
+| `--skip-online` | [iterate] 跳过在线文档检查 | False |
+| `--dry-run` | [iterate] 仅分析不执行 | False |
+| `--use-knowledge` | [knowledge] 使用知识库上下文 | False |
+| `--stream-log` | 启用流式日志 | False |
+
+### 无限迭代模式
+
+使用 `MAX`、`-1` 或 `0` 作为 `--max-iterations` 参数值，系统将持续迭代直到：
+- 审核通过（目标完成）
+- 用户按 `Ctrl+C` 中断
+
+```bash
+# 无限迭代直到完成
+python run.py "实现完整功能" --max-iterations MAX
+
+# 等价写法
+python run.py "实现完整功能" -m -1
+```
+
+### 自然语言任务描述
+
+统一入口支持自然语言描述任务，Agent 会自动分析并选择最佳模式：
+
+```bash
+# 自动识别为 iterate 模式
+python run.py "启动自我迭代，跳过在线更新"
+
+# 自动识别为 mp 模式
+python run.py "使用 5 个 worker 并行重构代码"
+
+# 自动识别为 knowledge 模式
+python run.py "搜索知识库查找 CLI 参数用法"
+```
 
 ## 项目结构
 
 ```
 cursorx/
-├── main.py                 # 主入口（协程模式）
-├── main_mp.py              # 多进程模式入口
+├── run.py                  # 统一入口脚本（支持自然语言任务）
 ├── config.yaml             # 系统配置
 ├── requirements.txt        # Python 依赖
 ├── AGENTS.md               # Agent 规则文档
@@ -145,7 +191,11 @@ cursorx/
 │   ├── cli.json            # 权限配置
 │   └── hooks.json          # 钩子配置
 │
-├── scripts/                # 自动化脚本
+├── scripts/                # 运行脚本
+│   ├── run_basic.py        # 基本模式入口
+│   ├── run_mp.py           # 多进程模式入口
+│   ├── run_knowledge.py    # 知识库增强模式入口
+│   ├── run_iterate.py      # 自我迭代模式入口
 │   ├── code_review.sh      # 代码审查
 │   ├── stream_progress.sh  # 流式进度
 │   ├── manage_index.sh     # 索引管理
@@ -219,6 +269,47 @@ python scripts/knowledge_cli.py search "关键词"
 # 列出所有文档
 python scripts/knowledge_cli.py list
 ```
+
+## 自我迭代
+
+通过统一入口或直接脚本，支持自动检查在线文档更新、更新知识库并自我迭代：
+
+```bash
+# 通过统一入口（推荐）
+python run.py --mode iterate "增加对新斜杠命令的支持"
+python run.py --mode iterate --skip-online "优化 CLI 参数处理"
+python run.py "启动自我迭代，跳过在线更新"  # 自动识别模式
+
+# 直接使用脚本
+python scripts/run_iterate.py "增加对新斜杠命令的支持"
+python scripts/run_iterate.py --skip-online "优化 CLI 参数处理"
+python scripts/run_iterate.py --dry-run "分析改进点"
+```
+
+### 自我迭代参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `requirement` | 额外需求（可选） | (空) |
+| `--skip-online` | 跳过在线文档检查 | False |
+| `--changelog-url` | Changelog URL | cursor.com/cn/changelog |
+| `--dry-run` | 仅分析不执行 | False |
+| `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 5 |
+| `--workers` | Worker 池大小 | 3 |
+| `--force-update` | 强制更新知识库 | False |
+| `-v, --verbose` | 详细输出 | False |
+
+### 工作流程
+
+```
+用户输入需求 → 分析在线文档更新 → 更新知识库 → 总结迭代内容 → 启动 Agent 执行
+```
+
+1. **分析 Changelog**: 从 Cursor 官方 Changelog 获取最新更新
+2. **更新知识库**: 将新文档保存到本地知识库
+3. **加载上下文**: 从知识库搜索相关文档作为上下文
+4. **构建目标**: 整合用户需求和更新内容，生成迭代目标
+5. **执行迭代**: 调用 Agent 系统执行代码更新
 
 ## Cursor CLI 集成
 

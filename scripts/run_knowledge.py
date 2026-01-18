@@ -30,6 +30,33 @@ CURSOR_KEYWORDS = [
 ]
 
 
+def parse_max_iterations(value: str) -> int:
+    """解析最大迭代次数参数
+    
+    Args:
+        value: 参数值，可以是数字、MAX、-1 或 0
+        
+    Returns:
+        迭代次数，-1 表示无限迭代
+    """
+    value_upper = value.upper().strip()
+    
+    # MAX 或 -1 或 0 表示无限迭代
+    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
+        return -1
+    
+    try:
+        num = int(value)
+        # -1 或 0 也表示无限迭代
+        if num <= 0:
+            return -1
+        return num
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
+        )
+
+
 def setup_logging(verbose: bool = False) -> None:
     """配置日志"""
     logger.remove()
@@ -87,9 +114,9 @@ def parse_args() -> argparse.Namespace:
     
     parser.add_argument(
         "-m", "--max-iterations",
-        type=int,
-        default=10,
-        help="最大迭代次数 (默认: 10)",
+        type=str,
+        default="10",
+        help="最大迭代次数 (默认: 10，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
     )
     
     parser.add_argument(
@@ -334,6 +361,11 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
                 limit=10,
             )
     
+    # 解析最大迭代次数
+    max_iterations = parse_max_iterations(args.max_iterations)
+    if max_iterations == -1:
+        logger.info("无限迭代模式已启用（按 Ctrl+C 中断）")
+
     # 创建配置
     cursor_config = CursorAgentConfig(
         working_directory=args.directory,
@@ -341,7 +373,7 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     
     config = OrchestratorConfig(
         working_directory=args.directory,
-        max_iterations=args.max_iterations,
+        max_iterations=max_iterations,
         worker_pool_size=args.workers,
         strict_review=args.strict,
         cursor_config=cursor_config,

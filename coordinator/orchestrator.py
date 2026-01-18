@@ -116,6 +116,19 @@ class Orchestrator:
         self.worker_pool.set_knowledge_manager(manager)
         logger.info("Orchestrator 已绑定知识库管理器")
     
+    def _should_continue_iteration(self) -> bool:
+        """判断是否应该继续迭代
+        
+        Returns:
+            True 表示继续迭代，False 表示停止
+        """
+        # 无限迭代模式（max_iterations == -1）
+        if self.config.max_iterations == -1:
+            return True
+        
+        # 正常模式：检查是否达到最大迭代次数
+        return self.state.current_iteration < self.state.max_iterations
+    
     async def run(self, goal: str) -> dict[str, Any]:
         """运行编排器完成目标
         
@@ -131,10 +144,14 @@ class Orchestrator:
         logger.info("=== 开始执行目标 ===")
         logger.info(f"目标: {goal}")
         logger.info(f"工作目录: {self.config.working_directory}")
-        logger.info(f"最大迭代: {self.config.max_iterations}")
+        if self.config.max_iterations == -1:
+            logger.info("最大迭代: 无限制（直到完成或用户中断）")
+        else:
+            logger.info(f"最大迭代: {self.config.max_iterations}")
         
         try:
-            while self.state.current_iteration < self.state.max_iterations:
+            # max_iterations == -1 表示无限迭代
+            while self._should_continue_iteration():
                 # 开始新迭代
                 iteration = self.state.start_new_iteration()
                 logger.info(f"\n{'='*50}")
