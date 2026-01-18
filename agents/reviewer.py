@@ -17,6 +17,8 @@ class ReviewDecision(str, Enum):
     COMPLETE = "complete"        # 目标已完成
     ADJUST = "adjust"            # 需要调整方向
     ABORT = "abort"              # 终止（无法完成）
+    COMMIT = "commit"            # 建议提交当前更改
+    ROLLBACK = "rollback"        # 建议回退更改
 
 
 class ReviewerConfig(BaseModel):
@@ -44,6 +46,7 @@ class ReviewerAgent(BaseAgent):
 2. 判断是否达成用户目标
 3. 决定下一步行动
 4. 提供具体的改进建议
+5. 评估是否应该提交或回退更改
 
 评审维度:
 - 功能完整性: 是否完成了所有要求的功能
@@ -51,17 +54,31 @@ class ReviewerAgent(BaseAgent):
 - 测试覆盖: 是否有适当的测试
 - 文档完善: 是否有必要的注释和文档
 
+决策类型:
+- continue: 继续下一轮迭代
+- complete: 目标已完成
+- adjust: 需要调整方向
+- abort: 终止（无法完成）
+- commit: 建议提交当前更改（代码质量良好，可以提交）
+- rollback: 建议回退更改（代码存在严重问题，需要回退）
+
 请以 JSON 格式输出评审结果:
 ```json
 {
-  "decision": "continue|complete|adjust|abort",
+  "decision": "continue|complete|adjust|abort|commit|rollback",
   "score": 0-100,
   "summary": "评审总结",
   "completed_items": ["已完成项1", "已完成项2"],
   "pending_items": ["待完成项1", "待完成项2"],
   "issues": ["问题1", "问题2"],
   "suggestions": ["建议1", "建议2"],
-  "next_iteration_focus": "下一轮迭代的重点（如果 decision 是 continue）"
+  "next_iteration_focus": "下一轮迭代的重点（如果 decision 是 continue）",
+  "commit_suggestion": {
+    "should_commit": true|false,
+    "commit_message": "建议的提交信息",
+    "files_to_commit": ["file1.py", "file2.py"],
+    "reason": "提交或不提交的原因"
+  }
 }
 ```"""
     

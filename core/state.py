@@ -12,6 +12,7 @@ class IterationStatus(str, Enum):
     PLANNING = "planning"      # 规划中
     EXECUTING = "executing"    # 执行中
     REVIEWING = "reviewing"    # 评审中
+    COMMITTING = "committing"  # 提交中
     COMPLETED = "completed"    # 已完成
     FAILED = "failed"          # 失败
 
@@ -45,6 +46,12 @@ class IterationState(BaseModel):
     # 评审结果
     review_passed: bool = False
     review_feedback: Optional[str] = None
+    
+    # 提交信息（由 Orchestrator 在提交阶段填充）
+    commit_hash: Optional[str] = None
+    commit_message: Optional[str] = None
+    pushed: bool = False
+    commit_files: list[str] = Field(default_factory=list)
 
 
 class SystemState(BaseModel):

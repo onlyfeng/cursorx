@@ -269,6 +269,26 @@ def parse_args() -> argparse.Namespace:
         help="详细输出",
     )
     
+    # 自动提交相关参数
+    parser.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="迭代完成后自动提交代码更改",
+    )
+    
+    parser.add_argument(
+        "--auto-push",
+        action="store_true",
+        help="自动推送到远程仓库（需配合 --auto-commit 使用）",
+    )
+    
+    parser.add_argument(
+        "--commit-message",
+        type=str,
+        default="",
+        help="自定义提交信息前缀（默认使用自动生成的提交信息）",
+    )
+    
     return parser.parse_args()
 
 
@@ -797,6 +817,11 @@ class SelfIterator:
         print(f"用户需求: {self.args.requirement or '(无)'}")
         print(f"跳过在线检查: {self.args.skip_online}")
         print(f"仅分析模式: {self.args.dry_run}")
+        if self.args.auto_commit:
+            print(f"自动提交: 启用")
+            print(f"自动推送: {'启用' if self.args.auto_push else '禁用'}")
+            if self.args.commit_message:
+                print(f"提交信息前缀: {self.args.commit_message}")
         
         try:
             # 步骤 1: 分析在线更新
@@ -921,6 +946,10 @@ class SelfIterator:
             max_iterations=max_iterations,
             worker_pool_size=self.args.workers,
             cursor_config=cursor_config,
+            # 自动提交配置
+            enable_auto_commit=self.args.auto_commit,
+            auto_push=self.args.auto_push,
+            commit_on_complete=True,  # 仅在完成时提交
         )
         
         # 创建知识库管理器
@@ -944,6 +973,42 @@ class SelfIterator:
         
         if result.get('final_score'):
             print(f"最终评分: {result['final_score']:.1f}")
+        
+        # 显示提交信息
+        commits_info = result.get('commits', {})
+        if commits_info:
+            print_section("提交信息")
+            total_commits = commits_info.get('total_commits', 0)
+            if total_commits > 0:
+                print_success(f"提交数量: {total_commits}")
+                
+                # 显示提交哈希
+                commit_hashes = commits_info.get('commit_hashes', [])
+                if commit_hashes:
+                    for i, hash_val in enumerate(commit_hashes[-3:], 1):  # 显示最近3个
+                        print(f"  提交 {i}: {hash_val[:8] if len(hash_val) > 8 else hash_val}")
+                
+                # 显示提交信息摘要
+                commit_messages = commits_info.get('commit_messages', [])
+                if commit_messages:
+                    print(f"提交信息摘要:")
+                    for msg in commit_messages[-3:]:  # 显示最近3条
+                        # 截取第一行作为摘要
+                        summary = msg.split('\n')[0][:60]
+                        print(f"  - {summary}")
+                
+                # 显示推送状态
+                pushed_commits = commits_info.get('pushed_commits', 0)
+                if self.args.auto_push:
+                    if pushed_commits > 0:
+                        print_success(f"推送状态: 已推送 {pushed_commits} 个提交到远程仓库")
+                    else:
+                        # 开启了 auto_push 但推送失败，显示警告
+                        print_warning("推送状态: 推送失败，请手动执行 git push")
+                elif result.get('pushed'):
+                    print_success(f"推送状态: 已推送到远程仓库")
+            else:
+                print_info("无代码更改，未创建提交")
         
         return result
 

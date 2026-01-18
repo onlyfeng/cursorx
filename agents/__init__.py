@@ -2,6 +2,7 @@
 from .planner import PlannerAgent, PlannerConfig
 from .worker import WorkerAgent, WorkerConfig
 from .reviewer import ReviewerAgent, ReviewerConfig, ReviewDecision
+from .committer import CommitterAgent, CommitterConfig, CommitResult
 
 # 多进程版本
 from .planner_process import PlannerAgentProcess
@@ -17,6 +18,9 @@ __all__ = [
     "ReviewerAgent",
     "ReviewerConfig",
     "ReviewDecision",
+    "CommitterAgent",
+    "CommitterConfig",
+    "CommitResult",
     # 多进程版本
     "PlannerAgentProcess",
     "WorkerAgentProcess",

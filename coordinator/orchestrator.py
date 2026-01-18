@@ -13,6 +13,7 @@ from core.base import AgentRole
 from tasks.queue import TaskQueue
 from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewerAgent, ReviewerConfig, ReviewDecision
+from agents.committer import CommitterAgent, CommitterConfig
 from cursor.client import CursorAgentConfig
 from .worker_pool import WorkerPool
 
@@ -32,6 +33,11 @@ class OrchestratorConfig(BaseModel):
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
+    # 自动提交配置
+    enable_auto_commit: bool = False   # 是否启用自动提交
+    auto_push: bool = False            # 是否自动推送
+    commit_on_complete: bool = True    # 仅在完成时提交
+    commit_per_iteration: bool = False # 每次迭代都提交
 
 
 class Orchestrator:
@@ -92,11 +98,23 @@ class Orchestrator:
         )
         self.worker_pool.initialize()
         
+        # 初始化 CommitterAgent（当 enable_auto_commit=True 时）
+        self.committer: Optional[CommitterAgent] = None
+        if config.enable_auto_commit:
+            committer_cursor_config = config.cursor_config.model_copy(deep=True)
+            self.committer = CommitterAgent(CommitterConfig(
+                working_directory=config.working_directory,
+                auto_push=config.auto_push,
+                cursor_config=committer_cursor_config,
+            ))
+        
         # 注册 Agents
         self.state.register_agent(self.planner.id, AgentRole.PLANNER)
         self.state.register_agent(self.reviewer.id, AgentRole.REVIEWER)
         for worker in self.worker_pool.workers:
             self.state.register_agent(worker.id, AgentRole.WORKER)
+        if self.committer:
+            self.state.register_agent(self.committer.id, AgentRole.COMMITTER)
 
     def _apply_stream_config(self) -> None:
         """将流式日志配置注入 CursorAgentConfig"""
@@ -171,6 +189,10 @@ class Orchestrator:
                 
                 # 3. 评审阶段
                 decision = await self._review_phase(goal, iteration.iteration_id)
+                
+                # 4. 提交阶段（根据配置和评审决策判断是否执行）
+                if self._should_commit(decision):
+                    await self._commit_phase(iteration.iteration_id, decision)
                 
                 # 根据评审决策处理
                 if decision == ReviewDecision.COMPLETE:
@@ -351,6 +373,79 @@ class Orchestrator:
         
         return decision
     
+    def _should_commit(self, decision: ReviewDecision) -> bool:
+        """判断是否应该执行提交
+        
+        Args:
+            decision: 评审决策
+            
+        Returns:
+            True 表示应该提交，False 表示跳过
+        """
+        # 未启用自动提交
+        if not self.config.enable_auto_commit or not self.committer:
+            return False
+        
+        # 每次迭代都提交
+        if self.config.commit_per_iteration:
+            return True
+        
+        # 仅在完成时提交
+        if self.config.commit_on_complete and decision == ReviewDecision.COMPLETE:
+            return True
+        
+        return False
+    
+    async def _commit_phase(self, iteration_id: int, decision: ReviewDecision) -> dict[str, Any]:
+        """提交阶段
+        
+        Args:
+            iteration_id: 迭代 ID
+            decision: 评审决策
+            
+        Returns:
+            提交结果
+        """
+        if not self.committer:
+            return {"success": False, "error": "Committer not initialized"}
+        
+        iteration = self.state.get_current_iteration()
+        iteration.status = IterationStatus.COMMITTING
+        
+        logger.info(f"[迭代 {iteration_id}] 提交阶段开始")
+        
+        # 收集已完成的任务
+        tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
+        completed_tasks = [
+            {"id": t.id, "title": t.title, "result": t.result}
+            for t in tasks if t.status.value == "completed"
+        ]
+        
+        # 执行提交
+        commit_result = await self.committer.commit_iteration(
+            iteration_id=iteration_id,
+            tasks_completed=completed_tasks,
+            review_decision=decision.value,
+            auto_push=self.config.auto_push,
+        )
+        
+        # 记录提交结果到 iteration
+        iteration.commit_hash = commit_result.get('commit_hash', '')
+        iteration.commit_message = commit_result.get('message', '')
+        iteration.pushed = commit_result.get('pushed', False)
+        iteration.commit_files = commit_result.get('files_changed', [])
+        
+        success = commit_result.get("success", False)
+        result_status = "success" if success else "failed"
+        
+        logger.info(f"[迭代 {iteration_id}] 提交完成: {result_status}")
+        if commit_result.get("commit_hash"):
+            logger.info(f"[迭代 {iteration_id}] 提交哈希: {commit_result.get('commit_hash')}")
+        if commit_result.get("pushed"):
+            logger.info(f"[迭代 {iteration_id}] 已推送到远程仓库")
+        
+        return commit_result
+    
     async def _reset_for_next_iteration(self) -> None:
         """为下一轮迭代重置"""
         await self.planner.reset()
@@ -363,6 +458,13 @@ class Orchestrator:
         review_summary = self.reviewer.get_review_summary()
         worker_stats = self.worker_pool.get_statistics()
         
+        # 获取提交信息
+        commit_summary = {}
+        pushed = False
+        if self.committer:
+            commit_summary = self.committer.get_commit_summary()
+            pushed = commit_summary.get("pushed_commits", 0) > 0
+        
         return {
             "success": self.state.is_completed,
             "goal": self.state.goal,
@@ -373,6 +475,8 @@ class Orchestrator:
             "final_score": review_summary.get("average_score", 0),
             "review_summary": review_summary,
             "worker_stats": worker_stats,
+            "commits": commit_summary,
+            "pushed": pushed,
             "iterations": [
                 {
                     "id": it.iteration_id,

@@ -13,6 +13,7 @@ class AgentRole(str, Enum):
     SUB_PLANNER = "sub_planner"  # 子规划者
     WORKER = "worker"            # 执行者
     REVIEWER = "reviewer"        # 评审者
+    COMMITTER = "committer"      # 提交者
 
 
 class AgentStatus(str, Enum):

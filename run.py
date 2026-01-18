@@ -285,6 +285,25 @@ def parse_args() -> argparse.Namespace:
         help="禁用自动分析，直接使用指定模式",
     )
     
+    # 自动提交相关参数
+    parser.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="启用自动提交（每次迭代成功后自动 git commit）",
+    )
+    
+    parser.add_argument(
+        "--auto-push",
+        action="store_true",
+        help="启用自动推送（需配合 --auto-commit，自动 git push）",
+    )
+    
+    parser.add_argument(
+        "--commit-per-iteration",
+        action="store_true",
+        help="每次迭代都提交（默认仅在全部完成时提交）",
+    )
+    
     return parser.parse_args()
 
 
@@ -322,6 +341,8 @@ class TaskAnalyzer:
         "force_update": ["强制更新", "force-update", "强制刷新"],
         "self_update": ["自我更新", "self-update", "更新自身"],
         "use_knowledge": ["使用知识库", "use-knowledge", "启用知识库"],
+        "auto_commit": ["自动提交", "auto-commit", "自动 commit"],
+        "auto_push": ["自动推送", "auto-push", "自动 push"],
     }
     
     # 无限迭代关键词
@@ -557,6 +578,15 @@ class Runner:
         # 流式日志
         options["stream_log"] = self.args.stream_log
         
+        # 自动提交选项
+        auto_commit = analysis_options.get("auto_commit") or getattr(self.args, "auto_commit", False)
+        auto_push = analysis_options.get("auto_push") or getattr(self.args, "auto_push", False)
+        commit_per_iteration = getattr(self.args, "commit_per_iteration", False)
+        
+        options["auto_commit"] = auto_commit
+        options["auto_push"] = auto_push and auto_commit  # auto_push 需要 auto_commit
+        options["commit_per_iteration"] = commit_per_iteration
+        
         return options
     
     def _get_mode_name(self, mode: RunMode) -> str:
@@ -586,6 +616,9 @@ class Runner:
             strict_review=options.get("strict", False),
             cursor_config=cursor_config,
             stream_events_enabled=options.get("stream_log", False),
+            auto_commit=options.get("auto_commit", False),
+            auto_push=options.get("auto_push", False),
+            commit_per_iteration=options.get("commit_per_iteration", False),
         )
         
         if options["max_iterations"] == -1:
@@ -690,6 +723,10 @@ class Runner:
                 self.workers = opts.get("workers", 3)
                 self.force_update = opts.get("force_update", False)
                 self.verbose = opts.get("verbose", False)
+                # 自动提交选项
+                self.auto_commit = opts.get("auto_commit", False)
+                self.auto_push = opts.get("auto_push", False)
+                self.commit_per_iteration = opts.get("commit_per_iteration", False)
         
         iterate_args = IterateArgs(goal, options)
         iterator = SelfIterator(iterate_args)

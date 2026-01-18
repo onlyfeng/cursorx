@@ -39,6 +39,9 @@ class WorkerConfig(BaseModel):
     # 知识库配置（Cursor 相关问题自动搜索）
     enable_knowledge_search: bool = True       # 是否启用知识库搜索
     knowledge_search_top_k: int = 5            # 知识库搜索返回结果数
+    # 中间提交配置
+    enable_intermediate_commit: bool = False   # 是否启用中间提交建议
+    intermediate_commit_threshold: int = 5     # 更改文件数阈值，超过则建议提交
 
 
 class WorkerAgent(BaseAgent):
@@ -228,13 +231,22 @@ class WorkerAgent(BaseAgent):
         result = await self.execute(task.instruction, context)
         
         if result.get("success"):
+            # 检查是否需要建议中间提交
+            suggest_commit, changed_files_count = await self._should_suggest_commit()
+            
             task.complete({
                 "output": result.get("output", ""),
                 "duration": result.get("duration", 0),
                 "worker_id": self.id,
+                "suggest_commit": suggest_commit,
+                "changed_files_count": changed_files_count,
             })
             self.completed_tasks.append(task.id)
-            logger.info(f"[{self.id}] 任务完成: {task.id}")
+            
+            if suggest_commit:
+                logger.info(f"[{self.id}] 任务完成: {task.id}，建议中间提交（{changed_files_count} 个文件更改）")
+            else:
+                logger.info(f"[{self.id}] 任务完成: {task.id}")
         else:
             task.fail(result.get("error", "未知错误"))
             logger.error(f"[{self.id}] 任务失败: {task.id} - {result.get('error')}")
@@ -346,6 +358,58 @@ class WorkerAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[{self.id}] 知识库搜索失败: {e}")
             return []
+    
+    async def _should_suggest_commit(self) -> tuple[bool, int]:
+        """检查是否应该建议中间提交
+        
+        通过检查 git status 获取更改文件数，根据阈值判断是否建议提交。
+        
+        Returns:
+            (should_commit, changed_files_count): 是否建议提交，更改文件数
+        """
+        if not self.worker_config.enable_intermediate_commit:
+            return False, 0
+        
+        try:
+            import subprocess
+            
+            # 执行 git status --porcelain 获取更改文件列表
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=self.worker_config.working_directory,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            if result.returncode != 0:
+                logger.warning(f"[{self.id}] git status 执行失败: {result.stderr}")
+                return False, 0
+            
+            # 统计更改文件数（每行一个文件）
+            lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+            changed_files_count = len(lines)
+            
+            # 判断是否超过阈值
+            threshold = self.worker_config.intermediate_commit_threshold
+            should_commit = changed_files_count >= threshold
+            
+            if should_commit:
+                logger.info(
+                    f"[{self.id}] 更改文件数 ({changed_files_count}) 达到阈值 ({threshold})，建议提交"
+                )
+            
+            return should_commit, changed_files_count
+            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[{self.id}] git status 执行超时")
+            return False, 0
+        except FileNotFoundError:
+            logger.warning(f"[{self.id}] git 命令未找到")
+            return False, 0
+        except Exception as e:
+            logger.warning(f"[{self.id}] 检查提交建议失败: {e}")
+            return False, 0
     
     def _build_execution_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
         """构建执行 prompt"""
