@@ -41,6 +41,7 @@ agent --list-models
 | `--fullscreen` | 全屏模式 |
 | `--resume [chatId]` | 恢复聊天会话 |
 | `-m, --model <model>` | 使用的模型 |
+| `--mode <mode>` | 运行模式: plan（规划模式）/ ask（问答模式）/ agent（默认，完整代理模式） |
 | `--list-models` | 列出所有可用模型 |
 | `-f, --force` | 强制允许修改文件 |
 | `-h, --help` | 显示帮助 |
@@ -74,6 +75,8 @@ agent --list-models
 | `/quit` | 退出 |
 | `/mcp enable <name>` | 启用 MCP 服务器 |
 | `/mcp disable <name>` | 禁用 MCP 服务器 |
+| `/plan` | 切换到规划模式（只分析不执行） |
+| `/ask` | 切换到问答模式（仅回答问题，不修改文件） |
 | `/rules` | 创建/编辑规则 |
 | `/commands` | 创建/编辑命令 |
 
@@ -380,6 +383,79 @@ agent -p "prompt" --output-format stream-json --stream-partial-output
 | `←` / `→` | 切换文件 |
 | `@` | 选择上下文文件/文件夹 |
 | `/compress` | 压缩上下文 |
+| `Tab` | 自动补全命令/文件路径 |
+| `Ctrl+C` | 中断当前操作 |
+| `Ctrl+L` | 清屏 |
+| `Esc` | 取消当前输入 |
+
+## Cloud Agent 使用方法
+
+Cloud Agent 提供云端 API 访问能力，支持程序化调用 Cursor Agent。
+
+### 基本使用
+
+```python
+from cursor import CloudClient
+
+# 初始化客户端
+client = CloudClient(api_key="your_api_key")
+
+# 发送请求
+response = client.chat(
+    prompt="分析项目结构",
+    model="opus-4.5-thinking",
+    output_format="json"
+)
+
+# 流式响应
+for chunk in client.stream_chat(prompt="重构代码"):
+    print(chunk)
+```
+
+### 配置选项
+
+| 参数 | 描述 | 默认值 |
+|------|------|--------|
+| `api_key` | API 密钥 | 环境变量 `CURSOR_API_KEY` |
+| `base_url` | API 端点 | `https://api.cursor.com` |
+| `timeout` | 请求超时（秒） | 300 |
+| `max_retries` | 最大重试次数 | 3 |
+
+### 高级功能
+
+```python
+# 带上下文的请求
+response = client.chat(
+    prompt="修复这个 bug",
+    context_files=["src/main.py", "tests/test_main.py"],
+    mode="agent"  # plan / ask / agent
+)
+
+# 恢复会话
+response = client.resume_chat(
+    session_id="previous_session_id",
+    prompt="继续之前的任务"
+)
+
+# 批量处理
+results = client.batch_process(
+    prompts=["任务1", "任务2", "任务3"],
+    parallel=True
+)
+```
+
+### 错误处理
+
+```python
+from cursor import CloudClient, CursorError, RateLimitError
+
+try:
+    response = client.chat(prompt="任务")
+except RateLimitError as e:
+    print(f"速率限制，请在 {e.retry_after} 秒后重试")
+except CursorError as e:
+    print(f"API 错误: {e.message}")
+```
 
 ## 系统架构
 

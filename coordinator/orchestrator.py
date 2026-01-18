@@ -15,6 +15,8 @@ from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewerAgent, ReviewerConfig, ReviewDecision
 from agents.committer import CommitterAgent, CommitterConfig
 from cursor.client import CursorAgentConfig
+from cursor.executor import ExecutionMode
+from cursor.cloud_client import CloudAuthConfig
 from .worker_pool import WorkerPool
 
 if TYPE_CHECKING:
@@ -38,6 +40,9 @@ class OrchestratorConfig(BaseModel):
     auto_push: bool = False            # 是否自动推送
     commit_on_complete: bool = True    # 仅在完成时提交
     commit_per_iteration: bool = False # 每次迭代都提交
+    # Cloud Agent 配置
+    execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
+    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
 
 
 class Orchestrator:
@@ -74,25 +79,34 @@ class Orchestrator:
         planner_cursor_config = config.cursor_config.model_copy(deep=True)
         reviewer_cursor_config = config.cursor_config.model_copy(deep=True)
         worker_cursor_config = config.cursor_config.model_copy(deep=True)
+        
+        # 记录执行模式
+        logger.info(f"编排器使用执行模式: {config.execution_mode.value}")
 
         self.planner = PlannerAgent(PlannerConfig(
             working_directory=config.working_directory,
             cursor_config=planner_cursor_config,
+            execution_mode=config.execution_mode,
+            cloud_auth_config=config.cloud_auth_config,
         ))
         
         self.reviewer = ReviewerAgent(ReviewerConfig(
             working_directory=config.working_directory,
             strict_mode=config.strict_review,
             cursor_config=reviewer_cursor_config,
+            execution_mode=config.execution_mode,
+            cloud_auth_config=config.cloud_auth_config,
         ))
         
-        # Worker 池（传递知识库管理器）
+        # Worker 池（传递知识库管理器和执行模式配置）
         from agents.worker import WorkerConfig
         self.worker_pool = WorkerPool(
             size=config.worker_pool_size,
             worker_config=WorkerConfig(
                 working_directory=config.working_directory,
                 cursor_config=worker_cursor_config,
+                execution_mode=config.execution_mode,
+                cloud_auth_config=config.cloud_auth_config,
             ),
             knowledge_manager=knowledge_manager,
         )

@@ -30,13 +30,25 @@ https://cursor.com/cn/docs/context/mcp/install-links
 
 # ========== 功能特性 ==========
 https://cursor.com/cn/docs/tab/overview
-https://cursor.com/cn/docs/cloud-agent
-https://cursor.com/cn/docs/cloud-agent/web-and-mobile
-https://cursor.com/cn/docs/cloud-agent/egress-ip-ranges
-https://cursor.com/cn/docs/cloud-agent/api/endpoints
 https://cursor.com/cn/docs/inline-edit/overview
 https://cursor.com/cn/docs/inline-edit/terminal
 https://cursor.com/cn/docs/bugbot
+
+# ========== Cloud Agent ==========
+https://cursor.com/cn/docs/cloud-agent
+https://cursor.com/cn/docs/cloud-agent/overview
+https://cursor.com/cn/docs/cloud-agent/getting-started
+https://cursor.com/cn/docs/cloud-agent/web-and-mobile
+https://cursor.com/cn/docs/cloud-agent/egress-ip-ranges
+
+# Cloud Agent API
+https://cursor.com/cn/docs/cloud-agent/api
+https://cursor.com/cn/docs/cloud-agent/api/endpoints
+https://cursor.com/cn/docs/cloud-agent/api/authentication
+https://cursor.com/cn/docs/cloud-agent/api/streaming
+https://cursor.com/cn/docs/cloud-agent/api/sessions
+https://cursor.com/cn/docs/cloud-agent/api/rate-limits
+https://cursor.com/cn/docs/cloud-agent/api/errors
 
 # ========== CLI 命令行 ==========
 https://cursor.com/cn/docs/cli/overview
@@ -47,6 +59,12 @@ https://cursor.com/cn/docs/cli/mcp
 https://cursor.com/cn/docs/cli/headless
 https://cursor.com/cn/docs/cli/github-actions
 
+# CLI Modes (运行模式)
+https://cursor.com/cn/docs/cli/modes
+https://cursor.com/cn/docs/cli/modes/agent
+https://cursor.com/cn/docs/cli/modes/plan
+https://cursor.com/cn/docs/cli/modes/ask
+
 # CLI 参考文档
 https://cursor.com/cn/docs/cli/reference/slash-commands
 https://cursor.com/cn/docs/cli/reference/parameters
@@ -54,6 +72,9 @@ https://cursor.com/cn/docs/cli/reference/authentication
 https://cursor.com/cn/docs/cli/reference/permissions
 https://cursor.com/cn/docs/cli/reference/configuration
 https://cursor.com/cn/docs/cli/reference/output-format
+https://cursor.com/cn/docs/cli/reference/hooks
+https://cursor.com/cn/docs/cli/reference/subagents
+https://cursor.com/cn/docs/cli/reference/skills
 
 # CLI Cookbook
 https://cursor.com/cn/docs/cli/cookbook/code-review

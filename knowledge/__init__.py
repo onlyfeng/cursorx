@@ -55,7 +55,7 @@ from .semantic_search import (
     KnowledgeSemanticSearch,
     HybridSearchConfig,
 )
-from .manager import KnowledgeManager
+from .manager import KnowledgeManager, AskResult
 
 __all__ = [
     # 枚举类型
@@ -101,6 +101,7 @@ __all__ = [
     "HybridSearchConfig",
     # 知识库管理器
     "KnowledgeManager",
+    "AskResult",
     # 便捷函数
     "semantic_search",
 ]

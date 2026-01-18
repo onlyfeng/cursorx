@@ -9,14 +9,19 @@
 - 支持关键词搜索、语义搜索和混合搜索
 - 文档刷新和删除
 - 向量索引管理
+- 支持 CLI ask 模式只读查询
 """
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import shutil
+import os
 from pathlib import Path
 from typing import Any, Optional, Union, Literal
 from datetime import datetime
 from loguru import logger
+from pydantic import BaseModel
 
 from .models import Document, KnowledgeBase, KnowledgeBaseStats
 from .fetcher import WebFetcher, FetchConfig, FetchResult
@@ -26,6 +31,16 @@ from .vector import (
     KnowledgeVectorStore,
     KnowledgeSemanticSearch,
 )
+
+
+class AskResult(BaseModel):
+    """CLI ask 模式查询结果"""
+    success: bool
+    answer: str = ""
+    error: Optional[str] = None
+    duration: float = 0.0
+    query: str = ""
+    context_used: list[str] = []  # 使用的上下文文档标题/URL
 
 
 class KnowledgeManager:
@@ -878,3 +893,301 @@ class KnowledgeManager:
             f"KnowledgeManager(name='{self.name}', "
             f"documents={len(self)})"
         )
+    
+    # ========== CLI Ask 模式查询 ==========
+    
+    async def ask_with_cli(
+        self,
+        question: str,
+        max_context_docs: int = 3,
+        timeout: int = 60,
+        model: Optional[str] = None,
+        working_directory: Optional[str] = None,
+    ) -> AskResult:
+        """使用 CLI ask 模式执行只读查询
+        
+        通过 Cursor CLI 的 --mode=ask 模式，结合知识库上下文回答问题。
+        此方法不会修改任何文件，仅用于问答查询。
+        
+        Args:
+            question: 用户问题
+            max_context_docs: 最大上下文文档数量
+            timeout: 超时时间（秒）
+            model: 使用的模型（默认使用 gpt-4o-mini）
+            working_directory: 工作目录
+            
+        Returns:
+            AskResult: 查询结果
+            
+        示例:
+            >>> result = await manager.ask_with_cli("如何使用 Cursor Agent 的 MCP 功能？")
+            >>> if result.success:
+            ...     print(result.answer)
+        """
+        start_time = datetime.now()
+        
+        # 查找 agent CLI
+        agent_path = self._find_agent_cli()
+        if not agent_path:
+            return AskResult(
+                success=False,
+                error="找不到 agent CLI，请先安装: curl https://cursor.com/install -fsS | bash",
+                query=question,
+            )
+        
+        # 从知识库搜索相关文档作为上下文
+        context_docs = self.search(question, max_results=max_context_docs)
+        context_used = []
+        context_content = ""
+        
+        if context_docs:
+            context_parts = ["## 参考文档\n"]
+            for i, result in enumerate(context_docs, 1):
+                doc = self.get_document(result.doc_id)
+                if doc:
+                    context_used.append(doc.title or doc.url)
+                    # 限制每个文档内容长度
+                    content_preview = doc.content[:1500] if doc.content else ""
+                    context_parts.append(
+                        f"### {i}. {doc.title or '未命名'}\n"
+                        f"来源: {doc.url}\n"
+                        f"```\n{content_preview}\n```\n"
+                    )
+            context_content = "\n".join(context_parts)
+        
+        # 构建完整 prompt
+        prompt_parts = []
+        if context_content:
+            prompt_parts.append(context_content)
+        prompt_parts.append(f"## 问题\n{question}")
+        prompt_parts.append("\n请根据上述参考文档回答问题。如果文档中没有相关信息，请明确说明。")
+        
+        full_prompt = "\n".join(prompt_parts)
+        
+        # 构建 CLI 命令
+        cmd = [
+            agent_path,
+            "-p", full_prompt,
+            "--mode", "ask",
+            "--output-format", "text",
+        ]
+        
+        if model:
+            cmd.extend(["--model", model])
+        
+        try:
+            # 构建环境变量
+            env = os.environ.copy()
+            
+            # 执行 CLI 命令
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=working_directory or ".",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
+            
+            output = stdout.decode("utf-8", errors="replace")
+            error_output = stderr.decode("utf-8", errors="replace")
+            
+            duration = (datetime.now() - start_time).total_seconds()
+            
+            if process.returncode == 0:
+                logger.info(f"CLI ask 查询成功，耗时 {duration:.2f}s")
+                return AskResult(
+                    success=True,
+                    answer=output.strip(),
+                    query=question,
+                    duration=duration,
+                    context_used=context_used,
+                )
+            else:
+                error_msg = error_output.strip() or f"exit_code: {process.returncode}"
+                logger.warning(f"CLI ask 查询失败: {error_msg}")
+                return AskResult(
+                    success=False,
+                    answer=output.strip(),
+                    error=error_msg,
+                    query=question,
+                    duration=duration,
+                    context_used=context_used,
+                )
+                
+        except asyncio.TimeoutError:
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.error(f"CLI ask 查询超时 ({timeout}s)")
+            return AskResult(
+                success=False,
+                error=f"查询超时 ({timeout}s)",
+                query=question,
+                duration=duration,
+                context_used=context_used,
+            )
+        except FileNotFoundError:
+            logger.error(f"找不到 agent CLI: {agent_path}")
+            return AskResult(
+                success=False,
+                error=f"找不到 agent CLI: {agent_path}",
+                query=question,
+            )
+        except Exception as e:
+            logger.exception(f"CLI ask 查询异常: {e}")
+            return AskResult(
+                success=False,
+                error=str(e),
+                query=question,
+            )
+    
+    def _find_agent_cli(self) -> Optional[str]:
+        """查找 agent CLI 可执行文件"""
+        # 尝试常见路径
+        possible_paths = [
+            shutil.which("agent"),
+            "/usr/local/bin/agent",
+            os.path.expanduser("~/.local/bin/agent"),
+            os.path.expanduser("~/.cursor/bin/agent"),
+        ]
+        
+        for path in possible_paths:
+            if path and os.path.isfile(path):
+                return path
+        
+        # 回退检查 PATH 中是否有 agent
+        if shutil.which("agent"):
+            return "agent"
+        
+        return None
+    
+    def ask_with_cli_sync(
+        self,
+        question: str,
+        max_context_docs: int = 3,
+        timeout: int = 60,
+        model: Optional[str] = None,
+        working_directory: Optional[str] = None,
+    ) -> AskResult:
+        """同步版本：使用 CLI ask 模式执行只读查询
+        
+        适用于同步调用场景（如测试、脚本）。
+        
+        Args:
+            question: 用户问题
+            max_context_docs: 最大上下文文档数量
+            timeout: 超时时间（秒）
+            model: 使用的模型
+            working_directory: 工作目录
+            
+        Returns:
+            AskResult: 查询结果
+        """
+        start_time = datetime.now()
+        
+        agent_path = self._find_agent_cli()
+        if not agent_path:
+            return AskResult(
+                success=False,
+                error="找不到 agent CLI，请先安装: curl https://cursor.com/install -fsS | bash",
+                query=question,
+            )
+        
+        # 从知识库搜索相关文档作为上下文
+        context_docs = self.search(question, max_results=max_context_docs)
+        context_used = []
+        context_content = ""
+        
+        if context_docs:
+            context_parts = ["## 参考文档\n"]
+            for i, result in enumerate(context_docs, 1):
+                doc = self.get_document(result.doc_id)
+                if doc:
+                    context_used.append(doc.title or doc.url)
+                    content_preview = doc.content[:1500] if doc.content else ""
+                    context_parts.append(
+                        f"### {i}. {doc.title or '未命名'}\n"
+                        f"来源: {doc.url}\n"
+                        f"```\n{content_preview}\n```\n"
+                    )
+            context_content = "\n".join(context_parts)
+        
+        # 构建完整 prompt
+        prompt_parts = []
+        if context_content:
+            prompt_parts.append(context_content)
+        prompt_parts.append(f"## 问题\n{question}")
+        prompt_parts.append("\n请根据上述参考文档回答问题。如果文档中没有相关信息，请明确说明。")
+        
+        full_prompt = "\n".join(prompt_parts)
+        
+        cmd = [
+            agent_path,
+            "-p", full_prompt,
+            "--mode", "ask",
+            "--output-format", "text",
+        ]
+        
+        if model:
+            cmd.extend(["--model", model])
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=working_directory or ".",
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=os.environ.copy(),
+            )
+            
+            duration = (datetime.now() - start_time).total_seconds()
+            
+            if result.returncode == 0:
+                logger.info(f"CLI ask 查询成功，耗时 {duration:.2f}s")
+                return AskResult(
+                    success=True,
+                    answer=result.stdout.strip(),
+                    query=question,
+                    duration=duration,
+                    context_used=context_used,
+                )
+            else:
+                error_msg = result.stderr.strip() or f"exit_code: {result.returncode}"
+                logger.warning(f"CLI ask 查询失败: {error_msg}")
+                return AskResult(
+                    success=False,
+                    answer=result.stdout.strip(),
+                    error=error_msg,
+                    query=question,
+                    duration=duration,
+                    context_used=context_used,
+                )
+                
+        except subprocess.TimeoutExpired:
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.error(f"CLI ask 查询超时 ({timeout}s)")
+            return AskResult(
+                success=False,
+                error=f"查询超时 ({timeout}s)",
+                query=question,
+                duration=duration,
+                context_used=context_used,
+            )
+        except FileNotFoundError:
+            logger.error(f"找不到 agent CLI: {agent_path}")
+            return AskResult(
+                success=False,
+                error=f"找不到 agent CLI: {agent_path}",
+                query=question,
+            )
+        except Exception as e:
+            logger.exception(f"CLI ask 查询异常: {e}")
+            return AskResult(
+                success=False,
+                error=str(e),
+                query=question,
+            )

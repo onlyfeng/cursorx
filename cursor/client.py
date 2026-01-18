@@ -39,6 +39,10 @@ class CursorAgentConfig(BaseModel):
     全局选项:
     - -p / --print: 非交互模式，输出到控制台
     - -m / --model <model>: 指定模型
+    - --mode <mode>: Agent 工作模式 (plan | ask | code)
+      - plan: 规划模式，仅分析和规划，不修改文件
+      - ask: 询问模式，回答问题和提供建议
+      - code: 编码模式，执行代码修改任务
     - --output-format <format>: text | json | stream-json
     - --stream-partial-output: 增量流式输出（配合 stream-json）
     - -f / --force: 允许直接修改文件，无需确认
@@ -123,6 +127,41 @@ class CursorAgentConfig(BaseModel):
     
     # 全屏模式（--fullscreen）
     fullscreen: bool = False
+    
+    # Agent 工作模式（--mode）
+    # - "plan": 规划模式，仅分析和规划，不修改文件（适合 Planner）
+    # - "ask": 询问模式，回答问题和提供建议（适合咨询场景）
+    # - "code": 编码模式，执行代码修改任务（适合 Worker）
+    # - None: 不指定模式，使用默认行为
+    mode: Optional[str] = None
+    
+    # 执行模式
+    # - "cli": 通过本地 Cursor CLI 执行
+    # - "cloud": 通过 Cloud API 执行
+    # - "auto": 自动选择，Cloud 优先，不可用时回退到 CLI
+    execution_mode: str = "auto"
+    
+    # ========== Cloud Agent 配置 ==========
+    # 参考: https://cursor.com/cn/docs/cloud-agent
+    
+    # 是否启用 Cloud Agent（使用 & 前缀推送任务到云端）
+    cloud_enabled: bool = False
+    
+    # Cloud Agent API 端点
+    cloud_api_base: str = "https://api.cursor.com"
+    cloud_agents_endpoint: str = "/v1/agents"
+    
+    # Cloud Agent 超时（云端任务通常需要更长时间）
+    cloud_timeout: int = 600  # 10 分钟
+    
+    # 轮询间隔（秒）- 用于检查云端任务状态
+    cloud_poll_interval: float = 2.0
+    
+    # 云端任务重试
+    cloud_max_retries: int = 3
+    
+    # 是否自动检测 & 前缀并推送到云端
+    auto_detect_cloud_prefix: bool = True
 
 
 # 预定义模型配置
@@ -338,6 +377,10 @@ class CursorAgentClient:
         if self.config.model:
             cmd.extend(["--model", self.config.model])
         
+        # 添加工作模式 (plan/ask/code)
+        if self.config.mode:
+            cmd.extend(["--mode", self.config.mode])
+        
         # 添加输出格式
         # text: 纯文本输出
         # json: 结构化输出，便于解析
@@ -394,12 +437,19 @@ class CursorAgentClient:
                 error_msg = "; ".join(error_parts)
                 logger.warning(f"agent CLI 返回非零退出码 {process.returncode}: {error_msg[:200]}")
 
+            # 构建命令描述（用于日志）
+            cmd_desc = f"agent -p '...' --model {self.config.model}"
+            if self.config.mode:
+                cmd_desc += f" --mode {self.config.mode}"
+            if self.config.force_write:
+                cmd_desc += " --force"
+            
             return {
                 "success": process.returncode == 0,
                 "output": output,
                 "error": error_msg,
                 "exit_code": process.returncode,
-                "command": f"agent -p '...' --model {self.config.model}" + (" --force" if self.config.force_write else ""),
+                "command": cmd_desc,
             }
             
         except FileNotFoundError:
@@ -492,12 +542,19 @@ class CursorAgentClient:
             error_msg = "; ".join(error_parts)
             logger.warning(f"agent CLI 返回非零退出码 {process.returncode}: {error_msg[:200]}")
 
+        # 构建命令描述（用于日志）
+        cmd_desc = f"agent -p '...' --model {self.config.model}"
+        if self.config.mode:
+            cmd_desc += f" --mode {self.config.mode}"
+        if self.config.force_write:
+            cmd_desc += " --force"
+
         return {
             "success": process.returncode == 0,
             "output": output,
             "error": error_msg,
             "exit_code": process.returncode,
-            "command": f"agent -p '...' --model {self.config.model}" + (" --force" if self.config.force_write else ""),
+            "command": cmd_desc,
         }
 
     async def _wait_process_with_deadline(

@@ -52,6 +52,8 @@ class RunMode(str, Enum):
     KNOWLEDGE = "knowledge"   # 知识库增强模式
     ITERATE = "iterate"       # 自我迭代模式
     AUTO = "auto"             # 自动分析模式
+    PLAN = "plan"             # 仅规划模式（不执行）
+    ASK = "ask"               # 问答模式（直接对话）
 
 
 # 模式别名映射
@@ -71,6 +73,13 @@ MODE_ALIASES = {
     "update": RunMode.ITERATE,
     "auto": RunMode.AUTO,
     "smart": RunMode.AUTO,
+    "plan": RunMode.PLAN,
+    "planning": RunMode.PLAN,
+    "analyze": RunMode.PLAN,
+    "ask": RunMode.ASK,
+    "chat": RunMode.ASK,
+    "question": RunMode.ASK,
+    "q": RunMode.ASK,
 }
 
 
@@ -331,6 +340,14 @@ class TaskAnalyzer:
             "知识库", "knowledge", "文档搜索", "搜索文档",
             "cursor 文档", "参考文档", "docs",
         ],
+        RunMode.PLAN: [
+            "规划", "plan", "planning", "分析任务", "任务分析",
+            "制定计划", "仅规划", "只规划", "分解任务",
+        ],
+        RunMode.ASK: [
+            "问答", "ask", "chat", "对话", "提问", "询问",
+            "直接问", "回答", "解答", "question",
+        ],
     }
     
     # 选项关键词映射
@@ -542,6 +559,10 @@ class Runner:
             return await self._run_knowledge(goal, merged_options)
         elif mode == RunMode.ITERATE:
             return await self._run_iterate(goal, merged_options)
+        elif mode == RunMode.PLAN:
+            return await self._run_plan(goal, merged_options)
+        elif mode == RunMode.ASK:
+            return await self._run_ask(goal, merged_options)
         else:
             return await self._run_basic(goal, merged_options)
     
@@ -597,6 +618,8 @@ class Runner:
             RunMode.KNOWLEDGE: "知识库增强模式",
             RunMode.ITERATE: "自我迭代模式",
             RunMode.AUTO: "自动模式",
+            RunMode.PLAN: "规划模式",
+            RunMode.ASK: "问答模式",
         }
         return names.get(mode, mode.value)
     
@@ -616,7 +639,7 @@ class Runner:
             strict_review=options.get("strict", False),
             cursor_config=cursor_config,
             stream_events_enabled=options.get("stream_log", False),
-            auto_commit=options.get("auto_commit", False),
+            enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
         )
@@ -732,6 +755,111 @@ class Runner:
         iterator = SelfIterator(iterate_args)
         
         return await iterator.run()
+    
+    async def _run_plan(self, goal: str, options: dict) -> dict:
+        """运行规划模式（仅规划不执行）"""
+        import subprocess
+        
+        print_info("仅规划模式：分析任务并生成执行计划...")
+        
+        # 构建规划提示
+        prompt = f"""你是一个任务规划专家。请分析以下任务并制定详细的执行计划。
+
+任务目标：{goal}
+
+请提供：
+1. 任务分解（将任务拆分为具体的子任务）
+2. 执行顺序（哪些任务可以并行，哪些需要顺序执行）
+3. 预估复杂度（每个子任务的难度评估）
+4. 潜在风险（可能遇到的问题和解决方案）
+5. 推荐运行模式（basic/mp/knowledge/iterate）
+
+请以结构化的方式输出计划。"""
+
+        try:
+            result = subprocess.run(
+                ["agent", "-p", prompt, "--output-format", "text"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=str(project_root),
+            )
+            
+            if result.returncode == 0:
+                plan_output = result.stdout.strip()
+                print("\n" + "=" * 60)
+                print("执行计划")
+                print("=" * 60)
+                print(plan_output)
+                print("=" * 60 + "\n")
+                
+                return {
+                    "success": True,
+                    "goal": goal,
+                    "mode": "plan",
+                    "plan": plan_output,
+                    "dry_run": True,
+                }
+            else:
+                print_error(f"规划失败: {result.stderr}")
+                return {
+                    "success": False,
+                    "goal": goal,
+                    "mode": "plan",
+                    "error": result.stderr,
+                }
+                
+        except subprocess.TimeoutExpired:
+            print_error("规划超时")
+            return {"success": False, "goal": goal, "mode": "plan", "error": "timeout"}
+        except Exception as e:
+            print_error(f"规划异常: {e}")
+            return {"success": False, "goal": goal, "mode": "plan", "error": str(e)}
+    
+    async def _run_ask(self, goal: str, options: dict) -> dict:
+        """运行问答模式（直接对话）"""
+        import subprocess
+        
+        print_info("问答模式：直接与 Agent 对话...")
+        
+        try:
+            result = subprocess.run(
+                ["agent", "-p", goal, "--output-format", "text"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=str(project_root),
+            )
+            
+            if result.returncode == 0:
+                answer = result.stdout.strip()
+                print("\n" + "=" * 60)
+                print("回答")
+                print("=" * 60)
+                print(answer)
+                print("=" * 60 + "\n")
+                
+                return {
+                    "success": True,
+                    "goal": goal,
+                    "mode": "ask",
+                    "answer": answer,
+                }
+            else:
+                print_error(f"问答失败: {result.stderr}")
+                return {
+                    "success": False,
+                    "goal": goal,
+                    "mode": "ask",
+                    "error": result.stderr,
+                }
+                
+        except subprocess.TimeoutExpired:
+            print_error("问答超时")
+            return {"success": False, "goal": goal, "mode": "ask", "error": "timeout"}
+        except Exception as e:
+            print_error(f"问答异常: {e}")
+            return {"success": False, "goal": goal, "mode": "ask", "error": str(e)}
 
 
 # ============================================================

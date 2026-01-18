@@ -41,6 +41,33 @@ agent_cli:
   output_format: text       # 输出格式: text, json, stream-json
   # api_key: ""             # API 密钥（可选，推荐使用环境变量）
 
+# Cloud Agent 配置
+# 提供云端 API 访问能力，支持程序化调用 Cursor Agent
+# 执行模式:
+#   - cli:   使用本地 agent CLI 执行（需要安装 cursor CLI）
+#   - cloud: 使用 Cloud API 执行（需要 API 密钥）
+#   - auto:  自动选择（优先使用 cloud，失败时降级到 cli）
+cloud_agent:
+  enabled: false                              # 是否启用 Cloud Agent
+  execution_mode: cli                         # 执行模式: cli | cloud | auto
+  
+  # Cloud API 配置
+  api_base_url: "https://api.cursor.com"      # API 基础 URL
+  # api_key: ""                               # API 密钥（推荐使用环境变量 CURSOR_API_KEY 或 CURSOR_CLOUD_API_KEY）
+  timeout: 300                                # 请求超时时间（秒）
+  max_retries: 3                              # 最大重试次数
+  
+  # 出口 IP 验证配置（用于验证请求来源）
+  egress_ip_cache_ttl: 3600                   # 出口 IP 缓存有效期（秒），默认 1 小时
+  egress_ip_api_url: ""                       # 自定义 IP 范围 API URL（可选，留空使用默认）
+  verify_egress_ip: false                     # 是否验证出口 IP
+
+# 网络配置
+# 代理和 SSL 设置，影响所有外部网络请求
+network:
+  proxy_url: ""                               # HTTP/HTTPS 代理 URL（如 http://proxy.example.com:8080）
+  ssl_verify: true                            # 是否验证 SSL 证书（生产环境建议保持 true）
+
 # 规划者配置
 planner:
   max_sub_planners: 3       # 最大子规划者数量

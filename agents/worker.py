@@ -10,7 +10,14 @@ from loguru import logger
 
 from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
 from tasks.task import Task
-from cursor.client import CursorAgentClient, CursorAgentConfig
+from cursor.client import CursorAgentConfig
+from cursor.executor import (
+    AgentExecutorFactory,
+    ExecutionMode,
+    CLIAgentExecutor,
+    AgentExecutor,
+)
+from cursor.cloud_client import CloudAuthConfig
 
 # 可选的语义搜索支持
 if TYPE_CHECKING:
@@ -32,6 +39,9 @@ class WorkerConfig(BaseModel):
     max_concurrent_tasks: int = 1      # 同时处理的任务数（通常为1）
     task_timeout: int = 300            # 任务超时时间
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    # 执行模式配置
+    execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
+    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
     # 语义搜索配置（可选增强）
     enable_context_search: bool = False        # 是否启用上下文搜索
     context_search_top_k: int = 5              # 上下文搜索返回结果数
@@ -39,6 +49,10 @@ class WorkerConfig(BaseModel):
     # 知识库配置（Cursor 相关问题自动搜索）
     enable_knowledge_search: bool = True       # 是否启用知识库搜索
     knowledge_search_top_k: int = 5            # 知识库搜索返回结果数
+    # CLI ask 模式配置（用于知识库增强查询）
+    enable_cli_ask_mode: bool = False          # 是否启用 CLI ask 模式查询
+    cli_ask_timeout: int = 60                  # CLI ask 查询超时时间
+    cli_ask_model: Optional[str] = None        # CLI ask 使用的模型（默认使用系统默认）
     # 中间提交配置
     enable_intermediate_commit: bool = False   # 是否启用中间提交建议
     intermediate_commit_threshold: int = 5     # 更改文件数阈值，超过则建议提交
@@ -84,7 +98,22 @@ class WorkerAgent(BaseAgent):
         super().__init__(agent_config)
         self.worker_config = config
         self._apply_stream_config(self.worker_config.cursor_config)
-        self.cursor_client = CursorAgentClient(config.cursor_config)
+        
+        # 使用 AgentExecutorFactory 创建执行器
+        self._executor: AgentExecutor = AgentExecutorFactory.create(
+            mode=config.execution_mode,
+            cli_config=config.cursor_config,
+            cloud_auth_config=config.cloud_auth_config,
+        )
+        
+        # 保留 cursor_client 属性以保持向后兼容
+        if isinstance(self._executor, CLIAgentExecutor):
+            self.cursor_client = self._executor.client
+        else:
+            # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
+            from cursor.client import CursorAgentClient
+            self.cursor_client = CursorAgentClient(config.cursor_config)
+        
         self.current_task: Optional[Task] = None
         self.completed_tasks: list[str] = []
         
@@ -99,6 +128,8 @@ class WorkerAgent(BaseAgent):
         self._knowledge_search_enabled = config.enable_knowledge_search and knowledge_manager is not None
         if self._knowledge_search_enabled:
             logger.info(f"[{config.name}] 知识库搜索已启用")
+        
+        logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
 
     def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
         """注入流式日志配置与 Agent 标识"""
@@ -160,9 +191,9 @@ class WorkerAgent(BaseAgent):
             # 构建执行 prompt
             prompt = self._build_execution_prompt(instruction, context)
             
-            # 调用 Cursor Agent 执行
-            result = await self.cursor_client.execute(
-                instruction=prompt,
+            # 调用执行器执行
+            result = await self._executor.execute(
+                prompt=prompt,
                 working_directory=self.worker_config.working_directory,
                 context=context,
                 timeout=self.worker_config.task_timeout,
@@ -311,6 +342,9 @@ class WorkerAgent(BaseAgent):
         """从知识库搜索任务相关的文档上下文
         
         当任务与 Cursor 相关时，自动搜索知识库补充上下文。
+        支持两种模式：
+        1. 关键词搜索模式（默认）：快速、轻量
+        2. CLI ask 模式：通过 --mode=ask 执行只读查询，获取更智能的回答
         
         Args:
             task: 任务对象
@@ -331,14 +365,21 @@ class WorkerAgent(BaseAgent):
         try:
             logger.info(f"[{self.id}] 检测到 Cursor 相关任务，搜索知识库...")
             
-            # KnowledgeManager 提供同步 keyword 搜索接口（更轻量，避免阻塞）
+            knowledge_docs = []
+            
+            # 如果启用了 CLI ask 模式，使用 ask_with_cli 进行增强查询
+            if self.worker_config.enable_cli_ask_mode:
+                ask_result = await self._query_knowledge_with_cli_ask(query)
+                if ask_result:
+                    knowledge_docs.append(ask_result)
+            
+            # 同时进行关键词搜索获取原始文档上下文
             results = self._knowledge_manager.search(
                 query=query,
                 max_results=self.worker_config.knowledge_search_top_k,
             )
             
             # 构建知识库上下文列表
-            knowledge_docs = []
             for result in results:
                 doc = self._knowledge_manager.get_document(result.doc_id)
                 if doc:
@@ -351,13 +392,58 @@ class WorkerAgent(BaseAgent):
                     })
             
             if knowledge_docs:
-                logger.info(f"[{self.id}] 从知识库找到 {len(knowledge_docs)} 个相关文档")
+                logger.info(f"[{self.id}] 从知识库找到 {len(knowledge_docs)} 个相关文档/回答")
             
             return knowledge_docs
             
         except Exception as e:
             logger.warning(f"[{self.id}] 知识库搜索失败: {e}")
             return []
+    
+    async def _query_knowledge_with_cli_ask(self, query: str) -> Optional[dict[str, Any]]:
+        """使用 CLI ask 模式查询知识库
+        
+        通过 Cursor CLI 的 --mode=ask 执行只读查询，获取基于知识库的智能回答。
+        
+        Args:
+            query: 查询问题
+            
+        Returns:
+            查询结果字典，失败返回 None
+        """
+        if not self._knowledge_manager:
+            return None
+        
+        try:
+            logger.info(f"[{self.id}] 使用 CLI ask 模式查询知识库...")
+            
+            result = await self._knowledge_manager.ask_with_cli(
+                question=query,
+                max_context_docs=self.worker_config.knowledge_search_top_k,
+                timeout=self.worker_config.cli_ask_timeout,
+                model=self.worker_config.cli_ask_model,
+                working_directory=self.worker_config.working_directory,
+            )
+            
+            if result.success and result.answer:
+                logger.info(f"[{self.id}] CLI ask 查询成功，耗时 {result.duration:.2f}s")
+                return {
+                    "title": "CLI Ask 查询结果",
+                    "url": "cli-ask://knowledge-query",
+                    "content": result.answer,
+                    "score": 1.0,  # CLI ask 回答优先级最高
+                    "source": "cli-ask",
+                    "context_used": result.context_used,
+                    "query": result.query,
+                }
+            else:
+                if result.error:
+                    logger.warning(f"[{self.id}] CLI ask 查询失败: {result.error}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"[{self.id}] CLI ask 查询异常: {e}")
+            return None
     
     async def _should_suggest_commit(self) -> tuple[bool, int]:
         """检查是否应该建议中间提交
@@ -439,16 +525,35 @@ class WorkerAgent(BaseAgent):
             # 添加知识库文档（Cursor 相关问题自动搜索结果）
             if "knowledge_docs" in context and context["knowledge_docs"]:
                 knowledge_docs = context["knowledge_docs"]
-                parts.append(f"\n## 参考文档（来自 Cursor 知识库，共 {len(knowledge_docs)} 个）")
-                for i, doc in enumerate(knowledge_docs[:3], 1):  # 只展示前3个
-                    parts.append(
-                        f"\n### {i}. {doc.get('title', '未命名')}"
-                        f"\n来源: {doc.get('url', 'N/A')}"
-                        f"\n相关度: {doc.get('score', 0):.2f}"
-                        f"\n```\n{doc.get('content', '')[:800]}\n```"
-                    )
-                if len(knowledge_docs) > 3:
-                    parts.append(f"\n... 还有 {len(knowledge_docs) - 3} 个参考文档未显示")
+                
+                # 分离 CLI ask 结果和普通文档
+                cli_ask_docs = [d for d in knowledge_docs if d.get("source") == "cli-ask"]
+                regular_docs = [d for d in knowledge_docs if d.get("source") != "cli-ask"]
+                
+                # 优先展示 CLI ask 查询结果（智能回答）
+                if cli_ask_docs:
+                    parts.append(f"\n## 知识库智能回答（CLI Ask 模式）")
+                    for doc in cli_ask_docs:
+                        context_used = doc.get("context_used", [])
+                        context_info = f"（参考了 {len(context_used)} 个文档）" if context_used else ""
+                        parts.append(
+                            f"\n### 查询: {doc.get('query', 'N/A')}"
+                            f"\n{context_info}"
+                            f"\n```\n{doc.get('content', '')[:1200]}\n```"
+                        )
+                
+                # 展示普通文档上下文
+                if regular_docs:
+                    parts.append(f"\n## 参考文档（来自 Cursor 知识库，共 {len(regular_docs)} 个）")
+                    for i, doc in enumerate(regular_docs[:3], 1):  # 只展示前3个
+                        parts.append(
+                            f"\n### {i}. {doc.get('title', '未命名')}"
+                            f"\n来源: {doc.get('url', 'N/A')}"
+                            f"\n相关度: {doc.get('score', 0):.2f}"
+                            f"\n```\n{doc.get('content', '')[:800]}\n```"
+                        )
+                    if len(regular_docs) > 3:
+                        parts.append(f"\n... 还有 {len(regular_docs) - 3} 个参考文档未显示")
             
             # 添加其他上下文（排除已处理的字段）
             exclude_keys = ("task_id", "task_type", "target_files", "reference_code", "knowledge_docs")

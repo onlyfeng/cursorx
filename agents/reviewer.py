@@ -8,7 +8,14 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
-from cursor.client import CursorAgentClient, CursorAgentConfig
+from cursor.client import CursorAgentConfig
+from cursor.executor import (
+    AgentExecutorFactory,
+    ExecutionMode,
+    CLIAgentExecutor,
+    AgentExecutor,
+)
+from cursor.cloud_client import CloudAuthConfig
 
 
 class ReviewDecision(str, Enum):
@@ -27,6 +34,9 @@ class ReviewerConfig(BaseModel):
     working_directory: str = "."
     strict_mode: bool = False          # 严格模式（更高的完成标准）
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    # 执行模式配置
+    execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
+    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
 
 
 class ReviewerAgent(BaseAgent):
@@ -91,8 +101,25 @@ class ReviewerAgent(BaseAgent):
         super().__init__(agent_config)
         self.reviewer_config = config
         self._apply_stream_config(self.reviewer_config.cursor_config)
-        self.cursor_client = CursorAgentClient(config.cursor_config)
+        
+        # 使用 AgentExecutorFactory 创建执行器
+        self._executor: AgentExecutor = AgentExecutorFactory.create(
+            mode=config.execution_mode,
+            cli_config=config.cursor_config,
+            cloud_auth_config=config.cloud_auth_config,
+        )
+        
+        # 保留 cursor_client 属性以保持向后兼容
+        if isinstance(self._executor, CLIAgentExecutor):
+            self.cursor_client = self._executor.client
+        else:
+            # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
+            from cursor.client import CursorAgentClient
+            self.cursor_client = CursorAgentClient(config.cursor_config)
+        
         self.review_history: list[dict] = []
+        
+        logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
     
     async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         """执行评审
@@ -111,9 +138,9 @@ class ReviewerAgent(BaseAgent):
             # 构建评审 prompt
             prompt = self._build_review_prompt(instruction, context)
             
-            # 调用 Cursor Agent 执行评审
-            result = await self.cursor_client.execute(
-                instruction=prompt,
+            # 调用执行器执行评审
+            result = await self._executor.execute(
+                prompt=prompt,
                 working_directory=self.reviewer_config.working_directory,
                 context=context,
             )

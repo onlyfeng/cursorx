@@ -3,13 +3,20 @@
 负责探索代码库、分解任务、派生子规划者
 支持语义搜索增强的代码库探索
 """
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, Union, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.base import BaseAgent, AgentConfig, AgentRole, AgentStatus
 from tasks.task import Task, TaskType, TaskPriority
-from cursor.client import CursorAgentClient, CursorAgentConfig
+from cursor.client import CursorAgentConfig
+from cursor.executor import (
+    AgentExecutorFactory,
+    ExecutionMode,
+    CLIAgentExecutor,
+    AgentExecutor,
+)
+from cursor.cloud_client import CloudAuthConfig
 
 # 可选的语义搜索支持
 if TYPE_CHECKING:
@@ -24,6 +31,11 @@ class PlannerConfig(BaseModel):
     max_tasks_per_plan: int = 10       # 单次规划最大任务数
     exploration_depth: int = 3          # 探索深度
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    # 执行模式配置
+    execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
+    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    # Plan 模式配置
+    use_plan_mode: bool = True         # 是否使用 --mode=plan（仅分析不修改文件）
     # 语义搜索配置（可选增强）
     enable_semantic_search: bool = False       # 是否启用语义搜索
     semantic_search_top_k: int = 10            # 搜索返回结果数
@@ -86,8 +98,26 @@ class PlannerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.planner_config = config
+        
+        # 应用 plan 模式配置（--mode=plan 仅分析不修改文件）
+        self._apply_plan_mode_config(self.planner_config.cursor_config)
         self._apply_stream_config(self.planner_config.cursor_config)
-        self.cursor_client = CursorAgentClient(config.cursor_config)
+        
+        # 使用 AgentExecutorFactory 创建执行器
+        self._executor: AgentExecutor = AgentExecutorFactory.create(
+            mode=config.execution_mode,
+            cli_config=config.cursor_config,
+            cloud_auth_config=config.cloud_auth_config,
+        )
+        
+        # 保留 cursor_client 属性以保持向后兼容
+        if isinstance(self._executor, CLIAgentExecutor):
+            self.cursor_client = self._executor.client
+        else:
+            # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
+            from cursor.client import CursorAgentClient
+            self.cursor_client = CursorAgentClient(config.cursor_config)
+        
         self.sub_planners: list["PlannerAgent"] = []
         
         # 语义搜索增强（可选）
@@ -95,6 +125,27 @@ class PlannerAgent(BaseAgent):
         self._search_enabled = config.enable_semantic_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 语义搜索已启用")
+        
+        logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
+        if config.use_plan_mode:
+            logger.debug(f"[{config.name}] 已启用 plan 模式（--mode=plan）")
+
+    def _apply_plan_mode_config(self, cursor_config: CursorAgentConfig) -> None:
+        """应用 plan 模式配置
+        
+        plan 模式特点:
+        - 使用 --mode=plan 参数
+        - 仅分析和规划，不修改文件
+        - 使用 JSON 输出格式便于解析结构化结果
+        - 禁用 force_write 以确保不会意外修改文件
+        """
+        if self.planner_config.use_plan_mode:
+            cursor_config.mode = "plan"
+            # plan 模式下推荐使用 JSON 输出格式，便于解析结构化的规划结果
+            if cursor_config.output_format == "text":
+                cursor_config.output_format = "json"
+            # 确保不会强制写入文件
+            cursor_config.force_write = False
 
     def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
         """注入流式日志配置与 Agent 标识"""
@@ -144,9 +195,9 @@ class PlannerAgent(BaseAgent):
             # 构建规划 prompt
             prompt = self._build_planning_prompt(instruction, merged_context)
             
-            # 调用 Cursor Agent 执行规划
-            result = await self.cursor_client.execute(
-                instruction=prompt,
+            # 调用执行器执行规划
+            result = await self._executor.execute(
+                prompt=prompt,
                 working_directory=self.planner_config.working_directory,
                 context=merged_context,
             )
@@ -254,28 +305,51 @@ class PlannerAgent(BaseAgent):
         return "\n".join(parts)
     
     def _parse_planning_result(self, output: str) -> dict[str, Any]:
-        """解析规划结果"""
+        """解析规划结果
+        
+        支持多种输出格式:
+        1. plan 模式 JSON 输出: {"type": "result", "result": "..."}
+        2. 包含 ```json``` 代码块的文本
+        3. 直接 JSON 字符串
+        4. 纯文本（回退）
+        """
         import json
         import re
         
-        # 尝试提取 JSON 块
-        json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+        content = output
+        
+        # 处理 plan 模式的 JSON 输出格式
+        # {"type": "result", "subtype": "success", "result": "<规划内容>", ...}
+        try:
+            outer_json = json.loads(output)
+            if isinstance(outer_json, dict) and outer_json.get("type") == "result":
+                # 提取 result 字段作为实际规划内容
+                content = outer_json.get("result", "")
+                logger.debug(f"[{self.id}] 从 plan 模式 JSON 输出中提取规划内容")
+        except json.JSONDecodeError:
+            pass
+        
+        # 尝试提取 JSON 块（Markdown 代码块格式）
+        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
             except json.JSONDecodeError:
                 pass
         
-        # 尝试直接解析
+        # 尝试直接解析为 JSON
         try:
-            return json.loads(output)
+            parsed = json.loads(content)
+            # 验证是规划结果格式
+            if isinstance(parsed, dict) and ("tasks" in parsed or "analysis" in parsed):
+                return parsed
         except json.JSONDecodeError:
             pass
         
         # 解析失败，返回原始输出作为分析
-        logger.warning(f"[{self.id}] 无法解析规划结果为 JSON")
+        logger.warning(f"[{self.id}] 无法解析规划结果为 JSON，使用原始文本")
         return {
-            "analysis": output,
+            "analysis": content if content else output,
             "tasks": [],
             "sub_planners_needed": [],
         }
@@ -300,6 +374,11 @@ class PlannerAgent(BaseAgent):
             max_sub_planners=0,  # 子规划者不能再派生
             max_tasks_per_plan=self.planner_config.max_tasks_per_plan,
             cursor_config=self.planner_config.cursor_config,
+            # 继承父规划者的执行模式配置
+            execution_mode=self.planner_config.execution_mode,
+            cloud_auth_config=self.planner_config.cloud_auth_config,
+            # 继承父规划者的 plan 模式配置
+            use_plan_mode=self.planner_config.use_plan_mode,
             # 继承父规划者的语义搜索配置
             enable_semantic_search=self.planner_config.enable_semantic_search,
             semantic_search_top_k=self.planner_config.semantic_search_top_k,

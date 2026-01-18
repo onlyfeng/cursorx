@@ -9,8 +9,8 @@ from cursor.streaming import (
     ToolCallInfo,
     parse_stream_event,
 )
-from main import resolve_stream_log_config as resolve_stream_log_config_single
-from main_mp import resolve_stream_log_config as resolve_stream_log_config_multi
+from scripts.run_basic import resolve_stream_log_config as resolve_stream_log_config_single
+from scripts.run_mp import resolve_stream_log_config as resolve_stream_log_config_multi
 
 
 def test_parse_stream_event_system_init() -> None:
