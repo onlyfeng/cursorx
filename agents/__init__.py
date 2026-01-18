@@ -9,6 +9,11 @@ from .reviewer_process import ReviewerAgentProcess
 from .worker import WorkerAgent, WorkerConfig
 from .worker_process import WorkerAgentProcess
 
+# 简短别名（兼容性）
+Planner = PlannerAgent
+Worker = WorkerAgent
+Reviewer = ReviewerAgent
+
 __all__ = [
     # 原版（协程）
     "PlannerAgent",
@@ -25,4 +30,8 @@ __all__ = [
     "PlannerAgentProcess",
     "WorkerAgentProcess",
     "ReviewerAgentProcess",
+    # 简短别名
+    "Planner",
+    "Worker",
+    "Reviewer",
 ]

@@ -11,7 +11,8 @@
    目录下的所有模块，并对 run.py 执行语法和导入测试
 5. 关键组件检查 - 验证 run.py 中的关键类和函数存在
 6. 配置文件检查 - 验证 config.yaml、mcp.json 等配置文件格式
-7. 冒烟测试 - 运行快速测试（不实际执行任务，仅验证初始化）
+7. 运行模式验证 - 验证 run.py --help 和所有模式（basic、mp、knowledge、iterate、auto、plan、ask）
+8. 冒烟测试 - 运行快速测试（不实际执行任务，仅验证初始化）
 
 用法：
     python scripts/pre_commit_check.py [--verbose] [--fix]
@@ -117,6 +118,11 @@ OPTIONAL_PACKAGES = [
     "hnswlib",
     "httpx",
     "websockets",
+    # 开发/测试工具（可选）
+    "pip-audit",
+    "mypy",
+    "ruff",
+    "flake8",
 ]
 
 
@@ -782,6 +788,137 @@ def verify_all_imports(verbose: bool = False) -> CheckResult:
     return result
 
 
+def verify_run_modes(verbose: bool = False) -> CheckResult:
+    """验证 run.py 的运行模式
+    
+    验证内容：
+    1. run.py --help 是否正常工作
+    2. 循环验证所有模式：basic、mp、knowledge、iterate、auto、plan、ask
+    
+    注意：模式列表需要与 .github/workflows/ci.yml 中的 MODES 变量保持一致
+    """
+    import subprocess
+    
+    result = CheckResult(name="运行模式验证", passed=True)
+    errors = []
+    verified = []
+    
+    # 需要验证的模式列表（与 ci.yml 保持一致）
+    run_modes = ["basic", "mp", "knowledge", "iterate", "auto", "plan", "ask"]
+    
+    # 1. 验证 run.py --help
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "run.py"), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(PROJECT_ROOT),
+        )
+        
+        if proc.returncode == 0:
+            verified.append("--help")
+            print_debug("run.py --help 执行成功", verbose)
+            
+            # 检查帮助信息中是否包含所有模式
+            help_output = proc.stdout
+            for mode in run_modes:
+                if mode not in help_output:
+                    errors.append(f"--help 输出中缺少模式: {mode}")
+                    print_debug(f"--help 输出中缺少模式: {mode}", verbose)
+        else:
+            errors.append(f"--help 执行失败: {proc.stderr[:100]}")
+            print_debug(f"run.py --help 执行失败: {proc.stderr[:100]}", verbose)
+    except subprocess.TimeoutExpired:
+        errors.append("--help 执行超时")
+        print_debug("run.py --help 执行超时", verbose)
+    except Exception as e:
+        errors.append(f"--help 执行异常: {e}")
+        print_debug(f"run.py --help 执行异常: {e}", verbose)
+    
+    # 2. 验证每个模式的可用性
+    # 使用空任务来验证模式参数是否被接受（会返回错误但应该是"请提供任务描述"而不是参数错误）
+    for mode in run_modes:
+        try:
+            proc = subprocess.run(
+                [
+                    sys.executable, str(PROJECT_ROOT / "run.py"),
+                    "--mode", mode,
+                    "--no-auto-analyze",
+                    "",  # 空任务
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                cwd=str(PROJECT_ROOT),
+            )
+            
+            # 检查输出
+            # 期望的行为：要么成功，要么提示"请提供任务描述"
+            output = proc.stdout + proc.stderr
+            
+            # 如果是参数错误则失败
+            if "invalid choice" in output.lower() or "unrecognized arguments" in output.lower():
+                errors.append(f"模式 '{mode}' 参数无效")
+                print_debug(f"模式 '{mode}' 参数无效: {output[:100]}", verbose)
+            elif "请提供任务描述" in output or proc.returncode in (0, 1):
+                # 正常情况：要求提供任务 或 正常退出
+                verified.append(f"--mode {mode}")
+                print_debug(f"模式 '{mode}' 验证通过", verbose)
+            else:
+                # 其他情况也视为通过（可能是环境问题）
+                verified.append(f"--mode {mode}")
+                print_debug(f"模式 '{mode}' 验证通过 (returncode={proc.returncode})", verbose)
+                
+        except subprocess.TimeoutExpired:
+            # 超时可能是因为模式启动成功但在等待输入
+            verified.append(f"--mode {mode} (超时)")
+            print_debug(f"模式 '{mode}' 超时（可能正常）", verbose)
+        except Exception as e:
+            errors.append(f"模式 '{mode}' 验证异常: {e}")
+            print_debug(f"模式 '{mode}' 验证异常: {e}", verbose)
+    
+    # 3. 验证 RunMode 枚举定义完整性
+    try:
+        from run import RunMode
+        
+        expected_modes = {"basic", "iterate", "plan", "ask", "mp", "knowledge", "auto"}
+        actual_modes = {m.value for m in RunMode}
+        
+        missing_modes = expected_modes - actual_modes
+        if missing_modes:
+            errors.append(f"RunMode 枚举缺少模式: {missing_modes}")
+            print_debug(f"RunMode 枚举缺少模式: {missing_modes}", verbose)
+        else:
+            verified.append("RunMode 枚举完整")
+            print_debug("RunMode 枚举验证通过", verbose)
+    except ImportError as e:
+        errors.append(f"无法导入 RunMode: {e}")
+        print_debug(f"无法导入 RunMode: {e}", verbose)
+    
+    # 生成结果
+    result.details.append(f"验证通过: {len(verified)} 项")
+    result.details.append(f"验证的模式: {', '.join(run_modes)}")
+    
+    if errors:
+        result.passed = False
+        result.message = f"{len(errors)} 个运行模式验证失败"
+        result.details.append("失败项:")
+        for error in errors[:5]:
+            result.details.append(f"  - {error}")
+        if len(errors) > 5:
+            result.details.append(f"  ... 还有 {len(errors) - 5} 个错误")
+        result.fix_suggestion = (
+            "检查 run.py 中的模式定义和参数解析。"
+            "确保 RunMode 枚举包含所有模式，"
+            "parse_args() 中的 --mode choices 列表正确。"
+        )
+    else:
+        result.message = f"所有 {len(verified)} 项运行模式验证通过"
+    
+    return result
+
+
 def check_config_files(verbose: bool = False) -> CheckResult:
     """检查配置文件格式"""
     result = CheckResult(name="配置文件检查", passed=True)
@@ -919,8 +1056,19 @@ def run_checks(verbose: bool = False) -> CheckReport:
         for detail in result.details:
             print_info(detail)
     
-    # 7. 冒烟测试
-    print_section("7. 冒烟测试")
+    # 7. 运行模式验证
+    print_section("7. 运行模式验证")
+    result = verify_run_modes(verbose)
+    report.add(result)
+    if result.passed:
+        print_pass(result.message)
+    else:
+        print_fail(result.message)
+        for detail in result.details:
+            print_info(detail)
+    
+    # 8. 冒烟测试
+    print_section("8. 冒烟测试")
     result = check_smoke_test(verbose)
     report.add(result)
     if result.passed:

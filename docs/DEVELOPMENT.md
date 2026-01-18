@@ -10,6 +10,7 @@
 - [运行时验证 vs 静态分析](#运行时验证-vs-静态分析)
 - [预提交检查流程](#预提交检查流程)
 - [常见问题和解决方案](#常见问题和解决方案)
+- [异步代码最佳实践](#异步代码最佳实践)
 - [模块依赖关系图](#模块依赖关系图)
 
 ---
@@ -639,6 +640,390 @@ shutil.rmtree('.cursor/vector_index/', ignore_errors=True)
 # 或使用不同的集合名称
 config = IndexConfig(collection_name="new_collection")
 ```
+
+---
+
+## 异步代码最佳实践
+
+本项目大量使用异步编程模式。本章节提供事件循环管理、异步函数调用的最佳实践指南。
+
+### 事件循环管理指南
+
+#### 核心原则
+
+1. **一个线程只有一个运行中的事件循环**
+2. **避免在已有事件循环的上下文中调用 `asyncio.run()`**
+3. **优先使用 `await` 而非创建新的事件循环**
+
+#### 事件循环生命周期
+
+```python
+import asyncio
+
+# ✅ 正确：了解事件循环的状态
+def check_event_loop():
+    try:
+        loop = asyncio.get_running_loop()
+        print(f"当前有运行中的事件循环: {loop}")
+        return True
+    except RuntimeError:
+        print("当前没有运行中的事件循环")
+        return False
+```
+
+### 何时使用 asyncio.run() vs 自定义事件循环
+
+#### 使用 `asyncio.run()` 的场景
+
+适用于 **同步入口点** 调用异步代码：
+
+```python
+import asyncio
+from agents import WorkerAgent
+
+# ✅ 正确：在同步的 main 函数或脚本入口使用
+def main():
+    agent = WorkerAgent()
+    result = asyncio.run(agent.execute_task("task-001"))
+    print(result)
+
+if __name__ == "__main__":
+    main()
+```
+
+```python
+# ✅ 正确：CLI 工具的入口点
+import click
+import asyncio
+
+@click.command()
+def cli_command():
+    """同步 CLI 命令调用异步函数"""
+    asyncio.run(async_main())
+```
+
+#### 使用自定义事件循环的场景
+
+适用于需要 **精细控制** 或 **长期运行** 的服务：
+
+```python
+import asyncio
+
+# ✅ 正确：需要自定义事件循环配置时
+def run_with_custom_loop():
+    # 创建自定义事件循环
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # 配置事件循环（如设置调试模式）
+        loop.set_debug(True)
+        
+        # 运行主协程
+        loop.run_until_complete(main_coroutine())
+    finally:
+        # 确保清理
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+```
+
+```python
+# ✅ 正确：在已有事件循环中运行多个任务
+async def orchestrator_main():
+    """协调器主函数 - 管理多个并发任务"""
+    tasks = [
+        asyncio.create_task(worker_1()),
+        asyncio.create_task(worker_2()),
+        asyncio.create_task(worker_3()),
+    ]
+    
+    # 等待所有任务完成
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return results
+```
+
+#### 避免的错误模式
+
+```python
+# ❌ 错误：在异步函数中调用 asyncio.run()
+async def bad_async_function():
+    # 这会导致 "This event loop is already running" 错误
+    result = asyncio.run(another_async_function())
+    return result
+
+# ✅ 正确：直接 await
+async def good_async_function():
+    result = await another_async_function()
+    return result
+```
+
+```python
+# ❌ 错误：在异步上下文中创建新的事件循环
+async def bad_nested_loop():
+    loop = asyncio.new_event_loop()  # 不要这样做！
+    loop.run_until_complete(some_coroutine())
+
+# ✅ 正确：使用 await 或 create_task
+async def good_nested_async():
+    await some_coroutine()
+    # 或并发执行
+    task = asyncio.create_task(some_coroutine())
+    result = await task
+```
+
+### 同步/异步混合代码处理
+
+#### 从同步代码调用异步函数
+
+```python
+import asyncio
+
+class SyncWrapper:
+    """为异步类提供同步接口"""
+    
+    def __init__(self):
+        self._async_client = AsyncClient()
+    
+    def sync_method(self, param: str) -> str:
+        """同步包装方法"""
+        # 检查是否已有事件循环
+        try:
+            loop = asyncio.get_running_loop()
+            # 在已有循环中 - 不能使用 asyncio.run()
+            # 使用 run_coroutine_threadsafe 或重构代码
+            import concurrent.futures
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_client.async_method(param),
+                loop
+            )
+            return future.result(timeout=30)
+        except RuntimeError:
+            # 没有运行中的循环 - 可以安全使用 asyncio.run()
+            return asyncio.run(self._async_client.async_method(param))
+```
+
+#### 从异步代码调用同步函数
+
+```python
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+async def call_sync_from_async():
+    """在异步上下文中调用阻塞的同步函数"""
+    loop = asyncio.get_running_loop()
+    
+    # 使用线程池执行阻塞操作
+    with ThreadPoolExecutor() as executor:
+        result = await loop.run_in_executor(
+            executor,
+            blocking_sync_function,
+            arg1, arg2
+        )
+    return result
+
+def blocking_sync_function(arg1, arg2):
+    """模拟阻塞的同步操作（如 I/O、CPU 密集计算）"""
+    import time
+    time.sleep(1)  # 阻塞操作
+    return f"Result: {arg1}, {arg2}"
+```
+
+### 并发控制
+
+#### 使用 Semaphore 限制并发数
+
+```python
+import asyncio
+
+async def limited_concurrency_example():
+    """限制并发任务数量"""
+    semaphore = asyncio.Semaphore(5)  # 最多 5 个并发
+    
+    async def limited_task(task_id: int):
+        async with semaphore:
+            print(f"Task {task_id} 开始")
+            await asyncio.sleep(1)
+            print(f"Task {task_id} 完成")
+            return task_id
+    
+    # 创建 20 个任务，但同时只有 5 个在运行
+    tasks = [limited_task(i) for i in range(20)]
+    results = await asyncio.gather(*tasks)
+    return results
+```
+
+#### 使用超时控制
+
+```python
+import asyncio
+
+async def with_timeout_example():
+    """为异步操作添加超时"""
+    try:
+        # 方式 1: asyncio.timeout (Python 3.11+)
+        async with asyncio.timeout(5.0):
+            result = await long_running_task()
+            return result
+    except asyncio.TimeoutError:
+        print("操作超时")
+        return None
+
+async def with_wait_for_example():
+    """使用 wait_for（兼容旧版本）"""
+    try:
+        # 方式 2: asyncio.wait_for (Python 3.7+)
+        result = await asyncio.wait_for(
+            long_running_task(),
+            timeout=5.0
+        )
+        return result
+    except asyncio.TimeoutError:
+        print("操作超时")
+        return None
+```
+
+### 常见异步问题和解决方案
+
+#### 问题 1：RuntimeError: This event loop is already running
+
+**现象**
+```
+RuntimeError: This event loop is already running
+```
+
+**原因**：在已运行的事件循环中调用 `asyncio.run()`
+
+**解决方案**
+```python
+# ❌ 错误代码
+async def handler():
+    result = asyncio.run(other_async())  # 错误！
+
+# ✅ 解决方案 1：直接 await
+async def handler():
+    result = await other_async()
+
+# ✅ 解决方案 2：使用 nest_asyncio（仅用于特殊场景如 Jupyter）
+import nest_asyncio
+nest_asyncio.apply()  # 允许嵌套事件循环（不推荐生产使用）
+```
+
+#### 问题 2：RuntimeWarning: coroutine was never awaited
+
+**现象**
+```
+RuntimeWarning: coroutine 'xxx' was never awaited
+```
+
+**原因**：调用异步函数但未使用 `await`
+
+**解决方案**
+```python
+# ❌ 错误
+async def main():
+    result = fetch_data()  # 忘记 await，result 是协程对象
+
+# ✅ 正确
+async def main():
+    result = await fetch_data()  # 正确等待结果
+```
+
+#### 问题 3：Task was destroyed but it is pending
+
+**现象**
+```
+Task was destroyed but it is pending!
+```
+
+**原因**：任务未完成就被取消或程序退出
+
+**解决方案**
+```python
+import asyncio
+
+async def graceful_shutdown():
+    """优雅关闭所有任务"""
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    
+    for task in tasks:
+        task.cancel()
+    
+    # 等待所有任务完成取消
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+# 在程序退出时调用
+async def main():
+    try:
+        await run_application()
+    finally:
+        await graceful_shutdown()
+```
+
+#### 问题 4：异步上下文管理器未正确关闭
+
+**现象**
+```
+ResourceWarning: unclosed resource
+```
+
+**解决方案**
+```python
+import asyncio
+from contextlib import asynccontextmanager
+
+# ✅ 正确：使用 async with 确保资源关闭
+async def proper_resource_handling():
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.text()
+
+# ✅ 正确：手动管理时确保 finally 中关闭
+async def manual_handling():
+    session = aiohttp.ClientSession()
+    try:
+        response = await session.get(url)
+        return await response.text()
+    finally:
+        await session.close()  # 确保关闭
+```
+
+#### 问题 5：测试中的异步代码
+
+**解决方案**
+```python
+import pytest
+import asyncio
+
+# ✅ 正确：使用 pytest-asyncio
+@pytest.mark.asyncio
+async def test_async_function():
+    result = await async_function()
+    assert result == expected
+
+# ✅ 正确：自定义 fixture
+@pytest.fixture
+def event_loop():
+    """为测试创建事件循环"""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+# ✅ 正确：在同步测试中使用 asyncio.run
+def test_sync_wrapper():
+    result = asyncio.run(async_function())
+    assert result == expected
+```
+
+### 项目中的异步模式参考
+
+本项目中的异步代码示例位置：
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| `agents/` | `worker.py`, `planner.py` | Agent 异步执行方法 |
+| `cursor/` | `client.py`, `streaming.py` | 异步 HTTP 客户端 |
+| `coordinator/` | `orchestrator.py` | 任务协调和并发控制 |
+| `knowledge/` | `fetcher.py` | 异步网页获取 |
 
 ---
 

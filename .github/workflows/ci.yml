@@ -288,6 +288,40 @@ jobs:
             --cov-fail-under=0 \
             --timeout=60
 
+      - name: Validate run modes
+        run: |
+          echo "## run.py 运行模式验证" >> $GITHUB_STEP_SUMMARY
+          
+          # 验证 --help 参数
+          echo "验证 run.py --help..."
+          python run.py --help || { echo "❌ run.py --help 失败" >> $GITHUB_STEP_SUMMARY; exit 1; }
+          echo "✅ run.py --help 通过" >> $GITHUB_STEP_SUMMARY
+          
+          # 定义所有运行模式
+          MODES="basic mp knowledge iterate auto plan ask"
+          
+          # 循环验证每个模式
+          FAILED=0
+          for mode in $MODES; do
+            echo "验证 --mode $mode..."
+            if python run.py --mode "$mode" --help; then
+              echo "✅ --mode $mode 通过" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ --mode $mode 失败" >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+            fi
+          done
+          
+          # 如果任何模式验证失败，退出
+          if [ $FAILED -eq 1 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **运行模式验证失败**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **所有运行模式验证通过**" >> $GITHUB_STEP_SUMMARY
+
       - name: 上传覆盖率报告到 Codecov
         if: matrix.python-version == '3.11'
         uses: codecov/codecov-action@v4

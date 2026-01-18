@@ -35,6 +35,8 @@ readonly: true
 - 关键操作缺少错误处理、明确的安全漏洞
 - 接口定义不一致、未声明的依赖、模块导入失败
 - 依赖库版本不一致、动态导入路径错误
+- 事件循环管理不当（直接使用 asyncio.run() 而未处理子进程清理）
+- 未正确关闭异步资源（异步上下文管理器、aiohttp session 等）
 
 ### 中等严重性问题（建议修复）
 - 逻辑错误、性能反模式、可读性问题
@@ -80,6 +82,12 @@ readonly: true
   - 验证通过路径: ___
   - 验证失败路径: ___
 
+- [ ] **6. 事件循环管理验证**
+  - 是否使用自定义事件循环策略: ___（是/否）
+  - asyncio.run() 使用数量: ___
+  - 未关闭的异步资源: ___
+  - 结果: ___（通过/存在问题）
+
 ### 依赖审核检查
 
 - [ ] **6. 未声明依赖检查**
@@ -103,6 +111,7 @@ readonly: true
 | run.py --help | ⬜ | |
 | 依赖一致性 | ⬜ | |
 | 动态导入 | ⬜ | |
+| 事件循环管理 | ⬜ | |
 | 未声明依赖 | ⬜ | |
 | 功能重叠 | ⬜ | |
 | 已有库优先 | ⬜ | |
@@ -138,7 +147,11 @@ diff <(grep -v '^#' requirements.in | grep -v '^$' | sort) \
 # 5. 动态导入搜索
 grep -rn "importlib.import_module\|__import__\|importlib.util" --include="*.py" .
 
-# 6. 依赖检查脚本
+# 6. 事件循环管理验证
+grep -rn "asyncio\.run\|asyncio\.get_event_loop\|asyncio\.new_event_loop" --include="*.py" .
+grep -rn "aiohttp\.ClientSession\|async with\|await.*close()" --include="*.py" .
+
+# 7. 依赖检查脚本
 python scripts/check_deps.py
 ```
 
@@ -153,8 +166,8 @@ python scripts/check_deps.py
 - `issues`: 问题列表（含严重程度、类型、位置、描述、建议）
 - `import_issues`: 导入问题列表
 - `dependency_consistency`: 依赖一致性检查结果
-- `validation_checks`: 验证检查结果（包含所有 8 项检查）
+- `validation_checks`: 验证检查结果（包含所有 9 项检查）
 - `summary`: 整体评价
 - `recommendations`: 改进建议列表
 
-**重要**: 如果检查项 1-5 中任何一项失败，`overall_status` 不能为 `approved`。
+**重要**: 如果检查项 1-6 中任何一项失败，`overall_status` 不能为 `approved`。

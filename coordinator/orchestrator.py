@@ -7,7 +7,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agents.committer import CommitterAgent, CommitterConfig
 from agents.planner import PlannerAgent, PlannerConfig
@@ -27,12 +27,29 @@ if TYPE_CHECKING:
 
 class OrchestratorConfig(BaseModel):
     """编排器配置"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     working_directory: str = "."
     max_iterations: int = 10           # 最大迭代次数
     worker_pool_size: int = 3          # Worker 池大小
     enable_sub_planners: bool = True   # 是否启用子规划者
     strict_review: bool = False        # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+
+    @field_validator('cursor_config', mode='before')
+    @classmethod
+    def validate_cursor_config(cls, v: Any) -> CursorAgentConfig:
+        """处理模块重载导致的类型检查问题"""
+        if isinstance(v, CursorAgentConfig):
+            return v
+        if isinstance(v, dict):
+            return CursorAgentConfig(**v)
+        # 处理模块重载后类标识符变化的情况
+        if hasattr(v, 'model_dump'):
+            return CursorAgentConfig(**v.model_dump())
+        if hasattr(v, '__dict__'):
+            return CursorAgentConfig(**v.__dict__)
+        return v
     stream_events_enabled: bool = True   # 默认启用流式日志
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
