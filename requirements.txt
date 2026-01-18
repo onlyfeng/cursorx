@@ -1,19 +1,27 @@
 # ============================================================
 # 规划者-执行者 多Agent系统依赖
 # ============================================================
-# 按需安装方式:
-#   pip install -r requirements.txt                    # 仅核心依赖
-#   pip install -r requirements.txt -r requirements-web.txt   # 核心 + 网页处理
-#   pip install -r requirements.txt -r requirements-ml.txt    # 核心 + ML/向量
-#   pip install cursorx[all]                           # 使用 pyproject.toml 完整安装
 #
-# 或直接使用 pyproject.toml 分组安装:
-#   pip install -e .              # 核心依赖
+# 依赖分类说明:
+#   - [core]   核心依赖 - 运行时必需，最小安装
+#   - [web]    网页处理 - 知识库抓取、HTML 解析（推荐）
+#   - [ml]     可选依赖 - 语义搜索、向量存储（按需）
+#   - [dev]    开发依赖 - 代码检查、类型验证
+#   - [test]   测试依赖 - 测试框架、Mock 工具
+#
+# 按需安装方式:
+#   pip install -r requirements.txt                         # 全部依赖
+#   pip install -r requirements-optional.txt                # 仅可选依赖（ML/浏览器）
+#
+# 使用 pyproject.toml 分组安装（推荐）:
+#   pip install -e .              # 仅核心依赖
 #   pip install -e ".[web]"       # 核心 + 网页处理
 #   pip install -e ".[ml]"        # 核心 + ML/向量搜索
 #   pip install -e ".[dev]"       # 核心 + 开发工具
 #   pip install -e ".[test]"      # 核心 + 测试框架
 #   pip install -e ".[all]"       # 所有依赖
+#
+# 可选依赖详见: requirements-optional.txt
 # ============================================================
 
 # ============================================================
@@ -54,8 +62,11 @@ httpx>=0.27.0                    # 异步 HTTP 客户端
 websockets>=12.0                 # WebSocket 实时连接支持
 
 # ============================================================
-# [ml] 机器学习/向量搜索 - 语义搜索、知识库功能
+# [ml] 机器学习/向量搜索 - 语义搜索、知识库功能（可选）
 # ============================================================
+# 注意: 这些是可选依赖，不安装不影响核心功能运行
+# 完整的可选依赖列表见: requirements-optional.txt
+# 如需 GPU 加速，另需安装 torch: pip install torch
 
 sentence-transformers>=2.2.0     # 文本嵌入向量生成
 chromadb>=0.4.0                  # 向量数据库，支持持久化存储

@@ -859,6 +859,68 @@ pip-compile --dry-run requirements.in
    python -c "from agents import *; from coordinator import *; from core import *; from cursor import *"
    ```
 
+##### 事件循环管理检查点
+
+涉及异步代码修改时，必须执行以下检查：
+
+1. **检查 asyncio.run() 使用情况**
+   ```bash
+   # 搜索项目中所有 asyncio.run() 调用
+   grep -rn "asyncio\.run\|asyncio\.get_event_loop\|asyncio\.new_event_loop" --include="*.py" .
+   ```
+
+2. **验证子进程场景的事件循环管理**
+   - 涉及 `subprocess` 或 `asyncio.create_subprocess_*` 的代码
+   - 必须使用自定义事件循环管理（参见案例 7）
+   - 避免直接使用 `asyncio.run()` 处理子进程
+
+3. **检查异步资源清理**
+   ```bash
+   # 搜索可能未正确关闭的异步资源
+   grep -rn "aiohttp\.ClientSession\|httpx\.AsyncClient\|async with" --include="*.py" .
+   ```
+
+4. **验证事件循环清理逻辑**
+   - 检查 `finally` 块中是否包含任务取消逻辑
+   - 检查是否调用 `loop.shutdown_asyncgens()`
+   - 检查是否使用 `return_exceptions=True` 处理取消异常
+
+##### 多模式验证必须步骤
+
+对于支持多种运行模式的入口脚本，必须执行以下验证：
+
+1. **验证所有运行模式可正常初始化**
+   ```bash
+   # 必须逐个验证每种模式
+   python run.py --mode agent --help 2>/dev/null || echo "agent 模式验证失败"
+   python run.py --mode plan --help 2>/dev/null || echo "plan 模式验证失败"
+   python run.py --mode iterate --help 2>/dev/null || echo "iterate 模式验证失败"
+   ```
+
+2. **一键多模式验证脚本**
+   ```bash
+   # 验证所有模式的完整脚本
+   MODES="agent plan iterate"
+   FAILED=0
+   for mode in $MODES; do
+       echo "验证模式: $mode"
+       python run.py --mode $mode --help >/dev/null 2>&1
+       if [ $? -ne 0 ]; then
+           echo "✗ 模式 $mode 验证失败"
+           FAILED=1
+       else
+           echo "✓ 模式 $mode 验证通过"
+       fi
+   done
+   [ $FAILED -eq 0 ] && echo "所有模式验证通过" || exit 1
+   ```
+
+3. **为什么必须执行多模式验证**
+   - `--help` 仅验证参数解析，不触发模式特定的导入
+   - 条件导入（`if mode == "X": import Y`）不会被执行
+   - 延迟导入（函数内部导入）不会被触发
+   - 参见案例 5 和案例 6 的详细说明
+
 #### 阶段 3: 代码审核
 
 1. **自审** - 开发者自行检查代码变更
@@ -986,6 +1048,16 @@ python -c "import agents; import coordinator; import core; import cursor; print(
 
 # 6. 入口脚本验证（必须）
 python run.py --help
+
+# 7. 多模式验证（必须！）
+# 验证所有运行模式的导入和初始化
+for mode in agent plan iterate; do
+    python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 失败"
+done
+
+# 8. 事件循环管理检查（涉及异步代码时必须）
+# 检查 asyncio.run() 使用情况和异步资源管理
+grep -rn "asyncio\.run" --include="*.py" . | grep -v "test_" | head -5
 ```
 
 #### 完整检查集（推荐）
@@ -1194,4 +1266,4 @@ DeprecationWarning: function X is deprecated
 ---
 
 *文档创建日期: 2026-01-18*
-*最后更新: 2026-01-19（添加案例 7: asyncio 事件循环关闭后子进程清理错误）*
+*最后更新: 2026-01-19（添加事件循环管理检查点和多模式验证必须步骤）*

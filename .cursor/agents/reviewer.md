@@ -86,19 +86,29 @@ readonly: true
   - 是否使用自定义事件循环策略: ___（是/否）
   - asyncio.run() 使用数量: ___
   - 未关闭的异步资源: ___
+  - 子进程场景事件循环管理: ___（正确/需改进）
   - 结果: ___（通过/存在问题）
+  - 参考: `docs/LESSONS_LEARNED.md` 案例 7 和审核提交流程
+
+- [ ] **7. 多模式验证（强制）**
+  - 验证命令: `for mode in agent plan iterate; do python run.py --mode $mode --help; done`
+  - agent 模式: ___（通过/失败）
+  - plan 模式: ___（通过/失败）
+  - iterate 模式: ___（通过/失败）
+  - 结果: ___（全部通过/存在失败）
+  - 参考: `docs/LESSONS_LEARNED.md` 审核提交流程章节
 
 ### 依赖审核检查
 
-- [ ] **6. 未声明依赖检查**
+- [ ] **8. 未声明依赖检查**
   - 命令: `python scripts/check_deps.py`
   - 未声明的第三方依赖: ___
 
-- [ ] **7. 功能重叠依赖检查**
+- [ ] **9. 功能重叠依赖检查**
   - 是否引入功能重叠的依赖: ___（是/否）
   - 建议替换: ___
 
-- [ ] **8. 优先使用已有库检查**
+- [ ] **10. 优先使用已有库检查**
   - 新增 import 是否优先使用已有库: ___（是/否）
   - 违规项: ___
 
@@ -111,12 +121,15 @@ readonly: true
 | run.py --help | ⬜ | |
 | 依赖一致性 | ⬜ | |
 | 动态导入 | ⬜ | |
-| 事件循环管理 | ⬜ | |
+| 事件循环管理 | ⬜ | 参考 LESSONS_LEARNED.md 案例 7 |
+| 多模式验证 | ⬜ | 强制检查所有运行模式 |
 | 未声明依赖 | ⬜ | |
 | 功能重叠 | ⬜ | |
 | 已有库优先 | ⬜ | |
 
 **总体状态**: ___（全部通过/存在问题）
+
+> **重要提示**: 检查项 1-7 为强制检查项，任何一项失败则 `overall_status` 不能为 `approved`。详细验证标准请参考 `docs/LESSONS_LEARNED.md` 的审核提交流程章节。
 ```
 
 ## 使用的工具
@@ -151,9 +164,17 @@ grep -rn "importlib.import_module\|__import__\|importlib.util" --include="*.py" 
 grep -rn "asyncio\.run\|asyncio\.get_event_loop\|asyncio\.new_event_loop" --include="*.py" .
 grep -rn "aiohttp\.ClientSession\|async with\|await.*close()" --include="*.py" .
 
-# 7. 依赖检查脚本
+# 7. 多模式验证（强制）
+for mode in agent plan iterate; do
+    echo "验证模式: $mode"
+    python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 验证失败"
+done
+
+# 8. 依赖检查脚本
 python scripts/check_deps.py
 ```
+
+> **参考文档**: 完整的验证标准和检查流程请参考 `docs/LESSONS_LEARNED.md` 的审核提交流程章节。
 
 ## 输出格式
 
@@ -166,8 +187,10 @@ python scripts/check_deps.py
 - `issues`: 问题列表（含严重程度、类型、位置、描述、建议）
 - `import_issues`: 导入问题列表
 - `dependency_consistency`: 依赖一致性检查结果
-- `validation_checks`: 验证检查结果（包含所有 9 项检查）
+- `validation_checks`: 验证检查结果（包含所有 10 项检查）
+- `event_loop_check`: 事件循环管理检查结果
+- `multi_mode_check`: 多模式验证检查结果
 - `summary`: 整体评价
 - `recommendations`: 改进建议列表
 
-**重要**: 如果检查项 1-6 中任何一项失败，`overall_status` 不能为 `approved`。
+**重要**: 如果检查项 1-7 中任何一项失败，`overall_status` 不能为 `approved`。

@@ -43,6 +43,51 @@ python -c "from core import BaseAgent; print('核心模块加载成功')"
 python -c "from agents import PlannerAgent; print('Agent 模块加载成功')"
 ```
 
+### 依赖管理
+
+项目依赖分为**核心依赖**和**可选依赖**两类：
+
+#### 依赖文件说明
+
+| 文件 | 说明 | 用途 |
+|------|------|------|
+| `requirements.txt` | 完整依赖列表 | 包含所有功能的依赖 |
+| `requirements.in` | 核心依赖源文件 | pip-compile 输入 |
+| `requirements-optional.txt` | 可选依赖 | ML/向量搜索、浏览器自动化 |
+| `requirements-dev.in` | 开发依赖源文件 | 代码检查、类型验证 |
+| `requirements-test.in` | 测试依赖源文件 | 测试框架、Mock |
+
+#### 按需安装
+
+```bash
+# 方式 1: 使用 requirements 文件
+pip install -r requirements.txt                  # 全部依赖
+pip install -r requirements-optional.txt         # 仅可选依赖（ML/浏览器）
+
+# 方式 2: 使用 pyproject.toml 分组安装（推荐）
+pip install -e .              # 仅核心依赖（最小安装）
+pip install -e ".[web]"       # 核心 + 网页处理
+pip install -e ".[ml]"        # 核心 + ML/向量搜索
+pip install -e ".[dev]"       # 核心 + 开发工具
+pip install -e ".[test]"      # 核心 + 测试框架
+pip install -e ".[all]"       # 所有依赖
+```
+
+#### 可选依赖列表
+
+| 依赖 | 分组 | 用途 | 安装命令 |
+|------|------|------|----------|
+| `torch` | ml | GPU 加速、深度学习 | `pip install torch` |
+| `sentence-transformers` | ml | 本地嵌入模型 | `pip install sentence-transformers` |
+| `chromadb` | ml | 向量数据库 | `pip install chromadb` |
+| `numpy` | ml | 数值计算 | `pip install numpy` |
+| `playwright` | browser | 网页渲染、JS 执行 | `pip install playwright && playwright install chromium` |
+
+#### 核心依赖与可选依赖的区别
+
+- **核心依赖**: 运行 Agent 系统必需的最小依赖集，不安装会导致程序无法启动
+- **可选依赖**: 特定功能所需，不安装不影响基础功能，代码中使用 `try-except` 处理
+
 ### Cursor CLI 安装
 
 ```bash
@@ -364,6 +409,15 @@ bash scripts/check_all.sh
 ### 4. 详细说明
 
 遇到问题时，请参阅 [LESSONS_LEARNED.md](LESSONS_LEARNED.md) 获取详细的经验教训和解决方案。
+
+### 5. 审核提交流程参考
+
+完整的审核提交流程请参阅 [LESSONS_LEARNED.md 的审核提交流程章节](LESSONS_LEARNED.md#审核提交流程)，包含：
+
+- **事件循环管理检查点**：涉及异步代码时的必需检查
+- **多模式验证必须步骤**：入口脚本多模式初始化验证
+- **自动化检查工具整合**：工具链执行顺序和配置
+- **常见失败场景排查**：问题诊断和解决方案
 
 ---
 
