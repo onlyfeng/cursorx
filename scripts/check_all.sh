@@ -742,6 +742,45 @@ check_main_entries() {
     done
 }
 
+check_run_modes() {
+    print_section "运行模式检查"
+
+    # 检查 run.py 是否存在
+    if [ ! -f "run.py" ]; then
+        check_fail "run.py 不存在"
+        return 1
+    fi
+
+    # 验证 run.py --help
+    if python3 run.py --help &>/dev/null; then
+        check_pass "python run.py --help 可用"
+    else
+        check_fail "python run.py --help 失败"
+        return 1
+    fi
+
+    # 定义运行模式
+    RUN_MODES=("basic" "iterate" "plan" "ask")
+    MODE_ERRORS=0
+
+    # 循环验证所有模式
+    for mode in "${RUN_MODES[@]}"; do
+        if python3 run.py --mode "$mode" --help &>/dev/null; then
+            check_pass "运行模式可用: --mode $mode"
+        else
+            check_fail "运行模式失败: --mode $mode"
+            ((MODE_ERRORS++))
+        fi
+    done
+
+    # 汇总结果
+    if [ $MODE_ERRORS -eq 0 ]; then
+        check_info "所有运行模式验证通过 (${#RUN_MODES[@]} 个模式)"
+    else
+        check_warn "有 $MODE_ERRORS 个运行模式验证失败"
+    fi
+}
+
 # ============================================================
 # 主程序
 # ============================================================
@@ -767,6 +806,7 @@ main() {
     check_imports
     check_directories
     check_main_entries
+    check_run_modes
     check_config
     check_git
     check_agent_cli

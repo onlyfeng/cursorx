@@ -23,7 +23,7 @@ from typing import Any, Callable, Optional, Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from cursor.executor import AgentResult, ExecutionMode

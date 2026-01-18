@@ -398,6 +398,138 @@ if TYPE_CHECKING:
 
 ---
 
+### 案例 7: asyncio 事件循环关闭后子进程清理错误
+
+**问题描述**
+
+`asyncio.run()` 在 Python 3.10+ 中关闭事件循环后，如果有子进程的 `__del__` 方法尝试清理资源，会触发 `RuntimeError: Event loop is closed` 错误。这是因为 `asyncio.run()` 在返回前会关闭事件循环，但子进程对象的析构函数仍需要访问事件循环来完成清理工作。
+
+**问题现象**
+```python
+# 原代码使用 asyncio.run()
+def main():
+    asyncio.run(async_main())  # 返回后事件循环已关闭
+
+# 运行时错误
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x...>
+RuntimeError: Event loop is closed
+```
+
+**影响范围**
+- 所有使用 `subprocess` 和 `asyncio` 的代码路径
+- 涉及子进程创建的异步操作（如调用外部命令、agent CLI）
+- Python 3.10+ 环境更容易触发此问题
+
+**修复方案**
+
+使用 `asyncio.new_event_loop()` 创建自定义事件循环，在 `finally` 块中正确清理待处理任务后再关闭循环。
+
+**代码示例**
+
+修复前（`run.py` 原代码）：
+```python
+def main() -> None:
+    """主函数"""
+    try:
+        exit_code = asyncio.run(async_main())  # 问题：事件循环关闭过早
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\n操作已取消")
+        sys.exit(130)
+```
+
+修复后（`run.py` 当前代码）：
+```python
+def main() -> None:
+    """主函数"""
+    try:
+        # 使用自定义事件循环运行，避免子进程清理时的事件循环关闭错误
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            exit_code = loop.run_until_complete(async_main())
+        finally:
+            # 清理待处理的任务
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # 等待所有任务完成
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\n操作已取消")
+        sys.exit(130)
+```
+
+**关键修复点**
+
+1. **使用 `asyncio.new_event_loop()` 创建自定义事件循环**
+   - 提供对事件循环生命周期的完全控制
+   - 避免 `asyncio.run()` 自动关闭循环导致的问题
+
+2. **在 `finally` 块中正确清理**
+   - 取消所有待处理的任务（`asyncio.all_tasks(loop)`）
+   - 等待任务完成（`asyncio.gather(*pending, return_exceptions=True)`）
+   - 关闭异步生成器（`loop.shutdown_asyncgens()`）
+   - 最后关闭事件循环（`loop.close()`）
+
+3. **使用 `return_exceptions=True`**
+   - 确保即使某些任务抛出异常也能完成清理
+   - 避免清理过程中的异常传播
+
+**预防措施**
+
+1. **避免直接使用 `asyncio.run()`**（如果涉及子进程）
+   ```python
+   # 不推荐
+   asyncio.run(main())
+   
+   # 推荐：自定义事件循环管理
+   loop = asyncio.new_event_loop()
+   asyncio.set_event_loop(loop)
+   try:
+       result = loop.run_until_complete(main())
+   finally:
+       # 清理代码...
+       loop.close()
+   ```
+
+2. **封装事件循环管理逻辑**
+   ```python
+   def run_async_safely(coro):
+       """安全运行异步协程，正确处理事件循环清理"""
+       loop = asyncio.new_event_loop()
+       asyncio.set_event_loop(loop)
+       try:
+           return loop.run_until_complete(coro)
+       finally:
+           pending = asyncio.all_tasks(loop)
+           for task in pending:
+               task.cancel()
+           if pending:
+               loop.run_until_complete(
+                   asyncio.gather(*pending, return_exceptions=True)
+               )
+           loop.run_until_complete(loop.shutdown_asyncgens())
+           loop.close()
+   ```
+
+3. **测试时注意子进程场景**
+   - 涉及 `subprocess.run()` 或 `asyncio.create_subprocess_*` 的测试
+   - 确保测试覆盖正常退出和异常退出场景
+
+**经验教训**
+- `asyncio.run()` 虽然方便，但在涉及子进程时可能导致清理问题
+- Python 3.10+ 对事件循环的生命周期管理更严格
+- 异步代码的资源清理需要显式处理，不能依赖 Python 的垃圾回收
+- 当遇到 `Event loop is closed` 错误时，优先检查事件循环的生命周期管理
+
+---
+
 ## 根因分析
 
 ### 共同问题模式
@@ -411,6 +543,7 @@ if TYPE_CHECKING:
 | **循环导入** | 模块间相互导入造成初始化失败 | - | 导入测试、依赖图分析 |
 | **动态导入遗漏** | 条件/延迟导入的依赖未被静态验证发现 | 案例5 | 运行时多模式验证 |
 | **多模式验证缺失** | 入口脚本仅验证部分模式 | 案例6 | 全模式启动测试 |
+| **事件循环生命周期** | asyncio 事件循环关闭后子进程清理失败 | 案例7 | 自定义事件循环管理 |
 
 ### 根本原因
 
@@ -1061,4 +1194,4 @@ DeprecationWarning: function X is deprecated
 ---
 
 *文档创建日期: 2026-01-18*
-*最后更新: 2026-01-19（添加案例 5、6: 动态导入与多模式验证；新增规则 4: run.py 多模式验证）*
+*最后更新: 2026-01-19（添加案例 7: asyncio 事件循环关闭后子进程清理错误）*
