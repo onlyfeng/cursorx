@@ -24,7 +24,15 @@ from typing import Any, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from cursor.streaming import StreamEventLogger, StreamEventType, parse_stream_event
+from cursor.streaming import (
+    AdvancedTerminalRenderer,
+    StreamEvent,
+    StreamEventLogger,
+    StreamEventType,
+    StreamRenderer,
+    TerminalStreamRenderer,
+    parse_stream_event,
+)
 
 
 class CursorAgentConfig(BaseModel):
@@ -111,6 +119,51 @@ class CursorAgentConfig(BaseModel):
     stream_agent_id: Optional[str] = None
     stream_agent_role: Optional[str] = None
     stream_agent_name: Optional[str] = None
+
+    # 流式日志聚合配置
+    # - True: ASSISTANT 消息聚合后写入 detail 日志（减少日志碎片）
+    # - False: 每条 ASSISTANT 消息立即写入（保持向后兼容）
+    stream_log_aggregate: bool = True
+
+    # 流式控制台渲染器配置
+    # - True: 使用 TerminalStreamRenderer 进行结构化控制台输出
+    # - False: 使用 StreamEventLogger 的默认控制台输出（保持向后兼容）
+    stream_console_renderer: bool = False
+
+    # TerminalStreamRenderer 详细输出模式（仅 stream_console_renderer=True 时生效）
+    stream_console_verbose: bool = False
+
+    # 流式控制台渲染模式（仅 stream_console_renderer=True 时生效）
+    # - "streaming": 流式输出模式，实时显示内容增量
+    # - "simple": 简单模式，仅显示关键事件
+    # - "silent": 静默模式，不输出控制台内容
+    stream_console_mode: str = "streaming"
+
+    # 是否启用打字机效果（仅 stream_console_renderer=True 时生效）
+    # - True: 逐字符输出，模拟打字效果
+    # - False: 直接输出完整内容
+    stream_typing_effect: bool = False
+
+    # 打字延迟（秒）- 控制打字效果的速度
+    stream_typing_delay: float = 0.02
+
+    # 逐词还是逐字符模式
+    # - True: 逐词输出
+    # - False: 逐字符输出
+    stream_word_mode: bool = True
+
+    # 是否启用颜色输出（仅 stream_console_renderer=True 时生效）
+    # - True: 使用 ANSI 颜色代码进行语法高亮和状态区分
+    # - False: 纯文本输出，适合无颜色支持的终端
+    stream_color_enabled: bool = True
+
+    # 是否使用高级终端渲染器（仅 stream_console_renderer=True 时生效）
+    # - True: 使用 AdvancedTerminalRenderer（支持状态栏、逐词显示等高级功能）
+    # - False: 使用 TerminalStreamRenderer（基础渲染器）
+    stream_advanced_renderer: bool = False
+
+    # 是否显示状态栏（仅 stream_advanced_renderer=True 时生效）
+    stream_show_status_bar: bool = True
 
     # 是否使用非交互模式（-p 参数）
     # 非交互模式下，Agent 具有完全写入权限
@@ -465,44 +518,121 @@ class CursorAgentClient:
             return None
 
     def _build_stream_logger(self) -> Optional[StreamEventLogger]:
-        """构建流式事件日志器（可选）"""
+        """构建流式事件日志器（可选）
+
+        根据配置项控制日志聚合和控制台渲染方式：
+        - stream_log_aggregate: 控制 ASSISTANT 消息是否聚合后写入
+        - stream_console_renderer: 是否使用 TerminalStreamRenderer
+        - stream_console_verbose: TerminalStreamRenderer 详细模式
+        """
         if not self.config.stream_events_enabled:
             return None
+
+        # 控制台输出：如果使用 TerminalStreamRenderer，则 StreamEventLogger 不输出到控制台
+        # TerminalStreamRenderer 会单独处理控制台输出
+        console_output = self.config.stream_log_console
+        if self.config.stream_console_renderer:
+            # 使用 TerminalStreamRenderer 时，StreamEventLogger 不输出到控制台
+            console_output = False
+
         return StreamEventLogger(
             agent_id=self.config.stream_agent_id,
             agent_role=self.config.stream_agent_role,
             agent_name=self.config.stream_agent_name,
-            console=self.config.stream_log_console,
+            console=console_output,
             detail_dir=self.config.stream_log_detail_dir,
             raw_dir=self.config.stream_log_raw_dir,
+            aggregate_assistant_messages=self.config.stream_log_aggregate,
         )
+
+    def _build_terminal_renderer(self) -> Optional[StreamRenderer]:
+        """构建终端流式渲染器（可选）
+
+        仅当 stream_console_renderer=True 时返回渲染器实例。
+        根据配置选择使用基础渲染器或高级渲染器：
+        - stream_advanced_renderer=True: 使用 AdvancedTerminalRenderer
+        - stream_advanced_renderer=False: 使用 TerminalStreamRenderer
+
+        Returns:
+            StreamRenderer 实例，如果未启用则返回 None
+        """
+        if not self.config.stream_console_renderer:
+            return None
+
+        if self.config.stream_advanced_renderer:
+            # 使用高级渲染器，支持状态栏、打字效果等
+            return AdvancedTerminalRenderer(
+                use_color=self.config.stream_color_enabled,
+                typing_delay=self.config.stream_typing_delay if self.config.stream_typing_effect else 0.0,
+                word_mode=self.config.stream_word_mode,
+                show_status_bar=self.config.stream_show_status_bar,
+            )
+        else:
+            # 使用基础渲染器
+            return TerminalStreamRenderer(verbose=self.config.stream_console_verbose)
 
     async def _handle_stream_json_process(
         self,
         process: asyncio.subprocess.Process,
         timeout: int,
     ) -> dict[str, Any]:
-        """处理 stream-json 输出"""
+        """处理 stream-json 输出
+
+        使用 StreamRenderer 接口进行控制台渲染，日志记录与渲染解耦。
+        对于 AdvancedTerminalRenderer 特有的 start/finish 方法，
+        通过鸭子类型（hasattr）检查进行处理。
+        """
         stream_logger = self._build_stream_logger()
+        terminal_renderer = self._build_terminal_renderer()
         deadline = asyncio.get_event_loop().time() + timeout
         assistant_chunks: list[str] = []
         fallback_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
+        # 渲染器状态跟踪
+        tool_count = 0
+        diff_count = 0
+        accumulated_text_len = 0
+
         stderr_task = asyncio.create_task(
             self._collect_stream(process.stderr, deadline, stderr_chunks)
         )
 
+        # 调用高级渲染器的 start 方法（如果存在）
+        if terminal_renderer and hasattr(terminal_renderer, 'start'):
+            terminal_renderer.start()
+
         try:
             async for line in self._read_stream_lines(process.stdout, deadline, strip_line=True):
+                # 日志记录（与渲染解耦）
                 if stream_logger:
                     stream_logger.handle_raw_line(line)
 
                 event = parse_stream_event(line)
                 if event:
+                    # 日志处理
                     if stream_logger:
                         stream_logger.handle_event(event)
 
+                    # 使用 StreamRenderer 接口渲染控制台输出
+                    if terminal_renderer:
+                        self._render_event_to_terminal(
+                            terminal_renderer,
+                            event,
+                            tool_count,
+                            diff_count,
+                            accumulated_text_len,
+                        )
+
+                        # 更新计数器（渲染方法会使用这些值）
+                        if event.type == StreamEventType.TOOL_STARTED:
+                            tool_count += 1
+                        elif event.type in (StreamEventType.DIFF_STARTED, StreamEventType.DIFF):
+                            diff_count += 1
+                        if event.type == StreamEventType.ASSISTANT and event.content:
+                            accumulated_text_len += len(event.content)
+
+                    # 收集输出内容
                     if event.type == StreamEventType.ASSISTANT:
                         if event.content:
                             assistant_chunks.append(event.content)
@@ -523,6 +653,11 @@ class CursorAgentClient:
             except Exception as e:
                 logger.warning(f"读取 stderr 失败: {e}")
 
+            # 调用高级渲染器的 finish 方法（如果存在）
+            if terminal_renderer and hasattr(terminal_renderer, 'finish'):
+                terminal_renderer.finish()
+
+            # 关闭日志记录器
             if stream_logger:
                 stream_logger.close()
 
@@ -558,6 +693,60 @@ class CursorAgentClient:
             "exit_code": process.returncode,
             "command": cmd_desc,
         }
+
+    def _render_event_to_terminal(
+        self,
+        renderer: StreamRenderer,
+        event: StreamEvent,
+        tool_count: int,
+        diff_count: int,
+        accumulated_text_len: int,
+    ) -> None:
+        """将事件渲染到终端
+
+        使用 StreamRenderer 接口方法进行渲染。
+        对于 AdvancedTerminalRenderer 的 render_event 方法，
+        通过鸭子类型检查直接调用。
+
+        Args:
+            renderer: StreamRenderer 实例
+            event: 流式事件
+            tool_count: 工具调用计数
+            diff_count: 差异操作计数
+            accumulated_text_len: 累积文本长度
+        """
+        # 如果渲染器支持 render_event 方法（如 AdvancedTerminalRenderer），
+        # 直接使用该方法处理所有事件
+        if hasattr(renderer, 'render_event'):
+            renderer.render_event(event)
+            return
+
+        # 否则使用 StreamRenderer 接口方法
+        if event.type == StreamEventType.SYSTEM_INIT:
+            renderer.render_init(event.model)
+        elif event.type == StreamEventType.ASSISTANT:
+            if event.content:
+                new_len = accumulated_text_len + len(event.content)
+                renderer.render_assistant(event.content, new_len)
+        elif event.type == StreamEventType.TOOL_STARTED:
+            renderer.render_tool_started(tool_count + 1, event.tool_call)
+        elif event.type == StreamEventType.TOOL_COMPLETED:
+            renderer.render_tool_completed(event.tool_call)
+        elif event.type == StreamEventType.DIFF_STARTED:
+            renderer.render_diff_started(diff_count + 1, event.tool_call)
+        elif event.type == StreamEventType.DIFF_COMPLETED:
+            renderer.render_diff_completed(
+                event.tool_call, event.diff_info, show_diff=True
+            )
+        elif event.type == StreamEventType.DIFF:
+            renderer.render_diff(diff_count + 1, event.diff_info, show_diff=True)
+        elif event.type == StreamEventType.RESULT:
+            renderer.render_result(
+                event.duration_ms, tool_count, accumulated_text_len
+            )
+        elif event.type == StreamEventType.ERROR:
+            error = event.data.get("error", "未知错误")
+            renderer.render_error(error)
 
     async def _wait_process_with_deadline(
         self,
