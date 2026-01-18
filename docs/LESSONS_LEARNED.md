@@ -302,7 +302,7 @@ pytest tests/test_e2e_*.py -v
 
 **问题描述**
 
-`run.py` 支持多种运行模式（agent、plan、iterate、cloud 等），每种模式可能有不同的依赖路径。仅验证 `--help` 无法确保所有模式的依赖都已正确声明。
+`run.py` 支持多种运行模式（basic、mp、iterate、plan、ask 等，参见 `MODE_ALIASES`），每种模式可能有不同的依赖路径。仅验证 `--help` 无法确保所有模式的依赖都已正确声明。
 
 **问题现象**
 ```python
@@ -594,8 +594,8 @@ check_run_modes() {
         return 1
     fi
 
-    # 定义运行模式
-    RUN_MODES=("basic" "iterate" "plan" "ask")
+    # 定义运行模式（需与 run.py 中的 MODE_ALIASES 保持一致）
+    RUN_MODES=("basic" "mp" "iterate" "plan" "ask")
     MODE_ERRORS=0
 
     # 循环验证所有模式
@@ -661,6 +661,120 @@ done
 
 ---
 
+### 案例 9: 文档与代码模式名不一致
+
+**问题描述**
+
+文档中使用的模式名与代码中实际定义的模式别名不一致，导致按文档执行验证命令时失败。例如，文档中使用 `agent` 作为模式名，但代码中定义的是 `basic`。
+
+**问题现象**
+```bash
+# 文档中的示例（错误的模式名）
+python run.py --mode agent --help
+# 错误: 'agent' 不是有效的模式选项
+
+# 正确的模式名（来自代码中的 MODE_ALIASES）
+python run.py --mode basic --help
+# 成功执行
+```
+
+**影响范围**
+- 用户按文档操作时遇到错误，降低信任度
+- 验证脚本使用错误的模式名导致检查无效
+- 新成员按文档学习时产生混淆
+
+**根因分析**
+
+代码中的模式定义（`run.py`）：
+```python
+# RunMode 枚举
+class RunMode(str, Enum):
+    BASIC = "basic"           # 基本协程模式
+    MP = "mp"                 # 多进程模式
+    ITERATE = "iterate"       # 自我迭代模式
+    KNOWLEDGE = "knowledge"   # 知识库增强模式
+    AUTO = "auto"             # 自动模式
+    PLAN = "plan"             # 规划模式（仅分析）
+    ASK = "ask"               # 问答模式
+
+# 模式别名映射
+MODE_ALIASES = {
+    "default": RunMode.BASIC,
+    "basic": RunMode.BASIC,
+    "simple": RunMode.BASIC,
+    "mp": RunMode.MP,
+    "multiprocess": RunMode.MP,
+    "parallel": RunMode.MP,
+    "knowledge": RunMode.KNOWLEDGE,
+    "kb": RunMode.KNOWLEDGE,
+    "docs": RunMode.KNOWLEDGE,
+    "iterate": RunMode.ITERATE,
+    "self-iterate": RunMode.ITERATE,
+    "self": RunMode.ITERATE,
+    "update": RunMode.ITERATE,
+    "auto": RunMode.AUTO,
+    "smart": RunMode.AUTO,
+    "plan": RunMode.PLAN,
+    "planning": RunMode.PLAN,
+    "analyze": RunMode.PLAN,
+    "ask": RunMode.ASK,
+    "chat": RunMode.ASK,
+    "question": RunMode.ASK,
+    "q": RunMode.ASK,
+}
+```
+
+**正确的模式名列表**
+
+| 主模式名 | 可用别名 | 描述 |
+|---------|---------|------|
+| `basic` | `default`, `simple` | 基本协程模式 |
+| `mp` | `multiprocess`, `parallel` | 多进程模式 |
+| `iterate` | `self-iterate`, `self`, `update` | 自我迭代模式 |
+| `knowledge` | `kb`, `docs` | 知识库增强模式 |
+| `auto` | `smart` | 自动模式（智能选择） |
+| `plan` | `planning`, `analyze` | 规划模式（仅分析） |
+| `ask` | `chat`, `question`, `q` | 问答模式 |
+
+**修复方案**
+
+1. **统一文档中的模式名**
+   ```bash
+   # 使用代码中定义的主模式名
+   for mode in basic mp iterate plan ask; do
+       python run.py --mode $mode --help
+   done
+   ```
+
+2. **文档中添加模式别名说明**
+   - 在使用模式名的地方添加注释说明参考来源
+   - 提供完整的模式别名参考表
+
+3. **建立文档与代码同步机制**
+   - 模式定义变更时，同步更新相关文档
+   - 考虑从代码自动生成模式文档
+
+**验证命令最佳实践**
+
+```bash
+# 推荐：使用主模式名进行验证
+MODES="basic mp iterate plan ask"
+for mode in $MODES; do
+    python run.py --mode $mode --help 2>/dev/null || echo "模式 $mode 验证失败"
+done
+
+# 不推荐：使用文档中可能过时的模式名
+# for mode in agent plan iterate; do ...
+```
+
+**经验教训**
+- 文档中的命令示例必须与代码实现保持同步
+- 使用代码中定义的主模式名（如 `basic`），而非假设名称（如 `agent`）
+- 修改代码中的模式定义后，必须更新所有相关文档
+- 验证脚本中的模式列表应有明确的来源说明（如注释指向 `run.py` 的 `MODE_ALIASES`）
+
+---
+
 ## 根因分析
 
 ### 共同问题模式
@@ -676,6 +790,7 @@ done
 | **多模式验证缺失** | 入口脚本仅验证部分模式 | 案例6 | 全模式启动测试 |
 | **事件循环生命周期** | asyncio 事件循环关闭后子进程清理失败 | 案例7 | 自定义事件循环管理 |
 | **单层验证不足** | 静态验证和 --help 通过但特定模式失败 | 案例8 | 逐模式 --help 验证 |
+| **文档与代码不同步** | 文档中的模式名与代码定义不一致 | 案例9 | 文档审查、验证脚本执行 |
 
 ### 根本原因
 
@@ -1403,4 +1518,4 @@ DeprecationWarning: function X is deprecated
 ---
 
 *文档创建日期: 2026-01-18*
-*最后更新: 2026-01-19（添加案例 8：多模式入口脚本验证策略）*
+*最后更新: 2026-01-19（添加案例 9：文档与代码模式名不一致；更新所有验证命令使用正确的模式别名）*
