@@ -1019,7 +1019,21 @@ async def async_main() -> int:
 def main() -> None:
     """主函数"""
     try:
-        exit_code = asyncio.run(async_main())
+        # 使用自定义事件循环运行，避免子进程清理时的事件循环关闭错误
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            exit_code = loop.run_until_complete(async_main())
+        finally:
+            # 清理待处理的任务
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            # 等待所有任务完成
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
         sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\n操作已取消")
