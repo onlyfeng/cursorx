@@ -20,8 +20,9 @@ class TestOrchestratorConfig:
         assert config.worker_pool_size == 3
         assert config.enable_sub_planners is True
         assert config.strict_review is False
-        assert config.stream_events_enabled is False
+        assert config.stream_events_enabled is True  # 默认启用
         assert config.stream_log_console is True
+        assert config.enable_auto_commit is True  # 默认启用自动提交
         assert config.stream_log_detail_dir == "logs/stream_json/detail/"
         assert config.stream_log_raw_dir == "logs/stream_json/raw/"
 
@@ -150,12 +151,13 @@ class TestAgentRegistration:
             assert orchestrator.state.agents[worker.id].role == AgentRole.WORKER
 
     def test_total_agents_count(self) -> None:
-        """验证总 Agent 数量正确（1 planner + 1 reviewer + N workers）"""
+        """验证总 Agent 数量正确（1 planner + 1 reviewer + N workers + 1 committer）"""
         worker_count = 4
         config = OrchestratorConfig(worker_pool_size=worker_count)
         orchestrator = Orchestrator(config)
 
-        expected_total = 1 + 1 + worker_count  # planner + reviewer + workers
+        # enable_auto_commit 默认为 True，所以会创建 committer
+        expected_total = 1 + 1 + worker_count + 1  # planner + reviewer + workers + committer
         assert len(orchestrator.state.agents) == expected_total
 
     def test_agent_initial_status(self) -> None:
