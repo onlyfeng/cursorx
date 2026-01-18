@@ -370,6 +370,41 @@ check_agent_cli() {
     fi
 }
 
+check_knowledge_base() {
+    print_section "知识库验证"
+    
+    # 检查知识库模块是否可导入
+    if PYTHONPATH=. python3 -c "from knowledge import KnowledgeManager" 2>/dev/null; then
+        check_pass "knowledge 模块可导入"
+    else
+        check_fail "knowledge 模块导入失败"
+        return 1
+    fi
+    
+    # 检查验证测试文件
+    if [ -f "tests/test_knowledge_validation.py" ]; then
+        check_pass "知识库验证测试文件存在"
+        
+        # 运行快速验证
+        echo -e "  ${BLUE}ℹ${NC} 运行知识库快速验证..."
+        if PYTHONPATH=. python3 tests/test_knowledge_validation.py 2>/dev/null | grep -q "所有验证通过"; then
+            check_pass "知识库快速验证通过"
+        else
+            check_warn "知识库快速验证有问题"
+        fi
+    else
+        check_warn "知识库验证测试文件不存在"
+        check_info "运行 'bash scripts/validate_knowledge.sh' 进行验证"
+    fi
+    
+    # 检查验证脚本
+    if [ -f "scripts/validate_knowledge.sh" ]; then
+        check_pass "知识库验证脚本存在"
+    else
+        check_info "知识库验证脚本不存在"
+    fi
+}
+
 check_directories() {
     print_section "目录结构检查"
     
@@ -422,6 +457,7 @@ main() {
     check_config
     check_git
     check_agent_cli
+    check_knowledge_base
     
     # 可选的深度检查
     if [ "$1" = "--full" ] || [ "$1" = "-f" ]; then
