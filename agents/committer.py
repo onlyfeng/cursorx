@@ -330,6 +330,15 @@ class CommitterAgent(BaseAgent):
                 )
             
             if not status.get("has_changes"):
+                # 记录失败的提交到历史
+                self._commit_history.append({
+                    "commit_hash": "",
+                    "message": message,
+                    "files_changed": [],
+                    "success": False,
+                    "pushed": False,
+                    "error": "没有需要提交的变更",
+                })
                 return CommitResult(
                     success=False,
                     error="没有需要提交的变更",
