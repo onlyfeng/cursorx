@@ -81,11 +81,13 @@ class MultiProcessOrchestratorConfig(BaseModel):
     knowledge_trigger_keywords: list[str] = CURSOR_KEYWORDS   # 触发知识库注入的关键词列表
 
     # 健康检查配置
-    health_check_interval: float = 30.0       # 健康检查间隔（秒）
-    health_check_timeout: float = 5.0         # 健康检查超时（秒）
-    max_unhealthy_workers: int = 0            # 允许的最大不健康 Worker 数量，超过则降级
+    # 注意：Worker 在执行任务期间可能无法立即响应心跳，需要合理配置容忍度
+    health_check_interval: float = 45.0       # 健康检查间隔（秒）- 增加间隔减少干扰
+    health_check_timeout: float = 10.0        # 健康检查超时（秒）- 增加超时容忍任务执行
+    max_unhealthy_workers: int = -1           # 允许的最大不健康 Worker 数量（-1 表示动态计算为 worker_count-1）
     requeue_on_worker_death: bool = True      # Worker 死亡时是否重新入队任务（False 则标记失败）
     fallback_on_critical_failure: bool = True # 关键进程（planner/reviewer）不健康时是否降级终止
+    skip_busy_workers_in_health_check: bool = True  # 跳过正在执行任务的 Worker（避免误判）
 
     # 卡死恢复配置
     stall_recovery_interval: float = 30.0     # 卡死检测/恢复间隔（秒）
@@ -158,6 +160,8 @@ class MultiProcessOrchestrator:
         # 心跳收集机制（方案 A：_message_loop 作为唯一消费者）
         # {agent_id: last_heartbeat_timestamp}
         self._heartbeat_responses: dict[str, float] = {}
+        # {agent_id: heartbeat_payload} 存储心跳响应的详细信息（如 busy 状态）
+        self._heartbeat_payloads: dict[str, dict] = {}
         self._heartbeat_request_id: Optional[str] = None  # 当前心跳请求的 ID
         self._heartbeat_pending: set[str] = set()  # 等待心跳响应的 agent_id
 
@@ -216,7 +220,10 @@ class MultiProcessOrchestrator:
         2. 在 _message_loop 的 _handle_message 中收集心跳响应
         3. 等待超时后，检查哪些 Agent 未响应
 
-        这确保了 _message_loop 是唯一的消费者，避免与 health_check 竞争消息。
+        容忍策略：
+        - 正在执行任务的 Worker（busy=True）不视为不健康
+        - 进程存活但无响应的 Worker 会被记录但不立即降级
+        - 只有进程真正死亡时才触发任务重入队
 
         Returns:
             健康检查结果
@@ -254,6 +261,9 @@ class MultiProcessOrchestrator:
         # 构建健康检查结果
         result = HealthCheckResult()
 
+        # 跟踪忙碌的 Worker
+        busy_workers: list[str] = []
+
         for agent_id in self._get_all_agent_ids():
             last_heartbeat = self._heartbeat_responses.get(agent_id, 0)
             # 检查心跳时间是否在本次请求之后
@@ -261,22 +271,59 @@ class MultiProcessOrchestrator:
 
             if is_responsive:
                 result.healthy.append(agent_id)
+                # 检查是否为忙碌状态（从 _heartbeat_payloads 获取）
+                heartbeat_payload = self._heartbeat_payloads.get(agent_id, {})
+                is_busy = heartbeat_payload.get("busy", False)
                 result.details[agent_id] = {
                     "healthy": True,
                     "reason": "heartbeat_ok",
                     "response_time": last_heartbeat - heartbeat_start_time,
+                    "busy": is_busy,
                 }
+                if is_busy:
+                    busy_workers.append(agent_id)
             else:
-                result.unhealthy.append(agent_id)
                 # 检查进程是否还存活
                 is_alive = self.process_manager.is_alive(agent_id)
-                reason = "no_heartbeat_response" if is_alive else "process_dead"
-                result.details[agent_id] = {
-                    "healthy": False,
-                    "reason": reason,
-                    "is_alive": is_alive,
-                }
-                logger.warning(f"健康检查失败: {agent_id} ({reason})")
+
+                if is_alive:
+                    # 进程存活但无响应 - 可能正在执行长任务
+                    # 根据配置决定是否视为不健康
+                    if self.config.skip_busy_workers_in_health_check:
+                        # 检查是否有分配给该 Worker 的任务（表示正在执行）
+                        has_assigned_task = len(self.process_manager.get_tasks_by_agent(agent_id)) > 0
+                        if has_assigned_task:
+                            # 有任务分配，视为忙碌而非不健康
+                            result.healthy.append(agent_id)
+                            result.details[agent_id] = {
+                                "healthy": True,
+                                "reason": "assumed_busy",
+                                "is_alive": True,
+                                "has_assigned_task": True,
+                            }
+                            busy_workers.append(agent_id)
+                            logger.debug(
+                                f"健康检查: {agent_id} 无心跳响应但有任务分配，假定为忙碌"
+                            )
+                            continue
+
+                    # 无任务分配但也无响应 - 可能有问题
+                    result.unhealthy.append(agent_id)
+                    result.details[agent_id] = {
+                        "healthy": False,
+                        "reason": "no_heartbeat_response",
+                        "is_alive": True,
+                    }
+                    logger.warning(f"健康检查警告: {agent_id} (无心跳响应)")
+                else:
+                    # 进程已死亡
+                    result.unhealthy.append(agent_id)
+                    result.details[agent_id] = {
+                        "healthy": False,
+                        "reason": "process_dead",
+                        "is_alive": False,
+                    }
+                    logger.error(f"健康检查失败: {agent_id} (进程已死亡)")
 
         result.all_healthy = len(result.unhealthy) == 0
 
@@ -284,46 +331,61 @@ class MultiProcessOrchestrator:
         self._heartbeat_request_id = None
         self._heartbeat_pending.clear()
 
-        # 记录健康检查完成（用于验证消息不丢失）
-        logger.debug(
-            f"健康检查完成: healthy={len(result.healthy)}, unhealthy={len(result.unhealthy)}, "
-            f"message_stats={self._message_stats}"
-        )
+        # 记录健康检查完成
+        if busy_workers:
+            logger.debug(
+                f"健康检查完成: healthy={len(result.healthy)}, "
+                f"unhealthy={len(result.unhealthy)}, "
+                f"busy_workers={len(busy_workers)}"
+            )
+        else:
+            logger.debug(
+                f"健康检查完成: healthy={len(result.healthy)}, "
+                f"unhealthy={len(result.unhealthy)}"
+            )
 
         if result.all_healthy:
             logger.debug("健康检查通过: 所有进程正常")
             self._unhealthy_worker_count = 0
             return result
 
-        # 记录不健康进程
-        for agent_id in result.unhealthy:
-            detail = result.details.get(agent_id, {})
-            logger.warning(
-                f"进程不健康: {agent_id} (原因: {detail.get('reason', 'unknown')})"
-            )
-
-        # 检查关键进程（planner/reviewer）
+        # 检查关键进程（planner/reviewer）- 只在进程真正死亡时降级
         if self.config.fallback_on_critical_failure:
-            if self.planner_id in result.unhealthy:
-                self._trigger_degradation("Planner 进程不健康")
-                return result
-            if self.reviewer_id in result.unhealthy:
-                self._trigger_degradation("Reviewer 进程不健康")
+            planner_detail = result.details.get(self.planner_id, {})
+            if self.planner_id in result.unhealthy and not planner_detail.get("is_alive", True):
+                self._trigger_degradation("Planner 进程已死亡")
                 return result
 
-        # 统计不健康的 Worker 数量
+            reviewer_detail = result.details.get(self.reviewer_id, {})
+            if self.reviewer_id in result.unhealthy and not reviewer_detail.get("is_alive", True):
+                self._trigger_degradation("Reviewer 进程已死亡")
+                return result
+
+        # 统计真正不健康的 Worker 数量（排除进程存活的）
         unhealthy_workers = result.get_unhealthy_workers()
-        self._unhealthy_worker_count = len(unhealthy_workers)
+        dead_workers = [
+            wid for wid in unhealthy_workers
+            if not result.details.get(wid, {}).get("is_alive", True)
+        ]
+        self._unhealthy_worker_count = len(dead_workers)
 
-        # 检查是否超过允许的不健康 Worker 数量
-        if self._unhealthy_worker_count > self.config.max_unhealthy_workers:
+        # 动态计算 max_unhealthy_workers（如果配置为 -1）
+        max_unhealthy = self.config.max_unhealthy_workers
+        if max_unhealthy < 0:
+            # 默认允许 worker_count - 1 个不健康（至少保留 1 个正常）
+            max_unhealthy = max(self.config.worker_count - 1, 1)
+
+        # 检查是否超过允许的不健康 Worker 数量（仅统计已死亡的）
+        if self._unhealthy_worker_count > max_unhealthy:
             self._trigger_degradation(
-                f"不健康 Worker 数量超过阈值: {self._unhealthy_worker_count} > {self.config.max_unhealthy_workers}"
+                f"已死亡 Worker 数量超过阈值: {self._unhealthy_worker_count} > {max_unhealthy}"
             )
             return result
 
-        # 处理不健康 Worker 的在途任务
-        await self._handle_unhealthy_workers(unhealthy_workers)
+        # 只处理真正死亡的 Worker 的在途任务
+        if dead_workers:
+            logger.warning(f"检测到 {len(dead_workers)} 个已死亡的 Worker: {dead_workers}")
+            await self._handle_unhealthy_workers(dead_workers)
 
         return result
 
@@ -1026,10 +1088,13 @@ class MultiProcessOrchestrator:
         if message.type == ProcessMessageType.HEARTBEAT:
             sender = message.sender
             self._heartbeat_responses[sender] = time.time()
+            # 存储心跳 payload（包含 busy 状态等信息）
+            self._heartbeat_payloads[sender] = message.payload or {}
             # 从待响应集合中移除
             self._heartbeat_pending.discard(sender)
+            is_busy = message.payload.get("busy", False) if message.payload else False
             logger.debug(
-                f"心跳响应收到: sender={sender}, "
+                f"心跳响应收到: sender={sender}, busy={is_busy}, "
                 f"remaining_pending={len(self._heartbeat_pending)}"
             )
             return

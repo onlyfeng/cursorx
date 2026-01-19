@@ -394,8 +394,13 @@ Shell 命令限制（重要）:
             })
 
     def handle_message(self, message: ProcessMessage) -> None:
-        """处理业务消息"""
+        """处理业务消息
+
+        注意：任务执行通过 asyncio.run 同步执行，但在基类中已标记 _is_busy=True。
+        心跳响应由独立的心跳线程处理，不会被任务执行阻塞。
+        """
         if message.type == ProcessMessageType.TASK_ASSIGN:
+            # 任务执行会阻塞主线程，但心跳线程独立运行
             asyncio.run(self._handle_task(message))
 
     async def _handle_task(self, message: ProcessMessage) -> None:

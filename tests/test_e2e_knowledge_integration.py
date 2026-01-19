@@ -242,6 +242,9 @@ class TestCursorKeywordDetection:
 
             worker = WorkerAgent(config=worker_config)
 
+            # 导入检测函数（WorkerAgent 使用模块级函数而非实例方法）
+            from core.knowledge import is_cursor_related
+
             # 测试 Cursor 相关文本
             cursor_texts = [
                 "如何使用 Cursor Agent CLI",
@@ -253,7 +256,7 @@ class TestCursorKeywordDetection:
             ]
 
             for text in cursor_texts:
-                assert worker._is_cursor_related(text), f"'{text}' 应被识别为 Cursor 相关"
+                assert is_cursor_related(text), f"'{text}' 应被识别为 Cursor 相关"
 
             # 测试非 Cursor 相关文本
             non_cursor_texts = [
@@ -263,9 +266,9 @@ class TestCursorKeywordDetection:
             ]
 
             for text in non_cursor_texts:
-                assert not worker._is_cursor_related(text), f"'{text}' 不应被识别为 Cursor 相关"
+                assert not is_cursor_related(text), f"'{text}' 不应被识别为 Cursor 相关"
 
-            print("✓ _is_cursor_related 方法正确检测 Cursor 相关内容")
+            print("✓ is_cursor_related 函数正确检测 Cursor 相关内容")
 
     @pytest.mark.asyncio
     async def test_knowledge_search_trigger(self, temp_workspace, mock_knowledge_manager):

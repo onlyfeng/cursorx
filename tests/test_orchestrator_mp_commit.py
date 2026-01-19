@@ -1036,30 +1036,48 @@ class TestHealthCheckInOrchestrator:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
         # worker-1 没有响应（不添加或使用过时时间戳）
 
-        # Mock broadcast 和 is_alive
+        # Mock broadcast、is_alive 和 get_tasks_by_agent
         def mock_is_alive(agent_id: str) -> bool:
             return True  # 所有进程都存活，worker-1 只是没响应心跳
+
+        def mock_get_tasks_by_agent(agent_id: str) -> list:
+            return []  # 没有任务分配给 worker-1（所以不是因为忙碌）
 
         with patch.object(orchestrator.process_manager, "broadcast"):
             with patch.object(
                 orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
             ):
                 with patch.object(
-                    orchestrator, "_handle_unhealthy_workers", new_callable=AsyncMock
-                ) as mock_handle:
-                    result = await orchestrator._perform_health_check()
+                    orchestrator.process_manager, "get_tasks_by_agent",
+                    side_effect=mock_get_tasks_by_agent
+                ):
+                    with patch.object(
+                        orchestrator, "_handle_unhealthy_workers", new_callable=AsyncMock
+                    ) as mock_handle:
+                        result = await orchestrator._perform_health_check()
 
-                    assert result.all_healthy is False
-                    assert orchestrator._degraded is False  # 未触发降级（在阈值内）
-                    assert orchestrator._unhealthy_worker_count == 1
-                    mock_handle.assert_called_once_with(["worker-1"])
+                        # 新逻辑：进程存活但无心跳响应，标记为 unhealthy
+                        assert result.all_healthy is False
+                        assert orchestrator._degraded is False  # 未触发降级
+                        # 新逻辑：_unhealthy_worker_count 只统计已死亡的 Worker（is_alive=False）
+                        # worker-1 进程存活，所以不计入 dead_workers
+                        assert orchestrator._unhealthy_worker_count == 0
+                        # 不调用 _handle_unhealthy_workers（只处理 dead workers）
+                        mock_handle.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_worker_unhealthy_exceeds_threshold(
         self, mp_config_with_health_check: MultiProcessOrchestratorConfig
     ) -> None:
-        """测试 Worker 不健康数量超过阈值触发降级（方案 A：心跳收集架构）"""
+        """测试 Worker 不健康数量超过阈值触发降级（方案 A：心跳收集架构）
+
+        新逻辑：只有进程真正死亡（is_alive=False）才计入 dead_workers。
+        当 dead_workers > max_unhealthy_workers 时触发降级。
+        """
         import time
+
+        # 修改配置：max_unhealthy_workers=1，这样 2 个死亡的 Worker 会触发降级
+        mp_config_with_health_check.max_unhealthy_workers = 1
 
         orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
         orchestrator.planner_id = "planner-1"
@@ -1073,21 +1091,29 @@ class TestHealthCheckInOrchestrator:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
         # worker-1, worker-2 没有响应
 
-        # Mock broadcast 和 is_alive
+        # Mock broadcast、is_alive 和 get_tasks_by_agent
         def mock_is_alive(agent_id: str) -> bool:
-            if agent_id == "worker-2":
-                return False  # process_dead
+            if agent_id in ("worker-1", "worker-2"):
+                return False  # 两个 Worker 进程都死亡
             return True  # 其他进程存活
+
+        def mock_get_tasks_by_agent(agent_id: str) -> list:
+            return []
 
         with patch.object(orchestrator.process_manager, "broadcast"):
             with patch.object(
                 orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
             ):
-                result = await orchestrator._perform_health_check()
+                with patch.object(
+                    orchestrator.process_manager, "get_tasks_by_agent",
+                    side_effect=mock_get_tasks_by_agent
+                ):
+                    result = await orchestrator._perform_health_check()
 
-                assert orchestrator._degraded is True
-                assert "阈值" in orchestrator._degradation_reason
-                assert orchestrator._unhealthy_worker_count == 2
+                    assert orchestrator._degraded is True
+                    assert "阈值" in orchestrator._degradation_reason
+                    # 只统计已死亡的 Worker
+                    assert orchestrator._unhealthy_worker_count == 2
 
     @pytest.mark.asyncio
     async def test_health_check_planner_unhealthy_triggers_degradation(
@@ -1127,7 +1153,10 @@ class TestHealthCheckInOrchestrator:
     async def test_health_check_reviewer_unhealthy_triggers_degradation(
         self, mp_config_with_health_check: MultiProcessOrchestratorConfig
     ) -> None:
-        """测试 Reviewer 不健康触发降级（方案 A：心跳收集架构）"""
+        """测试 Reviewer 进程死亡触发降级（方案 A：心跳收集架构）
+
+        新逻辑：只有当 Reviewer 进程真正死亡（is_alive=False）时才触发降级。
+        """
         import time
 
         orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
@@ -1144,7 +1173,9 @@ class TestHealthCheckInOrchestrator:
 
         # Mock broadcast 和 is_alive
         def mock_is_alive(agent_id: str) -> bool:
-            return True  # 所有进程存活，reviewer-1 只是没响应心跳
+            if agent_id == "reviewer-1":
+                return False  # Reviewer 进程已死亡
+            return True
 
         with patch.object(orchestrator.process_manager, "broadcast"):
             with patch.object(
@@ -1437,7 +1468,10 @@ class TestDegradationStrategyBOrchestrator:
     async def test_degraded_triggered_by_reviewer_unhealthy(
         self, mp_config_for_degradation: MultiProcessOrchestratorConfig
     ) -> None:
-        """测试 Reviewer 不健康触发降级（方案 A：心跳收集架构）"""
+        """测试 Reviewer 进程死亡触发降级（方案 A：心跳收集架构）
+
+        新逻辑：只有当 Reviewer 进程真正死亡（is_alive=False）时才触发降级。
+        """
         import time
 
         orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
@@ -1452,9 +1486,15 @@ class TestDegradationStrategyBOrchestrator:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
         # reviewer-1 没有响应
 
+        # Mock is_alive: reviewer-1 进程死亡
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "reviewer-1":
+                return False  # Reviewer 进程已死亡
+            return True
+
         with patch.object(orchestrator.process_manager, "broadcast"):
             with patch.object(
-                orchestrator.process_manager, "is_alive", return_value=True
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
             ):
                 await orchestrator._perform_health_check()
 
@@ -1465,8 +1505,15 @@ class TestDegradationStrategyBOrchestrator:
     async def test_degraded_triggered_by_workers_exceed_threshold(
         self, mp_config_for_degradation: MultiProcessOrchestratorConfig
     ) -> None:
-        """测试 Worker 不健康数量超过阈值触发降级（方案 A：心跳收集架构）"""
+        """测试 Worker 死亡数量超过阈值触发降级（方案 A：心跳收集架构）
+
+        新逻辑：只有进程真正死亡（is_alive=False）才计入死亡 Worker 统计。
+        当死亡 Worker 数量 > max_unhealthy_workers 时触发降级。
+        """
         import time
+
+        # 修改配置：max_unhealthy_workers=1，这样 2 个死亡的 Worker 会触发降级
+        mp_config_for_degradation.max_unhealthy_workers = 1
 
         orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
         orchestrator.planner_id = "planner-1"
@@ -1480,20 +1527,27 @@ class TestDegradationStrategyBOrchestrator:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
         # worker-1, worker-2 没有响应
 
-        # Mock is_alive: worker-2 进程死亡
+        # Mock is_alive: worker-1 和 worker-2 进程都死亡
         def mock_is_alive(agent_id: str) -> bool:
-            if agent_id == "worker-2":
+            if agent_id in ("worker-1", "worker-2"):
                 return False  # process_dead
             return True
+
+        def mock_get_tasks_by_agent(agent_id: str) -> list:
+            return []
 
         with patch.object(orchestrator.process_manager, "broadcast"):
             with patch.object(
                 orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
             ):
-                await orchestrator._perform_health_check()
+                with patch.object(
+                    orchestrator.process_manager, "get_tasks_by_agent",
+                    side_effect=mock_get_tasks_by_agent
+                ):
+                    await orchestrator._perform_health_check()
 
-                assert orchestrator._degraded is True
-                assert "阈值" in orchestrator._degradation_reason
+                    assert orchestrator._degraded is True
+                    assert "阈值" in orchestrator._degradation_reason
 
     @pytest.mark.asyncio
     async def test_degraded_stops_iteration_loop(

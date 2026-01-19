@@ -2,11 +2,15 @@
 
 每个 Agent 作为独立进程运行
 """
+import concurrent.futures
 import os
 import signal
 import sys
+import threading
+import time
 from abc import abstractmethod
 from multiprocessing import Process, Queue
+from queue import Empty
 from typing import Optional
 
 from loguru import logger
@@ -17,7 +21,14 @@ from .message_queue import ProcessMessage, ProcessMessageType
 class AgentWorkerProcess(Process):
     """Agent 工作进程基类
 
-    每个 Agent 实例作为独立进程运行
+    每个 Agent 实例作为独立进程运行。
+
+    线程架构说明：
+        为避免任务执行期间阻塞心跳响应，采用多线程架构：
+        1. 主线程：消息循环，快速处理控制消息（心跳、状态查询等）
+        2. 工作线程：执行耗时的业务任务（通过 ThreadPoolExecutor）
+
+        这确保了即使任务执行时间很长，主线程也能及时响应心跳请求。
     """
 
     def __init__(
@@ -36,6 +47,13 @@ class AgentWorkerProcess(Process):
         self.config = config
         self._running = False
 
+        # 工作线程池（用于执行耗时任务）
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._current_task_future: Optional[concurrent.futures.Future] = None
+        self._last_heartbeat_time: float = 0.0           # 最后心跳响应时间
+        self._is_busy: bool = False                      # 是否正在执行任务
+        self._task_lock = threading.Lock()               # 保护任务状态的锁
+
     def run(self) -> None:
         """进程主循环"""
         # 设置信号处理
@@ -49,6 +67,12 @@ class AgentWorkerProcess(Process):
 
         self._running = True
 
+        # 初始化工作线程池（单线程，确保任务串行执行）
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"worker-{self.agent_id[:8]}"
+        )
+
         try:
             # 初始化
             self.on_start()
@@ -59,23 +83,43 @@ class AgentWorkerProcess(Process):
                 "pid": os.getpid(),
             })
 
-            # 主循环
+            # 主循环 - 快速处理消息，保持响应性
             while self._running:
                 try:
-                    # 等待消息
-                    message = self.inbox.get(timeout=1.0)
+                    # 使用短超时，保持响应性
+                    message = self.inbox.get(timeout=0.5)
                     self._handle_message(message)
+                except Empty:
+                    # 队列超时是正常的，继续循环
+                    # 检查工作线程是否完成（清理状态）
+                    self._check_task_completion()
                 except Exception as e:
                     if self._running:
-                        # 队列超时是正常的，继续循环
                         if "Empty" not in str(type(e)):
                             logger.error(f"[{self.agent_id}] 消息处理异常: {e}")
 
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 进程异常: {e}")
         finally:
+            self._running = False
+            # 关闭工作线程池
+            if self._executor:
+                self._executor.shutdown(wait=False)
             self.on_stop()
             logger.info(f"[{self.agent_id}] 进程退出")
+
+    def _check_task_completion(self) -> None:
+        """检查工作线程是否完成任务"""
+        with self._task_lock:
+            if self._current_task_future and self._current_task_future.done():
+                try:
+                    # 获取结果（如果有异常会抛出）
+                    self._current_task_future.result()
+                except Exception as e:
+                    logger.error(f"[{self.agent_id}] 任务执行异常: {e}")
+                finally:
+                    self._current_task_future = None
+                    self._is_busy = False
 
     def _setup_logging(self) -> None:
         """配置进程内日志"""
@@ -92,8 +136,32 @@ class AgentWorkerProcess(Process):
         logger.info(f"[{self.agent_id}] 收到关闭信号")
         self._running = False
 
+    def _respond_heartbeat(self, message: ProcessMessage) -> None:
+        """响应心跳请求（在主线程中快速执行）
+
+        Args:
+            message: 心跳请求消息
+        """
+        self._last_heartbeat_time = time.time()
+        payload = {
+            "alive": True,
+            "busy": self._is_busy,
+            "pid": os.getpid(),
+            "timestamp": self._last_heartbeat_time,
+        }
+        # 如果有 request_id，添加到响应中
+        if message.payload.get("request_id"):
+            payload["request_id"] = message.payload.get("request_id")
+
+        self._send_message(ProcessMessageType.HEARTBEAT, payload)
+        logger.debug(f"[{self.agent_id}] 心跳响应已发送 (busy={self._is_busy})")
+
     def _handle_message(self, message: ProcessMessage) -> None:
-        """处理接收到的消息"""
+        """处理接收到的消息
+
+        控制消息（心跳、状态查询、关闭）在主线程立即处理。
+        业务消息（任务等）提交到工作线程异步执行。
+        """
         logger.debug(f"[{self.agent_id}] 收到消息: {message.type.value}")
 
         if message.type == ProcessMessageType.SHUTDOWN:
@@ -101,15 +169,43 @@ class AgentWorkerProcess(Process):
             return
 
         if message.type == ProcessMessageType.HEARTBEAT:
-            self._send_message(ProcessMessageType.HEARTBEAT, {"alive": True})
+            # 心跳在主线程立即响应（不阻塞）
+            self._respond_heartbeat(message)
             return
 
         if message.type == ProcessMessageType.STATUS_REQUEST:
             self._send_message(ProcessMessageType.STATUS_RESPONSE, self.get_status())
             return
 
-        # 分发给具体处理方法
-        self.handle_message(message)
+        # 业务消息提交到工作线程执行
+        self._submit_to_worker(message)
+
+    def _submit_to_worker(self, message: ProcessMessage) -> None:
+        """将业务消息提交到工作线程执行
+
+        Args:
+            message: 业务消息
+        """
+        with self._task_lock:
+            if self._is_busy:
+                # 已有任务在执行，记录警告
+                logger.warning(
+                    f"[{self.agent_id}] 收到新任务但当前正忙，消息将排队: {message.type.value}"
+                )
+
+            self._is_busy = True
+
+            def execute_task():
+                try:
+                    self.handle_message(message)
+                except Exception as e:
+                    logger.exception(f"[{self.agent_id}] 任务执行异常: {e}")
+                finally:
+                    with self._task_lock:
+                        self._is_busy = False
+                        self._current_task_future = None
+
+            self._current_task_future = self._executor.submit(execute_task)
 
     def _send_message(
         self,
