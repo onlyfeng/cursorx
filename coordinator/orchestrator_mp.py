@@ -29,8 +29,6 @@ from process.message_queue import ProcessMessage, ProcessMessageType
 from tasks.queue import TaskQueue
 from tasks.task import Task, TaskStatus
 
-# 用于执行阶段的健康检查间隔（秒）
-_EXECUTION_HEALTH_CHECK_INTERVAL = 10.0
 
 class MultiProcessOrchestratorConfig(BaseModel):
     """多进程编排器配置"""
@@ -84,15 +82,41 @@ class MultiProcessOrchestratorConfig(BaseModel):
     # 注意：Worker 在执行任务期间可能无法立即响应心跳，需要合理配置容忍度
     health_check_interval: float = 45.0       # 健康检查间隔（秒）- 增加间隔减少干扰
     health_check_timeout: float = 10.0        # 健康检查超时（秒）- 增加超时容忍任务执行
+    execution_health_check_interval: float = 30.0  # 执行阶段健康检查间隔（秒）- 不低于 30s 避免频繁检查
     max_unhealthy_workers: int = -1           # 允许的最大不健康 Worker 数量（-1 表示动态计算为 worker_count-1）
     requeue_on_worker_death: bool = True      # Worker 死亡时是否重新入队任务（False 则标记失败）
     fallback_on_critical_failure: bool = True # 关键进程（planner/reviewer）不健康时是否降级终止
     skip_busy_workers_in_health_check: bool = True  # 跳过正在执行任务的 Worker（避免误判）
+    consecutive_unresponsive_threshold: int = 3    # 连续未响应次数阈值，超过才告警（避免短暂抖动）
 
     # 卡死恢复配置
     stall_recovery_interval: float = 30.0     # 卡死检测/恢复间隔（秒）
     max_recovery_attempts: int = 3            # 单次迭代最大恢复尝试次数
     max_no_progress_time: float = 120.0       # 最大无进展时间（秒），超过触发降级
+
+    # 卡死诊断日志配置
+    # 控制卡死检测时输出的诊断信息详细程度
+    # 设计目的：默认关闭避免刷屏，疑似卡死时通过 --stall-diagnostics 启用排查
+    stall_diagnostics_enabled: bool = False   # 是否启用卡死诊断日志（默认关闭）
+    stall_diagnostics_detail: bool = False    # 是否输出详细诊断（逐任务状态）
+    stall_diagnostics_max_tasks: int = 5      # 详细诊断时最大输出任务条数
+    stall_diagnostics_level: str = "warning"  # 诊断日志级别: debug, info, warning, error
+
+    # 健康检查告警冷却时间（秒）
+    # 防止同一 agent 的警告刷屏，在此时间内不会重复告警
+    health_warning_cooldown_seconds: float = 60.0
+
+    # _send_and_wait 超时告警配置
+    # 连续超时阈值：达到此阈值后才输出 WARNING（之前为 DEBUG/INFO）
+    timeout_warning_threshold: int = 2
+    # 超时告警冷却时间（秒）：同一 agent 在此时间内不会重复输出 WARNING
+    timeout_warning_cooldown_seconds: float = 60.0
+
+    # 日志配置（透传到子进程）
+    # 这些配置会传递给 planner/worker/reviewer 子进程，控制其日志输出行为
+    verbose: bool = False                     # 是否启用详细模式（等价于 log_level=DEBUG）
+    log_level: str = "INFO"                   # 日志级别: DEBUG, INFO, WARNING, ERROR
+    heartbeat_debug: bool = False             # 是否输出心跳调试日志（默认 False，避免刷屏）
 
 
 class MultiProcessOrchestrator:
@@ -165,6 +189,22 @@ class MultiProcessOrchestrator:
         self._heartbeat_request_id: Optional[str] = None  # 当前心跳请求的 ID
         self._heartbeat_pending: set[str] = set()  # 等待心跳响应的 agent_id
 
+        # 健康检查告警 cooldown 机制
+        # {agent_id: last_warning_timestamp} 防止同一 agent 的警告刷屏
+        self._health_warning_cooldown: dict[str, float] = {}
+        # 告警冷却时间（秒），同一 agent 在此时间内不会重复告警（从配置读取）
+        self._health_warning_cooldown_seconds: float = config.health_warning_cooldown_seconds
+
+        # 连续未响应计数器
+        # {agent_id: consecutive_unresponsive_count} 跟踪每个 agent 连续未响应心跳的次数
+        self._consecutive_unresponsive_count: dict[str, int] = {}
+
+        # _send_and_wait 超时计数与告警节流
+        # {agent_id: consecutive_timeout_count} 跟踪每个 agent 连续超时的次数
+        self._timeout_count: dict[str, int] = {}
+        # {agent_id: last_timeout_warning_timestamp} 超时告警冷却
+        self._timeout_warning_cooldown: dict[str, float] = {}
+
         # 消息处理统计（用于验证消息不丢失）
         self._message_stats: dict[str, int] = {
             "total_received": 0,
@@ -178,8 +218,10 @@ class MultiProcessOrchestrator:
 
         # 卡死恢复状态
         self._recovery_attempts: dict[int, int] = {}  # {iteration_id: attempt_count}
-        self._last_progress_time: float = 0.0         # 最后有进展的时间戳
+        self._last_progress_time: float = 0.0         # 最后有进展的时间戳（用于 max_no_progress_time 计算）
         self._last_recovery_time: float = 0.0         # 最后恢复尝试的时间戳
+        self._last_stall_diagnostic_time: float = 0.0 # 最后输出卡死诊断的时间戳
+        self._last_stall_check_time: float = 0.0      # 最后卡死检测的时间戳（用于检测间隔冷却）
 
     def _should_continue_iteration(self) -> bool:
         """判断是否应该继续迭代
@@ -210,6 +252,25 @@ class MultiProcessOrchestrator:
             return True
         return False
 
+    def _should_emit_health_warning(self, agent_id: str) -> bool:
+        """检查是否应该发出健康检查警告（cooldown 机制）
+
+        防止同一 agent 的警告刷屏。在 cooldown 时间内不会重复告警。
+
+        Args:
+            agent_id: Agent 标识符
+
+        Returns:
+            True 表示应该发出警告，False 表示在 cooldown 内
+        """
+        import time
+        now = time.time()
+        last_warning = self._health_warning_cooldown.get(agent_id, 0)
+        if now - last_warning >= self._health_warning_cooldown_seconds:
+            self._health_warning_cooldown[agent_id] = now
+            return True
+        return False
+
     async def _perform_health_check(self) -> HealthCheckResult:
         """执行健康检查（方案 A：通过 _message_loop 收集心跳）
 
@@ -225,6 +286,12 @@ class MultiProcessOrchestrator:
         - 进程存活但无响应的 Worker 会被记录但不立即降级
         - 只有进程真正死亡时才触发任务重入队
 
+        告警节流策略：
+        - 使用 per-agent cooldown 机制防止同一 agent 的警告刷屏
+        - busy worker 的未响应仅输出 debug 日志（不告警）
+        - 进程死亡保留 ERROR 级别日志
+        - 进程存活但无响应的非 busy worker 使用 WARNING（带 cooldown）
+
         Returns:
             健康检查结果
         """
@@ -239,11 +306,12 @@ class MultiProcessOrchestrator:
         heartbeat_start_time = time.time()
 
         # 记录健康检查开始（用于验证消息不丢失）
-        logger.debug(
-            f"健康检查开始: request_id={self._heartbeat_request_id}, "
-            f"pending_agents={len(self._heartbeat_pending)}, "
-            f"message_stats={self._message_stats}"
-        )
+        if self.config.heartbeat_debug:
+            logger.debug(
+                f"健康检查开始: request_id={self._heartbeat_request_id}, "
+                f"pending_agents={len(self._heartbeat_pending)}, "
+                f"message_stats={self._message_stats}"
+            )
 
         # 广播心跳请求
         heartbeat_msg = ProcessMessage(
@@ -282,6 +350,8 @@ class MultiProcessOrchestrator:
                 }
                 if is_busy:
                     busy_workers.append(agent_id)
+                # 响应正常，重置连续未响应计数
+                self._consecutive_unresponsive_count[agent_id] = 0
             else:
                 # 检查进程是否还存活
                 is_alive = self.process_manager.is_alive(agent_id)
@@ -302,21 +372,48 @@ class MultiProcessOrchestrator:
                                 "has_assigned_task": True,
                             }
                             busy_workers.append(agent_id)
-                            logger.debug(
-                                f"健康检查: {agent_id} 无心跳响应但有任务分配，假定为忙碌"
-                            )
+                            # busy worker 的未响应仅输出 debug 日志，不告警
+                            if self.config.heartbeat_debug:
+                                logger.debug(
+                                    f"健康检查: {agent_id} 无心跳响应但有任务分配，假定为忙碌"
+                                )
                             continue
 
                     # 无任务分配但也无响应 - 可能有问题
+                    # 递增连续未响应计数
+                    self._consecutive_unresponsive_count[agent_id] = \
+                        self._consecutive_unresponsive_count.get(agent_id, 0) + 1
+                    consecutive_count = self._consecutive_unresponsive_count[agent_id]
+                    threshold = self.config.consecutive_unresponsive_threshold
+
                     result.unhealthy.append(agent_id)
                     result.details[agent_id] = {
                         "healthy": False,
                         "reason": "no_heartbeat_response",
                         "is_alive": True,
+                        "consecutive_unresponsive": consecutive_count,
                     }
-                    logger.warning(f"健康检查警告: {agent_id} (无心跳响应)")
+                    # 只有连续多次未响应后才输出 WARNING（避免短暂抖动导致告警）
+                    if consecutive_count >= threshold:
+                        # 使用 cooldown 机制防止刷屏（仅 warning 级别）
+                        if self._should_emit_health_warning(agent_id):
+                            logger.warning(
+                                f"健康检查警告: {agent_id} (无心跳响应，进程存活，"
+                                f"连续 {consecutive_count} 次)"
+                            )
+                        else:
+                            if self.config.heartbeat_debug:
+                                logger.debug(
+                                    f"健康检查: {agent_id} 无心跳响应（cooldown 中，跳过告警）"
+                                )
+                    else:
+                        if self.config.heartbeat_debug:
+                            logger.debug(
+                                f"健康检查: {agent_id} 无心跳响应 "
+                                f"({consecutive_count}/{threshold}，未达阈值，暂不告警)"
+                            )
                 else:
-                    # 进程已死亡
+                    # 进程已死亡 - 始终使用 ERROR 级别，不受 cooldown 限制
                     result.unhealthy.append(agent_id)
                     result.details[agent_id] = {
                         "healthy": False,
@@ -332,20 +429,22 @@ class MultiProcessOrchestrator:
         self._heartbeat_pending.clear()
 
         # 记录健康检查完成
-        if busy_workers:
-            logger.debug(
-                f"健康检查完成: healthy={len(result.healthy)}, "
-                f"unhealthy={len(result.unhealthy)}, "
-                f"busy_workers={len(busy_workers)}"
-            )
-        else:
-            logger.debug(
-                f"健康检查完成: healthy={len(result.healthy)}, "
-                f"unhealthy={len(result.unhealthy)}"
-            )
+        if self.config.heartbeat_debug:
+            if busy_workers:
+                logger.debug(
+                    f"健康检查完成: healthy={len(result.healthy)}, "
+                    f"unhealthy={len(result.unhealthy)}, "
+                    f"busy_workers={len(busy_workers)}"
+                )
+            else:
+                logger.debug(
+                    f"健康检查完成: healthy={len(result.healthy)}, "
+                    f"unhealthy={len(result.unhealthy)}"
+                )
 
         if result.all_healthy:
-            logger.debug("健康检查通过: 所有进程正常")
+            if self.config.heartbeat_debug:
+                logger.debug("健康检查通过: 所有进程正常")
             self._unhealthy_worker_count = 0
             return result
 
@@ -543,10 +642,32 @@ class MultiProcessOrchestrator:
 
         self._last_recovery_time = now
 
-        logger.warning(
-            f"[恢复] 迭代 {iteration_id} 开始恢复 (原因: {reason}, "
-            f"尝试 {self._recovery_attempts[iteration_id]}/{self.config.max_recovery_attempts})"
+        # 恢复开始日志：使用与卡死诊断相同的日志级别，并复用节流机制
+        # 检查是否应该输出恢复日志（节流控制：复用 _last_stall_diagnostic_time）
+        should_emit_recovery_log = (
+            self._last_stall_diagnostic_time == 0.0
+            or now - self._last_stall_diagnostic_time >= self.config.stall_recovery_interval
         )
+
+        if should_emit_recovery_log:
+            # 选择日志级别（复用 stall_diagnostics_level 配置）
+            log_level = self.config.stall_diagnostics_level.lower()
+            recovery_log_fn = {
+                "debug": logger.debug,
+                "info": logger.info,
+                "warning": logger.warning,
+                "error": logger.error,
+            }.get(log_level, logger.info)
+
+            recovery_log_fn(
+                f"[恢复] 迭代 {iteration_id} 开始恢复 (原因: {reason}, "
+                f"尝试 {self._recovery_attempts[iteration_id]}/{self.config.max_recovery_attempts})"
+            )
+        else:
+            # 节流中，仅输出 debug 日志
+            logger.debug(
+                f"[恢复] 迭代 {iteration_id} 开始恢复 (节流中，跳过详细日志)"
+            )
 
         # 构建活跃 future 对应的任务 ID 集合
         active_future_task_ids = set(worker_task_mapping.get(wid, "") for wid in active_futures.keys())
@@ -853,6 +974,13 @@ class MultiProcessOrchestrator:
 
     def _spawn_agents(self) -> None:
         """创建并启动所有 Agent 进程"""
+        # 构建通用日志配置（透传到所有子进程）
+        log_config = {
+            "verbose": self.config.verbose,
+            "log_level": self.config.log_level if not self.config.verbose else "DEBUG",
+            "heartbeat_debug": self.config.heartbeat_debug,
+        }
+
         # 创建 Planner - 使用 GPT 5.2-high
         planner_config = {
             "working_directory": self.config.working_directory,
@@ -863,6 +991,7 @@ class MultiProcessOrchestrator:
             "stream_log_detail_dir": self.config.stream_log_detail_dir,
             "stream_log_raw_dir": self.config.stream_log_raw_dir,
             "agent_name": "planner",
+            **log_config,  # 日志配置透传
         }
         self.planner_id = f"planner-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(
@@ -884,6 +1013,7 @@ class MultiProcessOrchestrator:
             "stream_log_console": self.config.stream_log_console,
             "stream_log_detail_dir": self.config.stream_log_detail_dir,
             "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            **log_config,  # 日志配置透传
         }
         for i in range(self.config.worker_count):
             worker_id = f"worker-{i}-{uuid.uuid4().hex[:8]}"
@@ -909,6 +1039,7 @@ class MultiProcessOrchestrator:
             "stream_log_detail_dir": self.config.stream_log_detail_dir,
             "stream_log_raw_dir": self.config.stream_log_raw_dir,
             "agent_name": "reviewer",
+            **log_config,  # 日志配置透传
         }
         self.reviewer_id = f"reviewer-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(
@@ -1092,11 +1223,13 @@ class MultiProcessOrchestrator:
             self._heartbeat_payloads[sender] = message.payload or {}
             # 从待响应集合中移除
             self._heartbeat_pending.discard(sender)
-            is_busy = message.payload.get("busy", False) if message.payload else False
-            logger.debug(
-                f"心跳响应收到: sender={sender}, busy={is_busy}, "
-                f"remaining_pending={len(self._heartbeat_pending)}"
-            )
+            # 心跳日志仅在 heartbeat_debug 模式下输出（避免高频刷屏）
+            if self.config.heartbeat_debug:
+                is_busy = message.payload.get("busy", False) if message.payload else False
+                logger.debug(
+                    f"心跳响应收到: sender={sender}, busy={is_busy}, "
+                    f"remaining_pending={len(self._heartbeat_pending)}"
+                )
             return
 
         # 检查是否有等待此消息的 Future
@@ -1259,7 +1392,20 @@ class MultiProcessOrchestrator:
         message: ProcessMessage,
         timeout: float,
     ) -> Optional[ProcessMessage]:
-        """发送消息并等待响应"""
+        """发送消息并等待响应
+
+        超时告警策略：
+        - 单次/偶发超时 → DEBUG/INFO 级别（避免告警刷屏）
+        - 连续超时达到 timeout_warning_threshold 后 → WARNING 级别（带 cooldown）
+        - 关键阶段（planner/reviewer）连续超时 → ERROR 级别
+        - 触发降级时 → ERROR 级别
+
+        超时计数管理：
+        - 正常响应时重置该 agent 的超时计数
+        - 超时时递增计数
+        """
+        import time
+
         # 创建 Future 等待响应
         future = asyncio.get_event_loop().create_future()
         self._pending_responses[message.id] = future
@@ -1270,10 +1416,50 @@ class MultiProcessOrchestrator:
         try:
             # 等待响应
             response = await asyncio.wait_for(future, timeout=timeout)
+            # 正常响应：重置超时计数
+            self._timeout_count[agent_id] = 0
             return response
         except asyncio.TimeoutError:
             self._pending_responses.pop(message.id, None)
-            logger.warning(f"等待 {agent_id} 响应超时")
+            # 递增超时计数
+            self._timeout_count[agent_id] = self._timeout_count.get(agent_id, 0) + 1
+            consecutive_count = self._timeout_count[agent_id]
+            threshold = self.config.timeout_warning_threshold
+
+            # 判断是否为关键阶段（planner/reviewer）
+            is_critical_agent = agent_id in (self.planner_id, self.reviewer_id)
+
+            # 日志级别策略
+            now = time.time()
+            if is_critical_agent and consecutive_count >= threshold:
+                # 关键阶段连续超时 → ERROR 级别
+                logger.error(
+                    f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, 关键阶段)"
+                )
+            elif consecutive_count >= threshold:
+                # 达到阈值后 → WARNING 级别（带 cooldown）
+                last_warning = self._timeout_warning_cooldown.get(agent_id, 0)
+                if now - last_warning >= self.config.timeout_warning_cooldown_seconds:
+                    self._timeout_warning_cooldown[agent_id] = now
+                    logger.warning(
+                        f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次)"
+                    )
+                else:
+                    # cooldown 中，降级为 DEBUG
+                    if self.config.heartbeat_debug:
+                        logger.debug(
+                            f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, cooldown 中)"
+                        )
+            elif consecutive_count == 1:
+                # 单次超时 → INFO 级别
+                logger.info(f"等待 {agent_id} 响应超时 (首次)")
+            else:
+                # 偶发超时（未达阈值）→ DEBUG 级别
+                if self.config.heartbeat_debug:
+                    logger.debug(
+                        f"等待 {agent_id} 响应超时 ({consecutive_count}/{threshold})"
+                    )
+
             return None
 
     async def _planning_phase(self, goal: str, iteration_id: int) -> None:
@@ -1355,7 +1541,8 @@ class MultiProcessOrchestrator:
 
         # 诊断计数器：用于检测卡死
         _loop_count = 0
-        self._last_progress_time = time.time()  # 使用实例变量以便恢复逻辑使用
+        self._last_progress_time = time.time()  # 用于 max_no_progress_time 计算（仅在任务完成时更新）
+        self._last_stall_check_time = time.time()  # 用于卡死检测间隔冷却（进入检测分支时更新）
         _STALL_DETECTION_INTERVAL = self.config.stall_recovery_interval  # 使用配置的间隔
 
         while True:
@@ -1363,45 +1550,108 @@ class MultiProcessOrchestrator:
 
             # ========== 诊断日志与卡死恢复 ==========
             now = time.time()
-            if now - self._last_progress_time >= _STALL_DETECTION_INTERVAL:
+            if now - self._last_stall_check_time >= _STALL_DETECTION_INTERVAL:
+                # 更新卡死检测时间戳（冷却窗口起点）
+                self._last_stall_check_time = now
+
                 # 收集诊断信息
                 queue_stats = self.task_queue.get_statistics(iteration_id)
                 in_flight_tasks = self.process_manager.get_all_in_flight_tasks()
                 tasks_in_iteration = self.task_queue.get_tasks_by_iteration(iteration_id)
 
-                logger.warning(f"[诊断] === 卡死检测触发 (循环 #{_loop_count}) ===")
-                logger.warning(f"[诊断] TaskQueue.get_statistics(): {queue_stats}")
-                logger.warning(f"[诊断] available_workers: {available_workers} (count={len(available_workers)})")
-                logger.warning(f"[诊断] active_tasks: {list(active_tasks.keys())} (count={len(active_tasks)})")
-                logger.warning(f"[诊断] in_flight_tasks: {list(in_flight_tasks.keys())} (count={len(in_flight_tasks)})")
-
-                # 打印每个任务的详细状态
-                for task in tasks_in_iteration:
-                    logger.warning(
-                        f"[诊断] Task {task.id}: status={task.status.value}, "
-                        f"retry_count={task.retry_count}, assigned_to={task.assigned_to}"
-                    )
-
-                # 检测典型卡死模式并尝试恢复
+                # 检测典型卡死模式
                 stall_detected = False
                 stall_reason = ""
+
+                assigned_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.ASSIGNED]
+                in_progress_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.IN_PROGRESS]
 
                 if queue_stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0:
                     stall_detected = True
                     stall_reason = f"pending={queue_stats['pending']} > 0 但 active_tasks=0, available_workers=0"
-                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
-                assigned_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.ASSIGNED]
                 if assigned_tasks and len(active_tasks) == 0:
                     stall_detected = True
                     stall_reason = f"存在 ASSIGNED 状态任务 ({len(assigned_tasks)}) 但无 active_tasks"
-                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
-                in_progress_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.IN_PROGRESS]
                 if in_progress_tasks and len(active_tasks) == 0:
                     stall_detected = True
                     stall_reason = f"存在 IN_PROGRESS 状态任务 ({len(in_progress_tasks)}) 但无 active_tasks"
-                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
+
+                # 诊断输出策略：
+                # - 仅在 stall_detected=True 时输出诊断信息（避免正常长任务时刷屏）
+                # - 所有诊断日志（摘要、详细、关键卡死行）均受冷却窗口控制
+                # - 冷却窗口使用 _last_stall_diagnostic_time，与 stall_recovery_interval 对齐
+                should_emit_diagnostic = (
+                    stall_detected
+                    and self.config.stall_diagnostics_enabled
+                    and (
+                        self._last_stall_diagnostic_time == 0.0
+                        or now - self._last_stall_diagnostic_time >= self.config.stall_recovery_interval
+                    )
+                )
+
+                if should_emit_diagnostic:
+                    # 更新诊断输出时间戳（冷却窗口起点）
+                    self._last_stall_diagnostic_time = now
+
+                    # 选择日志级别
+                    log_level = self.config.stall_diagnostics_level.lower()
+                    log_fn = {
+                        "debug": logger.debug,
+                        "info": logger.info,
+                        "warning": logger.warning,
+                        "error": logger.error,
+                    }.get(log_level, logger.warning)
+
+                    # 摘要日志（仅在 stall_detected=True 且冷却窗口外时输出）
+                    summary = (
+                        f"[诊断] 卡死检测 | iteration={iteration_id}, "
+                        f"pending={queue_stats['pending']}, "
+                        f"completed={queue_stats['completed']}, "
+                        f"failed={queue_stats['failed']}, "
+                        f"available_workers={len(available_workers)}, "
+                        f"active_tasks={len(active_tasks)}, "
+                        f"in_flight={len(in_flight_tasks)}, "
+                        f"stall_reason=\"{stall_reason}\""
+                    )
+                    log_fn(summary)
+
+                    # 计算无进展时间，决定卡死模式日志级别
+                    # 仅在接近 max_no_progress_time 阈值时使用 ERROR 级别
+                    no_progress_duration = now - self._last_progress_time
+                    near_degradation_threshold = self.config.max_no_progress_time * 0.8
+                    if no_progress_duration >= near_degradation_threshold:
+                        # 接近降级阈值，使用 ERROR 级别提醒
+                        logger.error(
+                            f"[诊断] ⚠ 卡死模式检测: {stall_reason} "
+                            f"(无进展 {no_progress_duration:.1f}s，临近降级阈值 {self.config.max_no_progress_time}s)"
+                        )
+                    else:
+                        # 正常卡死检测，使用配置的日志级别
+                        log_fn(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
+
+                    # 详细诊断（仅当 stall_diagnostics_detail=True 时输出）
+                    if self.config.stall_diagnostics_detail:
+                        log_fn(f"[诊断] === 详细诊断 (循环 #{_loop_count}) ===")
+                        log_fn(f"[诊断] TaskQueue.get_statistics(): {queue_stats}")
+                        log_fn(f"[诊断] available_workers: {available_workers}")
+                        log_fn(f"[诊断] active_tasks: {list(active_tasks.keys())}")
+                        log_fn(f"[诊断] in_flight_tasks: {list(in_flight_tasks.keys())}")
+
+                        # 限制输出的任务数量
+                        max_tasks = self.config.stall_diagnostics_max_tasks
+                        task_count = len(tasks_in_iteration)
+                        tasks_to_show = tasks_in_iteration[:max_tasks]
+
+                        for task in tasks_to_show:
+                            log_fn(
+                                f"[诊断] Task {task.id}: status={task.status.value}, "
+                                f"retry_count={task.retry_count}, assigned_to={task.assigned_to}"
+                            )
+
+                        if task_count > max_tasks:
+                            log_fn(f"[诊断] ... 省略 {task_count - max_tasks} 个任务")
 
                 # 尝试恢复
                 if stall_detected and self._should_attempt_recovery(iteration_id):
@@ -1429,8 +1679,8 @@ class MultiProcessOrchestrator:
                 # 只有在检测到卡死时才重置计时器（避免频繁触发）
                 # 正常情况下计时器在任务完成时重置
 
-            # 执行过程中的周期性健康检查
-            if time.time() - last_health_check >= _EXECUTION_HEALTH_CHECK_INTERVAL:
+            # 执行过程中的周期性健康检查（使用配置的间隔）
+            if time.time() - last_health_check >= self.config.execution_health_check_interval:
                 last_health_check = time.time()
                 health_result = await self._perform_health_check()
 

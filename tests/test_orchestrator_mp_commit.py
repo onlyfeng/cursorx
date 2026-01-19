@@ -958,6 +958,207 @@ class TestCommitStrategyEdgeCases:
             assert iteration.status == IterationStatus.COMMITTING
 
 
+class TestHealthCheckWarningCooldown:
+    """测试健康检查告警 cooldown 机制"""
+
+    @pytest.fixture
+    def mp_config_for_cooldown(self) -> MultiProcessOrchestratorConfig:
+        """创建测试 cooldown 的配置"""
+        return MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=1,
+            worker_count=2,
+            enable_auto_commit=False,
+            health_check_interval=1.0,
+            health_check_timeout=2.0,
+            skip_busy_workers_in_health_check=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cooldown_prevents_repeated_warnings(
+        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 cooldown 机制防止重复告警"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 验证初始状态
+        assert orchestrator._health_warning_cooldown == {}
+        assert orchestrator._health_warning_cooldown_seconds == 60.0
+
+        # 第一次调用应该返回 True（应该发出警告）
+        should_warn_1 = orchestrator._should_emit_health_warning("worker-0")
+        assert should_warn_1 is True
+        assert "worker-0" in orchestrator._health_warning_cooldown
+
+        # 立即再次调用应该返回 False（在 cooldown 内）
+        should_warn_2 = orchestrator._should_emit_health_warning("worker-0")
+        assert should_warn_2 is False
+
+        # 不同的 agent 应该独立计算
+        should_warn_3 = orchestrator._should_emit_health_warning("worker-1")
+        assert should_warn_3 is True
+
+    @pytest.mark.asyncio
+    async def test_cooldown_expires_after_interval(
+        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 cooldown 过期后可以再次告警"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
+        # 设置较短的 cooldown 时间用于测试
+        orchestrator._health_warning_cooldown_seconds = 0.1
+
+        # 第一次调用
+        should_warn_1 = orchestrator._should_emit_health_warning("worker-0")
+        assert should_warn_1 is True
+
+        # 等待 cooldown 过期
+        time.sleep(0.15)
+
+        # cooldown 过期后应该可以再次告警
+        should_warn_2 = orchestrator._should_emit_health_warning("worker-0")
+        assert should_warn_2 is True
+
+    @pytest.mark.asyncio
+    async def test_busy_worker_no_heartbeat_uses_debug_log(
+        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 busy worker 无心跳响应时使用 debug 日志（不告警）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：worker-0 有响应，worker-1 无响应
+        current_time = time.time()
+        orchestrator._heartbeat_responses["planner-1"] = current_time + 0.1
+        orchestrator._heartbeat_responses["worker-0"] = current_time + 0.1
+        orchestrator._heartbeat_responses["reviewer-1"] = current_time + 0.1
+        # worker-1 没有响应
+
+        # Mock: worker-1 进程存活且有任务分配（busy）
+        def mock_is_alive(agent_id: str) -> bool:
+            return True  # 所有进程存活
+
+        def mock_get_tasks_by_agent(agent_id: str) -> list:
+            if agent_id == "worker-1":
+                return ["task-123"]  # worker-1 有任务
+            return []
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                with patch.object(
+                    orchestrator.process_manager, "get_tasks_by_agent",
+                    side_effect=mock_get_tasks_by_agent
+                ):
+                    result = await orchestrator._perform_health_check()
+
+                    # worker-1 应该被视为健康（assumed_busy）
+                    assert "worker-1" in result.healthy
+                    assert result.details["worker-1"]["reason"] == "assumed_busy"
+                    # 不应该触发 cooldown 机制（因为不输出 warning）
+                    assert "worker-1" not in orchestrator._health_warning_cooldown
+
+    @pytest.mark.asyncio
+    async def test_non_busy_worker_no_heartbeat_triggers_cooldown(
+        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试非 busy worker 连续多次无心跳响应时触发 cooldown
+
+        新逻辑：只有连续多次未响应（达到 consecutive_unresponsive_threshold）后
+        才会触发 WARNING 和 cooldown。单次未响应不触发告警。
+        """
+        import time
+
+        # 设置较小的阈值以加速测试
+        mp_config_for_cooldown.consecutive_unresponsive_threshold = 2
+        orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # Mock: worker-1 进程存活但没有任务分配
+        def mock_is_alive(agent_id: str) -> bool:
+            return True
+
+        def mock_get_tasks_by_agent(agent_id: str) -> list:
+            return []  # 没有任务
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                with patch.object(
+                    orchestrator.process_manager, "get_tasks_by_agent",
+                    side_effect=mock_get_tasks_by_agent
+                ):
+                    # 执行多次健康检查直到达到阈值
+                    threshold = orchestrator.config.consecutive_unresponsive_threshold
+                    for i in range(threshold):
+                        # 预填充心跳响应：worker-1 无响应
+                        current_time = time.time()
+                        orchestrator._heartbeat_responses["planner-1"] = current_time + 0.1
+                        orchestrator._heartbeat_responses["worker-0"] = current_time + 0.1
+                        orchestrator._heartbeat_responses["reviewer-1"] = current_time + 0.1
+                        # worker-1 不响应
+
+                        result = await orchestrator._perform_health_check()
+
+                    # worker-1 应该被视为不健康
+                    assert "worker-1" in result.unhealthy
+                    assert result.details["worker-1"]["reason"] == "no_heartbeat_response"
+                    assert result.details["worker-1"]["is_alive"] is True
+                    # 连续未响应次数应达到阈值
+                    assert result.details["worker-1"]["consecutive_unresponsive"] == threshold
+                    # 达到阈值后应该触发 cooldown
+                    assert "worker-1" in orchestrator._health_warning_cooldown
+
+    @pytest.mark.asyncio
+    async def test_process_dead_always_logs_error(
+        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试进程死亡时始终记录 ERROR（不受 cooldown 限制）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：worker-1 无响应
+        current_time = time.time()
+        orchestrator._heartbeat_responses["planner-1"] = current_time + 0.1
+        orchestrator._heartbeat_responses["worker-0"] = current_time + 0.1
+        orchestrator._heartbeat_responses["reviewer-1"] = current_time + 0.1
+
+        # Mock: worker-1 进程已死亡
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "worker-1":
+                return False
+            return True
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                result = await orchestrator._perform_health_check()
+
+                # worker-1 应该被视为不健康且进程死亡
+                assert "worker-1" in result.unhealthy
+                assert result.details["worker-1"]["reason"] == "process_dead"
+                assert result.details["worker-1"]["is_alive"] is False
+
+
 class TestHealthCheckInOrchestrator:
     """测试 Orchestrator 中的健康检查处理"""
 

@@ -122,12 +122,28 @@ class AgentWorkerProcess(Process):
                     self._is_busy = False
 
     def _setup_logging(self) -> None:
-        """配置进程内日志"""
+        """配置进程内日志
+
+        根据 config 配置日志级别：
+        - log_level: 日志级别（DEBUG/INFO/WARNING/ERROR），默认 INFO
+        - verbose: 是否启用详细模式（等价于 log_level=DEBUG）
+        - heartbeat_debug: 是否输出心跳调试日志（默认 False）
+
+        日志过滤策略：
+        - 非 verbose 模式下过滤 DEBUG 级别日志
+        - 心跳相关日志仅在 heartbeat_debug=True 时输出
+        """
+        # 读取配置
+        verbose = self.config.get("verbose", False)
+        log_level = self.config.get("log_level", "DEBUG" if verbose else "INFO")
+        self._heartbeat_debug = self.config.get("heartbeat_debug", False)
+
         logger.remove()
         logger.add(
             sys.stderr,
             format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{extra[agent_id]}</cyan> - <level>{message}</level>",
-            level="DEBUG",
+            level=log_level,
+            filter=lambda record: record["level"].name != "DEBUG" or verbose,
         )
         logger.configure(extra={"agent_id": self.agent_id[:12]})
 
@@ -154,7 +170,9 @@ class AgentWorkerProcess(Process):
             payload["request_id"] = message.payload.get("request_id")
 
         self._send_message(ProcessMessageType.HEARTBEAT, payload)
-        logger.debug(f"[{self.agent_id}] 心跳响应已发送 (busy={self._is_busy})")
+        # 心跳日志仅在 heartbeat_debug 模式下输出（避免高频刷屏）
+        if getattr(self, "_heartbeat_debug", False):
+            logger.debug(f"[{self.agent_id}] 心跳响应已发送 (busy={self._is_busy})")
 
     def _handle_message(self, message: ProcessMessage) -> None:
         """处理接收到的消息
@@ -162,7 +180,12 @@ class AgentWorkerProcess(Process):
         控制消息（心跳、状态查询、关闭）在主线程立即处理。
         业务消息（任务等）提交到工作线程异步执行。
         """
-        logger.debug(f"[{self.agent_id}] 收到消息: {message.type.value}")
+        # 心跳消息仅在 heartbeat_debug 模式下输出日志（避免高频刷屏）
+        if message.type == ProcessMessageType.HEARTBEAT:
+            if getattr(self, "_heartbeat_debug", False):
+                logger.debug(f"[{self.agent_id}] 收到消息: {message.type.value}")
+        else:
+            logger.debug(f"[{self.agent_id}] 收到消息: {message.type.value}")
 
         if message.type == ProcessMessageType.SHUTDOWN:
             self._running = False
