@@ -373,12 +373,12 @@ python run.py --help
 # 1. 帮助信息验证（基础）
 python run.py --help
 
-# 2. 各模式帮助验证
-python run.py basic --help 2>/dev/null || true
-python run.py iterate --help 2>/dev/null || true
-python run.py plan --help 2>/dev/null || true
-python run.py ask --help 2>/dev/null || true
-python run.py auto --help 2>/dev/null || true
+# 2. 各模式帮助验证（使用 --mode 参数）
+python run.py --mode basic --help 2>/dev/null || true
+python run.py --mode iterate --help 2>/dev/null || true
+python run.py --mode plan --help 2>/dev/null || true
+python run.py --mode ask --help 2>/dev/null || true
+python run.py --mode auto --help 2>/dev/null || true
 
 # 3. dry-run 模式验证（如果支持）
 python run.py --dry-run "test task" 2>/dev/null || true
@@ -388,6 +388,44 @@ python run.py --validate-config 2>/dev/null || true
 
 # 5. 版本信息验证
 python run.py --version 2>/dev/null || true
+```
+
+#### plan/ask 模式的只读保证
+
+`plan` 和 `ask` 模式提供 **只读保证**：
+
+- **内部实现**：使用 `--mode plan` / `--mode ask` 调用 Cursor CLI
+- **只读机制**：通过 `PlanAgentExecutor` 和 `AskAgentExecutor` 类强制设置 `force_write=False`
+- **安全保证**：即使显式指定 `--force` 参数也不会修改文件
+
+| 模式 | 只读保证 | 内部 CLI 参数 | 适用场景 |
+|------|----------|---------------|----------|
+| `plan` | **是** | `--mode plan` | 任务分析、代码审查、架构规划 |
+| `ask` | **是** | `--mode ask` | 代码解释、问题咨询、知识查询 |
+| `agent` | 否 | `--mode agent` | 代码编写、重构、功能实现 |
+| `iterate` | 否 | N/A（编排器） | 自我迭代、持续改进 |
+
+```bash
+# 使用规划模式（只读，内部使用 --mode plan 调用 CLI）
+python run.py --mode plan "分析代码结构"
+
+# 使用问答模式（只读，内部使用 --mode ask 调用 CLI）
+python run.py --mode ask "解释这个函数的作用"
+```
+
+**自动提交配置**（iterate 模式）:
+
+`--auto-commit` 默认为 **False**，必须显式指定才会启用提交：
+
+```bash
+# 默认：不自动提交（安全模式）
+python run.py --mode iterate "任务描述"
+
+# 显式启用自动提交（必须指定 --auto-commit）
+python run.py --mode iterate --auto-commit "完成功能"
+
+# 每次迭代都提交（run.py 和 scripts/run_iterate.py 均支持）
+python run.py --mode iterate --auto-commit --commit-per-iteration "分步完成"
 ```
 
 **入口脚本验证检查清单**：
@@ -1212,7 +1250,10 @@ def test_sync_wrapper():
 ├─────────────────────────────────────────────────────────────────────┤
 │  CursorAgentClient     - CLI 客户端                                   │
 │  CursorCloudClient     - Cloud API 客户端                             │
-│  AgentExecutor         - 执行器抽象                                    │
+│  AgentExecutor         - 执行器抽象（CLI/Cloud/Plan/Ask 模式）           │
+│  PlanAgentExecutor     - 规划模式执行器（只读保证）                       │
+│  AskAgentExecutor      - 问答模式执行器（只读保证）                       │
+│  CloudAgentExecutor    - Cloud Relay 执行器（& 后台任务）                │
 │  StreamingClient       - 流式输出处理                                  │
 │  MCPManager            - MCP 服务器管理                                │
 │  EgressIPManager       - 网络/IP 管理                                  │

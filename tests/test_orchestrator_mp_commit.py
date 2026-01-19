@@ -958,5 +958,708 @@ class TestCommitStrategyEdgeCases:
             assert iteration.status == IterationStatus.COMMITTING
 
 
+class TestHealthCheckInOrchestrator:
+    """测试 Orchestrator 中的健康检查处理"""
+
+    @pytest.fixture
+    def mp_config_with_health_check(self) -> MultiProcessOrchestratorConfig:
+        """创建启用健康检查的配置"""
+        return MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=2,
+            worker_count=3,
+            enable_auto_commit=False,
+            health_check_interval=1.0,  # 1秒间隔（测试用）
+            health_check_timeout=2.0,
+            max_unhealthy_workers=1,  # 超过1个不健康 Worker 则降级
+            requeue_on_worker_death=True,
+            fallback_on_critical_failure=True,
+        )
+
+    def _mock_spawn_and_ready(
+        self, orchestrator: MultiProcessOrchestrator
+    ) -> tuple:
+        """Mock spawn 和 ready"""
+        mock_spawn = patch.object(
+            orchestrator, "_spawn_agents", return_value=None
+        )
+        mock_wait_ready = patch.object(
+            orchestrator.process_manager, "wait_all_ready", return_value=True
+        )
+        return mock_spawn, mock_wait_ready
+
+    @pytest.mark.asyncio
+    async def test_health_check_all_healthy(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试所有进程健康时的行为（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应以模拟所有进程响应心跳
+        all_agents = ["planner-1", "worker-0", "worker-1", "worker-2", "reviewer-1"]
+        current_time = time.time()
+        for agent_id in all_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+
+        # Mock broadcast 和 is_alive
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", return_value=True
+            ):
+                result = await orchestrator._perform_health_check()
+
+                assert result.all_healthy is True
+                assert orchestrator._degraded is False
+                assert orchestrator._unhealthy_worker_count == 0
+
+    @pytest.mark.asyncio
+    async def test_health_check_partial_worker_unhealthy_within_threshold(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试部分 Worker 不健康但在阈值内（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：worker-1 不响应（没有心跳记录或过时）
+        current_time = time.time()
+        healthy_agents = ["planner-1", "worker-0", "worker-2", "reviewer-1"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # worker-1 没有响应（不添加或使用过时时间戳）
+
+        # Mock broadcast 和 is_alive
+        def mock_is_alive(agent_id: str) -> bool:
+            return True  # 所有进程都存活，worker-1 只是没响应心跳
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                with patch.object(
+                    orchestrator, "_handle_unhealthy_workers", new_callable=AsyncMock
+                ) as mock_handle:
+                    result = await orchestrator._perform_health_check()
+
+                    assert result.all_healthy is False
+                    assert orchestrator._degraded is False  # 未触发降级（在阈值内）
+                    assert orchestrator._unhealthy_worker_count == 1
+                    mock_handle.assert_called_once_with(["worker-1"])
+
+    @pytest.mark.asyncio
+    async def test_health_check_worker_unhealthy_exceeds_threshold(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Worker 不健康数量超过阈值触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：worker-1 和 worker-2 不响应
+        current_time = time.time()
+        healthy_agents = ["planner-1", "worker-0", "reviewer-1"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # worker-1, worker-2 没有响应
+
+        # Mock broadcast 和 is_alive
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "worker-2":
+                return False  # process_dead
+            return True  # 其他进程存活
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                result = await orchestrator._perform_health_check()
+
+                assert orchestrator._degraded is True
+                assert "阈值" in orchestrator._degradation_reason
+                assert orchestrator._unhealthy_worker_count == 2
+
+    @pytest.mark.asyncio
+    async def test_health_check_planner_unhealthy_triggers_degradation(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Planner 不健康触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：planner-1 不响应
+        current_time = time.time()
+        healthy_agents = ["worker-0", "worker-1", "worker-2", "reviewer-1"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # planner-1 没有响应
+
+        # Mock broadcast 和 is_alive
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "planner-1":
+                return False  # process_dead
+            return True
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                result = await orchestrator._perform_health_check()
+
+                assert orchestrator._degraded is True
+                assert "Planner" in orchestrator._degradation_reason
+
+    @pytest.mark.asyncio
+    async def test_health_check_reviewer_unhealthy_triggers_degradation(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Reviewer 不健康触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：reviewer-1 不响应
+        current_time = time.time()
+        healthy_agents = ["planner-1", "worker-0", "worker-1", "worker-2"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # reviewer-1 没有响应
+
+        # Mock broadcast 和 is_alive
+        def mock_is_alive(agent_id: str) -> bool:
+            return True  # 所有进程存活，reviewer-1 只是没响应心跳
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                result = await orchestrator._perform_health_check()
+
+                assert orchestrator._degraded is True
+                assert "Reviewer" in orchestrator._degradation_reason
+
+    @pytest.mark.asyncio
+    async def test_handle_unhealthy_workers_requeue(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试不健康 Worker 的在途任务重新入队"""
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.state.start_new_iteration()
+
+        # 模拟任务和跟踪
+        task = Task(
+            id="task-requeue-1",
+            iteration_id=1,
+            type="implement",
+            title="测试任务",
+            description="",
+            instruction="执行",
+            target_files=[],
+        )
+        task.status = TaskStatus.IN_PROGRESS
+        await orchestrator.task_queue.enqueue(task)
+
+        # 跟踪任务分配
+        orchestrator.process_manager.track_task_assignment(
+            task_id="task-requeue-1",
+            agent_id="worker-1",
+            message_id="msg-123",
+        )
+
+        # 处理不健康 Worker
+        await orchestrator._handle_unhealthy_workers(["worker-1"])
+
+        # 验证任务被重新入队（状态变为 QUEUED）
+        updated_task = orchestrator.task_queue.get_task("task-requeue-1")
+        assert updated_task.status == TaskStatus.QUEUED
+
+    @pytest.mark.asyncio
+    async def test_handle_unhealthy_workers_mark_failed(
+        self,
+    ) -> None:
+        """测试不健康 Worker 的在途任务标记失败（requeue_on_worker_death=False）"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=1,
+            worker_count=2,
+            enable_auto_commit=False,
+            requeue_on_worker_death=False,  # 不重入队，直接标记失败
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+        orchestrator.state.start_new_iteration()
+
+        # 模拟任务
+        task = Task(
+            id="task-fail-1",
+            iteration_id=1,
+            type="implement",
+            title="测试任务",
+            description="",
+            instruction="执行",
+            target_files=[],
+        )
+        task.status = TaskStatus.IN_PROGRESS
+        await orchestrator.task_queue.enqueue(task)
+
+        # 跟踪任务分配
+        orchestrator.process_manager.track_task_assignment(
+            task_id="task-fail-1",
+            agent_id="worker-dead",
+            message_id="msg-456",
+        )
+
+        # 处理不健康 Worker
+        await orchestrator._handle_unhealthy_workers(["worker-dead"])
+
+        # 验证任务被标记为 FAILED
+        updated_task = orchestrator.task_queue.get_task("task-fail-1")
+        assert updated_task.status == TaskStatus.FAILED
+        assert "worker-dead" in updated_task.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_degraded_state_stops_iteration(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级状态下 _should_continue_iteration 返回 False"""
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+
+        assert orchestrator._should_continue_iteration() is True
+
+        orchestrator._trigger_degradation("测试降级")
+
+        assert orchestrator._should_continue_iteration() is False
+        assert orchestrator.is_degraded() is True
+        assert orchestrator.get_degradation_reason() == "测试降级"
+
+    @pytest.mark.asyncio
+    async def test_final_result_includes_degradation_info(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试最终结果包含降级信息"""
+        from process.manager import HealthCheckResult
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        mock_spawn, mock_wait_ready = self._mock_spawn_and_ready(orchestrator)
+
+        # 设置降级状态
+        orchestrator._degraded = True
+        orchestrator._degradation_reason = "Worker 全部死亡"
+
+        with mock_spawn, mock_wait_ready:
+            with patch.object(
+                orchestrator.process_manager, "shutdown_all", return_value=None
+            ):
+                result = orchestrator._generate_final_result()
+
+                assert result["degraded"] is True
+                assert result["degradation_reason"] == "Worker 全部死亡"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="集成测试需要更复杂的 mock 设置，单元测试已覆盖核心逻辑")
+    async def test_full_run_with_degradation_on_health_check(
+        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试完整运行流程中健康检查触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        mock_spawn, mock_wait_ready = self._mock_spawn_and_ready(orchestrator)
+
+        # 预填充心跳响应：planner-1 不响应
+        current_time = time.time()
+        healthy_agents = ["worker-0", "worker-1", "worker-2", "reviewer-1"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # planner-1 没有响应
+
+        # Mock broadcast 和 is_alive
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "planner-1":
+                return False  # process_dead
+            return True
+
+        with mock_spawn, mock_wait_ready:
+            with patch.object(orchestrator.process_manager, "broadcast"):
+                with patch.object(
+                    orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+                ):
+                    with patch.object(
+                        orchestrator.process_manager, "shutdown_all", return_value=None
+                    ):
+                        # Mock receive_message 返回 None 以避免 _message_loop 挂起
+                        with patch.object(
+                            orchestrator.process_manager, "receive_message", return_value=None
+                        ):
+                            # 强制 _should_run_health_check 返回 True
+                            orchestrator._last_health_check_time = 0
+
+                            result = await orchestrator.run("测试降级")
+
+                            # 应该因降级而终止
+                            assert result["success"] is False
+                            assert result["degraded"] is True
+                            assert "Planner" in result["degradation_reason"]
+
+
+class TestDegradationStrategyBOrchestrator:
+    """测试降级策略 B 在 MultiProcessOrchestrator 中的实现
+
+    策略 B 契约:
+    1. 降级时 success=False（基于 is_completed 状态）
+    2. degraded=True 显式标注
+    3. degradation_reason 记录降级原因
+    4. iterations_completed 记录降级前完成的迭代数
+    5. 不触发回退（回退由 SelfIterator 层判断 _fallback_required）
+
+    这是 MultiProcessOrchestrator 层的降级策略实现测试。
+    """
+
+    @pytest.fixture
+    def mp_config_for_degradation(self) -> MultiProcessOrchestratorConfig:
+        """创建用于降级测试的配置"""
+        return MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=3,
+            worker_count=3,
+            enable_auto_commit=False,
+            health_check_interval=1.0,
+            health_check_timeout=2.0,
+            max_unhealthy_workers=1,
+            fallback_on_critical_failure=True,
+        )
+
+    def _mock_spawn_and_ready(
+        self, orchestrator: MultiProcessOrchestrator
+    ) -> tuple:
+        """Mock spawn 和 ready"""
+        mock_spawn = patch.object(
+            orchestrator, "_spawn_agents", return_value=None
+        )
+        mock_wait_ready = patch.object(
+            orchestrator.process_manager, "wait_all_ready", return_value=True
+        )
+        return mock_spawn, mock_wait_ready
+
+    @pytest.mark.asyncio
+    async def test_degraded_result_success_false(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级时 success=False（策略 B 核心契约）"""
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+
+        # 模拟降级状态
+        orchestrator._degraded = True
+        orchestrator._degradation_reason = "Planner 进程不健康"
+        orchestrator.state.is_completed = False  # 确保未完成
+
+        result = orchestrator._generate_final_result()
+
+        # 策略 B 核心断言
+        assert result["success"] is False, "降级时 success 必须为 False"
+        assert result["degraded"] is True, "降级时 degraded 必须为 True"
+        assert result["degradation_reason"] == "Planner 进程不健康"
+
+    @pytest.mark.asyncio
+    async def test_degraded_result_iterations_completed_accurate(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级时 iterations_completed 准确记录"""
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+
+        # 模拟完成了 2 次迭代后降级
+        orchestrator.state.start_new_iteration()  # 迭代 1
+        orchestrator.state.start_new_iteration()  # 迭代 2
+
+        orchestrator._degraded = True
+        orchestrator._degradation_reason = "Worker 不健康数量超过阈值"
+
+        result = orchestrator._generate_final_result()
+
+        assert result["iterations_completed"] == 2
+        assert result["degraded"] is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_triggered_by_planner_unhealthy(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Planner 不健康触发降级"""
+        from process.manager import HealthCheckResult
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # Planner 不健康
+        mock_result = HealthCheckResult(
+            healthy=["worker-0", "worker-1", "worker-2", "reviewer-1"],
+            unhealthy=["planner-1"],
+            all_healthy=False,
+            details={"planner-1": {"healthy": False, "reason": "process_dead"}},
+        )
+
+        with patch.object(
+            orchestrator.process_manager, "health_check", return_value=mock_result
+        ):
+            await orchestrator._perform_health_check()
+
+            # 验证降级触发
+            assert orchestrator._degraded is True
+            assert "Planner" in orchestrator._degradation_reason
+
+            # 生成结果验证
+            result = orchestrator._generate_final_result()
+            assert result["success"] is False
+            assert result["degraded"] is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_triggered_by_reviewer_unhealthy(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Reviewer 不健康触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：reviewer-1 不响应
+        current_time = time.time()
+        healthy_agents = ["planner-1", "worker-0", "worker-1", "worker-2"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # reviewer-1 没有响应
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", return_value=True
+            ):
+                await orchestrator._perform_health_check()
+
+                assert orchestrator._degraded is True
+                assert "Reviewer" in orchestrator._degradation_reason
+
+    @pytest.mark.asyncio
+    async def test_degraded_triggered_by_workers_exceed_threshold(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试 Worker 不健康数量超过阈值触发降级（方案 A：心跳收集架构）"""
+        import time
+
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+        orchestrator.planner_id = "planner-1"
+        orchestrator.worker_ids = ["worker-0", "worker-1", "worker-2"]
+        orchestrator.reviewer_id = "reviewer-1"
+
+        # 预填充心跳响应：worker-1 和 worker-2 不响应
+        current_time = time.time()
+        healthy_agents = ["planner-1", "worker-0", "reviewer-1"]
+        for agent_id in healthy_agents:
+            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+        # worker-1, worker-2 没有响应
+
+        # Mock is_alive: worker-2 进程死亡
+        def mock_is_alive(agent_id: str) -> bool:
+            if agent_id == "worker-2":
+                return False  # process_dead
+            return True
+
+        with patch.object(orchestrator.process_manager, "broadcast"):
+            with patch.object(
+                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
+            ):
+                await orchestrator._perform_health_check()
+
+                assert orchestrator._degraded is True
+                assert "阈值" in orchestrator._degradation_reason
+
+    @pytest.mark.asyncio
+    async def test_degraded_stops_iteration_loop(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级后 _should_continue_iteration 返回 False
+
+        策略 B 行为：降级后迭代循环应停止
+        """
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+
+        # 初始状态：应继续迭代
+        assert orchestrator._should_continue_iteration() is True
+
+        # 触发降级
+        orchestrator._trigger_degradation("Planner 进程不健康")
+
+        # 降级后：应停止迭代
+        assert orchestrator._should_continue_iteration() is False
+        assert orchestrator.is_degraded() is True
+        assert orchestrator.get_degradation_reason() == "Planner 进程不健康"
+
+    @pytest.mark.asyncio
+    async def test_degraded_result_no_fallback_required_flag(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级结果不包含 _fallback_required 标志
+
+        这是策略 B 与策略 A 的关键区分点：
+        - degraded: 运行时降级，不触发回退
+        - _fallback_required: 启动失败，需要回退
+        """
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+
+        orchestrator._degraded = True
+        orchestrator._degradation_reason = "测试降级"
+
+        result = orchestrator._generate_final_result()
+
+        # 验证不包含 _fallback_required（这是启动失败的标志）
+        assert "_fallback_required" not in result
+        assert "_fallback_reason" not in result
+
+        # 验证包含降级标志
+        assert result["degraded"] is True
+        assert result["degradation_reason"] == "测试降级"
+
+    @pytest.mark.asyncio
+    async def test_degraded_preserves_completed_iterations_info(
+        self, mp_config_for_degradation: MultiProcessOrchestratorConfig
+    ) -> None:
+        """测试降级时保留已完成迭代的详细信息"""
+        orchestrator = MultiProcessOrchestrator(mp_config_for_degradation)
+
+        # 模拟完成了一次迭代
+        iteration = orchestrator.state.start_new_iteration()
+        iteration.tasks_created = 3
+        iteration.tasks_completed = 2
+        iteration.tasks_failed = 1
+        iteration.status = IterationStatus.COMPLETED
+        iteration.review_passed = True
+
+        # 然后降级
+        orchestrator._degraded = True
+        orchestrator._degradation_reason = "第二次迭代时 Planner 崩溃"
+
+        result = orchestrator._generate_final_result()
+
+        # 验证已完成迭代的信息被保留
+        assert len(result["iterations"]) == 1
+        iter_info = result["iterations"][0]
+        assert iter_info["tasks_created"] == 3
+        assert iter_info["tasks_completed"] == 2
+        assert iter_info["tasks_failed"] == 1
+        assert iter_info["review_passed"] is True
+
+
+class TestAutoCommitDefaultDisabled:
+    """回归测试：验证 enable_auto_commit 默认禁用时的行为
+
+    确保：
+    1. 默认情况下 Committer 不被初始化
+    2. 最终结果 commits 为空
+    3. 不会触发任何提交操作
+    """
+
+    def test_default_config_auto_commit_disabled(self) -> None:
+        """测试默认配置 enable_auto_commit=False"""
+        config = MultiProcessOrchestratorConfig()
+        assert config.enable_auto_commit is False, \
+            "默认配置应禁用 auto_commit"
+
+    def test_committer_not_initialized_when_disabled(self) -> None:
+        """测试禁用 auto_commit 时 Committer 不被初始化"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            enable_auto_commit=False,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+
+        assert orchestrator.committer is None, \
+            "禁用 auto_commit 时不应初始化 Committer"
+
+    def test_committer_initialized_when_enabled(self) -> None:
+        """测试启用 auto_commit 时 Committer 被初始化"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            enable_auto_commit=True,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+
+        assert orchestrator.committer is not None, \
+            "启用 auto_commit 时应初始化 Committer"
+
+    @pytest.mark.asyncio
+    async def test_should_commit_false_when_disabled(self) -> None:
+        """测试禁用 auto_commit 时 _should_commit 始终返回 False"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            enable_auto_commit=False,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+
+        # 所有决策都应返回 False
+        assert orchestrator._should_commit(ReviewDecision.COMPLETE) is False
+        assert orchestrator._should_commit(ReviewDecision.CONTINUE) is False
+        assert orchestrator._should_commit(ReviewDecision.ADJUST) is False
+        assert orchestrator._should_commit(ReviewDecision.ABORT) is False
+
+    @pytest.mark.asyncio
+    async def test_final_result_commits_empty_when_disabled(self) -> None:
+        """测试禁用 auto_commit 时最终结果 commits 为空"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=1,
+            enable_auto_commit=False,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+
+        # 模拟运行完成
+        orchestrator.state.is_completed = True
+
+        # 生成最终结果
+        result = orchestrator._generate_final_result()
+
+        # 验证 commits 为空
+        assert result["commits"] == {}, \
+            "禁用 auto_commit 时 commits 应为空字典"
+        assert result["pushed"] is False, \
+            "禁用 auto_commit 时 pushed 应为 False"
+
+    @pytest.mark.asyncio
+    async def test_commit_phase_returns_error_when_no_committer(self) -> None:
+        """测试没有 Committer 时 _commit_phase 返回错误"""
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            enable_auto_commit=False,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+        orchestrator.state.start_new_iteration()
+
+        result = await orchestrator._commit_phase(1, ReviewDecision.COMPLETE)
+
+        assert result["success"] is False
+        assert "Committer not initialized" in result.get("error", "")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

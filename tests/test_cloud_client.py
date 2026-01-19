@@ -878,15 +878,25 @@ class TestCloudAgentExecutor:
         """检查可用性"""
         executor = CloudAgentExecutor()
 
-        # Cloud API 当前未实现，应返回 False
+        # 认证成功时，Cloud API 可用
         with patch.object(
             executor._auth_manager,
             "authenticate",
             return_value=AuthStatus(authenticated=True),
         ):
             available = await executor.check_available()
-            # Cloud API 尚未实现
-            assert available is False
+            # 认证成功即表示可用（使用 CursorCloudClient）
+            assert available is True
+
+        # 认证失败时，Cloud API 不可用
+        executor2 = CloudAgentExecutor()
+        with patch.object(
+            executor2._auth_manager,
+            "authenticate",
+            return_value=AuthStatus(authenticated=False, error="No API key"),
+        ):
+            available2 = await executor2.check_available()
+            assert available2 is False
 
 
 # ========== PlanAgentExecutor 测试 ==========

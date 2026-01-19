@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from process.manager import AgentProcessManager
+from process.manager import AgentProcessManager, HealthCheckResult
 from process.message_queue import MessageQueue, ProcessMessage, ProcessMessageType
 from process.worker import AgentWorkerProcess
 
@@ -839,11 +839,14 @@ class TestAgentProcessManager:
 
             manager.wait_all_ready(timeout=10.0)
 
-            results = manager.health_check()
+            result = manager.health_check()
 
-            assert len(results) == 2
-            assert results.get("health-0") is True
-            assert results.get("health-1") is True
+            # health_check 返回 HealthCheckResult 对象
+            assert isinstance(result, HealthCheckResult)
+            assert len(result.healthy) == 2
+            assert "health-0" in result.healthy
+            assert "health-1" in result.healthy
+            assert result.all_healthy is True
         finally:
             manager.shutdown_all(graceful=False)
 
@@ -901,7 +904,7 @@ class TestProcessIntegration:
 
             # 5. 健康检查
             health = manager.health_check()
-            assert all(health.values())
+            assert health.all_healthy
 
             # 6. 优雅关闭
             manager.shutdown_all(graceful=True)
@@ -948,3 +951,752 @@ class TestProcessIntegration:
 
         finally:
             manager.shutdown_all(graceful=False)
+
+
+# ============================================================================
+# HealthCheckResult 测试
+# ============================================================================
+
+
+class TestHealthCheckResult:
+    """HealthCheckResult 数据类测试"""
+
+    def test_health_check_result_creation(self):
+        """测试 HealthCheckResult 创建"""
+        result = HealthCheckResult()
+
+        assert result.healthy == []
+        assert result.unhealthy == []
+        assert result.all_healthy is True
+        assert result.details == {}
+
+    def test_health_check_result_with_data(self):
+        """测试带数据的 HealthCheckResult"""
+        result = HealthCheckResult(
+            healthy=["worker-1", "worker-2"],
+            unhealthy=["worker-3"],
+            all_healthy=False,
+            details={
+                "worker-1": {"healthy": True, "reason": "heartbeat_ok"},
+                "worker-2": {"healthy": True, "reason": "heartbeat_ok"},
+                "worker-3": {"healthy": False, "reason": "no_heartbeat_response"},
+            },
+        )
+
+        assert len(result.healthy) == 2
+        assert len(result.unhealthy) == 1
+        assert result.all_healthy is False
+
+    def test_get_unhealthy_workers(self):
+        """测试获取不健康 Worker 列表"""
+        result = HealthCheckResult(
+            healthy=["planner-abc", "worker-1"],
+            unhealthy=["worker-2", "reviewer-xyz", "worker-3"],
+            all_healthy=False,
+        )
+
+        unhealthy_workers = result.get_unhealthy_workers()
+
+        # 应该只返回包含 "worker" 的 agent_id
+        assert len(unhealthy_workers) == 2
+        assert "worker-2" in unhealthy_workers
+        assert "worker-3" in unhealthy_workers
+        assert "reviewer-xyz" not in unhealthy_workers
+
+
+# ============================================================================
+# 任务分配跟踪测试
+# ============================================================================
+
+
+class TestTaskAssignmentTracking:
+    """任务分配跟踪测试"""
+
+    def test_track_task_assignment(self):
+        """测试跟踪任务分配"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment(
+            task_id="task-123",
+            agent_id="worker-1",
+            message_id="msg-456",
+        )
+
+        tasks = manager.get_tasks_by_agent("worker-1")
+        assert "task-123" in tasks
+
+        all_tasks = manager.get_all_in_flight_tasks()
+        assert "task-123" in all_tasks
+        assert all_tasks["task-123"]["agent_id"] == "worker-1"
+        assert all_tasks["task-123"]["message_id"] == "msg-456"
+
+    def test_untrack_task(self):
+        """测试取消跟踪任务"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-123", "worker-1", "msg-456")
+
+        # 取消跟踪
+        info = manager.untrack_task("task-123")
+
+        assert info is not None
+        assert info["agent_id"] == "worker-1"
+
+        # 再次取消应返回 None
+        info2 = manager.untrack_task("task-123")
+        assert info2 is None
+
+        # 列表应为空
+        assert manager.get_tasks_by_agent("worker-1") == []
+
+    def test_get_tasks_by_agent_multiple(self):
+        """测试获取多个任务"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-1", "worker-1", "msg-1")
+        manager.track_task_assignment("task-2", "worker-1", "msg-2")
+        manager.track_task_assignment("task-3", "worker-2", "msg-3")
+
+        worker1_tasks = manager.get_tasks_by_agent("worker-1")
+        worker2_tasks = manager.get_tasks_by_agent("worker-2")
+
+        assert len(worker1_tasks) == 2
+        assert len(worker2_tasks) == 1
+        assert "task-1" in worker1_tasks
+        assert "task-2" in worker1_tasks
+        assert "task-3" in worker2_tasks
+
+
+# ============================================================================
+# 健康检查增强测试
+# ============================================================================
+
+
+class TestHealthCheckEnhanced:
+    """增强健康检查测试"""
+
+    def test_health_check_returns_result_object(self):
+        """测试健康检查返回 HealthCheckResult 对象"""
+        manager = AgentProcessManager()
+
+        try:
+            for i in range(2):
+                manager.spawn_agent(
+                    agent_class=SimpleTestWorker,
+                    agent_id=f"hc-test-{i}",
+                    agent_type="test",
+                    config={},
+                )
+
+            manager.wait_all_ready(timeout=10.0)
+
+            result = manager.health_check()
+
+            assert isinstance(result, HealthCheckResult)
+            assert len(result.healthy) == 2
+            assert len(result.unhealthy) == 0
+            assert result.all_healthy is True
+        finally:
+            manager.shutdown_all(graceful=False)
+
+    def test_health_check_simple_backward_compat(self):
+        """测试 health_check_simple 向后兼容"""
+        manager = AgentProcessManager()
+
+        try:
+            manager.spawn_agent(
+                agent_class=SimpleTestWorker,
+                agent_id="simple-hc-test",
+                agent_type="test",
+                config={},
+            )
+
+            manager.wait_for_ready("simple-hc-test", timeout=5.0)
+
+            # 使用简单接口
+            result = manager.health_check_simple()
+
+            assert isinstance(result, dict)
+            assert result.get("simple-hc-test") is True
+        finally:
+            manager.shutdown_all(graceful=False)
+
+    def test_health_check_with_dead_process(self):
+        """测试死进程的健康检查"""
+        manager = AgentProcessManager()
+
+        try:
+            process = manager.spawn_agent(
+                agent_class=SimpleTestWorker,
+                agent_id="dead-hc-test",
+                agent_type="worker",
+                config={},
+            )
+
+            manager.wait_for_ready("dead-hc-test", timeout=5.0)
+
+            # 强制终止进程
+            process.terminate()
+            process.join(timeout=2.0)
+
+            # 执行健康检查
+            result = manager.health_check(timeout=2.0)
+
+            assert "dead-hc-test" in result.unhealthy
+            assert result.all_healthy is False
+            assert result.details["dead-hc-test"]["healthy"] is False
+            assert result.details["dead-hc-test"]["reason"] == "process_dead"
+        finally:
+            manager.shutdown_all(graceful=False)
+
+
+# ============================================================================
+# Mock 健康检查测试（用于 Orchestrator 集成测试）
+# ============================================================================
+
+
+# ============================================================================
+# 反向索引测试
+# ============================================================================
+
+
+class TestMessageToTaskIndex:
+    """message_id -> task_id 反向索引测试"""
+
+    def test_index_created_on_track(self):
+        """测试跟踪任务时创建反向索引"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-123", "worker-1", "msg-456")
+
+        # 验证反向索引存在
+        assert "msg-456" in manager._message_to_task
+        assert manager._message_to_task["msg-456"] == "task-123"
+
+    def test_index_removed_on_untrack(self):
+        """测试取消跟踪任务时移除反向索引"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-123", "worker-1", "msg-456")
+        manager.untrack_task("task-123")
+
+        # 验证反向索引已清理
+        assert "msg-456" not in manager._message_to_task
+
+    def test_get_task_by_message_id(self):
+        """测试通过消息 ID 查找任务"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-123", "worker-1", "msg-456")
+
+        result = manager.get_task_by_message_id("msg-456")
+
+        assert result is not None
+        task_id, info = result
+        assert task_id == "task-123"
+        assert info["agent_id"] == "worker-1"
+        assert info["message_id"] == "msg-456"
+
+    def test_get_task_by_message_id_not_found(self):
+        """测试查找不存在的消息 ID"""
+        manager = AgentProcessManager()
+
+        result = manager.get_task_by_message_id("nonexistent")
+
+        assert result is None
+
+    def test_get_task_assignment(self):
+        """测试获取任务分配信息"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-123", "worker-1", "msg-456")
+
+        info = manager.get_task_assignment("task-123")
+
+        assert info is not None
+        assert info["agent_id"] == "worker-1"
+        assert info["message_id"] == "msg-456"
+
+    def test_get_task_assignment_not_found(self):
+        """测试获取不存在的任务分配信息"""
+        manager = AgentProcessManager()
+
+        info = manager.get_task_assignment("nonexistent")
+
+        assert info is None
+
+    def test_multiple_tasks_index(self):
+        """测试多个任务的反向索引"""
+        manager = AgentProcessManager()
+
+        manager.track_task_assignment("task-1", "worker-1", "msg-1")
+        manager.track_task_assignment("task-2", "worker-2", "msg-2")
+        manager.track_task_assignment("task-3", "worker-1", "msg-3")
+
+        # 验证所有索引
+        assert manager.get_task_by_message_id("msg-1")[0] == "task-1"
+        assert manager.get_task_by_message_id("msg-2")[0] == "task-2"
+        assert manager.get_task_by_message_id("msg-3")[0] == "task-3"
+
+        # 取消其中一个
+        manager.untrack_task("task-2")
+
+        assert manager.get_task_by_message_id("msg-2") is None
+        assert manager.get_task_by_message_id("msg-1") is not None
+        assert manager.get_task_by_message_id("msg-3") is not None
+
+
+class TestHealthCheckMocking:
+    """Mock 健康检查测试 - 验证部分 False 返回的处理"""
+
+    def test_mock_partial_unhealthy(self):
+        """测试 Mock 部分不健康的情况"""
+        manager = AgentProcessManager()
+
+        # 不实际创建进程，直接 Mock health_check
+        with patch.object(manager, 'health_check') as mock_hc:
+            # 模拟部分 Worker 不健康
+            mock_result = HealthCheckResult(
+                healthy=["planner-1", "worker-0", "reviewer-1"],
+                unhealthy=["worker-1", "worker-2"],
+                all_healthy=False,
+                details={
+                    "planner-1": {"healthy": True, "reason": "heartbeat_ok"},
+                    "worker-0": {"healthy": True, "reason": "heartbeat_ok"},
+                    "worker-1": {"healthy": False, "reason": "no_heartbeat_response"},
+                    "worker-2": {"healthy": False, "reason": "process_dead"},
+                    "reviewer-1": {"healthy": True, "reason": "heartbeat_ok"},
+                },
+            )
+            mock_hc.return_value = mock_result
+
+            result = manager.health_check()
+
+            assert result.all_healthy is False
+            assert len(result.get_unhealthy_workers()) == 2
+            assert "worker-1" in result.get_unhealthy_workers()
+            assert "worker-2" in result.get_unhealthy_workers()
+
+    def test_mock_critical_process_unhealthy(self):
+        """测试 Mock 关键进程（planner/reviewer）不健康"""
+        manager = AgentProcessManager()
+
+        with patch.object(manager, 'health_check') as mock_hc:
+            # 模拟 Planner 不健康
+            mock_result = HealthCheckResult(
+                healthy=["worker-0", "worker-1", "reviewer-1"],
+                unhealthy=["planner-1"],
+                all_healthy=False,
+                details={
+                    "planner-1": {"healthy": False, "reason": "process_dead"},
+                    "worker-0": {"healthy": True, "reason": "heartbeat_ok"},
+                    "worker-1": {"healthy": True, "reason": "heartbeat_ok"},
+                    "reviewer-1": {"healthy": True, "reason": "heartbeat_ok"},
+                },
+            )
+            mock_hc.return_value = mock_result
+
+            result = manager.health_check()
+
+            assert result.all_healthy is False
+            assert "planner-1" in result.unhealthy
+            # Planner 不在 get_unhealthy_workers 返回中（因为它不是 worker）
+            assert "planner-1" not in result.get_unhealthy_workers()
+
+    def test_mock_all_workers_unhealthy(self):
+        """测试 Mock 所有 Worker 不健康的极端情况"""
+        manager = AgentProcessManager()
+
+        with patch.object(manager, 'health_check') as mock_hc:
+            mock_result = HealthCheckResult(
+                healthy=["planner-1", "reviewer-1"],
+                unhealthy=["worker-0", "worker-1", "worker-2"],
+                all_healthy=False,
+                details={
+                    "planner-1": {"healthy": True, "reason": "heartbeat_ok"},
+                    "reviewer-1": {"healthy": True, "reason": "heartbeat_ok"},
+                    "worker-0": {"healthy": False, "reason": "no_heartbeat_response"},
+                    "worker-1": {"healthy": False, "reason": "process_dead"},
+                    "worker-2": {"healthy": False, "reason": "no_heartbeat_response"},
+                },
+            )
+            mock_hc.return_value = mock_result
+
+            result = manager.health_check()
+
+            assert len(result.get_unhealthy_workers()) == 3
+            assert result.all_healthy is False
+
+
+# ============================================================================
+# Late Result 处理测试（MP Orchestrator）
+# ============================================================================
+
+
+class TestLateResultHandling:
+    """Late Result 兜底处理测试
+
+    验证当 TASK_RESULT 的 correlation_id 不在 _pending_responses 时：
+    1. 能通过反向索引查找任务
+    2. 根据任务状态决定忽略或应用结果
+    3. 不会导致挂起或崩溃
+    """
+
+    @pytest.fixture
+    def mock_orchestrator(self):
+        """创建 Mock Orchestrator 用于测试"""
+        from coordinator.orchestrator_mp import (
+            MultiProcessOrchestrator,
+            MultiProcessOrchestratorConfig,
+        )
+        from tasks.queue import TaskQueue
+        from tasks.task import Task, TaskStatus, TaskType
+
+        config = MultiProcessOrchestratorConfig(
+            working_directory=".",
+            max_iterations=1,
+            worker_count=1,
+            enable_auto_commit=False,
+        )
+        orchestrator = MultiProcessOrchestrator(config)
+
+        # Mock process_manager 方法
+        orchestrator.process_manager = MagicMock()
+        orchestrator.process_manager.get_task_by_message_id = MagicMock(return_value=None)
+        orchestrator.process_manager.get_task_assignment = MagicMock(return_value=None)
+        orchestrator.process_manager.untrack_task = MagicMock(return_value=None)
+
+        return orchestrator
+
+    @pytest.mark.asyncio
+    async def test_late_result_ignored_no_task_id(self, mock_orchestrator):
+        """测试无法确定 task_id 时 late result 被忽略"""
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={"success": True},  # 没有 task_id
+            correlation_id="unknown-corr-id",
+        )
+
+        # 确保没有等待中的 Future
+        assert "unknown-corr-id" not in mock_orchestrator._pending_responses
+
+        # 调用 _handle_message（应该触发 _handle_late_result）
+        await mock_orchestrator._handle_message(message)
+
+        # 验证统计
+        assert mock_orchestrator._message_stats.get("late_result_ignored", 0) >= 1
+
+    @pytest.mark.asyncio
+    async def test_late_result_ignored_task_requeued(self, mock_orchestrator):
+        """测试任务已重新入队时 late result 被忽略"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建一个 PENDING 状态的任务（模拟已重新入队）
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.PENDING,  # 已重新入队
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={"task_id": "task-123", "success": True},
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证被忽略
+        assert mock_orchestrator._message_stats.get("late_result_ignored", 0) >= 1
+        # 任务状态不应改变
+        assert mock_orchestrator.task_queue.get_task("task-123").status == TaskStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_late_result_ignored_task_completed(self, mock_orchestrator):
+        """测试任务已完成时 late result 被忽略"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建一个 COMPLETED 状态的任务
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.COMPLETED,
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={"task_id": "task-123", "success": False, "error": "Some error"},
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证被忽略
+        assert mock_orchestrator._message_stats.get("late_result_ignored", 0) >= 1
+        # 任务状态不应改变
+        assert mock_orchestrator.task_queue.get_task("task-123").status == TaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_late_result_applied_in_progress(self, mock_orchestrator):
+        """测试任务仍处于 IN_PROGRESS 时 late result 被应用"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建一个 IN_PROGRESS 状态的任务
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.IN_PROGRESS,
+            assigned_to="worker-1",
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        # 初始化 iteration
+        mock_orchestrator.state.start_new_iteration()
+
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={
+                "task_id": "task-123",
+                "success": True,
+                "output": "Task completed successfully",
+            },
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证被应用
+        assert mock_orchestrator._message_stats.get("late_result_applied", 0) >= 1
+        # 任务状态应更新为 COMPLETED
+        assert mock_orchestrator.task_queue.get_task("task-123").status == TaskStatus.COMPLETED
+        # 统计应更新
+        assert mock_orchestrator.state.total_tasks_completed >= 1
+
+    @pytest.mark.asyncio
+    async def test_late_result_ignored_sender_mismatch(self, mock_orchestrator):
+        """测试发送者不匹配时 late result 被忽略"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建一个 IN_PROGRESS 状态的任务，分配给 worker-1
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.IN_PROGRESS,
+            assigned_to="worker-1",
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        # 来自 worker-2 的响应（不匹配）
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-2",  # 不匹配
+            payload={"task_id": "task-123", "success": True},
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证被忽略
+        assert mock_orchestrator._message_stats.get("late_result_ignored", 0) >= 1
+        # 任务状态不应改变
+        assert mock_orchestrator.task_queue.get_task("task-123").status == TaskStatus.IN_PROGRESS
+
+    @pytest.mark.asyncio
+    async def test_late_result_lookup_by_correlation_id(self, mock_orchestrator):
+        """测试通过 correlation_id 反查 task_id"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建任务
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.IN_PROGRESS,
+            assigned_to="worker-1",
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        # 初始化 iteration
+        mock_orchestrator.state.start_new_iteration()
+
+        # 配置 mock 返回反向索引结果
+        mock_orchestrator.process_manager.get_task_by_message_id.return_value = (
+            "task-123",
+            {"agent_id": "worker-1", "message_id": "msg-456"},
+        )
+
+        # 消息没有 task_id，但有 correlation_id
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={"success": True, "output": "Done"},  # 没有 task_id
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证通过反向索引查找
+        mock_orchestrator.process_manager.get_task_by_message_id.assert_called_with("msg-456")
+        # 验证被应用
+        assert mock_orchestrator._message_stats.get("late_result_applied", 0) >= 1
+
+    @pytest.mark.asyncio
+    async def test_late_result_failed_task(self, mock_orchestrator):
+        """测试 late result 失败时正确更新任务状态"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建一个 IN_PROGRESS 状态的任务
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.IN_PROGRESS,
+            assigned_to="worker-1",
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        # 初始化 iteration
+        mock_orchestrator.state.start_new_iteration()
+
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={
+                "task_id": "task-123",
+                "success": False,
+                "error": "Execution failed",
+            },
+            correlation_id="msg-456",
+        )
+
+        await mock_orchestrator._handle_message(message)
+
+        # 验证被应用
+        assert mock_orchestrator._message_stats.get("late_result_applied", 0) >= 1
+        # 任务状态应更新为 FAILED
+        updated_task = mock_orchestrator.task_queue.get_task("task-123")
+        assert updated_task.status == TaskStatus.FAILED
+        assert updated_task.error == "Execution failed"
+        # 统计应更新
+        assert mock_orchestrator.state.total_tasks_failed >= 1
+
+    @pytest.mark.asyncio
+    async def test_late_result_no_crash_on_missing_iteration(self, mock_orchestrator):
+        """测试缺少 iteration 时不会崩溃"""
+        from tasks.task import Task, TaskStatus, TaskType
+
+        # 创建任务但不初始化 iteration
+        task = Task(
+            id="task-123",
+            title="Test Task",
+            description="Test task description",
+            instruction="Test instruction",
+            type=TaskType.IMPLEMENT,
+            status=TaskStatus.IN_PROGRESS,
+            assigned_to="worker-1",
+            iteration_id=1,
+        )
+        mock_orchestrator.task_queue._tasks["task-123"] = task
+
+        message = ProcessMessage(
+            type=ProcessMessageType.TASK_RESULT,
+            sender="worker-1",
+            payload={"task_id": "task-123", "success": True},
+            correlation_id="msg-456",
+        )
+
+        # 不应该崩溃
+        await mock_orchestrator._handle_message(message)
+
+        # 任务应该被更新
+        assert mock_orchestrator.task_queue.get_task("task-123").status == TaskStatus.COMPLETED
+
+    def test_late_result_stats_initialized(self, mock_orchestrator):
+        """测试 late result 统计初始化"""
+        # 初始时没有 late result 统计
+        assert "late_result_ignored" not in mock_orchestrator._message_stats
+        assert "late_result_applied" not in mock_orchestrator._message_stats
+
+
+class TestLateResultIntegration:
+    """Late Result 集成测试 - 使用真实的 AgentProcessManager"""
+
+    def test_manager_index_integration(self):
+        """测试 AgentProcessManager 反向索引与任务跟踪集成"""
+        manager = AgentProcessManager()
+
+        # 模拟任务分配流程
+        manager.track_task_assignment("task-1", "worker-1", "msg-100")
+        manager.track_task_assignment("task-2", "worker-2", "msg-200")
+        manager.track_task_assignment("task-3", "worker-1", "msg-300")
+
+        # 验证反向索引
+        assert manager.get_task_by_message_id("msg-100")[0] == "task-1"
+        assert manager.get_task_by_message_id("msg-200")[0] == "task-2"
+        assert manager.get_task_by_message_id("msg-300")[0] == "task-3"
+
+        # 任务完成，取消跟踪
+        manager.untrack_task("task-1")
+
+        # 反向索引也应该被清理
+        assert manager.get_task_by_message_id("msg-100") is None
+        assert manager.get_task_by_message_id("msg-200") is not None
+
+        # 获取任务分配信息
+        info = manager.get_task_assignment("task-2")
+        assert info is not None
+        assert info["agent_id"] == "worker-2"
+
+    def test_manager_concurrent_operations(self):
+        """测试并发操作下反向索引的正确性"""
+        manager = AgentProcessManager()
+
+        # 快速添加多个任务
+        for i in range(100):
+            manager.track_task_assignment(f"task-{i}", f"worker-{i % 3}", f"msg-{i}")
+
+        # 验证所有索引正确
+        for i in range(100):
+            result = manager.get_task_by_message_id(f"msg-{i}")
+            assert result is not None
+            assert result[0] == f"task-{i}"
+
+        # 取消部分任务
+        for i in range(0, 100, 2):
+            manager.untrack_task(f"task-{i}")
+
+        # 验证奇数索引仍存在，偶数已清理
+        for i in range(100):
+            result = manager.get_task_by_message_id(f"msg-{i}")
+            if i % 2 == 0:
+                assert result is None
+            else:
+                assert result is not None

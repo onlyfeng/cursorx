@@ -350,20 +350,13 @@ def parse_args() -> argparse.Namespace:
         help="禁用自动分析，直接使用指定模式",
     )
 
-    # 自动提交相关参数（默认开启）
-    auto_commit_group = parser.add_mutually_exclusive_group()
-    auto_commit_group.add_argument(
+    # 自动提交相关参数（默认禁用，需显式开启）
+    parser.add_argument(
         "--auto-commit",
         action="store_true",
         dest="auto_commit",
-        default=True,
-        help="启用自动提交（默认）",
-    )
-    auto_commit_group.add_argument(
-        "--no-auto-commit",
-        action="store_false",
-        dest="auto_commit",
-        help="禁用自动提交",
+        default=False,
+        help="启用自动提交（需显式指定）",
     )
 
     parser.add_argument(
@@ -540,7 +533,10 @@ class TaskAnalyzer:
         return analysis
 
     def _agent_analysis(self, task: str) -> Optional[TaskAnalysis]:
-        """使用 Agent 分析任务"""
+        """使用 Agent 分析任务（只读模式）
+
+        使用 --mode ask 确保只读执行，不会修改任何文件。
+        """
         try:
             # 构建分析提示
             prompt = f"""分析以下任务描述，确定最佳运行模式和选项。
@@ -570,9 +566,10 @@ class TaskAnalyzer:
 
 仅返回 JSON，不要其他内容。"""
 
-            # 调用 agent CLI
+            # 调用 agent CLI（使用 ask 模式，确保只读执行）
+            # --mode ask: 问答模式，仅回答问题，不修改文件
             result = subprocess.run(
-                ["agent", "-p", prompt, "--output-format", "text"],
+                ["agent", "-p", prompt, "--output-format", "text", "--mode", "ask"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -584,6 +581,10 @@ class TaskAnalyzer:
 
             # 解析 JSON 响应
             output = result.stdout.strip()
+
+            # 空输出返回 None
+            if not output:
+                return None
 
             # 尝试提取 JSON
             json_match = re.search(r'\{[\s\S]*\}', output)
@@ -701,11 +702,12 @@ class Runner:
             options["stream_log"] = self.args.stream_log
 
         # 自动提交选项（自然语言可控制开关）
-        # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）
+        # 优先使用自然语言指定的值，否则使用命令行参数（默认 False）
+        # 注意：auto_commit 默认必须为 False，只有显式参数或关键词才能启用
         if "auto_commit" in analysis_options:
             auto_commit = analysis_options["auto_commit"]
         else:
-            auto_commit = getattr(self.args, "auto_commit", True)
+            auto_commit = getattr(self.args, "auto_commit", False)
 
         if "auto_push" in analysis_options:
             auto_push = analysis_options["auto_push"]
@@ -865,8 +867,8 @@ class Runner:
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
             reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
             stream_events_enabled=options.get("stream_log", False),
-            # 自动提交配置透传
-            enable_auto_commit=options.get("auto_commit", True),
+            # 自动提交配置透传（默认禁用）
+            enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
             # commit_on_complete 语义：当 commit_per_iteration=False 时默认仅在完成时提交
@@ -931,6 +933,10 @@ class Runner:
             worker_pool_size=options["workers"],
             strict_review=options.get("strict", False),
             cursor_config=cursor_config,
+            # 自动提交配置（需显式开启）
+            enable_auto_commit=options.get("auto_commit", False),
+            auto_push=options.get("auto_push", False),
+            commit_per_iteration=options.get("commit_per_iteration", False),
         )
 
         if options["max_iterations"] == -1:
@@ -972,8 +978,14 @@ class Runner:
         return await iterator.run()
 
     async def _run_plan(self, goal: str, options: dict) -> dict:
-        """运行规划模式（仅规划不执行）"""
-        import subprocess
+        """运行规划模式（仅规划不执行）
+
+        使用 PlanAgentExecutor 确保:
+        - mode=plan（规划模式）
+        - force_write=False（只读保证，不修改文件）
+        """
+        from cursor.executor import PlanAgentExecutor
+        from cursor.client import CursorAgentConfig
 
         print_info("仅规划模式：分析任务并生成执行计划...")
 
@@ -992,16 +1004,22 @@ class Runner:
 请以结构化的方式输出计划。"""
 
         try:
-            result = subprocess.run(
-                ["agent", "-p", prompt, "--output-format", "text"],
-                capture_output=True,
-                text=True,
+            # 创建规划模式执行器（强制 mode=plan, force_write=False）
+            config = CursorAgentConfig(
+                working_directory=options.get("directory", str(project_root)),
                 timeout=300,
-                cwd=str(project_root),
+            )
+            executor = PlanAgentExecutor(config=config)
+
+            # 执行规划
+            result = await executor.execute(
+                prompt=prompt,
+                working_directory=options.get("directory", str(project_root)),
+                timeout=300,
             )
 
-            if result.returncode == 0:
-                plan_output = result.stdout.strip()
+            if result.success:
+                plan_output = result.output.strip()
                 print("\n" + "=" * 60)
                 print("执行计划")
                 print("=" * 60)
@@ -1016,15 +1034,16 @@ class Runner:
                     "dry_run": True,
                 }
             else:
-                print_error(f"规划失败: {result.stderr}")
+                error_msg = result.error or "未知错误"
+                print_error(f"规划失败: {error_msg}")
                 return {
                     "success": False,
                     "goal": goal,
                     "mode": "plan",
-                    "error": result.stderr,
+                    "error": error_msg,
                 }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             print_error("规划超时")
             return {"success": False, "goal": goal, "mode": "plan", "error": "timeout"}
         except Exception as e:
@@ -1032,22 +1051,34 @@ class Runner:
             return {"success": False, "goal": goal, "mode": "plan", "error": str(e)}
 
     async def _run_ask(self, goal: str, options: dict) -> dict:
-        """运行问答模式（直接对话）"""
-        import subprocess
+        """运行问答模式（直接对话）
+
+        使用 AskAgentExecutor 确保:
+        - mode=ask（问答模式）
+        - force_write=False（只读保证，不修改文件）
+        """
+        from cursor.executor import AskAgentExecutor
+        from cursor.client import CursorAgentConfig
 
         print_info("问答模式：直接与 Agent 对话...")
 
         try:
-            result = subprocess.run(
-                ["agent", "-p", goal, "--output-format", "text"],
-                capture_output=True,
-                text=True,
+            # 创建问答模式执行器（强制 mode=ask, force_write=False）
+            config = CursorAgentConfig(
+                working_directory=options.get("directory", str(project_root)),
                 timeout=120,
-                cwd=str(project_root),
+            )
+            executor = AskAgentExecutor(config=config)
+
+            # 执行问答
+            result = await executor.execute(
+                prompt=goal,
+                working_directory=options.get("directory", str(project_root)),
+                timeout=120,
             )
 
-            if result.returncode == 0:
-                answer = result.stdout.strip()
+            if result.success:
+                answer = result.output.strip()
                 print("\n" + "=" * 60)
                 print("回答")
                 print("=" * 60)
@@ -1061,15 +1092,16 @@ class Runner:
                     "answer": answer,
                 }
             else:
-                print_error(f"问答失败: {result.stderr}")
+                error_msg = result.error or "未知错误"
+                print_error(f"问答失败: {error_msg}")
                 return {
                     "success": False,
                     "goal": goal,
                     "mode": "ask",
-                    "error": result.stderr,
+                    "error": error_msg,
                 }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             print_error("问答超时")
             return {"success": False, "goal": goal, "mode": "ask", "error": "timeout"}
         except Exception as e:

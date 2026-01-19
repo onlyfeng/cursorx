@@ -305,6 +305,7 @@ class CursorAgentClient:
         working_directory: Optional[str] = None,
         context: Optional[dict[str, Any]] = None,
         timeout: Optional[int] = None,
+        session_id: Optional[str] = None,
     ) -> CursorAgentResult:
         """执行 Cursor Agent 任务
 
@@ -313,6 +314,7 @@ class CursorAgentClient:
             working_directory: 工作目录
             context: 上下文信息
             timeout: 超时时间
+            session_id: 可选的会话 ID，用于恢复之前的会话（映射到 --resume 参数）
 
         Returns:
             执行结果
@@ -331,6 +333,7 @@ class CursorAgentClient:
                 prompt=full_prompt,
                 working_directory=work_dir,
                 timeout=timeout_sec,
+                session_id=session_id,
             )
 
             completed_at = datetime.now()
@@ -385,13 +388,20 @@ class CursorAgentClient:
         prompt: str,
         working_directory: str,
         timeout: int,
+        session_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """执行 agent CLI
 
         使用 agent -p "prompt" --model "model" --output-format text
+
+        Args:
+            prompt: 任务 prompt
+            working_directory: 工作目录
+            timeout: 超时时间
+            session_id: 可选的会话 ID，用于恢复之前的会话
         """
         # 尝试调用 agent CLI
-        result = await self._try_agent_cli(prompt, working_directory, timeout)
+        result = await self._try_agent_cli(prompt, working_directory, timeout, session_id)
         if result:
             return result
 
@@ -404,6 +414,7 @@ class CursorAgentClient:
         prompt: str,
         working_directory: str,
         timeout: int,
+        session_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """调用 agent CLI
 
@@ -414,13 +425,20 @@ class CursorAgentClient:
         参考: https://cursor.com/cn/docs/cli/overview
 
         注意: 非交互模式下，Agent 具有完全写入权限
+
+        Args:
+            prompt: 任务 prompt
+            working_directory: 工作目录
+            timeout: 超时时间
+            session_id: 可选的会话 ID，优先于 config.resume_thread_id
         """
         # 构建命令参数
         cmd = [self._agent_path]
 
-        # 恢复会话（如果指定）
-        if self.config.resume_thread_id:
-            cmd.extend(["--resume", self.config.resume_thread_id])
+        # 恢复会话（session_id 参数优先于配置项）
+        resume_id = session_id or self.config.resume_thread_id
+        if resume_id:
+            cmd.extend(["--resume", resume_id])
 
         # 非交互模式使用 -p 参数（有完全写入权限）
         if self.config.non_interactive:

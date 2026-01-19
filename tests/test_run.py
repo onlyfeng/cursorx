@@ -50,7 +50,7 @@ def mock_args() -> argparse.Namespace:
         worker_model="opus-4.5-thinking",
         stream_log=True,
         no_auto_analyze=False,
-        auto_commit=True,
+        auto_commit=False,  # 默认禁用自动提交
         auto_push=False,
         commit_per_iteration=False,
     )
@@ -635,7 +635,7 @@ class TestTaskAnalyzer:
     def test_agent_analysis_success(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """验证 Agent 分析成功时正确解析 JSON 结果"""
+        """验证 Agent 分析成功时正确解析 JSON 结果，使用 ask 模式只读执行"""
         import subprocess
 
         with patch("run.subprocess.run") as mock_run:
@@ -654,9 +654,13 @@ class TestTaskAnalyzer:
             # 验证 subprocess 被正确调用
             mock_run.assert_called_once()
             call_args = mock_run.call_args
-            assert "agent" in call_args[0][0]
-            assert "-p" in call_args[0][0]
-            assert "--output-format" in call_args[0][0]
+            cmd_args = call_args[0][0]
+            assert "agent" in cmd_args
+            assert "-p" in cmd_args
+            assert "--output-format" in cmd_args
+            # 验证使用 ask 模式（只读执行）
+            assert "--mode" in cmd_args
+            assert "ask" in cmd_args
 
             # 验证解析结果
             assert result is not None
@@ -665,6 +669,38 @@ class TestTaskAnalyzer:
             assert result.options.get("strict") is True
             assert result.reasoning == "任务需要并行处理"
             assert result.goal == "使用多进程重构代码"
+
+    def test_agent_analysis_empty_output(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 Agent 返回空输出时返回 None"""
+        with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""  # 空输出
+            mock_run.return_value = mock_result
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            result = analyzer._agent_analysis("执行一个任务")
+
+            # 验证返回 None
+            assert result is None
+
+    def test_agent_analysis_whitespace_output(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 Agent 返回纯空白输出时返回 None"""
+        with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "   \n\t  "  # 纯空白
+            mock_run.return_value = mock_result
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            result = analyzer._agent_analysis("执行一个任务")
+
+            # 验证返回 None
+            assert result is None
 
     def test_agent_analysis_timeout(
         self, mock_args: argparse.Namespace
@@ -702,7 +738,7 @@ class TestTaskAnalyzer:
     def test_agent_analysis_returncode_nonzero(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """验证 Agent 返回非零退出码时返回 None"""
+        """验证 Agent 返回非零退出码时返回 None（稳定处理）"""
         with patch("run.subprocess.run") as mock_run:
             mock_result = MagicMock()
             mock_result.returncode = 1  # 非零退出码
@@ -713,8 +749,13 @@ class TestTaskAnalyzer:
             analyzer = TaskAnalyzer(use_agent=True)
             result = analyzer._agent_analysis("执行一个任务")
 
-            # 验证返回 None
+            # 验证返回 None（不抛出异常）
             assert result is None
+
+            # 验证调用使用了 ask 模式（只读保证）
+            cmd_args = mock_run.call_args[0][0]
+            assert "--mode" in cmd_args
+            assert "ask" in cmd_args
 
     def test_analyze_with_agent_fallback(
         self, mock_args: argparse.Namespace
@@ -835,7 +876,7 @@ class TestRunner:
             planner_model="gpt-5.2-high",
             worker_model="opus-4.5-thinking",
             stream_log=True,
-            auto_commit=True,
+            auto_commit=False,  # 默认禁用自动提交
             auto_push=False,
             commit_per_iteration=False,
         )
@@ -864,7 +905,7 @@ class TestRunner:
         assert options["max_iterations"] == 10
         assert options["strict"] is False
         assert options["stream_log"] is True
-        assert options["auto_commit"] is True
+        assert options["auto_commit"] is False  # 默认禁用自动提交
         assert options["auto_push"] is False
 
     def test_merge_options_with_analysis(self, mock_args: argparse.Namespace) -> None:
@@ -924,6 +965,151 @@ class TestRunner:
         # 两者都为 True
         options = runner._merge_options({"auto_commit": True, "auto_push": True})
         assert options["auto_push"] is True
+
+    def test_merge_options_auto_commit_default_false_without_arg(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证不提供 --auto-commit 时 auto_commit 默认为 False"""
+        runner = Runner(mock_args)
+
+        # 不提供任何 auto_commit 相关选项
+        options = runner._merge_options({})
+        assert options["auto_commit"] is False, (
+            "不提供 --auto-commit 时，auto_commit 应默认为 False"
+        )
+
+        # 即使提供其他选项，auto_commit 仍应为 False
+        options = runner._merge_options({
+            "workers": 5,
+            "max_iterations": -1,
+            "strict": True,
+        })
+        assert options["auto_commit"] is False, (
+            "提供其他选项但不提供 auto_commit 时，应默认为 False"
+        )
+
+    def test_merge_options_auto_commit_explicit_enable(self) -> None:
+        """验证显式提供 --auto-commit 时能正确启用"""
+        # 创建一个带有 auto_commit=True 的 args
+        args = argparse.Namespace(
+            task="test",
+            mode="basic",
+            directory=".",
+            workers=3,
+            max_iterations="10",
+            strict=False,
+            verbose=False,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model="gpt-5.2-high",
+            worker_model="opus-4.5-thinking",
+            stream_log=True,
+            auto_commit=True,  # 显式启用
+            auto_push=False,
+            commit_per_iteration=False,
+        )
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        assert options["auto_commit"] is True, (
+            "显式提供 --auto-commit 时，应该启用 auto_commit"
+        )
+
+    def test_merge_options_natural_language_commit_keywords_consistent(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证自然语言关键词启用/禁用提交时结果与 _merge_options 一致"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        runner = Runner(mock_args)
+
+        # 测试启用关键词
+        enable_tasks = [
+            "启用提交，完成任务",
+            "开启提交完成代码",
+            "自动提交代码修改",
+            "enable-commit task",
+        ]
+        for task in enable_tasks:
+            analysis = analyzer.analyze(task, mock_args)
+            options = runner._merge_options(analysis.options)
+            assert options["auto_commit"] is True, (
+                f"任务 '{task}' 应该通过自然语言启用 auto_commit"
+            )
+
+        # 测试禁用关键词
+        disable_tasks = [
+            "禁用提交，仅分析",
+            "关闭提交不修改",
+            "不提交代码",
+            "跳过提交步骤",
+            "no-commit mode",
+        ]
+        for task in disable_tasks:
+            analysis = analyzer.analyze(task, mock_args)
+            options = runner._merge_options(analysis.options)
+            assert options["auto_commit"] is False, (
+                f"任务 '{task}' 应该通过自然语言禁用 auto_commit"
+            )
+
+    def test_merge_options_auto_push_forced_false_when_auto_commit_false(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 auto_push 在 auto_commit==False 时必须被强制为 False"""
+        runner = Runner(mock_args)
+
+        # 场景1: 两者都未指定，auto_push 应为 False
+        options = runner._merge_options({})
+        assert options["auto_commit"] is False
+        assert options["auto_push"] is False, (
+            "auto_commit=False 时，auto_push 必须为 False"
+        )
+
+        # 场景2: 仅指定 auto_push=True（不指定 auto_commit）
+        options = runner._merge_options({"auto_push": True})
+        assert options["auto_commit"] is False, (
+            "未指定 auto_commit 时应默认为 False"
+        )
+        assert options["auto_push"] is False, (
+            "auto_commit=False 时，即使指定 auto_push=True 也应强制为 False"
+        )
+
+        # 场景3: 显式禁用 auto_commit，启用 auto_push
+        options = runner._merge_options({"auto_commit": False, "auto_push": True})
+        assert options["auto_push"] is False, (
+            "显式 auto_commit=False 时，auto_push 必须强制为 False"
+        )
+
+        # 场景4: 通过命令行参数设置 auto_push=True 但 auto_commit=False
+        args_with_push = argparse.Namespace(
+            task="test",
+            mode="basic",
+            directory=".",
+            workers=3,
+            max_iterations="10",
+            strict=False,
+            verbose=False,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model="gpt-5.2-high",
+            worker_model="opus-4.5-thinking",
+            stream_log=True,
+            auto_commit=False,
+            auto_push=True,  # 命令行指定 auto_push
+            commit_per_iteration=False,
+        )
+        runner_with_push = Runner(args_with_push)
+        options = runner_with_push._merge_options({})
+        assert options["auto_push"] is False, (
+            "命令行 auto_push=True 但 auto_commit=False 时，auto_push 应被强制为 False"
+        )
 
 
 # ============================================================
@@ -1004,8 +1190,8 @@ class TestRunMpMode:
         assert config.worker_model == "opus-4.5-thinking"
         assert config.reviewer_model == "opus-4.5-thinking"
         assert config.stream_events_enabled is True
-        # 验证提交相关默认值（与 OrchestratorConfig 对齐）
-        assert config.enable_auto_commit is True
+        # 验证提交相关默认值（auto_commit 默认禁用，需显式开启）
+        assert config.enable_auto_commit is False  # 默认禁用自动提交
         assert config.auto_push is False
         assert config.commit_on_complete is True
         assert config.commit_per_iteration is False
@@ -1305,15 +1491,32 @@ class TestRunnerRunMethods:
     async def test_run_plan_success(
         self, runner: Runner
     ) -> None:
-        """测试 _run_plan 方法成功"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "执行计划内容..."
-            mock_subprocess.return_value = mock_result
+        """测试 _run_plan 方法成功（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=True,
+            output="执行计划内容...",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("规划任务", options)
+
+            # 验证执行器被正确创建和配置
+            mock_executor_cls.assert_called_once()
+            mock_executor.execute.assert_called_once()
+
+            # 验证执行器配置（mode=plan, force_write=False）
+            assert mock_executor.config.mode == "plan"
+            assert mock_executor.config.force_write is False
 
             assert result["success"] is True
             assert result["mode"] == "plan"
@@ -1323,12 +1526,22 @@ class TestRunnerRunMethods:
     async def test_run_plan_failure(
         self, runner: Runner
     ) -> None:
-        """测试 _run_plan 方法失败"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "规划失败原因"
-            mock_subprocess.return_value = mock_result
+        """测试 _run_plan 方法失败（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=False,
+            output="",
+            error="规划失败原因",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("失败的规划", options)
@@ -1340,10 +1553,15 @@ class TestRunnerRunMethods:
     async def test_run_plan_timeout(
         self, runner: Runner
     ) -> None:
-        """测试 _run_plan 方法超时"""
-        import subprocess
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=300)
+        """测试 _run_plan 方法超时（使用 PlanAgentExecutor）"""
+        import asyncio
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("超时的规划", options)
@@ -1355,9 +1573,13 @@ class TestRunnerRunMethods:
     async def test_run_plan_exception(
         self, runner: Runner
     ) -> None:
-        """测试 _run_plan 方法异常"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = Exception("未知错误")
+        """测试 _run_plan 方法异常（使用 PlanAgentExecutor）"""
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(side_effect=Exception("未知错误"))
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("异常的规划", options)
@@ -1370,11 +1592,19 @@ class TestRunnerRunMethods:
         self, runner: Runner
     ) -> None:
         """测试 _run_ask 方法成功"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "回答内容..."
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output="回答内容...",
+            error=None,
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("问题内容", options)
@@ -1388,25 +1618,37 @@ class TestRunnerRunMethods:
         self, runner: Runner
     ) -> None:
         """测试 _run_ask 方法失败"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "问答失败"
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=False,
+            output="",
+            error="问答失败",
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("失败的问题", options)
 
             assert result["success"] is False
+            assert result["error"] == "问答失败"
 
     @pytest.mark.asyncio
     async def test_run_ask_timeout(
         self, runner: Runner
     ) -> None:
         """测试 _run_ask 方法超时"""
-        import subprocess
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=120)
+        import asyncio
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("超时的问题", options)
@@ -1547,12 +1789,16 @@ class TestKnowledgeMode:
 
 
 class TestTaskAnalyzerAgentAnalysis:
-    """测试 TaskAnalyzer Agent 分析相关功能"""
+    """测试 TaskAnalyzer Agent 分析相关功能
+
+    验证 _agent_analysis 使用 ask 模式（只读执行），
+    以及 JSON 提取逻辑在各种边界情况下保持稳定。
+    """
 
     def test_agent_analysis_json_extraction(
         self, mock_args: argparse.Namespace, mock_subprocess
     ) -> None:
-        """验证 Agent 分析 JSON 提取"""
+        """验证 Agent 分析 JSON 提取，使用 ask 模式"""
         analyzer = TaskAnalyzer(use_agent=True)
 
         # 模拟包含 JSON 的输出
@@ -1566,10 +1812,30 @@ class TestTaskAnalyzerAgentAnalysis:
 
         assert analysis.mode == RunMode.ITERATE
 
+    def test_agent_analysis_uses_ask_mode(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 Agent 分析使用 ask 模式（只读保证）"""
+        with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = '{"mode": "basic", "reasoning": "test"}'
+            mock_run.return_value = mock_result
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            analyzer._agent_analysis("测试任务")
+
+            # 验证调用使用了 ask 模式
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            assert "--mode" in cmd_args
+            mode_idx = cmd_args.index("--mode")
+            assert cmd_args[mode_idx + 1] == "ask"
+
     def test_agent_analysis_fallback_on_invalid_json(
         self, mock_args: argparse.Namespace, mock_subprocess
     ) -> None:
-        """验证无效 JSON 时回退到规则分析"""
+        """验证无效 JSON 时回退到规则分析（稳定返回 None）"""
         analyzer = TaskAnalyzer(use_agent=True)
 
         mock_subprocess.return_value.stdout = "无效的响应内容"
@@ -1583,21 +1849,28 @@ class TestTaskAnalyzerAgentAnalysis:
     def test_agent_analysis_timeout_fallback(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """验证 Agent 分析超时时回退"""
+        """验证 Agent 分析超时时回退（稳定返回 None）"""
         import subprocess
         with patch("run.subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=30)
 
             analyzer = TaskAnalyzer(use_agent=True)
-            analysis = analyzer.analyze("执行自我迭代", mock_args)
+            # 使用不会触发规则匹配的任务（规则分析返回 BASIC）
+            analysis = analyzer.analyze("完成一个普通的编程任务", mock_args)
 
-            # 应该回退到规则分析
-            assert analysis.mode == RunMode.ITERATE
+            # Agent 分析失败后回退，保持规则分析的 BASIC 模式
+            assert analysis.mode == RunMode.BASIC
+
+            # 验证 Agent 被调用且使用 ask 模式
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            assert "--mode" in cmd_args
+            assert "ask" in cmd_args
 
     def test_agent_analysis_error_fallback(
         self, mock_args: argparse.Namespace, mock_subprocess
     ) -> None:
-        """验证 Agent 分析失败时回退"""
+        """验证 Agent 分析失败时回退（稳定返回 None）"""
         analyzer = TaskAnalyzer(use_agent=True)
 
         mock_subprocess.return_value.returncode = 1
@@ -1605,6 +1878,49 @@ class TestTaskAnalyzerAgentAnalysis:
         # 应该回退到规则分析
         analysis = analyzer.analyze("执行自我迭代", mock_args)
         assert analysis.mode == RunMode.ITERATE
+
+    def test_agent_analysis_empty_output_returns_none(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _agent_analysis 空输出时返回 None"""
+        with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""
+            mock_run.return_value = mock_result
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            result = analyzer._agent_analysis("普通任务")
+
+            assert result is None
+
+    def test_agent_analysis_non_json_output_returns_none(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _agent_analysis 非 JSON 输出时返回 None"""
+        with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "这只是普通文本，没有任何 JSON 结构"
+            mock_run.return_value = mock_result
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            result = analyzer._agent_analysis("普通任务")
+
+            assert result is None
+
+    def test_agent_analysis_timeout_returns_none(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _agent_analysis 超时时返回 None"""
+        import subprocess
+        with patch("run.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="agent", timeout=30)
+
+            analyzer = TaskAnalyzer(use_agent=True)
+            result = analyzer._agent_analysis("普通任务")
+
+            assert result is None
 
 
 # ============================================================
@@ -2349,11 +2665,10 @@ class TestRunPlanAskModes:
 
     @pytest.mark.asyncio
     async def test_run_plan_success(self, runner: Runner) -> None:
-        """测试规划模式成功返回计划"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = """## 任务分解
+        """测试规划模式成功返回计划（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        plan_text = """## 任务分解
 1. 分析需求
 2. 设计架构
 3. 实现功能
@@ -2363,7 +2678,19 @@ class TestRunPlanAskModes:
 
 ## 推荐模式
 mp (多进程模式)"""
-            mock_subprocess.return_value = mock_result
+
+        mock_result = AgentResult(
+            success=True,
+            output=plan_text,
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("实现用户认证功能", options)
@@ -2376,22 +2703,24 @@ mp (多进程模式)"""
             assert "任务分解" in result["plan"]
             assert result["dry_run"] is True
 
-            # 验证 subprocess 调用参数
-            mock_subprocess.assert_called_once()
-            call_args = mock_subprocess.call_args
-            assert "agent" in call_args[0][0]
-            assert "-p" in call_args[0][0]
-            assert "--output-format" in call_args[0][0]
+            # 验证 PlanAgentExecutor 被正确调用
+            mock_executor_cls.assert_called_once()
+            mock_executor.execute.assert_called_once()
+            # 验证执行器配置（mode=plan, force_write=False）
+            assert mock_executor.config.mode == "plan"
+            assert mock_executor.config.force_write is False
 
     @pytest.mark.asyncio
     async def test_run_plan_timeout(self, runner: Runner) -> None:
-        """测试规划模式超时处理"""
-        import subprocess
+        """测试规划模式超时处理（使用 PlanAgentExecutor）"""
+        import asyncio
 
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = subprocess.TimeoutExpired(
-                cmd="agent", timeout=300
-            )
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("复杂的大型任务", options)
@@ -2405,12 +2734,22 @@ mp (多进程模式)"""
 
     @pytest.mark.asyncio
     async def test_run_plan_error(self, runner: Runner) -> None:
-        """测试规划模式错误处理"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "Agent 服务不可用"
-            mock_subprocess.return_value = mock_result
+        """测试规划模式错误处理（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=False,
+            output="",
+            error="Agent 服务不可用",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("失败的规划任务", options)
@@ -2425,9 +2764,13 @@ mp (多进程模式)"""
 
     @pytest.mark.asyncio
     async def test_run_plan_exception(self, runner: Runner) -> None:
-        """测试规划模式异常处理"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = OSError("网络连接失败")
+        """测试规划模式异常处理（使用 PlanAgentExecutor）"""
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(side_effect=OSError("网络连接失败"))
+            mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
             result = await runner._run_plan("异常任务", options)
@@ -2446,15 +2789,25 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_ask_success(self, runner: Runner) -> None:
         """测试问答模式成功返回答案"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = """Python 是一种高级编程语言，具有以下特点：
+        from cursor.executor import AgentResult
+
+        answer_text = """Python 是一种高级编程语言，具有以下特点：
 1. 简洁易读的语法
 2. 丰富的标准库
 3. 跨平台支持
 4. 强大的社区生态"""
-            mock_subprocess.return_value = mock_result
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output=answer_text,
+            error=None,
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("什么是 Python？", options)
@@ -2469,21 +2822,19 @@ mp (多进程模式)"""
             # 问答模式不应有 dry_run 标记
             assert "dry_run" not in result
 
-            # 验证 subprocess 调用参数
-            mock_subprocess.assert_called_once()
-            call_args = mock_subprocess.call_args
-            assert "agent" in call_args[0][0]
-            assert "什么是 Python？" in call_args[0][0]
+            # 验证 AskAgentExecutor 被正确调用
+            MockExecutor.assert_called_once()
+            mock_instance.execute.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_run_ask_timeout(self, runner: Runner) -> None:
         """测试问答模式超时处理"""
-        import subprocess
+        import asyncio
 
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = subprocess.TimeoutExpired(
-                cmd="agent", timeout=120
-            )
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("一个需要很长时间回答的问题", options)
@@ -2498,11 +2849,19 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_ask_error(self, runner: Runner) -> None:
         """测试问答模式错误处理"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "API 限流"
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=False,
+            output="",
+            error="API 限流",
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("失败的问题", options)
@@ -2518,8 +2877,10 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_ask_exception(self, runner: Runner) -> None:
         """测试问答模式异常处理"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_subprocess.side_effect = PermissionError("权限不足")
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(side_effect=PermissionError("权限不足"))
+            MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
             result = await runner._run_ask("异常问题", options)
@@ -2531,18 +2892,137 @@ mp (多进程模式)"""
             assert "error" in result
             assert "权限不足" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_run_ask_readonly_guarantee(self, runner: Runner) -> None:
+        """测试问答模式的只读保证（force_write=False）
+
+        验证 AskAgentExecutor 强制设置 mode=ask 和 force_write=False
+        """
+        from cursor.executor import AskAgentExecutor
+
+        # 直接验证 AskAgentExecutor 的配置
+        executor = AskAgentExecutor()
+        assert executor.config.mode == "ask", "AskAgentExecutor 应强制 mode=ask"
+        assert executor.config.force_write is False, "AskAgentExecutor 应强制 force_write=False"
+
+    @pytest.mark.asyncio
+    async def test_run_plan_readonly_guarantee(self, runner: Runner) -> None:
+        """测试规划模式的只读保证（force_write=False）
+
+        验证 PlanAgentExecutor 强制设置 mode=plan 和 force_write=False
+        """
+        from cursor.executor import PlanAgentExecutor
+
+        # 直接验证 PlanAgentExecutor 的配置
+        executor = PlanAgentExecutor()
+        assert executor.config.mode == "plan", "PlanAgentExecutor 应强制 mode=plan"
+        assert executor.config.force_write is False, "PlanAgentExecutor 应强制 force_write=False"
+
+    @pytest.mark.asyncio
+    async def test_plan_force_write_always_disabled(self, runner: Runner) -> None:
+        """测试规划模式：即使用户尝试通过配置开启 force_write 也会被强制关闭
+
+        验证 PlanAgentExecutor 会覆盖用户配置中的 force_write=True
+        """
+        from cursor.client import CursorAgentConfig
+        from cursor.executor import PlanAgentExecutor
+
+        # 用户尝试配置 force_write=True
+        user_config = CursorAgentConfig(force_write=True)
+
+        # 创建 PlanAgentExecutor，应强制关闭 force_write
+        executor = PlanAgentExecutor(config=user_config)
+
+        # 验证 force_write 被强制关闭
+        assert executor.config.force_write is False, \
+            "PlanAgentExecutor 应强制覆盖用户配置的 force_write=True"
+        assert executor.config.mode == "plan", \
+            "PlanAgentExecutor 应强制设置 mode=plan"
+
+    @pytest.mark.asyncio
+    async def test_ask_force_write_always_disabled(self, runner: Runner) -> None:
+        """测试问答模式：即使用户尝试通过配置开启 force_write 也会被强制关闭
+
+        验证 AskAgentExecutor 会覆盖用户配置中的 force_write=True
+        """
+        from cursor.client import CursorAgentConfig
+        from cursor.executor import AskAgentExecutor
+
+        # 用户尝试配置 force_write=True
+        user_config = CursorAgentConfig(force_write=True)
+
+        # 创建 AskAgentExecutor，应强制关闭 force_write
+        executor = AskAgentExecutor(config=user_config)
+
+        # 验证 force_write 被强制关闭
+        assert executor.config.force_write is False, \
+            "AskAgentExecutor 应强制覆盖用户配置的 force_write=True"
+        assert executor.config.mode == "ask", \
+            "AskAgentExecutor 应强制设置 mode=ask"
+
+    @pytest.mark.asyncio
+    async def test_plan_mode_always_preserved(self, runner: Runner) -> None:
+        """测试规划模式：即使用户尝试通过配置设置 mode=agent 也会被覆盖
+
+        验证 PlanAgentExecutor 会覆盖用户配置中的 mode
+        """
+        from cursor.client import CursorAgentConfig
+        from cursor.executor import PlanAgentExecutor
+
+        # 用户尝试配置 mode=agent
+        user_config = CursorAgentConfig(mode="agent", force_write=True)
+
+        # 创建 PlanAgentExecutor，应强制设置 mode=plan
+        executor = PlanAgentExecutor(config=user_config)
+
+        # 验证配置被强制覆盖
+        assert executor.config.mode == "plan", \
+            "PlanAgentExecutor 应强制覆盖用户配置的 mode"
+        assert executor.config.force_write is False, \
+            "PlanAgentExecutor 应强制覆盖用户配置的 force_write"
+
+    @pytest.mark.asyncio
+    async def test_ask_mode_always_preserved(self, runner: Runner) -> None:
+        """测试问答模式：即使用户尝试通过配置设置 mode=agent 也会被覆盖
+
+        验证 AskAgentExecutor 会覆盖用户配置中的 mode
+        """
+        from cursor.client import CursorAgentConfig
+        from cursor.executor import AskAgentExecutor
+
+        # 用户尝试配置 mode=agent
+        user_config = CursorAgentConfig(mode="agent", force_write=True)
+
+        # 创建 AskAgentExecutor，应强制设置 mode=ask
+        executor = AskAgentExecutor(config=user_config)
+
+        # 验证配置被强制覆盖
+        assert executor.config.mode == "ask", \
+            "AskAgentExecutor 应强制覆盖用户配置的 mode"
+        assert executor.config.force_write is False, \
+            "AskAgentExecutor 应强制覆盖用户配置的 force_write"
+
     # ----------------------------------------------------------
     # 返回结构验证测试
     # ----------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_plan_result_structure(self, runner: Runner) -> None:
-        """验证规划模式返回的 dict 结构完整性"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "计划内容"
-            mock_subprocess.return_value = mock_result
+        """验证规划模式返回的 dict 结构完整性（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=True,
+            output="计划内容",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             result = await runner._run_plan("测试任务", runner._merge_options({}))
 
@@ -2558,14 +3038,28 @@ mp (多进程模式)"""
             assert isinstance(result["plan"], str)
             assert isinstance(result["dry_run"], bool)
 
+            # 验证执行器配置
+            assert mock_executor.config.mode == "plan"
+            assert mock_executor.config.force_write is False
+
     @pytest.mark.asyncio
     async def test_plan_error_result_structure(self, runner: Runner) -> None:
-        """验证规划模式失败时返回的 dict 结构"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "错误信息"
-            mock_subprocess.return_value = mock_result
+        """验证规划模式失败时返回的 dict 结构（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=False,
+            output="",
+            error="错误信息",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             result = await runner._run_plan("失败任务", runner._merge_options({}))
 
@@ -2581,11 +3075,19 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_ask_result_structure(self, runner: Runner) -> None:
         """验证问答模式返回的 dict 结构完整性"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "回答内容"
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output="回答内容",
+            error=None,
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             result = await runner._run_ask("测试问题", runner._merge_options({}))
 
@@ -2603,11 +3105,19 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_ask_error_result_structure(self, runner: Runner) -> None:
         """验证问答模式失败时返回的 dict 结构"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 1
-            mock_result.stderr = "错误信息"
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=False,
+            output="",
+            error="错误信息",
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             result = await runner._run_ask("失败问题", runner._merge_options({}))
 
@@ -2626,12 +3136,21 @@ mp (多进程模式)"""
 
     @pytest.mark.asyncio
     async def test_run_plan_empty_output(self, runner: Runner) -> None:
-        """测试规划模式返回空输出"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = ""
-            mock_subprocess.return_value = mock_result
+        """测试规划模式返回空输出（使用 PlanAgentExecutor）"""
+        from cursor.executor import AgentResult
+
+        mock_result = AgentResult(
+            success=True,
+            output="",
+            executor_type="plan",
+        )
+
+        with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.config.mode = "plan"
+            mock_executor.config.force_write = False
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            mock_executor_cls.return_value = mock_executor
 
             result = await runner._run_plan("空输出任务", runner._merge_options({}))
 
@@ -2642,11 +3161,19 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_ask_empty_output(self, runner: Runner) -> None:
         """测试问答模式返回空输出"""
-        with patch("run.subprocess.run") as mock_subprocess:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "   \n\t  "  # 仅空白字符
-            mock_subprocess.return_value = mock_result
+        from cursor.executor import AgentResult
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output="   \n\t  ",  # 仅空白字符
+            error=None,
+            executor_type="ask",
+        )
+
+        with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
+            mock_instance = MagicMock()
+            mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+            MockExecutor.return_value = mock_instance
 
             result = await runner._run_ask("空输出问题", runner._merge_options({}))
 
@@ -2684,7 +3211,7 @@ class TestAsyncMain:
             worker_model="opus-4.5-thinking",
             stream_log=True,
             no_auto_analyze=False,
-            auto_commit=True,
+            auto_commit=False,  # 默认禁用自动提交
             auto_push=False,
             commit_per_iteration=False,
         )

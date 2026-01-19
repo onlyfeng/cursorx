@@ -859,6 +859,379 @@ class TestIterateMode:
                 assert result["total_commits"] == 1
                 assert result["pushed_commits"] == 1
 
+    @pytest.mark.asyncio
+    async def test_iterate_mode_skip_commit_when_orchestrator_already_committed(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试提交去重：当编排器已提交时，SelfIterator 不会再次调用 CommitterAgent"""
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试提交去重"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = True  # 启用自动提交
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+                self.orchestrator = "mp"
+                self.no_mp = False
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试提交去重目标"
+
+        # 模拟编排器返回已提交的结果
+        mock_run_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+            # 关键：编排器已完成提交
+            "commits": {
+                "total_commits": 1,
+                "commit_hashes": ["orchestrator_commit_abc123"],
+                "pushed_commits": 0,
+                "files_changed": ["src/main.py"],
+            },
+            "iterations": [
+                {
+                    "id": 1,
+                    "commit_hash": "orchestrator_commit_abc123",
+                    "commit_pushed": False,
+                }
+            ],
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig"):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    # 设置 KnowledgeManager mock
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_run_result)
+                    MockMP.return_value = mock_orch
+
+                    # Mock _run_commit_phase - 不应该被调用
+                    with patch.object(
+                        iterator, "_run_commit_phase", new_callable=AsyncMock
+                    ) as mock_commit:
+                        result = await iterator._run_agent_system()
+
+                        # 关键断言：_run_commit_phase 不应该被调用
+                        mock_commit.assert_not_called()
+
+                        # 验证结果保留了编排器的 commits 信息
+                        assert "commits" in result
+                        assert result["commits"]["total_commits"] == 1
+                        assert result["commits"]["commit_hashes"] == ["orchestrator_commit_abc123"]
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_commit_when_orchestrator_not_committed(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试当编排器未提交时，SelfIterator 会执行提交"""
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试后备提交"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = True  # 启用自动提交
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+                self.orchestrator = "mp"
+                self.no_mp = False
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试后备提交目标"
+
+        # 模拟编排器返回未提交的结果（commits 为空或不存在）
+        mock_run_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+            # 编排器未提交（commits 为空）
+            "commits": {
+                "total_commits": 0,
+                "commit_hashes": [],
+                "pushed_commits": 0,
+            },
+            "iterations": [
+                {
+                    "id": 1,
+                    "commit_hash": "",  # 无提交
+                    "commit_pushed": False,
+                }
+            ],
+        }
+
+        mock_commit_result = {
+            "total_commits": 1,
+            "commit_hashes": ["selfiterator_commit_xyz789"],
+            "commit_messages": ["feat: SelfIterator 后备提交"],
+            "pushed_commits": 0,
+            "files_changed": ["backup.py"],
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig"):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    # 设置 KnowledgeManager mock
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_run_result)
+                    MockMP.return_value = mock_orch
+
+                    # Mock _run_commit_phase - 应该被调用
+                    with patch.object(
+                        iterator, "_run_commit_phase", new_callable=AsyncMock
+                    ) as mock_commit:
+                        mock_commit.return_value = mock_commit_result
+
+                        result = await iterator._run_agent_system()
+
+                        # 关键断言：_run_commit_phase 应该被调用
+                        mock_commit.assert_called_once()
+
+                        # 验证结果使用了 SelfIterator 的 commits
+                        assert "commits" in result
+                        assert result["commits"]["total_commits"] == 1
+                        assert result["commits"]["commit_hashes"] == ["selfiterator_commit_xyz789"]
+
+    def test_has_orchestrator_committed_detection(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 _has_orchestrator_committed 检测逻辑"""
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = ""
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                self.auto_commit = True
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+
+        iterator = SelfIterator(IterateArgs())
+
+        # 测试场景 1: 有 total_commits > 0
+        result1 = {
+            "commits": {"total_commits": 1, "commit_hashes": []},
+            "iterations": [],
+        }
+        assert iterator._has_orchestrator_committed(result1) is True
+
+        # 测试场景 2: 有有效的 commit_hashes
+        result2 = {
+            "commits": {"total_commits": 0, "commit_hashes": ["abc123"]},
+            "iterations": [],
+        }
+        assert iterator._has_orchestrator_committed(result2) is True
+
+        # 测试场景 3: 有 successful_commits > 0
+        result3 = {
+            "commits": {"successful_commits": 1},
+            "iterations": [],
+        }
+        assert iterator._has_orchestrator_committed(result3) is True
+
+        # 测试场景 4: 迭代级别有 commit_hash
+        result4 = {
+            "commits": {},
+            "iterations": [{"id": 1, "commit_hash": "iter_commit_123"}],
+        }
+        assert iterator._has_orchestrator_committed(result4) is True
+
+        # 测试场景 5: 完全无提交
+        result5 = {
+            "commits": {"total_commits": 0, "commit_hashes": []},
+            "iterations": [{"id": 1, "commit_hash": ""}],
+        }
+        assert iterator._has_orchestrator_committed(result5) is False
+
+        # 测试场景 6: 空结果
+        result6: dict = {"commits": {}, "iterations": []}
+        assert iterator._has_orchestrator_committed(result6) is False
+
+        # 测试场景 7: 完全空
+        result7: dict = {}
+        assert iterator._has_orchestrator_committed(result7) is False
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_no_commit_without_auto_commit_flag(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 iterate 模式默认不带 --auto-commit 时不触发提交
+
+        这个测试验证了默认提交策略：默认不自动提交，需显式开启。
+        当用户不指定 --auto-commit 时，iterate 模式应该完成任务但不会触发提交。
+        """
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试默认不提交"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                # 关键：默认 auto_commit=False（与命令行默认值一致）
+                self.auto_commit = False
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+                self.orchestrator = "mp"
+                self.no_mp = False
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试默认不提交目标"
+
+        mock_run_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig"):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    # 设置 KnowledgeManager mock
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_run_result)
+                    MockMP.return_value = mock_orch
+
+                    # Mock _run_commit_phase - 不应该被调用
+                    with patch.object(
+                        iterator, "_run_commit_phase", new_callable=AsyncMock
+                    ) as mock_commit:
+                        result = await iterator._run_agent_system()
+
+                        # 关键断言：_run_commit_phase 不应该被调用
+                        # 因为 auto_commit=False（默认值）
+                        mock_commit.assert_not_called()
+
+                        # 验证结果中没有 commits 字段
+                        assert "commits" not in result or result.get("commits") is None
+
+                        # 验证执行成功
+                        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_iterate_mode_commit_only_with_explicit_auto_commit(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 iterate 模式仅在显式指定 --auto-commit 时才触发提交
+
+        这个测试验证了默认提交策略：只有显式开启 auto_commit 时才会提交。
+        """
+        from scripts.run_iterate import SelfIterator
+
+        class IterateArgs:
+            def __init__(self):
+                self.requirement = "测试显式提交"
+                self.skip_online = True
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = False
+                self.max_iterations = "1"
+                self.workers = 2
+                self.force_update = False
+                self.verbose = False
+                # 关键：显式启用 auto_commit
+                self.auto_commit = True
+                self.auto_push = False
+                self.commit_per_iteration = False
+                self.commit_message = ""
+                self.orchestrator = "mp"
+                self.no_mp = False
+
+        iterate_args = IterateArgs()
+        iterator = SelfIterator(iterate_args)
+        iterator.context.iteration_goal = "测试显式提交目标"
+
+        mock_run_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        mock_commit_result = {
+            "total_commits": 1,
+            "commit_hashes": ["explicit_commit_abc123"],
+            "commit_messages": ["feat: 测试显式提交"],
+            "pushed_commits": 0,
+            "files_changed": ["src/main.py"],
+        }
+
+        with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+            with patch("scripts.run_iterate.MultiProcessOrchestratorConfig"):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value=mock_run_result)
+                    MockMP.return_value = mock_orch
+
+                    # Mock _run_commit_phase - 应该被调用
+                    with patch.object(
+                        iterator, "_run_commit_phase", new_callable=AsyncMock
+                    ) as mock_commit:
+                        mock_commit.return_value = mock_commit_result
+
+                        result = await iterator._run_agent_system()
+
+                        # 关键断言：_run_commit_phase 应该被调用
+                        # 因为 auto_commit=True（显式开启）
+                        mock_commit.assert_called_once()
+
+                        # 验证结果包含 commits 字段
+                        assert "commits" in result
+                        assert result["commits"]["total_commits"] == 1
+
 
 # ==================== TestAutoMode ====================
 

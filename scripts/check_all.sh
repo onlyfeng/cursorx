@@ -462,6 +462,56 @@ check_tests() {
     fi
 }
 
+check_core_tests() {
+    # 核心测试集合：run.py、self_iterate、execution_modes、orchestrator_mp_commit
+    # 这些测试确保 CI 稳定性
+    print_section "核心测试集合"
+
+    if ! command -v pytest &> /dev/null; then
+        check_skip "pytest 未安装 (pip install pytest)"
+        return 0
+    fi
+
+    # 核心测试文件列表
+    CORE_TEST_FILES=(
+        "tests/test_run.py"
+        "tests/test_self_iterate.py"
+        "tests/test_e2e_execution_modes.py"
+        "tests/test_orchestrator_mp_commit.py"
+    )
+
+    MISSING_FILES=0
+    for test_file in "${CORE_TEST_FILES[@]}"; do
+        if [ ! -f "$test_file" ]; then
+            check_fail "核心测试文件缺失: $test_file"
+            ((MISSING_FILES++))
+        fi
+    done
+
+    if [ $MISSING_FILES -gt 0 ]; then
+        check_fail "有 $MISSING_FILES 个核心测试文件缺失"
+        return 1
+    fi
+
+    check_pass "所有核心测试文件存在 (${#CORE_TEST_FILES[@]} 个)"
+
+    if [ "$JSON_OUTPUT" != true ]; then
+        echo -e "  ${BLUE}ℹ${NC} 运行核心测试集合 (使用 unit marker，跳过慢速测试)..."
+    fi
+
+    # 运行核心测试（跳过 slow 和 e2e 标记的测试以保持快速）
+    CORE_TEST_CMD="pytest ${CORE_TEST_FILES[*]} -v --tb=short -m 'not slow and not e2e'"
+
+    if eval "$CORE_TEST_CMD" 2>&1 | tee /tmp/pytest_core_output.txt; then
+        PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_core_output.txt | tail -1)
+        check_pass "核心测试通过: ${PASSED:-0} 个"
+    else
+        FAILED=$(grep -oP '\d+(?= failed)' /tmp/pytest_core_output.txt | tail -1)
+        check_fail "核心测试失败: ${FAILED:-?} 个"
+    fi
+    rm -f /tmp/pytest_core_output.txt
+}
+
 check_coverage() {
     print_section "代码覆盖率检查"
 
@@ -817,14 +867,16 @@ main() {
     if [ "$FULL_CHECK" = true ]; then
         check_type_hints
         check_code_style
-        check_tests
+        check_core_tests   # 核心测试集合（快速验证关键功能）
+        check_tests        # 完整测试
         check_coverage
     else
         if [ "$JSON_OUTPUT" != true ]; then
             print_section "跳过的检查 (使用 --full 启用)"
             check_info "类型检查 (mypy)"
             check_info "代码风格检查 (flake8/ruff)"
-            check_info "测试运行 (pytest)"
+            check_info "核心测试集合 (test_run, test_self_iterate, test_e2e_execution_modes, test_orchestrator_mp_commit)"
+            check_info "完整测试运行 (pytest)"
             check_info "代码覆盖率检查 (pytest-cov, 阈值 80%)"
         fi
     fi

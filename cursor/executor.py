@@ -29,6 +29,10 @@ from pydantic import BaseModel, Field
 from cursor.client import CursorAgentClient, CursorAgentConfig, CursorAgentResult
 from cursor.cloud_client import AuthStatus, CloudAuthConfig, CloudAuthManager
 
+# 导入 Cloud Client 相关类
+from cursor.cloud.client import CloudAgentResult, CursorCloudClient
+from cursor.cloud.task import CloudTaskOptions, TaskStatus
+
 
 class ExecutionMode(str, Enum):
     """执行模式"""
@@ -361,28 +365,42 @@ class AskAgentExecutor:
 class CloudAgentExecutor:
     """Cloud Agent 执行器
 
-    通过 Cursor Cloud API 执行任务（预留接口）
+    通过 Cursor Cloud API 执行任务。
+    使用 CursorCloudClient 实现后台任务提交、轮询和恢复功能。
 
-    注意：Cloud API 目前尚未正式发布，此类预留了接口结构
-    当 API 可用时，可以直接实现具体逻辑
+    特点:
+    - 支持 & 前缀自动识别云端请求
+    - 使用 -b (background) 模式提交后台任务
+    - 支持任务状态轮询和结果获取
+    - 支持会话恢复功能
     """
 
     def __init__(
         self,
         auth_config: Optional[CloudAuthConfig] = None,
         agent_config: Optional[CursorAgentConfig] = None,
+        cloud_client: Optional[CursorCloudClient] = None,
     ):
         """初始化 Cloud 执行器
 
         Args:
             auth_config: Cloud 认证配置
             agent_config: Agent 配置（用于模型、超时等设置）
+            cloud_client: 可选的 CursorCloudClient 实例（用于测试注入）
         """
         self._auth_config = auth_config or CloudAuthConfig()
         self._agent_config = agent_config or CursorAgentConfig()
         self._auth_manager = CloudAuthManager(self._auth_config)
         self._available: Optional[bool] = None
         self._auth_status: Optional[AuthStatus] = None
+
+        # 初始化 Cloud Client
+        if cloud_client is not None:
+            self._cloud_client = cloud_client
+        else:
+            self._cloud_client = CursorCloudClient(
+                auth_manager=self._auth_manager,
+            )
 
     @property
     def executor_type(self) -> str:
@@ -396,17 +414,35 @@ class CloudAgentExecutor:
     def agent_config(self) -> CursorAgentConfig:
         return self._agent_config
 
+    @property
+    def cloud_client(self) -> CursorCloudClient:
+        """获取 Cloud Client 实例"""
+        return self._cloud_client
+
     async def execute(
         self,
         prompt: str,
         context: Optional[dict[str, Any]] = None,
         working_directory: Optional[str] = None,
         timeout: Optional[int] = None,
+        background: bool = True,
+        session_id: Optional[str] = None,
     ) -> AgentResult:
         """通过 Cloud API 执行任务
 
-        注意：当前实现会回退到 CLI 模式，
-        当 Cloud API 正式发布后，此处应替换为真正的 API 调用
+        使用 CursorCloudClient 提交任务到云端执行。
+        默认使用后台模式 (-b) 提交任务并轮询结果。
+
+        Args:
+            prompt: 任务提示（可带 & 前缀）
+            context: 上下文信息
+            working_directory: 工作目录
+            timeout: 超时时间（秒）
+            background: 是否使用后台模式（默认 True）
+            session_id: 可选的会话 ID（用于恢复会话）
+
+        Returns:
+            执行结果
         """
         started_at = datetime.now()
         timeout_sec = timeout or self._agent_config.timeout
@@ -417,21 +453,29 @@ class CloudAgentExecutor:
                 self._auth_status = await self._auth_manager.authenticate()
 
             if not self._auth_status.authenticated:
+                error_msg = self._auth_status.error or "未认证"
                 return AgentResult(
                     success=False,
-                    error=f"Cloud 认证失败: {self._auth_status.error}",
+                    error=f"Cloud 认证失败: {error_msg}",
                     executor_type="cloud",
                     started_at=started_at,
                     completed_at=datetime.now(),
                 )
 
-            # TODO: 当 Cloud API 可用时，替换为真正的 API 调用
-            # 目前使用 CLI 作为后端实现
-            result = await self._execute_via_api(
-                prompt=prompt,
-                context=context,
-                working_directory=working_directory,
+            # 构建任务选项
+            task_options = CloudTaskOptions(
+                model=self._agent_config.model,
+                working_directory=working_directory or ".",
+                allow_write=self._agent_config.force_write,
                 timeout=timeout_sec,
+            )
+
+            # 使用 CursorCloudClient 执行任务
+            result = await self._execute_via_cloud_client(
+                prompt=prompt,
+                options=task_options,
+                timeout=timeout_sec,
+                session_id=session_id,
             )
 
             return result
@@ -454,42 +498,216 @@ class CloudAgentExecutor:
                 completed_at=datetime.now(),
             )
 
-    async def _execute_via_api(
+    async def _execute_via_cloud_client(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]],
-        working_directory: Optional[str],
+        options: CloudTaskOptions,
         timeout: int,
+        session_id: Optional[str] = None,
     ) -> AgentResult:
-        """通过 Cloud API 执行（预留接口）
+        """通过 CursorCloudClient 执行任务
 
-        当 Cloud API 正式发布后，此方法应实现:
-        1. 构建 API 请求
-        2. 发送请求到 Cloud 端点
-        3. 处理流式响应
+        使用 Cloud Client 的 execute 方法：
+        1. 如果 prompt 以 & 开头，自动识别为云端请求
+        2. 使用后台模式提交任务
+        3. 轮询等待任务完成
         4. 返回执行结果
         """
         started_at = datetime.now()
 
-        # 当前实现：标记为 Cloud 不可用
-        # 这将触发 AutoAgentExecutor 回退到 CLI
-        logger.debug("Cloud API 尚未实现，将标记为不可用")
+        try:
+            # 使用 CursorCloudClient 执行
+            # 默认等待任务完成（wait=True）
+            cloud_result: CloudAgentResult = await self._cloud_client.execute(
+                prompt=prompt,
+                options=options,
+                wait=True,
+                timeout=timeout,
+                session_id=session_id,
+            )
 
-        return AgentResult(
-            success=False,
-            error="Cloud API 尚未实现",
-            executor_type="cloud",
-            started_at=started_at,
-            completed_at=datetime.now(),
-            raw_result={"status": "not_implemented"},
-        )
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            # 转换为 AgentResult
+            return AgentResult.from_cloud_result(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                duration=duration,
+                session_id=cloud_result.task.task_id if cloud_result.task else None,
+                raw_result=cloud_result.to_dict(),
+            )
+
+        except asyncio.TimeoutError:
+            logger.error(f"Cloud Client 执行超时 ({timeout}s)")
+            return AgentResult(
+                success=False,
+                error=f"Cloud API 执行超时 ({timeout}s)",
+                executor_type="cloud",
+                started_at=started_at,
+                completed_at=datetime.now(),
+            )
+        except Exception as e:
+            error_msg = str(e) if str(e) else type(e).__name__
+            logger.error(f"Cloud Client 执行失败: {error_msg}")
+            return AgentResult(
+                success=False,
+                error=error_msg,
+                executor_type="cloud",
+                started_at=started_at,
+                completed_at=datetime.now(),
+            )
+
+    async def submit_background_task(
+        self,
+        prompt: str,
+        options: Optional[CloudTaskOptions] = None,
+    ) -> AgentResult:
+        """提交后台任务（不等待完成）
+
+        使用 -b (background) 模式提交任务，立即返回任务 ID。
+        后续可通过 get_task_status 或 wait_for_task 获取结果。
+
+        Args:
+            prompt: 任务提示
+            options: 任务选项
+
+        Returns:
+            包含 task_id 的结果（可用于后续查询）
+        """
+        started_at = datetime.now()
+
+        try:
+            if not self._auth_status or not self._auth_status.authenticated:
+                self._auth_status = await self._auth_manager.authenticate()
+
+            if not self._auth_status.authenticated:
+                return AgentResult(
+                    success=False,
+                    error="Cloud 认证失败",
+                    executor_type="cloud",
+                    started_at=started_at,
+                    completed_at=datetime.now(),
+                )
+
+            # 提交任务（不等待完成）
+            cloud_result = await self._cloud_client.submit_task(prompt, options)
+
+            return AgentResult(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                executor_type="cloud",
+                session_id=cloud_result.task.task_id if cloud_result.task else None,
+                started_at=started_at,
+                completed_at=datetime.now(),
+                raw_result=cloud_result.to_dict(),
+            )
+
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                error=str(e),
+                executor_type="cloud",
+                started_at=started_at,
+                completed_at=datetime.now(),
+            )
+
+    async def wait_for_task(
+        self,
+        task_id: str,
+        timeout: Optional[int] = None,
+    ) -> AgentResult:
+        """等待后台任务完成
+
+        Args:
+            task_id: 任务 ID
+            timeout: 超时时间（秒）
+
+        Returns:
+            任务执行结果
+        """
+        started_at = datetime.now()
+        timeout_sec = timeout or self._agent_config.timeout
+
+        try:
+            cloud_result = await self._cloud_client.wait_for_completion(
+                task_id=task_id,
+                timeout=timeout_sec,
+            )
+
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            return AgentResult.from_cloud_result(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                duration=duration,
+                session_id=task_id,
+                raw_result=cloud_result.to_dict(),
+            )
+
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                error=str(e),
+                executor_type="cloud",
+                started_at=started_at,
+                completed_at=datetime.now(),
+            )
+
+    async def resume_session(
+        self,
+        session_id: str,
+        prompt: Optional[str] = None,
+    ) -> AgentResult:
+        """恢复云端会话
+
+        Args:
+            session_id: 会话 ID
+            prompt: 可选的附加提示
+
+        Returns:
+            执行结果
+        """
+        started_at = datetime.now()
+
+        try:
+            cloud_result = await self._cloud_client.resume_from_cloud(
+                task_id=session_id,
+                local=True,
+                prompt=prompt,
+            )
+
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            return AgentResult.from_cloud_result(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                duration=duration,
+                session_id=session_id,
+                raw_result=cloud_result.to_dict(),
+            )
+
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                error=str(e),
+                executor_type="cloud",
+                started_at=started_at,
+                completed_at=datetime.now(),
+            )
 
     async def check_available(self) -> bool:
         """检查 Cloud API 是否可用
 
         检查条件:
         1. 认证状态有效
-        2. Cloud API 端点可访问
+        2. Cloud Client 可用
         """
         if self._available is not None:
             return self._available
@@ -501,10 +719,9 @@ class CloudAgentExecutor:
                 self._available = False
                 return False
 
-            # TODO: 检查 Cloud API 端点可用性
-            # 当前实现：Cloud API 尚未发布，返回 False
-            self._available = False
-            return False
+            # Cloud API 可用（认证成功即可用）
+            self._available = True
+            return True
 
         except Exception as e:
             logger.debug(f"Cloud API 可用性检查失败: {e}")
@@ -521,6 +738,11 @@ class CloudAgentExecutor:
             return loop.run_until_complete(self.check_available())
         except RuntimeError:
             return False
+
+    def reset_availability_cache(self) -> None:
+        """重置可用性缓存，下次检查时重新验证"""
+        self._available = None
+        self._auth_status = None
 
 
 class AutoAgentExecutor:

@@ -294,6 +294,12 @@ def parse_args() -> argparse.Namespace:
         help="自定义提交信息前缀（默认使用自动生成的提交信息）",
     )
 
+    parser.add_argument(
+        "--commit-per-iteration",
+        action="store_true",
+        help="每次迭代都提交（默认仅在全部完成时提交）",
+    )
+
     # 编排器选择参数
     orchestrator_group = parser.add_mutually_exclusive_group()
     orchestrator_group.add_argument(
@@ -320,6 +326,7 @@ class ChangelogAnalyzer:
     """Changelog 分析器
 
     从 Cursor Changelog 页面获取更新内容并分析。
+    支持多种解析策略：优先日期标题块、备用月份标题块、保底全页单条。
     """
 
     def __init__(self, changelog_url: str = DEFAULT_CHANGELOG_URL):
@@ -344,8 +351,252 @@ class ChangelogAnalyzer:
             print_error(f"Changelog 获取失败: {result.error}")
             return None
 
+    def _clean_content(self, content: str) -> str:
+        """清理 HTML/Markdown 混合内容
+
+        移除 HTML 标签、多余空白等，保留纯文本和 Markdown 格式。
+
+        Args:
+            content: 原始内容
+
+        Returns:
+            清理后的内容
+        """
+        if not content:
+            return ""
+
+        # 移除 HTML 注释
+        content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+
+        # 移除 script 和 style 标签及内容
+        content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
+
+        # 移除常见 HTML 标签，保留内容
+        # 保留 <a> 标签的文本
+        content = re.sub(r'<a[^>]*>([^<]*)</a>', r'\1', content, flags=re.IGNORECASE)
+        # 移除其他标签
+        content = re.sub(r'<[^>]+>', '', content)
+
+        # 解码常见 HTML 实体
+        html_entities = {
+            '&nbsp;': ' ',
+            '&lt;': '<',
+            '&gt;': '>',
+            '&amp;': '&',
+            '&quot;': '"',
+            '&#39;': "'",
+            '&mdash;': '—',
+            '&ndash;': '–',
+        }
+        for entity, char in html_entities.items():
+            content = content.replace(entity, char)
+
+        # 移除多余空行（保留最多2个连续空行）
+        content = re.sub(r'\n{3,}', '\n\n', content)
+
+        # 移除行首行尾空白
+        lines = [line.strip() for line in content.split('\n')]
+        content = '\n'.join(lines)
+
+        return content.strip()
+
+    def _parse_by_date_headers(self, content: str) -> list[ChangelogEntry]:
+        """策略1: 按日期标题块解析（优先）
+
+        匹配格式如：## 2024-01-15、### Jan 16, 2026 等
+
+        Args:
+            content: 清理后的内容
+
+        Returns:
+            解析出的条目列表
+        """
+        entries: list[ChangelogEntry] = []
+
+        # 匹配多种日期格式：
+        # - ## 2024-01-15
+        # - ### 2024/01/15
+        # - ## Jan 16, 2026
+        # - ## January 16 2026
+        date_pattern = r'\n(?=#{1,3}\s*(?:' \
+            r'\d{4}[-/]\d{2}[-/]\d{2}|' \
+            r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|' \
+            r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}[,\s]+\d{4}' \
+            r'))'
+
+        sections = re.split(date_pattern, content, flags=re.IGNORECASE)
+
+        for section in sections:
+            if not section.strip():
+                continue
+
+            entry = self._parse_section(section)
+            if entry and (entry.date or entry.content):
+                entries.append(entry)
+
+        return entries
+
+    def _parse_by_version_headers(self, content: str) -> list[ChangelogEntry]:
+        """策略2: 按版本标题块解析（备用）
+
+        匹配格式如：## v1.0.0、### Version 2.1
+
+        Args:
+            content: 清理后的内容
+
+        Returns:
+            解析出的条目列表
+        """
+        entries: list[ChangelogEntry] = []
+
+        # 匹配版本号格式
+        version_pattern = r'\n(?=#{1,3}\s*(?:v(?:ersion)?\s*)?\d+\.\d+)'
+
+        sections = re.split(version_pattern, content, flags=re.IGNORECASE)
+
+        for section in sections:
+            if not section.strip():
+                continue
+
+            entry = self._parse_section(section)
+            if entry and (entry.version or entry.content):
+                entries.append(entry)
+
+        return entries
+
+    def _parse_fallback(self, content: str) -> list[ChangelogEntry]:
+        """策略3: 保底策略，将全页作为单条 entry
+
+        当其他策略都无法解析出有效条目时使用。
+
+        Args:
+            content: 清理后的内容
+
+        Returns:
+            包含单条 entry 的列表
+        """
+        if not content.strip():
+            return []
+
+        entry = ChangelogEntry()
+        entry.title = "Changelog"
+        entry.content = content.strip()
+        entry.category = self._categorize_content(entry.content)
+
+        # 尝试从内容中提取日期
+        date_match = re.search(
+            r'(\d{4}[-/]\d{2}[-/]\d{2})|'
+            r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+            r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+            r'\s+\d{1,2}[,\s]+\d{4})',
+            content, re.IGNORECASE
+        )
+        if date_match:
+            entry.date = date_match.group(0)
+
+        # 提取关键词
+        for pattern in UPDATE_KEYWORDS:
+            matches = re.findall(pattern, entry.content, re.IGNORECASE)
+            entry.keywords.extend(matches)
+
+        return [entry]
+
+    def _parse_section(self, section: str) -> Optional[ChangelogEntry]:
+        """解析单个 section 为 ChangelogEntry
+
+        Args:
+            section: 单个 section 的内容
+
+        Returns:
+            解析出的 ChangelogEntry，解析失败返回 None
+        """
+        if not section.strip():
+            return None
+
+        entry = ChangelogEntry()
+        lines = section.strip().split('\n')
+
+        # 提取标题行
+        if lines:
+            title_line = lines[0].strip()
+
+            # 尝试提取日期（多种格式）
+            # 格式1: 2024-01-15 或 2024/01/15
+            date_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2})', title_line)
+            if date_match:
+                entry.date = date_match.group(1)
+            else:
+                # 格式2: Jan 16, 2026 或 January 16 2026
+                date_match = re.search(
+                    r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+                    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+                    r'\s+\d{1,2}[,\s]+\d{4})',
+                    title_line, re.IGNORECASE
+                )
+                if date_match:
+                    entry.date = date_match.group(1)
+
+            # 尝试提取版本
+            version_match = re.search(r'v?(\d+\.\d+(?:\.\d+)?)', title_line)
+            if version_match:
+                entry.version = version_match.group(1)
+
+            entry.title = re.sub(r'^#+\s*', '', title_line)
+
+        # 提取内容
+        entry.content = '\n'.join(lines[1:]).strip()
+
+        # 分析类别
+        entry.category = self._categorize_content(entry.content)
+
+        # 提取关键词
+        for pattern in UPDATE_KEYWORDS:
+            matches = re.findall(pattern, entry.content, re.IGNORECASE)
+            entry.keywords.extend(matches)
+
+        return entry if entry.content else None
+
+    def _categorize_content(self, content: str) -> str:
+        """根据内容分析类别
+
+        Args:
+            content: 条目内容
+
+        Returns:
+            类别字符串: feature, fix, improvement, other
+        """
+        content_lower = content.lower()
+
+        # 检测新功能
+        if any(kw in content_lower for kw in [
+            '新增', '新功能', 'new feature', 'new:', 'added', '添加',
+            'introducing', 'launch', '发布', '支持'
+        ]):
+            return 'feature'
+
+        # 检测修复
+        if any(kw in content_lower for kw in [
+            '修复', 'fix', 'bug', 'fixed', 'resolved', '解决', 'patch'
+        ]):
+            return 'fix'
+
+        # 检测改进
+        if any(kw in content_lower for kw in [
+            '改进', '优化', 'improve', 'enhance', 'update', 'better',
+            '更新', '升级', 'upgrade', 'performance'
+        ]):
+            return 'improvement'
+
+        return 'other'
+
     def parse_changelog(self, content: str) -> list[ChangelogEntry]:
         """解析 Changelog 内容
+
+        使用分层解析策略：
+        1. 优先按日期标题块解析
+        2. 备用按版本标题块解析
+        3. 保底将全页作为单条 entry
 
         Args:
             content: Changelog 页面内容
@@ -353,56 +604,30 @@ class ChangelogAnalyzer:
         Returns:
             Changelog 条目列表
         """
-        entries: list[ChangelogEntry] = []
+        if not content:
+            return []
 
-        # 按日期/版本分割（常见格式：## 2024-01-15 或 ### v1.0.0）
-        sections = re.split(r'\n(?=#{1,3}\s*(?:\d{4}[-/]\d{2}[-/]\d{2}|v?\d+\.\d+))', content)
+        # 清理 HTML/Markdown 混合内容
+        cleaned_content = self._clean_content(content)
 
-        for section in sections:
-            if not section.strip():
-                continue
+        if not cleaned_content:
+            return []
 
-            entry = ChangelogEntry()
-            lines = section.strip().split('\n')
+        # 策略1: 按日期标题块解析
+        entries = self._parse_by_date_headers(cleaned_content)
+        if entries:
+            logger.debug(f"使用日期标题策略解析，得到 {len(entries)} 条")
+            return entries
 
-            # 提取标题行
-            if lines:
-                title_line = lines[0].strip()
-                # 尝试提取日期
-                date_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2})', title_line)
-                if date_match:
-                    entry.date = date_match.group(1)
+        # 策略2: 按版本标题块解析
+        entries = self._parse_by_version_headers(cleaned_content)
+        if entries:
+            logger.debug(f"使用版本标题策略解析，得到 {len(entries)} 条")
+            return entries
 
-                # 尝试提取版本
-                version_match = re.search(r'v?(\d+\.\d+(?:\.\d+)?)', title_line)
-                if version_match:
-                    entry.version = version_match.group(1)
-
-                entry.title = re.sub(r'^#+\s*', '', title_line)
-
-            # 提取内容
-            entry.content = '\n'.join(lines[1:]).strip()
-
-            # 分析类别和关键词
-            content_lower = entry.content.lower()
-            if any(kw in content_lower for kw in ['新增', '新功能', 'new', 'feature']):
-                entry.category = 'feature'
-            elif any(kw in content_lower for kw in ['修复', 'fix', 'bug']):
-                entry.category = 'fix'
-            elif any(kw in content_lower for kw in ['改进', '优化', 'improve', 'enhance']):
-                entry.category = 'improvement'
-            else:
-                entry.category = 'other'
-
-            # 提取关键词
-            for pattern in UPDATE_KEYWORDS:
-                matches = re.findall(pattern, entry.content, re.IGNORECASE)
-                entry.keywords.extend(matches)
-
-            if entry.content:
-                entries.append(entry)
-
-        return entries
+        # 策略3: 保底全页单条
+        logger.debug("使用保底策略，全页作为单条 entry")
+        return self._parse_fallback(cleaned_content)
 
     def extract_update_points(self, entries: list[ChangelogEntry]) -> UpdateAnalysis:
         """提取更新要点
@@ -440,19 +665,70 @@ class ChangelogAnalyzer:
         return analysis
 
     def _extract_doc_keywords(self, url: str) -> list[str]:
-        """从 URL 提取关键词"""
+        """从 URL 提取关键词
+
+        关键词映射覆盖 Cursor CLI 主要特性，包括 Jan 16 2026 新增的
+        plan/ask 模式、cloud relay、diff 视图等功能。
+        """
         # 从 URL 路径提取关键词
         path = url.split('/')[-1]
         keywords = [path.replace('-', ' ')]
 
         # 添加特定关键词映射
+        # 包含 Jan 16 2026 新特性: plan/ask 模式、cloud relay、diff
         keyword_map = {
-            'parameters': ['参数', 'parameter', 'option', '选项'],
-            'slash-commands': ['斜杠命令', 'slash', '/'],
-            'mcp': ['mcp', '服务器', 'server'],
-            'hooks': ['hook', '钩子'],
-            'subagents': ['subagent', '子代理'],
-            'skills': ['skill', '技能'],
+            # 基础参数文档
+            'parameters': [
+                '参数', 'parameter', 'option', '选项',
+                # Jan 16 2026: plan/ask 模式
+                'plan', 'ask', '--mode', 'mode', '模式',
+                '规划模式', '问答模式', '代理模式',
+                # 输出格式
+                'output-format', 'stream-json', 'json',
+            ],
+            # 斜杠命令
+            'slash-commands': [
+                '斜杠命令', 'slash', '/',
+                # Jan 16 2026: /plan 和 /ask 命令
+                '/plan', '/ask', '/model', '/models',
+                '/rules', '/commands', '/mcp',
+            ],
+            # MCP 服务器
+            'mcp': [
+                'mcp', '服务器', 'server',
+                # Jan 16 2026: cloud relay
+                'cloud relay', 'relay', '云中继',
+                'mcp enable', 'mcp disable', 'mcp list',
+            ],
+            # Hooks
+            'hooks': [
+                'hook', '钩子',
+                'beforeShellExecution', 'afterShellExecution',
+                'beforeFileEdit', 'afterFileEdit',
+            ],
+            # 子代理
+            'subagents': [
+                'subagent', '子代理', 'agent',
+                'foreground', 'background', '前台', '后台',
+            ],
+            # 技能
+            'skills': [
+                'skill', '技能', 'SKILL.md',
+            ],
+            # CLI 概览
+            'overview': [
+                'cli', '命令行', 'agent',
+                # Jan 16 2026: diff 视图
+                'diff', '差异', 'changes', '变更',
+                'review', '审阅', 'Ctrl+R',
+            ],
+            # 使用指南
+            'using': [
+                'using', '使用', '教程',
+                # Jan 16 2026: 交互模式增强
+                'interactive', '交互', '快捷键',
+                'diff view', 'diff 视图',
+            ],
         }
 
         for key, kws in keyword_map.items():
@@ -1071,6 +1347,52 @@ class SelfIterator:
             return "basic"
         return getattr(self.args, "orchestrator", "mp")
 
+    def _has_orchestrator_committed(self, result: dict[str, Any]) -> bool:
+        """检测编排器是否已完成提交
+
+        提交去重策略：如果编排器返回的结果中已包含有效的 commits 信息，
+        则 SelfIterator 不应再次调用 CommitterAgent 避免重复提交。
+
+        检测条件（满足任一即表示已提交）：
+        1. result["commits"]["total_commits"] > 0
+        2. result["commits"]["commit_hashes"] 非空
+        3. result["iterations"] 中任意迭代有 commit_hash
+
+        Args:
+            result: 编排器返回的执行结果
+
+        Returns:
+            True 表示编排器已完成提交，False 表示未提交
+        """
+        # 检查 commits 摘要
+        commits = result.get("commits", {})
+        if commits:
+            # 检查 total_commits
+            if commits.get("total_commits", 0) > 0:
+                logger.debug(f"检测到编排器提交: total_commits={commits.get('total_commits')}")
+                return True
+
+            # 检查 commit_hashes
+            commit_hashes = commits.get("commit_hashes", [])
+            if commit_hashes and any(h for h in commit_hashes if h):
+                logger.debug(f"检测到编排器提交: commit_hashes={commit_hashes}")
+                return True
+
+            # 检查 successful_commits（兼容不同字段命名）
+            if commits.get("successful_commits", 0) > 0:
+                logger.debug(f"检测到编排器提交: successful_commits={commits.get('successful_commits')}")
+                return True
+
+        # 检查迭代级别的提交信息
+        iterations = result.get("iterations", [])
+        for it in iterations:
+            commit_hash = it.get("commit_hash")
+            if commit_hash and commit_hash.strip():
+                logger.debug(f"检测到迭代 {it.get('id')} 已提交: {commit_hash}")
+                return True
+
+        return False
+
     async def _run_agent_system(self) -> dict[str, Any]:
         """运行 Agent 系统
 
@@ -1116,17 +1438,23 @@ class SelfIterator:
             # 使用基本协程编排器
             result = await self._run_with_basic_orchestrator(max_iterations, manager)
 
-        # 完成后提交阶段
+        # 完成后提交阶段（提交去重策略）
+        # 如果编排器已经完成了提交，则跳过 SelfIterator 的二次提交
         if self.args.auto_commit:
-            commits_result = await self._run_commit_phase(
-                result.get("iterations_completed", 0),
-                result.get("total_tasks_completed", 0),
-            )
-            result["commits"] = commits_result
+            orchestrator_already_committed = self._has_orchestrator_committed(result)
+            if orchestrator_already_committed:
+                logger.info("编排器已完成提交，跳过 SelfIterator 二次提交")
+                print_info("检测到编排器已提交，跳过重复提交")
+            else:
+                commits_result = await self._run_commit_phase(
+                    result.get("iterations_completed", 0),
+                    result.get("total_tasks_completed", 0),
+                )
+                result["commits"] = commits_result
 
-            # 更新 pushed 标志
-            if commits_result.get("pushed_commits", 0) > 0:
-                result["pushed"] = True
+                # 更新 pushed 标志
+                if commits_result.get("pushed_commits", 0) > 0:
+                    result["pushed"] = True
 
         # 显示结果
         self._print_execution_result(result)
@@ -1217,9 +1545,12 @@ class SelfIterator:
                 # 方案 C: 启用 MP 任务级知识库注入
                 enable_knowledge_search=True,
                 enable_knowledge_injection=True,
-                # 自动提交配置透传
+                # 自动提交配置透传（与 CommitPolicy 语义对齐）
                 enable_auto_commit=self.args.auto_commit,
                 auto_push=self.args.auto_push,
+                commit_per_iteration=getattr(self.args, "commit_per_iteration", False),
+                # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
+                commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
             )
 
             # 创建多进程编排器
@@ -1285,9 +1616,12 @@ class SelfIterator:
             max_iterations=max_iterations,
             worker_pool_size=self.args.workers,
             cursor_config=cursor_config,
-            # 自动提交配置
+            # 自动提交配置透传（与 CommitPolicy 语义对齐）
             enable_auto_commit=self.args.auto_commit,
             auto_push=self.args.auto_push,
+            commit_per_iteration=getattr(self.args, "commit_per_iteration", False),
+            # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
+            commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
         )
 
         # 创建编排器，注入知识库管理器

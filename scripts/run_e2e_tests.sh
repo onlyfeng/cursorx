@@ -9,6 +9,7 @@
 #   ./scripts/run_e2e_tests.sh --local      # 本地模式 (详细输出)
 #   ./scripts/run_e2e_tests.sh --coverage   # 生成覆盖率报告
 #   ./scripts/run_e2e_tests.sh --all        # 运行所有测试 (包括 slow)
+#   ./scripts/run_e2e_tests.sh --core       # 仅运行核心测试集合 (快速验证)
 # =============================================================================
 
 set -e
@@ -24,9 +25,18 @@ NC='\033[0m' # No Color
 MODE="local"
 COVERAGE=false
 RUN_ALL=false
+CORE_ONLY=false
 TIMEOUT=300
 VERBOSE=true
 EXIT_CODE=0
+
+# 核心测试文件列表
+CORE_TEST_FILES=(
+    "tests/test_run.py"
+    "tests/test_self_iterate.py"
+    "tests/test_e2e_execution_modes.py"
+    "tests/test_orchestrator_mp_commit.py"
+)
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -49,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             RUN_ALL=true
             shift
             ;;
+        --core)
+            CORE_ONLY=true
+            shift
+            ;;
         --timeout)
             TIMEOUT="$2"
             shift 2
@@ -64,8 +78,15 @@ while [[ $# -gt 0 ]]; do
             echo "  --local       本地模式 (详细输出，默认)"
             echo "  --coverage    生成覆盖率报告"
             echo "  --all         运行所有测试 (包括 slow 标记的测试)"
+            echo "  --core        仅运行核心测试集合 (快速验证关键功能)"
             echo "  --timeout N   设置超时时间 (秒，默认 300)"
             echo "  -h, --help    显示帮助信息"
+            echo ""
+            echo "核心测试集合包含:"
+            echo "  - tests/test_run.py (plan/ask/auto/iterate 模式)"
+            echo "  - tests/test_self_iterate.py (changelog 解析稳健性与回退)"
+            echo "  - tests/test_e2e_execution_modes.py (执行器模式)"
+            echo "  - tests/test_orchestrator_mp_commit.py (提交策略与健康检查)"
             exit 0
             ;;
         *)
@@ -131,7 +152,15 @@ check_dependencies() {
 
 # 构建 pytest 命令
 build_pytest_command() {
-    local cmd="pytest tests/"
+    local cmd="pytest"
+    
+    # 测试目标
+    if [ "$CORE_ONLY" = true ]; then
+        # 核心测试集合
+        cmd="$cmd ${CORE_TEST_FILES[*]}"
+    else
+        cmd="$cmd tests/"
+    fi
     
     # 基本选项
     if [ "$VERBOSE" = true ]; then
@@ -144,14 +173,14 @@ build_pytest_command() {
     cmd="$cmd --color=yes"
     
     # 测试标记
-    if [ "$RUN_ALL" = true ]; then
+    if [ "$CORE_ONLY" = true ]; then
+        # 核心测试：跳过 slow 和 e2e 标记的测试以保持快速
+        cmd="$cmd -m 'not slow and not e2e'"
+    elif [ "$RUN_ALL" = true ]; then
         cmd="$cmd -m 'e2e'"
     else
         cmd="$cmd -m 'e2e and not slow'"
     fi
-    
-    # 超时设置
-    cmd="$cmd --timeout=$TIMEOUT"
     
     # 覆盖率
     if [ "$COVERAGE" = true ]; then
@@ -163,7 +192,11 @@ build_pytest_command() {
 
 # 运行 E2E 测试
 run_e2e_tests() {
-    print_header "运行 E2E 测试"
+    if [ "$CORE_ONLY" = true ]; then
+        print_header "运行核心测试集合"
+    else
+        print_header "运行 E2E 测试"
+    fi
     
     local pytest_cmd=$(build_pytest_command)
     print_info "执行命令: $pytest_cmd"
@@ -181,14 +214,24 @@ run_e2e_tests() {
 generate_report() {
     print_header "测试报告"
     
+    local test_type="E2E 测试"
+    if [ "$CORE_ONLY" = true ]; then
+        test_type="核心测试集合"
+    fi
+    
     if [ $EXIT_CODE -eq 0 ]; then
-        print_success "所有 E2E 测试通过!"
+        print_success "所有 ${test_type} 通过!"
     elif [ $EXIT_CODE -eq 5 ]; then
-        print_warning "没有找到 E2E 测试用例"
-        print_info "请确保测试函数使用 @pytest.mark.e2e 装饰器标记"
+        if [ "$CORE_ONLY" = true ]; then
+            print_warning "没有找到匹配的核心测试用例"
+            print_info "这可能是因为所有测试都被 'slow' 或 'e2e' 标记"
+        else
+            print_warning "没有找到 E2E 测试用例"
+            print_info "请确保测试函数使用 @pytest.mark.e2e 装饰器标记"
+        fi
         EXIT_CODE=0  # 没有测试用例不算失败
     else
-        print_error "E2E 测试失败 (退出码: $EXIT_CODE)"
+        print_error "${test_type} 失败 (退出码: $EXIT_CODE)"
     fi
     
     # 覆盖率报告
@@ -204,23 +247,32 @@ generate_report() {
 ci_output() {
     if [ "$MODE" = "ci" ]; then
         echo ""
+        local test_type="E2E 测试"
+        if [ "$CORE_ONLY" = true ]; then
+            test_type="核心测试集合"
+        fi
+        
         if [ $EXIT_CODE -eq 0 ]; then
-            echo "::notice::E2E 测试通过"
+            echo "::notice::${test_type} 通过"
         elif [ $EXIT_CODE -eq 5 ]; then
-            echo "::warning::没有找到 E2E 测试用例"
+            echo "::warning::没有找到匹配的测试用例"
         else
-            echo "::error::E2E 测试失败"
+            echo "::error::${test_type} 失败"
         fi
     fi
 }
 
 # 主流程
 main() {
-    print_header "E2E 测试运行器"
+    if [ "$CORE_ONLY" = true ]; then
+        print_header "核心测试运行器"
+    else
+        print_header "E2E 测试运行器"
+    fi
     print_info "模式: $MODE"
     print_info "覆盖率: $COVERAGE"
     print_info "运行全部: $RUN_ALL"
-    print_info "超时: ${TIMEOUT}s"
+    print_info "仅核心测试: $CORE_ONLY"
     
     check_dependencies
     run_e2e_tests || true

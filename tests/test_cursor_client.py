@@ -557,7 +557,7 @@ class TestBuildCommand:
 
     @pytest.mark.asyncio
     async def test_build_command_with_resume(self):
-        """测试恢复会话的命令构建"""
+        """测试恢复会话的命令构建（通过 config）"""
         config = CursorAgentConfig(resume_thread_id="session-123")
         client = CursorAgentClient(config=config)
 
@@ -574,6 +574,72 @@ class TestBuildCommand:
             call_args = mock_exec.call_args.args
             assert "--resume" in call_args
             assert "session-123" in call_args
+
+    @pytest.mark.asyncio
+    async def test_build_command_with_session_id_param(self):
+        """测试通过 session_id 参数恢复会话的命令构建"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            # 通过 session_id 参数传递会话 ID
+            await client.execute("继续任务", session_id="param-session-456")
+
+            call_args = mock_exec.call_args.args
+            assert "--resume" in call_args
+            assert "param-session-456" in call_args
+
+    @pytest.mark.asyncio
+    async def test_session_id_param_overrides_config(self):
+        """测试 session_id 参数优先于 config.resume_thread_id"""
+        config = CursorAgentConfig(resume_thread_id="config-session-old")
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"OK", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            # session_id 参数应该覆盖 config 中的值
+            await client.execute("继续任务", session_id="param-session-new")
+
+            call_args = mock_exec.call_args.args
+            assert "--resume" in call_args
+            assert "param-session-new" in call_args
+            # 确保不是 config 中的旧值
+            assert "config-session-old" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_execute_with_session_id_no_exception(self):
+        """测试带 session_id 的本地执行不应抛异常"""
+        client = CursorAgentClient()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"Session resumed successfully", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            # 带 session_id 的执行应该正常工作，不抛异常
+            result = await client.execute(
+                "继续之前的任务",
+                session_id="test-session-789"
+            )
+
+        assert result.success is True
+        assert result.output == "Session resumed successfully"
+        assert result.exit_code == 0
 
     @pytest.mark.asyncio
     async def test_build_command_with_api_key(self):

@@ -4,7 +4,7 @@ import asyncio
 import sys
 sys.path.insert(0, '/mnt/e/QianFeng/ai/cursorx')
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 import argparse
 from run import Runner
 
@@ -83,12 +83,20 @@ async def test_run_plan_error():
 
 
 async def test_run_ask_success():
-    """测试问答模式成功返回答案"""
-    with patch('run.subprocess.run') as mock_subprocess:
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '回答内容'
-        mock_subprocess.return_value = mock_result
+    """测试问答模式成功返回答案（使用 AskAgentExecutor）"""
+    from cursor.executor import AgentResult
+
+    mock_agent_result = AgentResult(
+        success=True,
+        output='回答内容',
+        error=None,
+        executor_type='ask',
+    )
+
+    with patch('cursor.executor.AskAgentExecutor') as MockExecutor:
+        mock_instance = MagicMock()
+        mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+        MockExecutor.return_value = mock_instance
 
         result = await runner._run_ask('测试问题', runner._merge_options({}))
 
@@ -101,9 +109,10 @@ async def test_run_ask_success():
 
 async def test_run_ask_timeout():
     """测试问答模式超时处理"""
-    import subprocess as sp
-    with patch('run.subprocess.run') as mock_subprocess:
-        mock_subprocess.side_effect = sp.TimeoutExpired(cmd='agent', timeout=120)
+    with patch('cursor.executor.AskAgentExecutor') as MockExecutor:
+        mock_instance = MagicMock()
+        mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+        MockExecutor.return_value = mock_instance
 
         result = await runner._run_ask('超时问题', runner._merge_options({}))
 
@@ -114,8 +123,10 @@ async def test_run_ask_timeout():
 
 async def test_result_structure():
     """验证返回的 dict 结构正确"""
+    from cursor.executor import AgentResult
+
+    # Plan 成功结构
     with patch('run.subprocess.run') as mock_subprocess:
-        # Plan 成功结构
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = '内容'
@@ -124,11 +135,34 @@ async def test_result_structure():
         plan_result = await runner._run_plan('任务', runner._merge_options({}))
         assert all(k in plan_result for k in ['success', 'goal', 'mode', 'plan', 'dry_run'])
 
-        # Ask 成功结构
+    # Ask 成功结构（使用 AskAgentExecutor）
+    mock_agent_result = AgentResult(
+        success=True,
+        output='回答',
+        error=None,
+        executor_type='ask',
+    )
+
+    with patch('cursor.executor.AskAgentExecutor') as MockExecutor:
+        mock_instance = MagicMock()
+        mock_instance.execute = AsyncMock(return_value=mock_agent_result)
+        MockExecutor.return_value = mock_instance
+
         ask_result = await runner._run_ask('问题', runner._merge_options({}))
         assert all(k in ask_result for k in ['success', 'goal', 'mode', 'answer'])
 
-        print('test_result_structure: PASSED')
+    print('test_result_structure: PASSED')
+
+
+async def test_ask_readonly_guarantee():
+    """测试问答模式的只读保证"""
+    from cursor.executor import AskAgentExecutor
+
+    # 验证 AskAgentExecutor 强制设置 force_write=False
+    executor = AskAgentExecutor()
+    assert executor.config.force_write is False, "AskAgentExecutor 应强制 force_write=False"
+    assert executor.config.mode == "ask", "AskAgentExecutor 应强制 mode=ask"
+    print('test_ask_readonly_guarantee: PASSED')
 
 
 async def main():
@@ -139,6 +173,7 @@ async def main():
     await test_run_ask_success()
     await test_run_ask_timeout()
     await test_result_structure()
+    await test_ask_readonly_guarantee()
     print('\n所有测试通过!')
 
 

@@ -55,7 +55,7 @@ class OrchestratorConfig(BaseModel):
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
     # 自动提交配置
-    enable_auto_commit: bool = True    # 默认启用自动提交
+    enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
     auto_push: bool = False            # 是否自动推送
     commit_on_complete: bool = True    # 仅在完成时提交
     commit_per_iteration: bool = False # 每次迭代都提交

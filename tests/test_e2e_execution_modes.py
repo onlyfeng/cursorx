@@ -2,7 +2,7 @@
 
 测试 cursor/executor.py 中各种执行模式的功能，包括：
 - CLI 模式执行工作流
-- Cloud 模式执行工作流
+- Cloud 模式执行工作流（使用 CursorCloudClient）
 - Auto 模式自动选择和回退
 - ExecutorFactory 工厂创建
 
@@ -17,6 +17,8 @@ import pytest
 
 from cursor.client import CursorAgentConfig, CursorAgentResult
 from cursor.cloud_client import AuthStatus, CloudAuthConfig
+from cursor.cloud.client import CloudAgentResult, CursorCloudClient
+from cursor.cloud.task import CloudTask, CloudTaskOptions, TaskStatus
 from cursor.executor import (
     AgentExecutorFactory,
     AgentResult,
@@ -197,7 +199,15 @@ class TestCLIExecutionMode:
 
 
 class TestCloudExecutionMode:
-    """Cloud 执行模式测试"""
+    """Cloud 执行模式测试
+
+    使用 Mock CursorCloudClient 验证:
+    - 成功执行路径
+    - 失败执行路径
+    - 错误处理
+    - 后台任务提交
+    - 会话恢复
+    """
 
     @pytest.fixture
     def cloud_auth_config(self) -> CloudAuthConfig:
@@ -215,16 +225,64 @@ class TestCloudExecutionMode:
             timeout=600,
         )
 
+    @pytest.fixture
+    def mock_cloud_client(self) -> MagicMock:
+        """创建 Mock CursorCloudClient"""
+        client = MagicMock(spec=CursorCloudClient)
+        client.execute = AsyncMock()
+        client.submit_task = AsyncMock()
+        client.wait_for_completion = AsyncMock()
+        client.resume_from_cloud = AsyncMock()
+        client.is_cloud_request = CursorCloudClient.is_cloud_request
+        return client
+
+    @pytest.fixture
+    def mock_cloud_success_result(self) -> CloudAgentResult:
+        """创建成功的 Cloud 执行结果"""
+        task = CloudTask(
+            task_id="task-12345",
+            status=TaskStatus.COMPLETED,
+            prompt="测试任务",
+            output="任务执行成功",
+        )
+        return CloudAgentResult(
+            success=True,
+            task=task,
+            output="任务执行成功，已完成代码分析。",
+            duration=2.5,
+            files_modified=["src/main.py", "tests/test_main.py"],
+        )
+
+    @pytest.fixture
+    def mock_cloud_failure_result(self) -> CloudAgentResult:
+        """创建失败的 Cloud 执行结果"""
+        task = CloudTask(
+            task_id="task-failed-123",
+            status=TaskStatus.FAILED,
+            prompt="失败任务",
+            error="任务执行失败: 资源不足",
+        )
+        return CloudAgentResult(
+            success=False,
+            task=task,
+            output="",
+            error="任务执行失败: 资源不足",
+        )
+
     @pytest.mark.asyncio
-    async def test_cloud_mode_workflow(
+    async def test_cloud_mode_success_workflow(
         self,
         cloud_auth_config: CloudAuthConfig,
         agent_config: CursorAgentConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
     ) -> None:
-        """测试 Cloud 模式完整工作流"""
+        """测试 Cloud 模式成功执行工作流"""
+        # 使用注入的 mock client
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             agent_config=agent_config,
+            cloud_client=mock_cloud_client,
         )
 
         # Mock 认证成功
@@ -234,6 +292,9 @@ class TestCloudExecutionMode:
             email="test@example.com",
         )
 
+        # 配置 mock client 返回成功结果
+        mock_cloud_client.execute.return_value = mock_cloud_success_result
+
         with patch.object(
             executor._auth_manager,
             "authenticate",
@@ -241,23 +302,69 @@ class TestCloudExecutionMode:
             return_value=mock_auth_status,
         ):
             result = await executor.execute(
-                prompt="分析代码",
+                prompt="分析代码结构",
                 context={"files": ["app.py"]},
+                working_directory="/tmp/workspace",
             )
 
-            # 当前 Cloud API 未实现，应返回失败
+            # 验证 Cloud Client 被正确调用
+            mock_cloud_client.execute.assert_called_once()
+            call_args = mock_cloud_client.execute.call_args
+
+            # 验证执行结果
+            assert result.success is True
             assert result.executor_type == "cloud"
-            # Cloud API 尚未实现，预期返回失败
+            assert "任务执行成功" in result.output
+            assert result.session_id == "task-12345"
+
+    @pytest.mark.asyncio
+    async def test_cloud_mode_failure_workflow(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        agent_config: CursorAgentConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_failure_result: CloudAgentResult,
+    ) -> None:
+        """测试 Cloud 模式失败执行工作流"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            agent_config=agent_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_auth_status = AuthStatus(
+            authenticated=True,
+            user_id="user-123",
+        )
+
+        # 配置 mock client 返回失败结果
+        mock_cloud_client.execute.return_value = mock_cloud_failure_result
+
+        with patch.object(
+            executor._auth_manager,
+            "authenticate",
+            new_callable=AsyncMock,
+            return_value=mock_auth_status,
+        ):
+            result = await executor.execute(prompt="失败的任务")
+
+            # 验证失败处理
             assert result.success is False
-            assert "Cloud API 尚未实现" in (result.error or "")
+            assert result.executor_type == "cloud"
+            assert "资源不足" in (result.error or "")
 
     @pytest.mark.asyncio
     async def test_cloud_authentication(
         self,
         cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
     ) -> None:
         """测试 Cloud 认证流程"""
-        executor = CloudAgentExecutor(auth_config=cloud_auth_config)
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
 
         # 测试认证成功
         mock_auth_status = AuthStatus(
@@ -266,18 +373,23 @@ class TestCloudExecutionMode:
             email="test@example.com",
         )
 
+        mock_cloud_client.execute.return_value = mock_cloud_success_result
+
         with patch.object(
             executor._auth_manager,
             "authenticate",
             new_callable=AsyncMock,
             return_value=mock_auth_status,
         ):
-            # 执行会触发认证
             result = await executor.execute(prompt="测试认证")
             assert result.executor_type == "cloud"
+            assert result.success is True
 
         # 测试认证失败
-        executor2 = CloudAgentExecutor(auth_config=cloud_auth_config)
+        executor2 = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
         mock_auth_failed = AuthStatus(
             authenticated=False,
             error="Invalid API key",
@@ -294,19 +406,121 @@ class TestCloudExecutionMode:
             assert "认证失败" in (result.error or "")
 
     @pytest.mark.asyncio
-    async def test_cloud_task_submission(
+    async def test_cloud_background_task_submission(
         self,
         cloud_auth_config: CloudAuthConfig,
         agent_config: CursorAgentConfig,
+        mock_cloud_client: MagicMock,
     ) -> None:
-        """测试 Cloud 任务提交"""
+        """测试 Cloud 后台任务提交"""
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             agent_config=agent_config,
+            cloud_client=mock_cloud_client,
         )
 
-        # Mock 认证和任务执行
         mock_auth_status = AuthStatus(
+            authenticated=True,
+            user_id="user-123",
+        )
+
+        # 创建后台提交成功的结果
+        background_task = CloudTask(
+            task_id="bg-task-001",
+            status=TaskStatus.QUEUED,
+            prompt="后台任务",
+        )
+        mock_submit_result = CloudAgentResult(
+            success=True,
+            task=background_task,
+            output="任务已提交",
+        )
+
+        mock_cloud_client.submit_task.return_value = mock_submit_result
+
+        with patch.object(
+            executor._auth_manager,
+            "authenticate",
+            new_callable=AsyncMock,
+            return_value=mock_auth_status,
+        ):
+            result = await executor.submit_background_task(
+                prompt="执行长时间任务",
+                options=CloudTaskOptions(timeout=600),
+            )
+
+            # 验证后台任务提交
+            mock_cloud_client.submit_task.assert_called_once()
+            assert result.success is True
+            assert result.session_id == "bg-task-001"
+
+    @pytest.mark.asyncio
+    async def test_cloud_wait_for_task(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
+    ) -> None:
+        """测试等待后台任务完成"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_cloud_client.wait_for_completion.return_value = mock_cloud_success_result
+
+        result = await executor.wait_for_task(
+            task_id="task-12345",
+            timeout=300,
+        )
+
+        mock_cloud_client.wait_for_completion.assert_called_once_with(
+            task_id="task-12345",
+            timeout=300,
+        )
+        assert result.success is True
+        assert result.session_id == "task-12345"
+
+    @pytest.mark.asyncio
+    async def test_cloud_session_resume(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
+    ) -> None:
+        """测试云端会话恢复"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_cloud_client.resume_from_cloud.return_value = mock_cloud_success_result
+
+        result = await executor.resume_session(
+            session_id="session-abc123",
+            prompt="继续之前的任务",
+        )
+
+        mock_cloud_client.resume_from_cloud.assert_called_once_with(
+            task_id="session-abc123",
+            local=True,
+            prompt="继续之前的任务",
+        )
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_cloud_availability_check_success(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+    ) -> None:
+        """测试 Cloud 可用性检查 - 成功"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_auth_success = AuthStatus(
             authenticated=True,
             user_id="user-123",
         )
@@ -315,28 +529,24 @@ class TestCloudExecutionMode:
             executor._auth_manager,
             "authenticate",
             new_callable=AsyncMock,
-            return_value=mock_auth_status,
+            return_value=mock_auth_success,
         ):
-            # 测试任务提交（当前会返回未实现）
-            result = await executor.execute(
-                prompt="执行云端任务",
-                context={"task_id": "task-001"},
-                timeout=120,
-            )
-
-            assert result.executor_type == "cloud"
-            assert result.raw_result is not None
-            assert result.raw_result.get("status") == "not_implemented"
+            result = await executor.check_available()
+            # 认证成功，Cloud 可用
+            assert result is True
 
     @pytest.mark.asyncio
-    async def test_cloud_availability_check(
+    async def test_cloud_availability_check_failure(
         self,
         cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
     ) -> None:
-        """测试 Cloud 可用性检查"""
-        executor = CloudAgentExecutor(auth_config=cloud_auth_config)
+        """测试 Cloud 可用性检查 - 失败"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
 
-        # Mock 认证失败（Cloud 不可用）
         mock_auth_failed = AuthStatus(
             authenticated=False,
             error="No API key",
@@ -349,21 +559,27 @@ class TestCloudExecutionMode:
             return_value=mock_auth_failed,
         ):
             result = await executor.check_available()
-            # 当前实现 Cloud API 总是返回不可用
             assert result is False
 
     @pytest.mark.asyncio
     async def test_cloud_timeout_handling(
         self,
         cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
     ) -> None:
         """测试 Cloud 超时处理"""
-        executor = CloudAgentExecutor(auth_config=cloud_auth_config)
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
 
         mock_auth_status = AuthStatus(
             authenticated=True,
             user_id="user-123",
         )
+
+        # 模拟 Cloud Client 执行超时
+        mock_cloud_client.execute.side_effect = asyncio.TimeoutError()
 
         with patch.object(
             executor._auth_manager,
@@ -371,19 +587,66 @@ class TestCloudExecutionMode:
             new_callable=AsyncMock,
             return_value=mock_auth_status,
         ):
-            with patch.object(
-                executor,
-                "_execute_via_api",
-                new_callable=AsyncMock,
-                side_effect=asyncio.TimeoutError(),
-            ):
-                result = await executor.execute(
-                    prompt="长时间任务",
-                    timeout=1,
-                )
+            result = await executor.execute(
+                prompt="长时间任务",
+                timeout=1,
+            )
 
-                assert result.success is False
-                assert "超时" in (result.error or "")
+            assert result.success is False
+            assert "超时" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_cloud_error_handling(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+    ) -> None:
+        """测试 Cloud 错误处理"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_auth_status = AuthStatus(
+            authenticated=True,
+            user_id="user-123",
+        )
+
+        # 模拟 Cloud Client 抛出异常
+        mock_cloud_client.execute.side_effect = RuntimeError("网络连接失败")
+
+        with patch.object(
+            executor._auth_manager,
+            "authenticate",
+            new_callable=AsyncMock,
+            return_value=mock_auth_status,
+        ):
+            result = await executor.execute(prompt="测试异常")
+
+            assert result.success is False
+            assert "网络连接失败" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_cloud_reset_availability_cache(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+    ) -> None:
+        """测试重置可用性缓存"""
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        # 设置缓存
+        executor._available = True
+        executor._auth_status = AuthStatus(authenticated=True)
+
+        # 重置缓存
+        executor.reset_availability_cache()
+
+        assert executor._available is None
+        assert executor._auth_status is None
 
 
 # ==================== TestAutoExecutionMode ====================
@@ -573,6 +836,104 @@ class TestAutoExecutionMode:
                     # 应该回退到 CLI
                     assert result.success is True
                     assert result.executor_type == "cli"
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_cloud_error_fallback_to_cli(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 Cloud 执行异常后回退到 CLI（使用 mock CursorCloudClient）"""
+        # 创建 mock cloud client
+        mock_cloud_client = MagicMock(spec=CursorCloudClient)
+        mock_cloud_client.execute = AsyncMock()
+
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 注入 mock cloud client 到 cloud executor
+        executor._cloud_executor._cloud_client = mock_cloud_client
+
+        # Mock Cloud 可用
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            # Cloud 执行返回网络错误
+            cloud_error_result = CloudAgentResult(
+                success=False,
+                error="网络连接失败",
+            )
+            mock_cloud_client.execute.return_value = cloud_error_result
+
+            cli_success_result = AgentResult(
+                success=True,
+                output="CLI 成功执行",
+                executor_type="cli",
+            )
+
+            with patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ):
+                result = await executor.execute(prompt="测试网络错误回退")
+
+                # 应该回退到 CLI
+                assert result.success is True
+                assert result.executor_type == "cli"
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_cloud_timeout_fallback(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 Cloud 超时后回退到 CLI"""
+        mock_cloud_client = MagicMock(spec=CursorCloudClient)
+        mock_cloud_client.execute = AsyncMock()
+
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        executor._cloud_executor._cloud_client = mock_cloud_client
+
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            # Cloud 执行返回超时错误
+            cloud_timeout_result = CloudAgentResult(
+                success=False,
+                error="执行超时",
+            )
+            mock_cloud_client.execute.return_value = cloud_timeout_result
+
+            cli_success_result = AgentResult(
+                success=True,
+                output="CLI 执行完成",
+                executor_type="cli",
+            )
+
+            with patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ):
+                result = await executor.execute(prompt="测试超时回退")
+
+                assert result.success is True
+                assert result.executor_type == "cli"
 
     @pytest.mark.asyncio
     async def test_auto_mode_availability(

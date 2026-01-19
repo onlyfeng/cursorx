@@ -50,6 +50,31 @@ agent --list-models
 | `-f, --force` | 强制允许修改文件 |
 | `-h, --help` | 显示帮助 |
 
+### 运行模式详解（--mode）
+
+| 模式 | 描述 | 只读保证 | 适用场景 |
+|------|------|----------|----------|
+| `agent` | 完整代理模式（默认） | 否，可修改文件 | 代码编写、重构、功能实现 |
+| `plan` | 规划模式 | **是，强制只读** | 任务分析、代码审查、架构规划 |
+| `ask` | 问答模式 | **是，强制只读** | 代码解释、问题咨询、知识查询 |
+
+**只读保证机制**:
+- `plan` 和 `ask` 模式内部使用 `--mode plan` / `--mode ask` 调用 Cursor CLI
+- 内部强制设置 `force_write=False`，即使显式指定 `--force` 也不会修改文件
+- 通过 `PlanAgentExecutor` 和 `AskAgentExecutor` 类实现，确保只读语义
+- 适合用于 Planner Agent 和咨询场景，确保不会意外修改代码
+
+```bash
+# 规划模式：只分析不执行
+agent -p "分析这个项目的架构" --mode plan
+
+# 问答模式：仅回答问题
+agent -p "解释这段代码的作用" --mode ask
+
+# 完整代理模式：可修改文件（需配合 --force）
+agent -p --force "重构这个函数" --mode agent
+```
+
 ### 命令
 
 | 命令 | 描述 |
@@ -396,6 +421,30 @@ agent -p "prompt" --output-format stream-json --stream-partial-output
 
 Cloud Agent 提供云端 API 访问能力，支持程序化调用 Cursor Agent。
 
+### Cloud Relay（& 前缀）
+
+使用 `&` 前缀可以将任务提交到云端后台执行，无需等待完成即可继续其他工作。
+
+```bash
+# 使用 & 前缀提交云端任务
+agent -p "& 分析整个代码库的架构"
+
+# 等效于使用 -b (background) 模式
+agent -b -p "分析整个代码库的架构"
+
+# 查看后台任务状态
+agent ls
+
+# 恢复/查看后台任务结果
+agent resume <session_id>
+```
+
+**Cloud Relay 特点**:
+- 任务在云端独立运行，本地可断开连接
+- 自动轮询任务状态并获取结果
+- 支持会话恢复（`--resume`）继续之前的任务
+- 适合长时间运行的分析或重构任务
+
 ### 基本使用
 
 ```python
@@ -447,6 +496,46 @@ results = client.batch_process(
     parallel=True
 )
 ```
+
+### Executor 抽象层
+
+`cursor.executor` 模块提供统一的执行器接口，支持多种执行模式自动切换。
+
+```python
+from cursor.executor import AgentExecutorFactory, ExecutionMode
+
+# 创建执行器（自动选择 Cloud 或 CLI）
+executor = AgentExecutorFactory.create(mode=ExecutionMode.AUTO)
+
+# 使用规划模式执行器（只读保证）
+plan_executor = AgentExecutorFactory.create(mode=ExecutionMode.PLAN)
+result = await plan_executor.execute(prompt="分析代码架构")
+
+# 使用问答模式执行器（只读保证）
+ask_executor = AgentExecutorFactory.create(mode=ExecutionMode.ASK)
+result = await ask_executor.execute(prompt="解释这段代码")
+
+# Cloud 执行器（后台任务）
+cloud_executor = AgentExecutorFactory.create(mode=ExecutionMode.CLOUD)
+result = await cloud_executor.execute(prompt="& 长时间分析任务")
+
+# 提交后台任务（不等待完成）
+result = await cloud_executor.submit_background_task(prompt="分析任务")
+task_id = result.session_id
+
+# 等待后台任务完成
+result = await cloud_executor.wait_for_task(task_id, timeout=600)
+```
+
+**执行模式对比**:
+
+| 模式 | 描述 | 只读 | 使用场景 |
+|------|------|------|----------|
+| `CLI` | 本地 CLI 执行 | 否 | 本地开发、完整代理功能 |
+| `CLOUD` | Cloud API 执行 | 否 | 后台任务、长时间运行 |
+| `AUTO` | 自动选择（Cloud 优先，回退 CLI） | 否 | 推荐默认选择 |
+| `PLAN` | 规划模式 | **是** | 任务分析、代码审查 |
+| `ASK` | 问答模式 | **是** | 代码解释、咨询 |
 
 ### 错误处理
 
@@ -520,9 +609,48 @@ python run.py --mode iterate --auto-commit --auto-push "完成功能"
 | `--orchestrator` | 编排器类型: `mp`/`basic` | `mp` |
 | `--no-mp` | 禁用多进程编排器 | False |
 | `--workers` | Worker 池大小 | 3 |
-| `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 5 |
-| `--auto-commit` | 迭代完成后自动提交 | False |
-| `--auto-push` | 自动推送到远程仓库 | False |
+| `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 10 |
+| `--auto-commit` | 启用自动提交（**必须显式指定才会提交**） | **False** |
+| `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | **False** |
+| `--commit-per-iteration` | 每次迭代都提交（默认仅在全部完成时提交，`run.py` 和 `scripts/run_iterate.py` 均支持） | False |
+
+### 自动提交配置
+
+**默认行为**: `--auto-commit` 和 `--auto-push` **默认禁用（False）**，必须显式指定 `--auto-commit` 才会启用提交功能。
+
+```bash
+# 默认：不自动提交（安全模式）
+python run.py --mode iterate "任务描述"
+python scripts/run_iterate.py "任务描述"
+
+# 显式启用自动提交（必须指定 --auto-commit）
+python run.py --mode iterate --auto-commit "完成功能"
+python scripts/run_iterate.py --auto-commit "完成功能"
+
+# 启用自动提交并推送到远程（需同时指定 --auto-commit 和 --auto-push）
+python run.py --mode iterate --auto-commit --auto-push "完成功能"
+python scripts/run_iterate.py --auto-commit --auto-push "完成功能"
+
+# 每次迭代都提交（而非仅在全部完成时提交）
+# run.py 和 scripts/run_iterate.py 均支持 --commit-per-iteration
+python run.py --mode iterate --auto-commit --commit-per-iteration "分步完成"
+python scripts/run_iterate.py --auto-commit --commit-per-iteration "分步完成"
+```
+
+**重要**: 不指定 `--auto-commit` 时，即使任务成功完成也不会创建 Git 提交。
+
+**通过自然语言控制提交**:
+
+```bash
+# 在任务描述中可以使用关键词控制
+python run.py "启用提交，完成功能优化"     # 检测到 "启用提交" 自动开启
+python run.py "禁用提交，仅分析代码"       # 检测到 "禁用提交" 显式关闭
+
+# 支持的开启关键词: 启用提交、开启提交、自动提交、enable-commit
+# 支持的关闭关键词: 禁用提交、关闭提交、不提交、跳过提交、no-commit
+```
+
+**提交去重策略**: 如果编排器（MP 或 basic）已完成提交，SelfIterator 不会重复提交
 
 ## Agent 角色定义
 
