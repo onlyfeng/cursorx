@@ -24,10 +24,13 @@ from core.knowledge import (
 )
 from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState
 from cursor.client import CursorAgentConfig
-from process.manager import AgentProcessManager
+from process.manager import AgentProcessManager, HealthCheckResult
 from process.message_queue import ProcessMessage, ProcessMessageType
 from tasks.queue import TaskQueue
 from tasks.task import Task, TaskStatus
+
+# 用于执行阶段的健康检查间隔（秒）
+_EXECUTION_HEALTH_CHECK_INTERVAL = 10.0
 
 class MultiProcessOrchestratorConfig(BaseModel):
     """多进程编排器配置"""
@@ -54,7 +57,7 @@ class MultiProcessOrchestratorConfig(BaseModel):
     stream_log_raw_dir: str = "logs/stream_json/raw/"
 
     # 自动提交配置（与 OrchestratorConfig 对齐）
-    enable_auto_commit: bool = True    # 默认启用自动提交
+    enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
     auto_push: bool = False            # 是否自动推送
     commit_on_complete: bool = True    # 仅在完成时提交
     commit_per_iteration: bool = False # 每次迭代都提交
@@ -76,6 +79,18 @@ class MultiProcessOrchestratorConfig(BaseModel):
     knowledge_max_chars_per_doc: int = MAX_CHARS_PER_DOC      # 注入时单文档最大字符数
     knowledge_max_total_chars: int = MAX_TOTAL_KNOWLEDGE_CHARS  # 注入时总字符上限
     knowledge_trigger_keywords: list[str] = CURSOR_KEYWORDS   # 触发知识库注入的关键词列表
+
+    # 健康检查配置
+    health_check_interval: float = 30.0       # 健康检查间隔（秒）
+    health_check_timeout: float = 5.0         # 健康检查超时（秒）
+    max_unhealthy_workers: int = 0            # 允许的最大不健康 Worker 数量，超过则降级
+    requeue_on_worker_death: bool = True      # Worker 死亡时是否重新入队任务（False 则标记失败）
+    fallback_on_critical_failure: bool = True # 关键进程（planner/reviewer）不健康时是否降级终止
+
+    # 卡死恢复配置
+    stall_recovery_interval: float = 30.0     # 卡死检测/恢复间隔（秒）
+    max_recovery_attempts: int = 3            # 单次迭代最大恢复尝试次数
+    max_no_progress_time: float = 120.0       # 最大无进展时间（秒），超过触发降级
 
 
 class MultiProcessOrchestrator:
@@ -134,18 +149,475 @@ class MultiProcessOrchestrator:
         self._knowledge_storage = None
         self._knowledge_initialized = False
 
+        # 健康检查状态
+        self._last_health_check_time: float = 0.0
+        self._unhealthy_worker_count: int = 0
+        self._degraded: bool = False  # 是否已降级
+        self._degradation_reason: Optional[str] = None
+
+        # 心跳收集机制（方案 A：_message_loop 作为唯一消费者）
+        # {agent_id: last_heartbeat_timestamp}
+        self._heartbeat_responses: dict[str, float] = {}
+        self._heartbeat_request_id: Optional[str] = None  # 当前心跳请求的 ID
+        self._heartbeat_pending: set[str] = set()  # 等待心跳响应的 agent_id
+
+        # 消息处理统计（用于验证消息不丢失）
+        self._message_stats: dict[str, int] = {
+            "total_received": 0,
+            "plan_result": 0,
+            "task_result": 0,
+            "heartbeat": 0,
+            "status_response": 0,
+            "task_progress": 0,
+            "other": 0,
+        }
+
+        # 卡死恢复状态
+        self._recovery_attempts: dict[int, int] = {}  # {iteration_id: attempt_count}
+        self._last_progress_time: float = 0.0         # 最后有进展的时间戳
+        self._last_recovery_time: float = 0.0         # 最后恢复尝试的时间戳
+
     def _should_continue_iteration(self) -> bool:
         """判断是否应该继续迭代
 
         Returns:
             True 表示继续迭代，False 表示停止
         """
+        # 已降级，停止迭代
+        if self._degraded:
+            return False
+
         # 无限迭代模式（max_iterations == -1）
         if self.config.max_iterations == -1:
             return True
 
         # 正常模式：检查是否达到最大迭代次数
         return self.state.current_iteration < self.state.max_iterations
+
+    def _should_run_health_check(self) -> bool:
+        """判断是否应该执行健康检查
+
+        Returns:
+            True 表示应该执行健康检查
+        """
+        import time
+        now = time.time()
+        if now - self._last_health_check_time >= self.config.health_check_interval:
+            return True
+        return False
+
+    async def _perform_health_check(self) -> HealthCheckResult:
+        """执行健康检查（方案 A：通过 _message_loop 收集心跳）
+
+        检测所有 Agent 进程的健康状态，处理不健康的进程。
+
+        实现机制：
+        1. 广播 HEARTBEAT 消息给所有 Agent
+        2. 在 _message_loop 的 _handle_message 中收集心跳响应
+        3. 等待超时后，检查哪些 Agent 未响应
+
+        这确保了 _message_loop 是唯一的消费者，避免与 health_check 竞争消息。
+
+        Returns:
+            健康检查结果
+        """
+        import time
+        import uuid
+
+        self._last_health_check_time = time.time()
+
+        # 初始化心跳收集状态
+        self._heartbeat_request_id = uuid.uuid4().hex
+        self._heartbeat_pending = set(self._get_all_agent_ids())
+        heartbeat_start_time = time.time()
+
+        # 记录健康检查开始（用于验证消息不丢失）
+        logger.debug(
+            f"健康检查开始: request_id={self._heartbeat_request_id}, "
+            f"pending_agents={len(self._heartbeat_pending)}, "
+            f"message_stats={self._message_stats}"
+        )
+
+        # 广播心跳请求
+        heartbeat_msg = ProcessMessage(
+            type=ProcessMessageType.HEARTBEAT,
+            sender="orchestrator",
+            payload={"request_id": self._heartbeat_request_id},
+        )
+        self.process_manager.broadcast(heartbeat_msg)
+
+        # 等待心跳响应（通过 _message_loop 收集）
+        deadline = time.time() + self.config.health_check_timeout
+        while self._heartbeat_pending and time.time() < deadline:
+            await asyncio.sleep(0.1)
+
+        # 构建健康检查结果
+        result = HealthCheckResult()
+
+        for agent_id in self._get_all_agent_ids():
+            last_heartbeat = self._heartbeat_responses.get(agent_id, 0)
+            # 检查心跳时间是否在本次请求之后
+            is_responsive = last_heartbeat >= heartbeat_start_time
+
+            if is_responsive:
+                result.healthy.append(agent_id)
+                result.details[agent_id] = {
+                    "healthy": True,
+                    "reason": "heartbeat_ok",
+                    "response_time": last_heartbeat - heartbeat_start_time,
+                }
+            else:
+                result.unhealthy.append(agent_id)
+                # 检查进程是否还存活
+                is_alive = self.process_manager.is_alive(agent_id)
+                reason = "no_heartbeat_response" if is_alive else "process_dead"
+                result.details[agent_id] = {
+                    "healthy": False,
+                    "reason": reason,
+                    "is_alive": is_alive,
+                }
+                logger.warning(f"健康检查失败: {agent_id} ({reason})")
+
+        result.all_healthy = len(result.unhealthy) == 0
+
+        # 清理心跳状态
+        self._heartbeat_request_id = None
+        self._heartbeat_pending.clear()
+
+        # 记录健康检查完成（用于验证消息不丢失）
+        logger.debug(
+            f"健康检查完成: healthy={len(result.healthy)}, unhealthy={len(result.unhealthy)}, "
+            f"message_stats={self._message_stats}"
+        )
+
+        if result.all_healthy:
+            logger.debug("健康检查通过: 所有进程正常")
+            self._unhealthy_worker_count = 0
+            return result
+
+        # 记录不健康进程
+        for agent_id in result.unhealthy:
+            detail = result.details.get(agent_id, {})
+            logger.warning(
+                f"进程不健康: {agent_id} (原因: {detail.get('reason', 'unknown')})"
+            )
+
+        # 检查关键进程（planner/reviewer）
+        if self.config.fallback_on_critical_failure:
+            if self.planner_id in result.unhealthy:
+                self._trigger_degradation("Planner 进程不健康")
+                return result
+            if self.reviewer_id in result.unhealthy:
+                self._trigger_degradation("Reviewer 进程不健康")
+                return result
+
+        # 统计不健康的 Worker 数量
+        unhealthy_workers = result.get_unhealthy_workers()
+        self._unhealthy_worker_count = len(unhealthy_workers)
+
+        # 检查是否超过允许的不健康 Worker 数量
+        if self._unhealthy_worker_count > self.config.max_unhealthy_workers:
+            self._trigger_degradation(
+                f"不健康 Worker 数量超过阈值: {self._unhealthy_worker_count} > {self.config.max_unhealthy_workers}"
+            )
+            return result
+
+        # 处理不健康 Worker 的在途任务
+        await self._handle_unhealthy_workers(unhealthy_workers)
+
+        return result
+
+    def _get_all_agent_ids(self) -> list[str]:
+        """获取所有 Agent ID 列表"""
+        agent_ids = []
+        if self.planner_id:
+            agent_ids.append(self.planner_id)
+        agent_ids.extend(self.worker_ids)
+        if self.reviewer_id:
+            agent_ids.append(self.reviewer_id)
+        return agent_ids
+
+    def _trigger_degradation(self, reason: str) -> None:
+        """触发降级
+
+        标记系统进入降级状态，后续迭代将终止。
+
+        Args:
+            reason: 降级原因
+        """
+        if self._degraded:
+            return  # 已经降级，忽略
+
+        self._degraded = True
+        self._degradation_reason = reason
+        logger.error(f"系统降级: {reason}")
+        logger.warning("将在当前迭代结束后终止（或回退到 basic 编排器）")
+
+    async def _handle_unhealthy_workers(self, unhealthy_worker_ids: list[str]) -> None:
+        """处理不健康的 Worker 进程
+
+        根据配置决定将在途任务重新入队或标记为失败。
+
+        Args:
+            unhealthy_worker_ids: 不健康的 Worker ID 列表
+        """
+        if not unhealthy_worker_ids:
+            return
+
+        for worker_id in unhealthy_worker_ids:
+            # 获取该 Worker 的在途任务
+            task_ids = self.process_manager.get_tasks_by_agent(worker_id)
+
+            if not task_ids:
+                continue
+
+            logger.warning(f"Worker {worker_id} 不健康，处理 {len(task_ids)} 个在途任务")
+
+            for task_id in task_ids:
+                # 取消跟踪
+                assignment_info = self.process_manager.untrack_task(task_id)
+
+                # 获取任务
+                task = self.task_queue.get_task(task_id)
+                if not task:
+                    logger.warning(f"任务 {task_id} 未在队列中找到")
+                    continue
+
+                # 递增重试计数
+                task.retry_count += 1
+
+                if self.config.requeue_on_worker_death and task.can_retry():
+                    # 重新入队到优先级队列
+                    logger.info(
+                        f"任务 {task_id} 重新入队 (Worker {worker_id} 死亡) "
+                        f"(重试 {task.retry_count}/{task.max_retries})"
+                    )
+                    await self.task_queue.requeue(task, reason=f"Worker {worker_id} 死亡")
+                else:
+                    # 超过重试上限或配置不允许重试，标记失败
+                    if task.retry_count > task.max_retries:
+                        fail_reason = f"Worker {worker_id} 进程不健康，已达最大重试次数 ({task.max_retries})"
+                    else:
+                        fail_reason = f"Worker {worker_id} 进程不健康，任务丢失（配置禁止重试）"
+                    logger.info(f"任务 {task_id} 标记为失败: {fail_reason}")
+                    task.fail(fail_reason)
+                    self.task_queue.update_task(task)
+
+                    # 更新统计
+                    iteration = self.state.get_current_iteration()
+                    if iteration:
+                        iteration.tasks_failed += 1
+                    self.state.total_tasks_failed += 1
+
+            # 从可用 Worker 列表中移除（如果有的话）
+            if worker_id in self.worker_ids:
+                logger.warning(f"从 Worker 池中移除不健康进程: {worker_id}")
+                # 不移除，保留在列表中但后续分配时会跳过不健康的
+
+    async def _recover_stalled_iteration(
+        self,
+        iteration_id: int,
+        reason: str,
+        active_futures: dict[str, "asyncio.Task"],
+        worker_task_mapping: dict[str, str],
+    ) -> dict[str, Any]:
+        """恢复卡死的迭代
+
+        扫描迭代中的任务，找出状态不一致的任务并进行恢复：
+        1. PENDING/QUEUED 但不在队列中的任务 → 重新入队
+        2. ASSIGNED/IN_PROGRESS 但无 in-flight 记录的任务 → 检查 worker 状态后决定
+        3. 超过最大恢复次数或无进展时间 → 触发降级
+
+        Args:
+            iteration_id: 迭代 ID
+            reason: 触发恢复的原因
+            active_futures: 当前活跃的 asyncio.Task 字典 {worker_id: asyncio.Task}
+            worker_task_mapping: worker 到任务的映射 {worker_id: task_id}
+
+        Returns:
+            恢复结果:
+            {
+                "recovered": int,        # 恢复的任务数
+                "failed": int,           # 标记失败的任务数
+                "requeued": int,         # 重新入队的任务数
+                "degraded": bool,        # 是否触发降级
+                "reason": str,           # 恢复或降级原因
+            }
+        """
+        import time
+
+        result = {
+            "recovered": 0,
+            "failed": 0,
+            "requeued": 0,
+            "degraded": False,
+            "reason": reason,
+        }
+
+        # 检查恢复次数限制
+        self._recovery_attempts.setdefault(iteration_id, 0)
+        self._recovery_attempts[iteration_id] += 1
+
+        if self._recovery_attempts[iteration_id] > self.config.max_recovery_attempts:
+            self._trigger_degradation(
+                f"迭代 {iteration_id} 恢复尝试超过上限 ({self.config.max_recovery_attempts})"
+            )
+            result["degraded"] = True
+            result["reason"] = "max_recovery_attempts_exceeded"
+            return result
+
+        # 检查无进展时间
+        now = time.time()
+        if self._last_progress_time > 0:
+            no_progress_duration = now - self._last_progress_time
+            if no_progress_duration > self.config.max_no_progress_time:
+                self._trigger_degradation(
+                    f"迭代 {iteration_id} 无进展时间超过 {self.config.max_no_progress_time}s "
+                    f"(已 {no_progress_duration:.1f}s)"
+                )
+                result["degraded"] = True
+                result["reason"] = "max_no_progress_time_exceeded"
+                return result
+
+        self._last_recovery_time = now
+
+        logger.warning(
+            f"[恢复] 迭代 {iteration_id} 开始恢复 (原因: {reason}, "
+            f"尝试 {self._recovery_attempts[iteration_id]}/{self.config.max_recovery_attempts})"
+        )
+
+        # 构建活跃 future 对应的任务 ID 集合
+        active_future_task_ids = set(worker_task_mapping.get(wid, "") for wid in active_futures.keys())
+        active_future_task_ids.discard("")  # 移除空字符串
+
+        # 获取 in-flight 任务 ID 集合
+        in_flight_tasks = self.process_manager.get_all_in_flight_tasks()
+        in_flight_task_ids = set(in_flight_tasks.keys())
+
+        # 调用 TaskQueue.reconcile_iteration 检测不一致
+        issues = await self.task_queue.reconcile_iteration(
+            iteration_id=iteration_id,
+            in_flight_task_ids=in_flight_task_ids,
+            active_future_task_ids=active_future_task_ids,
+        )
+
+        # 处理 orphaned_pending: 重新入队
+        for task in issues["orphaned_pending"]:
+            try:
+                await self.task_queue.enqueue(task)
+                result["requeued"] += 1
+                logger.info(f"[恢复] orphaned_pending 任务 {task.id} 已重新入队")
+            except Exception as e:
+                logger.error(f"[恢复] 任务 {task.id} 重新入队失败: {e}")
+                task.fail(f"恢复失败: {e}")
+                self.task_queue.update_task(task)
+                result["failed"] += 1
+
+        # 处理 orphaned_assigned: 检查 worker 状态
+        for task in issues["orphaned_assigned"]:
+            worker_id = task.assigned_to
+            if worker_id and self.process_manager.is_alive(worker_id):
+                # Worker 存活，可能是 in-flight 记录丢失，重新入队
+                task.retry_count += 1
+                if task.can_retry():
+                    await self.task_queue.requeue(task, reason=f"orphaned_assigned (worker {worker_id} alive)")
+                    result["requeued"] += 1
+                    logger.info(f"[恢复] orphaned_assigned 任务 {task.id} 重新入队 (worker 存活)")
+                else:
+                    task.fail(f"orphaned_assigned 且超过重试上限 (worker {worker_id} alive)")
+                    self.task_queue.update_task(task)
+                    result["failed"] += 1
+                    logger.warning(f"[恢复] orphaned_assigned 任务 {task.id} 标记失败 (超过重试上限)")
+            else:
+                # Worker 已死亡
+                task.retry_count += 1
+                if self.config.requeue_on_worker_death and task.can_retry():
+                    await self.task_queue.requeue(task, reason=f"worker {worker_id} dead")
+                    result["requeued"] += 1
+                    logger.info(f"[恢复] orphaned_assigned 任务 {task.id} 重新入队 (worker 死亡)")
+                else:
+                    task.fail(f"Worker {worker_id} 死亡，任务丢失")
+                    self.task_queue.update_task(task)
+                    result["failed"] += 1
+                    logger.warning(f"[恢复] orphaned_assigned 任务 {task.id} 标记失败 (worker 死亡)")
+
+        # 处理 stale_in_progress: 检查 worker 状态后决定
+        for task in issues["stale_in_progress"]:
+            worker_id = task.assigned_to
+            if worker_id and self.process_manager.is_alive(worker_id):
+                # Worker 存活但无 active future，可能是异步任务丢失
+                task.retry_count += 1
+                if task.can_retry():
+                    await self.task_queue.requeue(task, reason=f"stale_in_progress (worker {worker_id} alive, no future)")
+                    result["requeued"] += 1
+                    logger.info(f"[恢复] stale_in_progress 任务 {task.id} 重新入队 (worker 存活)")
+                else:
+                    task.fail(f"stale_in_progress 且超过重试上限")
+                    self.task_queue.update_task(task)
+                    result["failed"] += 1
+                    logger.warning(f"[恢复] stale_in_progress 任务 {task.id} 标记失败 (超过重试上限)")
+            else:
+                # Worker 已死亡
+                task.retry_count += 1
+                if self.config.requeue_on_worker_death and task.can_retry():
+                    await self.task_queue.requeue(task, reason=f"worker {worker_id} dead (stale)")
+                    result["requeued"] += 1
+                    logger.info(f"[恢复] stale_in_progress 任务 {task.id} 重新入队 (worker 死亡)")
+                else:
+                    task.fail(f"Worker {worker_id} 死亡，任务执行丢失")
+                    self.task_queue.update_task(task)
+                    result["failed"] += 1
+                    logger.warning(f"[恢复] stale_in_progress 任务 {task.id} 标记失败 (worker 死亡)")
+
+        result["recovered"] = result["requeued"] + result["failed"]
+
+        logger.info(
+            f"[恢复] 迭代 {iteration_id} 恢复完成: "
+            f"requeued={result['requeued']}, failed={result['failed']}"
+        )
+
+        return result
+
+    def _should_attempt_recovery(self, iteration_id: int) -> bool:
+        """判断是否应该尝试恢复
+
+        基于恢复间隔和恢复次数限制判断。
+
+        Args:
+            iteration_id: 迭代 ID
+
+        Returns:
+            是否应该尝试恢复
+        """
+        import time
+
+        # 检查恢复间隔
+        now = time.time()
+        if now - self._last_recovery_time < self.config.stall_recovery_interval:
+            return False
+
+        # 检查恢复次数
+        attempts = self._recovery_attempts.get(iteration_id, 0)
+        if attempts >= self.config.max_recovery_attempts:
+            return False
+
+        return True
+
+    def is_degraded(self) -> bool:
+        """检查系统是否已降级
+
+        Returns:
+            True 表示已降级
+        """
+        return self._degraded
+
+    def get_degradation_reason(self) -> Optional[str]:
+        """获取降级原因
+
+        Returns:
+            降级原因，如果未降级则返回 None
+        """
+        return self._degradation_reason
 
     async def _init_knowledge_storage(self) -> bool:
         """延迟初始化知识库存储
@@ -422,7 +894,17 @@ class MultiProcessOrchestrator:
 
             # 4. 执行主循环（max_iterations == -1 表示无限迭代）
             try:
+                import time
+                self._last_health_check_time = time.time()  # 初始化健康检查时间
+
                 while self._should_continue_iteration():
+                    # 周期性健康检查
+                    if self._should_run_health_check():
+                        health_result = await self._perform_health_check()
+                        if self._degraded:
+                            logger.error(f"系统降级，终止迭代: {self._degradation_reason}")
+                            break
+
                     # 开始新迭代
                     iteration = self.state.start_new_iteration()
                     logger.info(f"\n{'='*50}")
@@ -437,8 +919,13 @@ class MultiProcessOrchestrator:
                         logger.warning("规划阶段未产生任务")
                         continue
 
-                    # 执行阶段
+                    # 执行阶段（内部会进行健康检查）
                     await self._execution_phase(iteration.iteration_id)
+
+                    # 检查是否在执行阶段降级
+                    if self._degraded:
+                        logger.error(f"执行阶段降级，终止迭代: {self._degradation_reason}")
+                        break
 
                     # 评审阶段
                     decision = await self._review_phase(goal, iteration.iteration_id)
@@ -498,12 +985,73 @@ class MultiProcessOrchestrator:
                 logger.error(f"消息处理异常: {e}")
 
     async def _handle_message(self, message: ProcessMessage) -> None:
-        """处理来自 Agent 的消息"""
+        """处理来自 Agent 的消息（唯一消费者）
+
+        此方法是消息队列的唯一消费者，确保消息不会在健康检查时丢失。
+        所有消息类型都在此处理，包括心跳响应。
+
+        Late Result 处理:
+            当收到 PLAN_RESULT/TASK_RESULT 但 correlation_id 不在 _pending_responses 时，
+            可能是以下情况：
+            1. 任务已超时，_send_and_wait 已移除 Future 但响应仍然到达
+            2. 任务已被重试/重新入队
+            3. Worker 处理较慢导致响应延迟
+
+            处理策略：
+            - 通过 message_id -> task_id 反向索引查找任务
+            - 如果任务已被重试/重新入队（状态为 PENDING），记录 "late result ignored"
+            - 如果任务仍处于 IN_PROGRESS 且 assigned_to 匹配，则完成/失败并更新统计
+        """
+        import time
+
+        # 更新消息统计（用于验证消息不丢失）
+        self._message_stats["total_received"] += 1
+        msg_type = message.type.value if hasattr(message.type, 'value') else str(message.type)
+        if msg_type in self._message_stats:
+            self._message_stats[msg_type] += 1
+        elif message.type == ProcessMessageType.PLAN_RESULT:
+            self._message_stats["plan_result"] += 1
+        elif message.type == ProcessMessageType.TASK_RESULT:
+            self._message_stats["task_result"] += 1
+        elif message.type == ProcessMessageType.HEARTBEAT:
+            self._message_stats["heartbeat"] += 1
+        elif message.type == ProcessMessageType.STATUS_RESPONSE:
+            self._message_stats["status_response"] += 1
+        elif message.type == ProcessMessageType.TASK_PROGRESS:
+            self._message_stats["task_progress"] += 1
+        else:
+            self._message_stats["other"] += 1
+
+        # 处理心跳响应（方案 A 核心：在消息循环中收集心跳）
+        if message.type == ProcessMessageType.HEARTBEAT:
+            sender = message.sender
+            self._heartbeat_responses[sender] = time.time()
+            # 从待响应集合中移除
+            self._heartbeat_pending.discard(sender)
+            logger.debug(
+                f"心跳响应收到: sender={sender}, "
+                f"remaining_pending={len(self._heartbeat_pending)}"
+            )
+            return
+
         # 检查是否有等待此消息的 Future
         if message.correlation_id and message.correlation_id in self._pending_responses:
             future = self._pending_responses.pop(message.correlation_id)
             if not future.done():
                 future.set_result(message)
+
+            # 记录关键消息（验证不丢失）
+            if message.type in (ProcessMessageType.PLAN_RESULT, ProcessMessageType.TASK_RESULT):
+                logger.debug(
+                    f"关键消息已处理: type={message.type.value}, "
+                    f"sender={message.sender}, correlation_id={message.correlation_id}"
+                )
+            return
+
+        # ============ Late Result 兜底处理 ============
+        # 当 correlation_id 不在 _pending_responses 时，尝试处理 late result
+        if message.type in (ProcessMessageType.PLAN_RESULT, ProcessMessageType.TASK_RESULT):
+            await self._handle_late_result(message)
             return
 
         # 处理任务进度消息
@@ -511,6 +1059,134 @@ class MultiProcessOrchestrator:
             task_id = message.payload.get("task_id")
             progress = message.payload.get("progress", 0)
             logger.debug(f"任务进度: {task_id} - {progress}%")
+
+    async def _handle_late_result(self, message: ProcessMessage) -> None:
+        """处理 late result（延迟到达的任务/规划结果）
+
+        当 PLAN_RESULT/TASK_RESULT 的 correlation_id 不在 _pending_responses 时调用。
+        这通常发生在：
+        1. _send_and_wait 超时后，响应仍然到达
+        2. 任务已被重试/重新入队，旧响应延迟到达
+
+        处理策略：
+        - 通过 process_manager 的反向索引查找任务
+        - 检查任务状态决定是忽略还是应用结果
+        """
+        # 初始化 late result 统计（首次访问时）
+        if "late_result_ignored" not in self._message_stats:
+            self._message_stats["late_result_ignored"] = 0
+        if "late_result_applied" not in self._message_stats:
+            self._message_stats["late_result_applied"] = 0
+
+        # 解析 payload
+        payload = message.payload or {}
+        task_id = payload.get("task_id")
+        success = payload.get("success", False)
+        error = payload.get("error")
+        sender = message.sender
+        correlation_id = message.correlation_id
+
+        # 如果 payload 中没有 task_id，尝试通过 correlation_id 反查
+        if not task_id and correlation_id:
+            task_info = self.process_manager.get_task_by_message_id(correlation_id)
+            if task_info:
+                task_id, assignment_info = task_info
+                logger.debug(
+                    f"Late result: 通过 correlation_id={correlation_id} 反查到 task_id={task_id}"
+                )
+
+        # 如果仍然无法确定 task_id，记录并忽略
+        if not task_id:
+            logger.warning(
+                f"Late result ignored: 无法确定 task_id, "
+                f"type={message.type.value}, sender={sender}, "
+                f"correlation_id={correlation_id}"
+            )
+            self._message_stats["late_result_ignored"] += 1
+            return
+
+        # 获取任务对象
+        task = self.task_queue.get_task(task_id)
+        if not task:
+            logger.debug(
+                f"Late result ignored: task_id={task_id} 不在 TaskQueue 中, "
+                f"type={message.type.value}, sender={sender}"
+            )
+            self._message_stats["late_result_ignored"] += 1
+            return
+
+        # 检查任务状态
+        current_status = task.status
+
+        # 情况1: 任务已被重试/重新入队（状态为 PENDING）
+        if current_status == TaskStatus.PENDING:
+            logger.info(
+                f"Late result ignored: task_id={task_id} 已重新入队 (status=PENDING), "
+                f"success={success}, sender={sender}"
+            )
+            self._message_stats["late_result_ignored"] += 1
+            return
+
+        # 情况2: 任务已完成/失败（终态）
+        if current_status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            logger.debug(
+                f"Late result ignored: task_id={task_id} 已处于终态 (status={current_status.value}), "
+                f"sender={sender}"
+            )
+            self._message_stats["late_result_ignored"] += 1
+            return
+
+        # 情况3: 任务仍处于 IN_PROGRESS，检查 assigned_to 是否匹配
+        if current_status == TaskStatus.IN_PROGRESS:
+            # 获取分配信息验证 sender
+            assignment_info = self.process_manager.get_task_assignment(task_id)
+            assigned_to = task.assigned_to or (assignment_info.get("agent_id") if assignment_info else None)
+
+            if assigned_to and assigned_to != sender:
+                # 发送者不匹配，可能是旧 worker 的响应
+                logger.info(
+                    f"Late result ignored: task_id={task_id} assigned_to={assigned_to} "
+                    f"但 sender={sender} 不匹配"
+                )
+                self._message_stats["late_result_ignored"] += 1
+                return
+
+            # 应用 late result
+            logger.info(
+                f"Late result applied: task_id={task_id}, success={success}, "
+                f"sender={sender}, correlation_id={correlation_id}"
+            )
+
+            # 更新任务状态
+            if success:
+                task.complete(payload)
+                # 更新统计
+                iteration = self.state.get_current_iteration()
+                if iteration:
+                    iteration.tasks_completed += 1
+                self.state.total_tasks_completed += 1
+            else:
+                task.fail(error or "未知错误")
+                # 更新统计
+                iteration = self.state.get_current_iteration()
+                if iteration:
+                    iteration.tasks_failed += 1
+                self.state.total_tasks_failed += 1
+
+            self.task_queue.update_task(task)
+
+            # 取消任务跟踪
+            self.process_manager.untrack_task(task_id)
+
+            self._message_stats["late_result_applied"] += 1
+            return
+
+        # 其他状态（ASSIGNED 等），记录警告
+        logger.warning(
+            f"Late result: task_id={task_id} 处于非预期状态 (status={current_status.value}), "
+            f"success={success}, sender={sender}"
+        )
+        self._message_stats["late_result_ignored"] += 1
 
     async def _send_and_wait(
         self,
@@ -569,7 +1245,18 @@ class MultiProcessOrchestrator:
         if not response or not response.payload.get("success"):
             error = response.payload.get("error") if response else "规划超时"
             logger.error(f"规划失败: {error}")
+            # 记录消息统计（验证消息不丢失）
+            logger.debug(
+                f"[迭代 {iteration_id}] 规划失败时消息统计: "
+                f"plan_result={self._message_stats['plan_result']}"
+            )
             return
+
+        # 记录成功收到 PLAN_RESULT（验证消息不丢失）
+        logger.debug(
+            f"[迭代 {iteration_id}] PLAN_RESULT 已收到并处理: "
+            f"total_plan_results={self._message_stats['plan_result']}"
+        )
 
         # 处理规划结果
         tasks_data = response.payload.get("tasks", [])
@@ -582,7 +1269,12 @@ class MultiProcessOrchestrator:
         logger.info(f"[迭代 {iteration_id}] 规划完成，创建 {len(tasks_data)} 个任务")
 
     async def _execution_phase(self, iteration_id: int) -> None:
-        """执行阶段"""
+        """执行阶段
+
+        包含周期性健康检查，处理不健康 Worker 的在途任务。
+        """
+        import time
+
         iteration = self.state.get_current_iteration()
         iteration.status = IterationStatus.EXECUTING
 
@@ -591,16 +1283,122 @@ class MultiProcessOrchestrator:
 
         # 并行分发任务给 Workers
         active_tasks: dict[str, asyncio.Task] = {}
+        # 跟踪 worker -> task_id 的映射
+        worker_task_mapping: dict[str, str] = {}
         available_workers = list(self.worker_ids)
+        last_health_check = time.time()
+
+        # 诊断计数器：用于检测卡死
+        _loop_count = 0
+        self._last_progress_time = time.time()  # 使用实例变量以便恢复逻辑使用
+        _STALL_DETECTION_INTERVAL = self.config.stall_recovery_interval  # 使用配置的间隔
 
         while True:
-            # 分配任务给空闲 Worker
+            _loop_count += 1
+
+            # ========== 诊断日志与卡死恢复 ==========
+            now = time.time()
+            if now - self._last_progress_time >= _STALL_DETECTION_INTERVAL:
+                # 收集诊断信息
+                queue_stats = self.task_queue.get_statistics(iteration_id)
+                in_flight_tasks = self.process_manager.get_all_in_flight_tasks()
+                tasks_in_iteration = self.task_queue.get_tasks_by_iteration(iteration_id)
+
+                logger.warning(f"[诊断] === 卡死检测触发 (循环 #{_loop_count}) ===")
+                logger.warning(f"[诊断] TaskQueue.get_statistics(): {queue_stats}")
+                logger.warning(f"[诊断] available_workers: {available_workers} (count={len(available_workers)})")
+                logger.warning(f"[诊断] active_tasks: {list(active_tasks.keys())} (count={len(active_tasks)})")
+                logger.warning(f"[诊断] in_flight_tasks: {list(in_flight_tasks.keys())} (count={len(in_flight_tasks)})")
+
+                # 打印每个任务的详细状态
+                for task in tasks_in_iteration:
+                    logger.warning(
+                        f"[诊断] Task {task.id}: status={task.status.value}, "
+                        f"retry_count={task.retry_count}, assigned_to={task.assigned_to}"
+                    )
+
+                # 检测典型卡死模式并尝试恢复
+                stall_detected = False
+                stall_reason = ""
+
+                if queue_stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0:
+                    stall_detected = True
+                    stall_reason = f"pending={queue_stats['pending']} > 0 但 active_tasks=0, available_workers=0"
+                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
+
+                assigned_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.ASSIGNED]
+                if assigned_tasks and len(active_tasks) == 0:
+                    stall_detected = True
+                    stall_reason = f"存在 ASSIGNED 状态任务 ({len(assigned_tasks)}) 但无 active_tasks"
+                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
+
+                in_progress_tasks = [t for t in tasks_in_iteration if t.status == TaskStatus.IN_PROGRESS]
+                if in_progress_tasks and len(active_tasks) == 0:
+                    stall_detected = True
+                    stall_reason = f"存在 IN_PROGRESS 状态任务 ({len(in_progress_tasks)}) 但无 active_tasks"
+                    logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
+
+                # 尝试恢复
+                if stall_detected and self._should_attempt_recovery(iteration_id):
+                    recovery_result = await self._recover_stalled_iteration(
+                        iteration_id=iteration_id,
+                        reason=stall_reason,
+                        active_futures=active_tasks,
+                        worker_task_mapping=worker_task_mapping,
+                    )
+
+                    if recovery_result["degraded"]:
+                        # 恢复触发了降级
+                        logger.error(f"[迭代 {iteration_id}] 恢复触发降级: {recovery_result['reason']}")
+                        break
+
+                    if recovery_result["requeued"] > 0:
+                        # 有任务被重新入队，刷新可用 worker 列表
+                        alive_workers = [wid for wid in self.worker_ids if self.process_manager.is_alive(wid)]
+                        # 只添加不在 active_tasks 中的 worker
+                        for wid in alive_workers:
+                            if wid not in active_tasks and wid not in available_workers:
+                                available_workers.append(wid)
+                        logger.info(f"[恢复后] 刷新可用 workers: {available_workers}")
+
+                # 只有在检测到卡死时才重置计时器（避免频繁触发）
+                # 正常情况下计时器在任务完成时重置
+
+            # 执行过程中的周期性健康检查
+            if time.time() - last_health_check >= _EXECUTION_HEALTH_CHECK_INTERVAL:
+                last_health_check = time.time()
+                health_result = await self._perform_health_check()
+
+                if self._degraded:
+                    logger.warning(f"[迭代 {iteration_id}] 执行阶段降级，中止剩余任务")
+                    break
+
+                # 从可用 Worker 中移除不健康的
+                unhealthy_workers = health_result.get_unhealthy_workers()
+                for worker_id in unhealthy_workers:
+                    if worker_id in available_workers:
+                        available_workers.remove(worker_id)
+                        logger.warning(f"从可用 Worker 列表中移除: {worker_id}")
+
+            # 分配任务给空闲 Worker（跳过不健康的）
             while available_workers:
+                # 检查 Worker 是否健康（使用进程存活状态快速检查）
+                worker_id = available_workers[0]
+                if not self.process_manager.is_alive(worker_id):
+                    available_workers.pop(0)
+                    logger.warning(f"Worker {worker_id} 进程已死亡，跳过")
+                    continue
+
                 task = await self.task_queue.dequeue(iteration_id, timeout=0.1)
                 if not task:
                     break
 
-                worker_id = available_workers.pop(0)
+                available_workers.pop(0)
+
+                # 设置任务分配状态并启动
+                task.assigned_to = worker_id
+                task.start()  # 将状态推进到 IN_PROGRESS
+                self.task_queue.update_task(task)
 
                 # 知识库检索：检测触发关键词并注入知识库上下文
                 task_data = task.model_dump()
@@ -626,6 +1424,14 @@ class MultiProcessOrchestrator:
                     payload={"task": task_data},
                 )
 
+                # 跟踪任务分配
+                self.process_manager.track_task_assignment(
+                    task_id=task.id,
+                    agent_id=worker_id,
+                    message_id=request.id,
+                )
+                worker_task_mapping[worker_id] = task.id
+
                 # 创建异步等待任务
                 async_task = asyncio.create_task(
                     self._send_and_wait(worker_id, request, self.config.execution_timeout)
@@ -638,6 +1444,26 @@ class MultiProcessOrchestrator:
             if not active_tasks:
                 if self.task_queue.is_iteration_complete(iteration_id):
                     break
+
+                # 兜底退出条件：无可用 worker 且仍有未终态任务
+                # 检查是否还有待处理或进行中的任务
+                pending_count = self.task_queue.get_pending_count(iteration_id)
+                in_progress_count = self.task_queue.get_in_progress_count(iteration_id)
+                has_unfinished_tasks = pending_count > 0 or in_progress_count > 0
+
+                if not available_workers and has_unfinished_tasks:
+                    # 检查是否所有 worker 都已死亡
+                    alive_workers = [wid for wid in self.worker_ids if self.process_manager.is_alive(wid)]
+                    if not alive_workers:
+                        # 无可用 worker，触发降级退出
+                        degradation_msg = (
+                            f"无可用 Worker 且仍有 {pending_count} 个待处理 + "
+                            f"{in_progress_count} 个进行中任务"
+                        )
+                        self._trigger_degradation(degradation_msg)
+                        logger.error(f"[迭代 {iteration_id}] 兜底退出: {degradation_msg}")
+                        break
+
                 await asyncio.sleep(0.1)
                 continue
 
@@ -652,24 +1478,35 @@ class MultiProcessOrchestrator:
             for completed in done:
                 # 找到对应的 worker
                 worker_id = None
-                for wid, task in active_tasks.items():
-                    if task == completed:
+                for wid, atask in active_tasks.items():
+                    if atask == completed:
                         worker_id = wid
                         break
 
                 if worker_id:
                     del active_tasks[worker_id]
-                    available_workers.append(worker_id)
+
+                    # 取消任务跟踪
+                    task_id = worker_task_mapping.pop(worker_id, None)
+                    if task_id:
+                        self.process_manager.untrack_task(task_id)
+
+                    # 只有健康的 Worker 才重新加入可用列表
+                    if self.process_manager.is_alive(worker_id):
+                        available_workers.append(worker_id)
+
+                    # 重置进度计时器（有任务完成说明有进展）
+                    self._last_progress_time = time.time()
 
                     # 处理结果
                     try:
                         response = completed.result()
                         if response:
-                            task_id = response.payload.get("task_id")
+                            resp_task_id = response.payload.get("task_id")
                             success = response.payload.get("success", False)
 
                             # 更新任务状态
-                            task = self.task_queue.get_task(task_id)
+                            task = self.task_queue.get_task(resp_task_id)
                             if task:
                                 if success:
                                     task.complete(response.payload)
@@ -680,11 +1517,36 @@ class MultiProcessOrchestrator:
                                     iteration.tasks_failed += 1
                                     self.state.total_tasks_failed += 1
                                 self.task_queue.update_task(task)
+                        else:
+                            # 响应为 None（超时），检查任务是否需要重新入队
+                            if task_id:
+                                task = self.task_queue.get_task(task_id)
+                                if task and task.status == TaskStatus.IN_PROGRESS:
+                                    if self.config.requeue_on_worker_death:
+                                        # 关键修复：必须调用 requeue 而不只是改状态
+                                        # 只改状态会导致任务卡在 PENDING 但不在优先级队列中
+                                        logger.warning(f"任务 {task_id} 响应超时，重新入队")
+                                        await self.task_queue.requeue(
+                                            task, reason="Worker 响应超时"
+                                        )
+                                    else:
+                                        task.fail("Worker 响应超时")
+                                        iteration.tasks_failed += 1
+                                        self.state.total_tasks_failed += 1
+                                        self.task_queue.update_task(task)
                     except Exception as e:
                         logger.error(f"处理任务结果异常: {e}")
 
         stats = self.task_queue.get_statistics(iteration_id)
         logger.info(f"[迭代 {iteration_id}] 执行完成: {stats['completed']} 成功, {stats['failed']} 失败")
+
+        # 记录消息统计（验证 TASK_RESULT 不丢失）
+        logger.debug(
+            f"[迭代 {iteration_id}] 执行阶段消息统计: "
+            f"task_result={self._message_stats['task_result']}, "
+            f"heartbeat={self._message_stats['heartbeat']}, "
+            f"total={self._message_stats['total_received']}"
+        )
 
     async def _review_phase(self, goal: str, iteration_id: int) -> ReviewDecision:
         """评审阶段"""
@@ -941,6 +1803,9 @@ class MultiProcessOrchestrator:
             "process_info": process_info,
             "commits": commit_summary,
             "pushed": pushed,
+            "degraded": self._degraded,
+            "degradation_reason": self._degradation_reason,
+            "message_stats": self._message_stats.copy(),  # 消息处理统计（验证消息不丢失）
             "iterations": [
                 {
                     "id": it.iteration_id,

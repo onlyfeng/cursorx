@@ -3,12 +3,33 @@
 管理所有 Agent 进程的生命周期
 """
 import time
-from typing import Dict, Optional, Type
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Type
 
 from loguru import logger
 
 from .message_queue import MessageQueue, ProcessMessage, ProcessMessageType
 from .worker import AgentWorkerProcess
+
+
+@dataclass
+class HealthCheckResult:
+    """健康检查结果
+
+    Attributes:
+        healthy: 健康的 agent_id 列表
+        unhealthy: 不健康的 agent_id 列表
+        all_healthy: 是否所有进程都健康
+        details: 每个进程的详细状态 {agent_id: {"healthy": bool, "reason": str}}
+    """
+    healthy: List[str] = field(default_factory=list)
+    unhealthy: List[str] = field(default_factory=list)
+    all_healthy: bool = True
+    details: Dict[str, dict] = field(default_factory=dict)
+
+    def get_unhealthy_workers(self) -> List[str]:
+        """获取不健康的 worker 进程 ID 列表"""
+        return [aid for aid in self.unhealthy if "worker" in aid.lower()]
 
 
 class AgentProcessManager:
@@ -19,6 +40,7 @@ class AgentProcessManager:
     2. 进程间消息路由
     3. 进程健康监控
     4. 优雅关闭
+    5. 跟踪任务分配状态（用于健康检查后的任务恢复）
     """
 
     def __init__(self):
@@ -26,6 +48,10 @@ class AgentProcessManager:
         self._processes: Dict[str, AgentWorkerProcess] = {}
         self._process_info: Dict[str, dict] = {}
         self._running = False
+        # 跟踪任务分配：{task_id: {"agent_id": str, "assigned_at": float, "message_id": str}}
+        self._task_assignments: Dict[str, dict] = {}
+        # 反向索引：{message_id: task_id}，用于通过消息 ID 快速查找任务 ID
+        self._message_to_task: Dict[str, str] = {}
 
     def spawn_agent(
         self,
@@ -216,29 +242,160 @@ class AgentProcessManager:
 
         logger.info("所有 Agent 进程已关闭")
 
-    def health_check(self) -> Dict[str, bool]:
-        """健康检查"""
-        results = {}
+    def track_task_assignment(
+        self,
+        task_id: str,
+        agent_id: str,
+        message_id: str,
+    ) -> None:
+        """跟踪任务分配
 
-        # 发送心跳请求
-        self.broadcast(ProcessMessage(
-            type=ProcessMessageType.HEARTBEAT,
-            sender="manager",
-        ))
+        Args:
+            task_id: 任务 ID
+            agent_id: 分配给的 Agent ID
+            message_id: 发送的消息 ID（用于关联响应）
+        """
+        self._task_assignments[task_id] = {
+            "agent_id": agent_id,
+            "assigned_at": time.time(),
+            "message_id": message_id,
+        }
+        # 维护反向索引
+        self._message_to_task[message_id] = task_id
 
-        # 收集响应
-        pending = set(self._processes.keys())
-        deadline = time.time() + 5.0
+    def untrack_task(self, task_id: str) -> Optional[dict]:
+        """取消跟踪任务
 
-        while pending and time.time() < deadline:
-            message = self.receive_message(timeout=1.0)
-            if message and message.type == ProcessMessageType.HEARTBEAT:
-                if message.sender in pending:
-                    results[message.sender] = True
-                    pending.remove(message.sender)
+        Args:
+            task_id: 任务 ID
 
-        # 未响应的标记为不健康
-        for agent_id in pending:
-            results[agent_id] = False
+        Returns:
+            被移除的分配信息，如果不存在则返回 None
+        """
+        info = self._task_assignments.pop(task_id, None)
+        # 同时清理反向索引
+        if info and info.get("message_id"):
+            self._message_to_task.pop(info["message_id"], None)
+        return info
 
-        return results
+    def get_tasks_by_agent(self, agent_id: str) -> List[str]:
+        """获取分配给指定 Agent 的所有任务 ID
+
+        Args:
+            agent_id: Agent ID
+
+        Returns:
+            任务 ID 列表
+        """
+        return [
+            task_id
+            for task_id, info in self._task_assignments.items()
+            if info["agent_id"] == agent_id
+        ]
+
+    def get_all_in_flight_tasks(self) -> Dict[str, dict]:
+        """获取所有在途任务的分配信息
+
+        Returns:
+            {task_id: {"agent_id": str, "assigned_at": float, "message_id": str}}
+        """
+        return self._task_assignments.copy()
+
+    def get_task_by_message_id(self, message_id: str) -> Optional[tuple[str, dict]]:
+        """通过消息 ID 查找任务信息
+
+        用于处理 late result 场景：当收到 TASK_RESULT 但 correlation_id
+        不在 _pending_responses 时，通过此方法反查任务 ID。
+
+        Args:
+            message_id: 发送任务时的消息 ID（即 correlation_id）
+
+        Returns:
+            (task_id, assignment_info) 元组，如果不存在则返回 None
+        """
+        task_id = self._message_to_task.get(message_id)
+        if task_id is None:
+            return None
+        assignment_info = self._task_assignments.get(task_id)
+        if assignment_info is None:
+            return None
+        return (task_id, assignment_info)
+
+    def get_task_assignment(self, task_id: str) -> Optional[dict]:
+        """获取任务的分配信息
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            分配信息 {"agent_id": str, "assigned_at": float, "message_id": str}
+            如果不存在则返回 None
+        """
+        return self._task_assignments.get(task_id)
+
+    def health_check(self, timeout: float = 5.0) -> HealthCheckResult:
+        """健康检查（仅检查进程存活状态）
+
+        注意：此方法已重构，不再读取消息队列以避免与 orchestrator 的
+        _message_loop 竞争消息。心跳响应的收集由 orchestrator 的
+        _perform_health_check() 通过 _message_loop 完成。
+
+        此方法仅检查进程的存活状态（is_alive()），用于快速判断
+        进程是否已死亡，不涉及心跳响应的等待。
+
+        Args:
+            timeout: 保留参数（用于向后兼容，实际不使用）
+
+        Returns:
+            HealthCheckResult 对象，包含健康/不健康的 agent 列表和详细信息
+        """
+        result = HealthCheckResult()
+
+        if not self._processes:
+            return result
+
+        # 仅检查进程存活状态，不读取消息队列
+        for agent_id, process in self._processes.items():
+            is_alive = process.is_alive() if process else False
+
+            if is_alive:
+                result.healthy.append(agent_id)
+                result.details[agent_id] = {
+                    "healthy": True,
+                    "reason": "process_alive",
+                    "pid": process.pid if process else None,
+                }
+            else:
+                result.unhealthy.append(agent_id)
+                result.details[agent_id] = {
+                    "healthy": False,
+                    "reason": "process_dead",
+                    "is_alive": False,
+                }
+                logger.warning(f"进程已死亡: {agent_id}")
+
+        result.all_healthy = len(result.unhealthy) == 0
+        return result
+
+    def check_processes_alive(self) -> dict[str, bool]:
+        """快速检查所有进程的存活状态
+
+        轻量级方法，仅调用 is_alive()，不涉及消息队列操作。
+
+        Returns:
+            {agent_id: is_alive} 字典
+        """
+        return {
+            agent_id: (process.is_alive() if process else False)
+            for agent_id, process in self._processes.items()
+        }
+
+    def health_check_simple(self) -> Dict[str, bool]:
+        """简单健康检查（向后兼容）
+
+        直接调用 check_processes_alive()，仅检查进程存活状态。
+
+        Returns:
+            {agent_id: is_healthy} 字典
+        """
+        return self.check_processes_alive()
