@@ -22,6 +22,7 @@
 """
 import argparse
 import asyncio
+import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
@@ -83,6 +84,13 @@ UPDATE_KEYWORDS = [
 
 # 知识库名称
 KB_NAME = "cursor-docs"
+
+# 禁用多进程编排器的关键词（在 requirement 中检测）
+DISABLE_MP_KEYWORDS = [
+    "非并行", "不并行", "串行", "协程",
+    "单进程", "basic", "no-mp", "no_mp",
+    "禁用多进程", "禁用mp", "关闭多进程",
+]
 
 
 # ============================================================
@@ -315,7 +323,17 @@ def parse_args() -> argparse.Namespace:
         help="禁用多进程编排器，使用基本协程编排器（等同于 --orchestrator basic）",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # 检测用户是否显式设置了编排器参数
+    # 通过检查 sys.argv 中是否存在相关参数来判断
+    args._orchestrator_user_set = any(
+        arg in sys.argv for arg in [
+            "--orchestrator", "--no-mp", "-no-mp",
+        ]
+    )
+
+    return args
 
 
 # ============================================================
@@ -327,11 +345,18 @@ class ChangelogAnalyzer:
 
     从 Cursor Changelog 页面获取更新内容并分析。
     支持多种解析策略：优先日期标题块、备用月份标题块、保底全页单条。
+    支持基线比较：通过 fingerprint 检测内容是否真正更新。
     """
 
-    def __init__(self, changelog_url: str = DEFAULT_CHANGELOG_URL):
+    def __init__(
+        self,
+        changelog_url: str = DEFAULT_CHANGELOG_URL,
+        storage: Optional[KnowledgeStorage] = None,
+    ):
         self.changelog_url = changelog_url
         self.fetcher = WebFetcher(FetchConfig(timeout=60))
+        # 用于基线读取的存储实例（可选）
+        self._storage = storage
 
     async def fetch_changelog(self) -> Optional[str]:
         """获取 Changelog 内容
@@ -753,8 +778,50 @@ class ChangelogAnalyzer:
         else:
             return "未检测到新的更新"
 
+    def compute_fingerprint(self, content: str) -> str:
+        """计算内容的 fingerprint（SHA256 前16位）
+
+        使用清理后的内容计算哈希，确保比较时忽略空白差异。
+
+        Args:
+            content: 原始内容
+
+        Returns:
+            16字符的 SHA256 哈希前缀
+        """
+        # 使用清理后的内容计算指纹，确保一致性
+        cleaned = self._clean_content(content)
+        return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:16]
+
+    async def _get_baseline_fingerprint(self) -> Optional[str]:
+        """获取基线 fingerprint
+
+        从知识库中读取上次保存的 changelog 内容哈希。
+
+        Returns:
+            上次内容的 fingerprint，不存在时返回 None
+        """
+        if self._storage is None:
+            return None
+
+        try:
+            # 确保存储已初始化
+            if not self._storage._initialized:
+                await self._storage.initialize()
+
+            # 使用便捷方法获取 content_hash
+            return self._storage.get_content_hash_by_url(self.changelog_url)
+        except Exception as e:
+            logger.warning(f"获取基线 fingerprint 失败: {e}")
+            return None
+
     async def analyze(self) -> UpdateAnalysis:
         """执行完整分析
+
+        支持基线比较：
+        1. 获取当前 changelog 内容
+        2. 计算 fingerprint 并与知识库中的基线比较
+        3. 如果 fingerprint 相同，返回 has_updates=False
 
         Returns:
             更新分析结果
@@ -764,6 +831,30 @@ class ChangelogAnalyzer:
         content = await self.fetch_changelog()
         if not content:
             return UpdateAnalysis()
+
+        # 计算当前内容的 fingerprint
+        current_fingerprint = self.compute_fingerprint(content)
+        logger.debug(f"当前 changelog fingerprint: {current_fingerprint}")
+
+        # 获取基线 fingerprint 进行比较
+        baseline_fingerprint = await self._get_baseline_fingerprint()
+        if baseline_fingerprint:
+            logger.debug(f"基线 fingerprint: {baseline_fingerprint}")
+            if current_fingerprint == baseline_fingerprint:
+                # 内容未变化，返回无更新结果
+                print_info(f"Changelog 内容未变化 (fingerprint: {current_fingerprint[:8]}...)")
+                analysis = UpdateAnalysis(
+                    has_updates=False,
+                    entries=[],
+                    summary="未检测到新的更新",
+                    raw_content=content,
+                    related_doc_urls=[],  # 无更新时不设置相关文档
+                )
+                return analysis
+            else:
+                print_info(f"检测到内容变化 (fingerprint: {baseline_fingerprint[:8]}... → {current_fingerprint[:8]}...)")
+        else:
+            print_info("首次分析，无基线比较")
 
         entries = self.parse_changelog(content)
         print_info(f"解析到 {len(entries)} 个更新条目")
@@ -816,6 +907,9 @@ class KnowledgeUpdater:
     ) -> dict[str, Any]:
         """根据更新分析结果更新知识库
 
+        当 analysis.has_updates=False 时（基线 fingerprint 匹配），
+        跳过抓取 related docs，减少网络访问。
+
         Args:
             analysis: 更新分析结果
             force: 是否强制更新
@@ -830,6 +924,7 @@ class KnowledgeUpdater:
             "skipped": 0,
             "failed": 0,
             "urls_processed": [],
+            "no_updates_detected": not analysis.has_updates,
         }
 
         # 1. 保存 Changelog 内容
@@ -857,26 +952,31 @@ class KnowledgeUpdater:
                     results["failed"] += 1
                     print_warning(f"Changelog 保存失败: {msg}")
 
-        # 2. 获取并保存相关文档
-        urls_to_fetch = analysis.related_doc_urls.copy()
+        # 2. 获取并保存相关文档（仅在有更新时）
+        # 当 has_updates=False（基线 fingerprint 匹配）时，跳过抓取以减少网络访问
+        if not analysis.has_updates:
+            print_info("无内容更新，跳过抓取相关文档")
+            logger.debug("跳过 related docs 抓取: has_updates=False (fingerprint 匹配)")
+        else:
+            urls_to_fetch = analysis.related_doc_urls.copy()
 
-        # 如果没有相关 URL 但有更新，获取所有文档
-        if not urls_to_fetch and analysis.has_updates:
-            urls_to_fetch = CURSOR_DOC_URLS[:5]  # 获取前 5 个核心文档
+            # 如果没有相关 URL 但有更新，获取所有文档
+            if not urls_to_fetch and analysis.has_updates:
+                urls_to_fetch = CURSOR_DOC_URLS[:5]  # 获取前 5 个核心文档
 
-        if urls_to_fetch:
-            print_info(f"获取 {len(urls_to_fetch)} 个相关文档...")
+            if urls_to_fetch:
+                print_info(f"获取 {len(urls_to_fetch)} 个相关文档...")
 
-            for url in urls_to_fetch:
-                result = await self._fetch_and_save_doc(url, force)
-                results["urls_processed"].append(url)
+                for url in urls_to_fetch:
+                    result = await self._fetch_and_save_doc(url, force)
+                    results["urls_processed"].append(url)
 
-                if result == "updated":
-                    results["updated"] += 1
-                elif result == "skipped":
-                    results["skipped"] += 1
-                else:
-                    results["failed"] += 1
+                    if result == "updated":
+                        results["updated"] += 1
+                    elif result == "skipped":
+                        results["skipped"] += 1
+                    else:
+                        results["failed"] += 1
 
         # 显示统计
         print("\n知识库更新完成:")
@@ -1094,8 +1194,12 @@ class SelfIterator:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.changelog_analyzer = ChangelogAnalyzer(args.changelog_url)
         self.knowledge_updater = KnowledgeUpdater()
+        # 传递 storage 给 ChangelogAnalyzer 用于基线比较
+        self.changelog_analyzer = ChangelogAnalyzer(
+            args.changelog_url,
+            storage=self.knowledge_updater.storage,
+        )
         self.goal_builder = IterationGoalBuilder()
         self.context = IterationContext(
             user_requirement=args.requirement,
@@ -1340,12 +1444,34 @@ class SelfIterator:
     def _get_orchestrator_type(self) -> str:
         """获取编排器类型
 
+        优先级：
+        1. 用户显式设置的编排器选项（通过命令行参数 --orchestrator 或 --no-mp）
+        2. 从 requirement 中检测的非并行关键词
+        3. 默认值 "mp"
+
         Returns:
             "mp" 或 "basic"
         """
+        # 1. 检查用户是否显式设置了 no_mp
         if getattr(self.args, "no_mp", False):
             return "basic"
-        return getattr(self.args, "orchestrator", "mp")
+
+        # 2. 检查用户是否显式设置了 orchestrator
+        orchestrator = getattr(self.args, "orchestrator", "mp")
+        if orchestrator == "basic":
+            return "basic"
+
+        # 3. 如果用户显式设置了编排器选项，尊重用户设置
+        if getattr(self.args, "_orchestrator_user_set", False):
+            return orchestrator
+
+        # 4. 从 requirement 中检测非并行关键词
+        requirement = getattr(self.args, "requirement", "")
+        if requirement and _detect_disable_mp_from_requirement(requirement):
+            logger.debug(f"从 requirement 检测到非并行关键词，选择 basic 编排器")
+            return "basic"
+
+        return orchestrator
 
     def _has_orchestrator_committed(self, result: dict[str, Any]) -> bool:
         """检测编排器是否已完成提交
@@ -1712,10 +1838,42 @@ def setup_logging(verbose: bool = False):
 # 主入口
 # ============================================================
 
+def _detect_disable_mp_from_requirement(requirement: str) -> bool:
+    """从 requirement 中检测是否包含禁用多进程的关键词
+
+    Args:
+        requirement: 用户需求字符串
+
+    Returns:
+        True 表示检测到禁用多进程关键词，False 表示未检测到
+    """
+    if not requirement:
+        return False
+
+    requirement_lower = requirement.lower()
+    for keyword in DISABLE_MP_KEYWORDS:
+        if keyword.lower() in requirement_lower:
+            logger.debug(f"检测到禁用 MP 关键词: '{keyword}' in requirement")
+            return True
+    return False
+
+
 def main():
     """主函数"""
     args = parse_args()
     setup_logging(args.verbose)
+
+    # 关键词检测：仅当用户未显式设置编排器时，从 requirement 检测是否需要禁用 MP
+    # 条件：no_mp=False 且 orchestrator 为默认值 "mp" 且 _orchestrator_user_set=False
+    if (
+        not getattr(args, "no_mp", False)
+        and getattr(args, "orchestrator", "mp") == "mp"
+        and not getattr(args, "_orchestrator_user_set", False)
+    ):
+        if _detect_disable_mp_from_requirement(args.requirement):
+            args.no_mp = True
+            print_info("检测到需求中的关键词，自动切换到协程编排器（basic）")
+            logger.info(f"关键词触发 no_mp=True: requirement='{args.requirement[:50]}...'")
 
     # 创建并运行迭代器
     iterator = SelfIterator(args)

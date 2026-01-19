@@ -17,6 +17,7 @@ import pytest
 # 导入被测模块
 from scripts.run_iterate import (
     ChangelogAnalyzer,
+    ChangelogEntry,
     IterationContext,
     IterationGoalBuilder,
     KnowledgeUpdater,
@@ -609,6 +610,124 @@ class TestOrchestratorSelection:
         iterator = SelfIterator(base_iterate_args)
         assert iterator._get_orchestrator_type() == "basic"
 
+    def test_get_orchestrator_type_from_requirement_non_parallel(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试从 requirement 检测非并行关键词时选择 basic 编排器
+
+        场景：requirement='自我迭代，非并行模式' 且 no_mp=False/orchestrator='mp'
+        期望：SelfIterator 选择 basic 编排器
+        """
+        # 设置 requirement 包含非并行关键词
+        base_iterate_args.requirement = "自我迭代，非并行模式"
+        # 确保命令行参数使用默认的 mp 编排器
+        base_iterate_args.no_mp = False
+        base_iterate_args.orchestrator = "mp"
+        # 未显式设置编排器选项
+        base_iterate_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(base_iterate_args)
+        # 应该从 requirement 检测到非并行关键词，返回 basic
+        assert iterator._get_orchestrator_type() == "basic", (
+            "当 requirement 包含 '非并行模式' 且用户未显式设置编排器时，"
+            "应该自动选择 basic 编排器"
+        )
+
+    def test_get_orchestrator_type_from_requirement_various_keywords(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试多种非并行关键词都能正确检测"""
+        non_parallel_requirements = [
+            "自我迭代，非并行模式",
+            "使用协程模式处理任务",
+            "单进程执行",
+            "禁用多进程执行",
+            "使用 basic 编排器",
+            "no-mp 模式运行",
+            "串行处理任务",
+        ]
+
+        for requirement in non_parallel_requirements:
+            base_iterate_args.requirement = requirement
+            base_iterate_args.no_mp = False
+            base_iterate_args.orchestrator = "mp"
+            base_iterate_args._orchestrator_user_set = False
+
+            iterator = SelfIterator(base_iterate_args)
+            assert iterator._get_orchestrator_type() == "basic", (
+                f"requirement='{requirement}' 应该触发 basic 编排器"
+            )
+
+    def test_get_orchestrator_type_user_explicit_setting_not_overridden(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试用户显式设置编排器时不被 requirement 关键词覆盖
+
+        场景：用户通过 --orchestrator mp 显式指定使用 MP 编排器，
+        即使 requirement 包含非并行关键词，也应该尊重用户的显式设置。
+        """
+        # requirement 包含非并行关键词
+        base_iterate_args.requirement = "自我迭代，非并行模式"
+        # 用户显式设置使用 mp 编排器
+        base_iterate_args.no_mp = False
+        base_iterate_args.orchestrator = "mp"
+        # 标记用户显式设置了编排器选项
+        base_iterate_args._orchestrator_user_set = True
+
+        iterator = SelfIterator(base_iterate_args)
+        # 用户显式设置应该优先，返回 mp
+        assert iterator._get_orchestrator_type() == "mp", (
+            "当用户显式设置 --orchestrator mp 时，即使 requirement 包含非并行关键词，"
+            "也应该尊重用户的显式设置，返回 mp"
+        )
+
+    def test_get_orchestrator_type_user_explicit_no_mp_takes_priority(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试用户显式设置 --no-mp 时优先生效"""
+        # requirement 不包含非并行关键词
+        base_iterate_args.requirement = "普通的自我迭代任务"
+        # 用户显式设置 --no-mp
+        base_iterate_args.no_mp = True
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args._orchestrator_user_set = True
+
+        iterator = SelfIterator(base_iterate_args)
+        # --no-mp 显式设置应该返回 basic
+        assert iterator._get_orchestrator_type() == "basic", (
+            "当用户显式设置 --no-mp 时，应该返回 basic"
+        )
+
+    def test_get_orchestrator_type_requirement_without_keyword_uses_default(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 requirement 不包含非并行关键词时使用默认 mp 编排器"""
+        # requirement 不包含非并行关键词
+        base_iterate_args.requirement = "普通的自我迭代任务，优化代码"
+        base_iterate_args.no_mp = False
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(base_iterate_args)
+        # 没有非并行关键词，应该返回默认的 mp
+        assert iterator._get_orchestrator_type() == "mp", (
+            "当 requirement 不包含非并行关键词时，应该使用默认的 mp 编排器"
+        )
+
+    def test_get_orchestrator_type_empty_requirement(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试空 requirement 时使用默认 mp 编排器"""
+        base_iterate_args.requirement = ""
+        base_iterate_args.no_mp = False
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(base_iterate_args)
+        assert iterator._get_orchestrator_type() == "mp", (
+            "空 requirement 时应该使用默认的 mp 编排器"
+        )
+
 
 # ============================================================
 # TestParseMaxIterations - 最大迭代次数解析测试
@@ -740,8 +859,6 @@ class TestChangelogAnalyzer:
 
     def test_extract_update_points(self) -> None:
         """测试提取更新要点"""
-        from scripts.run_iterate import ChangelogEntry
-
         analyzer = ChangelogAnalyzer()
         entries = [
             ChangelogEntry(
@@ -1629,6 +1746,260 @@ class TestDegradationStrategyB:
                     assert result["degraded"] is True
                     assert result["degradation_reason"] == case["reason"]
                     assert isinstance(result["iterations_completed"], int)
+
+
+# ============================================================
+# TestBaselineFingerprint - 基线 fingerprint 比较测试
+# ============================================================
+
+
+class TestBaselineFingerprint:
+    """测试基线 fingerprint 比较功能
+
+    覆盖场景：
+    1. 同一份 changelog 连续两次分析，第二次应判定 has_updates=False
+    2. 不同内容的 changelog 应判定 has_updates=True
+    3. 无基线时应正常解析
+    4. 无更新时应跳过 related docs 抓取
+    """
+
+    @pytest.fixture
+    def mock_storage(self) -> MagicMock:
+        """创建 mock storage"""
+        storage = MagicMock()
+        storage._initialized = True
+        storage.initialize = AsyncMock()
+        storage.get_content_hash_by_url = MagicMock(return_value=None)
+        storage.save_document = AsyncMock(return_value=(True, "保存成功"))
+        storage.get_stats = AsyncMock(return_value={"document_count": 1})
+        storage.search = AsyncMock(return_value=[])
+        storage.list_documents = AsyncMock(return_value=[])
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_same_changelog_second_analysis_no_updates(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试同一份 changelog 连续两次分析，第二次应判定 has_updates=False"""
+        # 固定的 changelog 内容
+        changelog_content = """
+## Jan 16, 2026
+
+### New Features
+- Added /plan and /ask mode
+- Cloud relay support
+"""
+        # 模拟 fetch 返回固定内容
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = changelog_content
+
+        # 创建 analyzer 并注入 storage
+        analyzer = ChangelogAnalyzer(storage=mock_storage)
+
+        with patch.object(
+            analyzer.fetcher, "initialize", new_callable=AsyncMock
+        ):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                # 第一次分析 - 无基线
+                mock_storage.get_content_hash_by_url.return_value = None
+                first_result = await analyzer.analyze()
+
+                # 验证第一次有更新
+                assert first_result.has_updates is True
+                assert len(first_result.entries) > 0
+
+                # 计算第一次的 fingerprint
+                first_fingerprint = analyzer.compute_fingerprint(changelog_content)
+
+                # 第二次分析 - 模拟基线存在（使用第一次的 fingerprint）
+                mock_storage.get_content_hash_by_url.return_value = first_fingerprint
+                second_result = await analyzer.analyze()
+
+                # 验证第二次无更新
+                assert second_result.has_updates is False
+                assert len(second_result.entries) == 0
+                assert second_result.summary == "未检测到新的更新"
+                assert second_result.related_doc_urls == []
+
+    @pytest.mark.asyncio
+    async def test_different_changelog_has_updates(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试不同内容的 changelog 应判定 has_updates=True"""
+        old_content = "## Jan 10, 2026\n- Old feature"
+        new_content = "## Jan 16, 2026\n- New feature added"
+
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = new_content
+
+        analyzer = ChangelogAnalyzer(storage=mock_storage)
+
+        # 计算旧内容的 fingerprint 作为基线
+        old_fingerprint = analyzer.compute_fingerprint(old_content)
+        mock_storage.get_content_hash_by_url.return_value = old_fingerprint
+
+        with patch.object(
+            analyzer.fetcher, "initialize", new_callable=AsyncMock
+        ):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                result = await analyzer.analyze()
+
+                # 验证检测到更新
+                assert result.has_updates is True
+                assert len(result.entries) > 0
+
+    @pytest.mark.asyncio
+    async def test_no_baseline_parses_normally(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试无基线时应正常解析"""
+        changelog_content = "## Jan 16, 2026\n- Feature A"
+
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = changelog_content
+
+        analyzer = ChangelogAnalyzer(storage=mock_storage)
+        mock_storage.get_content_hash_by_url.return_value = None
+
+        with patch.object(
+            analyzer.fetcher, "initialize", new_callable=AsyncMock
+        ):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                result = await analyzer.analyze()
+
+                # 无基线时应正常解析
+                assert result.has_updates is True
+                assert len(result.entries) >= 1
+
+    @pytest.mark.asyncio
+    async def test_no_updates_skips_related_docs_fetch(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试无更新时应跳过 related docs 抓取"""
+        changelog_content = "## Jan 16, 2026\n- MCP support"
+        fingerprint = ChangelogAnalyzer().compute_fingerprint(changelog_content)
+
+        # 创建无更新的 analysis
+        analysis = UpdateAnalysis(
+            has_updates=False,
+            entries=[],
+            summary="未检测到新的更新",
+            raw_content=changelog_content,
+            related_doc_urls=[],
+        )
+
+        updater = KnowledgeUpdater()
+        updater.storage = mock_storage
+        updater.fetcher = MagicMock()
+        updater.fetcher.initialize = AsyncMock()
+        updater.fetcher.fetch = AsyncMock()
+        updater.manager = MagicMock()
+        updater.manager.initialize = AsyncMock()
+
+        await updater.initialize()
+        result = await updater.update_from_analysis(analysis)
+
+        # 验证 fetcher.fetch 未被调用（跳过了 related docs 抓取）
+        updater.fetcher.fetch.assert_not_called()
+
+        # 验证结果标记
+        assert result.get("no_updates_detected") is True
+        assert len(result.get("urls_processed", [])) == 0
+
+    @pytest.mark.asyncio
+    async def test_has_updates_fetches_related_docs(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试有更新时应抓取 related docs"""
+        changelog_content = "## Jan 16, 2026\n- MCP support"
+
+        # 创建有更新的 analysis
+        analysis = UpdateAnalysis(
+            has_updates=True,
+            entries=[],
+            summary="检测到更新: 新功能 (1项)",
+            raw_content=changelog_content,
+            related_doc_urls=["https://cursor.com/cn/docs/cli/mcp"],
+        )
+
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = "MCP documentation content"
+        mock_fetch_result.method_used = MagicMock()
+        mock_fetch_result.method_used.value = "fetch"
+
+        updater = KnowledgeUpdater()
+        updater.storage = mock_storage
+        updater.fetcher = MagicMock()
+        updater.fetcher.initialize = AsyncMock()
+        updater.fetcher.fetch = AsyncMock(return_value=mock_fetch_result)
+        updater.manager = MagicMock()
+        updater.manager.initialize = AsyncMock()
+
+        await updater.initialize()
+        result = await updater.update_from_analysis(analysis)
+
+        # 验证 fetcher.fetch 被调用
+        updater.fetcher.fetch.assert_called()
+
+        # 验证结果
+        assert result.get("no_updates_detected") is False
+        assert len(result.get("urls_processed", [])) > 0
+
+    def test_compute_fingerprint_consistency(self) -> None:
+        """测试 fingerprint 计算的一致性"""
+        analyzer = ChangelogAnalyzer()
+        content = "## Jan 16, 2026\n- Feature A\n- Feature B"
+
+        # 多次计算应返回相同结果
+        fp1 = analyzer.compute_fingerprint(content)
+        fp2 = analyzer.compute_fingerprint(content)
+        fp3 = analyzer.compute_fingerprint(content)
+
+        assert fp1 == fp2 == fp3
+        assert len(fp1) == 16  # SHA256 前16位
+
+    def test_compute_fingerprint_different_content(self) -> None:
+        """测试不同内容的 fingerprint 不同"""
+        analyzer = ChangelogAnalyzer()
+        content1 = "## Jan 16, 2026\n- Feature A"
+        content2 = "## Jan 16, 2026\n- Feature B"
+
+        fp1 = analyzer.compute_fingerprint(content1)
+        fp2 = analyzer.compute_fingerprint(content2)
+
+        assert fp1 != fp2
+
+    def test_compute_fingerprint_ignores_whitespace_variance(self) -> None:
+        """测试 fingerprint 对空白差异的处理"""
+        analyzer = ChangelogAnalyzer()
+        # _clean_content 会规范化空白
+        content1 = "## Jan 16, 2026\n\n\n- Feature A"
+        content2 = "## Jan 16, 2026\n\n- Feature A"
+
+        fp1 = analyzer.compute_fingerprint(content1)
+        fp2 = analyzer.compute_fingerprint(content2)
+
+        # 由于 _clean_content 规范化空行，指纹应相同
+        assert fp1 == fp2
 
 
 class TestIntegration:

@@ -1125,6 +1125,328 @@ class TestCloudSessionManagement:
                 assert push_result.error is not None
 
 
+class TestCursorAgentClientCloudRouting:
+    """测试 CursorAgentClient 的 Cloud 路由策略
+
+    验证统一路由逻辑：
+    - 若 cloud_enabled=True 且 auto_detect_cloud_prefix=True 且 instruction 以 & 开头,
+      则使用 CloudClient 而非本地 asyncio.create_subprocess_exec
+    - 覆盖边界用例（仅 &、空白等）
+    """
+
+    @pytest.fixture
+    def cloud_enabled_config(self):
+        """启用 Cloud 路由的配置"""
+        from cursor.client import CursorAgentConfig
+        return CursorAgentConfig(
+            cloud_enabled=True,
+            auto_detect_cloud_prefix=True,
+            model="opus-4.5-thinking",
+            timeout=300,
+            force_write=True,
+        )
+
+    @pytest.fixture
+    def cloud_disabled_config(self):
+        """禁用 Cloud 路由的配置"""
+        from cursor.client import CursorAgentConfig
+        return CursorAgentConfig(
+            cloud_enabled=False,
+            auto_detect_cloud_prefix=True,
+        )
+
+    def test_is_cloud_request_basic(self):
+        """测试基本的 cloud request 检测"""
+        from cursor.client import CursorAgentClient
+
+        assert CursorAgentClient._is_cloud_request("& 任务") is True
+        assert CursorAgentClient._is_cloud_request("  & 任务") is True
+        assert CursorAgentClient._is_cloud_request("&任务") is True
+        assert CursorAgentClient._is_cloud_request("普通任务") is False
+
+    def test_is_cloud_request_edge_cases(self):
+        """测试 cloud request 检测的边界情况"""
+        from cursor.client import CursorAgentClient
+
+        # None 和空值
+        assert CursorAgentClient._is_cloud_request(None) is False
+        assert CursorAgentClient._is_cloud_request("") is False
+        assert CursorAgentClient._is_cloud_request("   ") is False
+
+        # 只有 & 符号（无实际内容）
+        assert CursorAgentClient._is_cloud_request("&") is False
+        assert CursorAgentClient._is_cloud_request("&  ") is False
+        assert CursorAgentClient._is_cloud_request("  &  ") is False
+
+        # & 不在开头
+        assert CursorAgentClient._is_cloud_request("任务 & 描述") is False
+        assert CursorAgentClient._is_cloud_request("任务&") is False
+
+    def test_is_cloud_request_non_string(self):
+        """测试非字符串类型的处理"""
+        from cursor.client import CursorAgentClient
+
+        assert CursorAgentClient._is_cloud_request(123) is False
+        assert CursorAgentClient._is_cloud_request([]) is False
+        assert CursorAgentClient._is_cloud_request({}) is False
+
+    def test_should_route_to_cloud_enabled(self, cloud_enabled_config):
+        """测试 cloud_enabled=True 时的路由判断"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # 以 & 开头应该路由到 Cloud
+        assert client._should_route_to_cloud("& 任务") is True
+        assert client._should_route_to_cloud("& 分析代码") is True
+
+        # 不以 & 开头应该使用本地
+        assert client._should_route_to_cloud("任务") is False
+        assert client._should_route_to_cloud("分析代码") is False
+
+    def test_should_route_to_cloud_disabled(self, cloud_disabled_config):
+        """测试 cloud_enabled=False 时的路由判断"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_disabled_config)
+
+        # cloud_enabled=False 时，即使以 & 开头也不应路由到 Cloud
+        assert client._should_route_to_cloud("& 任务") is False
+        assert client._should_route_to_cloud("任务") is False
+
+    def test_should_route_to_cloud_auto_detect_disabled(self):
+        """测试 auto_detect_cloud_prefix=False 时的路由判断"""
+        from cursor.client import CursorAgentClient, CursorAgentConfig
+
+        config = CursorAgentConfig(
+            cloud_enabled=True,
+            auto_detect_cloud_prefix=False,  # 禁用自动检测
+        )
+        client = CursorAgentClient(config=config)
+
+        # auto_detect_cloud_prefix=False 时，即使以 & 开头也不应路由到 Cloud
+        assert client._should_route_to_cloud("& 任务") is False
+
+    @pytest.mark.asyncio
+    async def test_execute_routes_to_cloud_when_enabled(self, cloud_enabled_config):
+        """测试 cloud_enabled=True 且 & 前缀时调用 CloudClient"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # Mock _execute_via_cloud 方法
+        from cursor.client import CursorAgentResult
+        mock_cloud_result = CursorAgentResult(
+            success=True,
+            output="Cloud executed successfully",
+            exit_code=0,
+        )
+
+        with patch.object(
+            client, "_execute_via_cloud", new_callable=AsyncMock
+        ) as mock_cloud:
+            mock_cloud.return_value = mock_cloud_result
+
+            result = await client.execute("& 分析代码")
+
+            # 验证调用了 Cloud 执行
+            mock_cloud.assert_called_once()
+            assert result.success is True
+            assert result.output == "Cloud executed successfully"
+
+    @pytest.mark.asyncio
+    async def test_execute_routes_to_local_when_no_prefix(self, cloud_enabled_config):
+        """测试无 & 前缀时使用本地 CLI"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # Mock 本地执行
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"Local CLI executed", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await client.execute("分析代码")  # 无 & 前缀
+
+            assert result.success is True
+            assert "Local CLI executed" in result.output
+
+    @pytest.mark.asyncio
+    async def test_execute_routes_to_local_when_cloud_disabled(self, cloud_disabled_config):
+        """测试 cloud_enabled=False 时使用本地 CLI"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_disabled_config)
+
+        # Mock 本地执行
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"Local CLI executed", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            # 即使有 & 前缀，因为 cloud_enabled=False，也应使用本地
+            result = await client.execute("& 分析代码")
+
+            assert result.success is True
+            assert "Local CLI executed" in result.output
+
+    @pytest.mark.asyncio
+    async def test_execute_via_cloud_passes_options(self, cloud_enabled_config):
+        """测试 Cloud 路径正确传递 model/working_directory/timeout/allow_write"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # Mock CursorCloudClient.execute（延迟导入的模块需要用完整路径）
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Cloud output"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = []
+
+        with patch(
+            "cursor.cloud.client.CursorCloudClient"
+        ) as MockCloudClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute = AsyncMock(return_value=mock_cloud_result)
+            MockCloudClient.return_value = mock_client_instance
+
+            with patch("cursor.cloud_client.CloudAuthManager"):
+                result = await client.execute(
+                    "& 分析代码",
+                    working_directory="/custom/path",
+                    timeout=600,
+                )
+
+                # 验证 execute 被调用
+                mock_client_instance.execute.assert_called_once()
+                call_kwargs = mock_client_instance.execute.call_args.kwargs
+
+                # 验证 options 包含正确的参数
+                options = call_kwargs.get("options")
+                assert options is not None
+                assert options.model == "opus-4.5-thinking"
+                assert options.working_directory == "/custom/path"
+                assert options.timeout == 600
+                assert options.allow_write is True
+
+    @pytest.mark.asyncio
+    async def test_execute_via_cloud_handles_timeout(self, cloud_enabled_config):
+        """测试 Cloud 执行超时处理"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        with patch(
+            "cursor.cloud.client.CursorCloudClient"
+        ) as MockCloudClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute = AsyncMock(
+                side_effect=asyncio.TimeoutError()
+            )
+            MockCloudClient.return_value = mock_client_instance
+
+            with patch("cursor.cloud_client.CloudAuthManager"):
+                result = await client.execute("& 慢任务", timeout=1)
+
+                assert result.success is False
+                assert "超时" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_via_cloud_handles_exception(self, cloud_enabled_config):
+        """测试 Cloud 执行异常处理"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        with patch(
+            "cursor.cloud.client.CursorCloudClient"
+        ) as MockCloudClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute = AsyncMock(
+                side_effect=RuntimeError("Cloud API error")
+            )
+            MockCloudClient.return_value = mock_client_instance
+
+            with patch("cursor.cloud_client.CloudAuthManager"):
+                result = await client.execute("& 任务")
+
+                assert result.success is False
+                assert "Cloud API error" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_with_session_id_via_cloud(self, cloud_enabled_config):
+        """测试带 session_id 的 Cloud 执行"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Resumed from cloud"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = []
+
+        with patch(
+            "cursor.cloud.client.CursorCloudClient"
+        ) as MockCloudClient:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.execute = AsyncMock(return_value=mock_cloud_result)
+            MockCloudClient.return_value = mock_client_instance
+
+            with patch("cursor.cloud_client.CloudAuthManager"):
+                result = await client.execute(
+                    "& 继续任务",
+                    session_id="cloud-session-123",
+                )
+
+                # 验证 session_id 被传递
+                call_kwargs = mock_client_instance.execute.call_args.kwargs
+                assert call_kwargs.get("session_id") == "cloud-session-123"
+
+    def test_edge_case_only_ampersand(self, cloud_enabled_config):
+        """测试边界用例：只有 & 符号"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # 只有 & 符号不应该路由到 Cloud
+        assert client._should_route_to_cloud("&") is False
+        assert client._should_route_to_cloud("& ") is False
+        assert client._should_route_to_cloud("  &  ") is False
+
+    def test_edge_case_whitespace_only(self, cloud_enabled_config):
+        """测试边界用例：只有空白"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        assert client._should_route_to_cloud("") is False
+        assert client._should_route_to_cloud("   ") is False
+        assert client._should_route_to_cloud("\t\n") is False
+
+    def test_edge_case_ampersand_in_middle(self, cloud_enabled_config):
+        """测试边界用例：& 在中间"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_config)
+
+        # & 在中间不应该路由到 Cloud
+        assert client._should_route_to_cloud("任务 & 描述") is False
+        assert client._should_route_to_cloud("code & test") is False
+
+
 class TestIntegrationScenarios:
     """集成场景测试"""
 

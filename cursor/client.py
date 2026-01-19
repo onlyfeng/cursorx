@@ -49,10 +49,10 @@ class CursorAgentConfig(BaseModel):
     全局选项:
     - -p / --print: 非交互模式，输出到控制台
     - -m / --model <model>: 指定模型
-    - --mode <mode>: Agent 工作模式 (plan | ask | code)
+    - --mode <mode>: Agent 工作模式 (plan | ask | agent)
       - plan: 规划模式，仅分析和规划，不修改文件
       - ask: 询问模式，回答问题和提供建议
-      - code: 编码模式，执行代码修改任务
+      - agent: 完整代理模式，执行代码修改任务（默认）
     - --output-format <format>: text | json | stream-json
     - --stream-partial-output: 增量流式输出（配合 stream-json）
     - -f / --force: 允许直接修改文件，无需确认
@@ -186,7 +186,8 @@ class CursorAgentConfig(BaseModel):
     # Agent 工作模式（--mode）
     # - "plan": 规划模式，仅分析和规划，不修改文件（适合 Planner）
     # - "ask": 询问模式，回答问题和提供建议（适合咨询场景）
-    # - "code": 编码模式，执行代码修改任务（适合 Worker）
+    # - "agent": 完整代理模式，执行代码修改任务（适合 Worker，默认）
+    # - "code": 已废弃，兼容旧配置，实际映射为 "agent"
     # - None: 不指定模式，使用默认行为
     mode: Optional[str] = None
 
@@ -309,6 +310,11 @@ class CursorAgentClient:
     ) -> CursorAgentResult:
         """执行 Cursor Agent 任务
 
+        统一路由策略:
+        - 若 cloud_enabled=True 且 auto_detect_cloud_prefix=True 且 instruction 为 cloud request（以 & 开头）,
+          则使用 CursorCloudClient.execute()
+        - 否则保持现有本地 CLI 执行
+
         Args:
             instruction: 给 Agent 的指令
             working_directory: 工作目录
@@ -326,6 +332,17 @@ class CursorAgentClient:
         full_prompt = self._build_prompt(instruction, context)
 
         started_at = datetime.now()
+
+        # 统一路由策略: 检查是否应该使用 Cloud 执行
+        if self._should_route_to_cloud(instruction):
+            return await self._execute_via_cloud(
+                instruction=instruction,
+                working_directory=work_dir,
+                context=context,
+                timeout=timeout_sec,
+                session_id=session_id,
+                started_at=started_at,
+            )
 
         try:
             # 尝试不同的调用方式
@@ -362,6 +379,171 @@ class CursorAgentClient:
             )
         except Exception as e:
             logger.error(f"Cursor Agent 执行异常: {e}")
+            return CursorAgentResult(
+                success=False,
+                error=str(e),
+                exit_code=-1,
+                started_at=started_at,
+            )
+
+    def _should_route_to_cloud(self, instruction: str) -> bool:
+        """检查是否应该路由到 Cloud 执行
+
+        统一路由策略:
+        - 若 cloud_enabled=True 且 auto_detect_cloud_prefix=True 且 instruction 为 cloud request,
+          则返回 True
+
+        边界情况处理:
+        - None 或空字符串返回 False
+        - 只有 & 的字符串返回 False（无实际内容）
+        - 只有空白字符返回 False
+        - & 后面需要有实际内容才认为是 cloud request
+
+        Args:
+            instruction: 给 Agent 的指令
+
+        Returns:
+            是否应该路由到 Cloud
+        """
+        # 检查 cloud 是否启用
+        if not self.config.cloud_enabled:
+            return False
+
+        # 检查是否自动检测 cloud 前缀
+        if not self.config.auto_detect_cloud_prefix:
+            return False
+
+        # 检查 instruction 是否为 cloud request
+        return self._is_cloud_request(instruction)
+
+    @staticmethod
+    def _is_cloud_request(prompt: str) -> bool:
+        """检测是否是云端请求（以 & 开头）
+
+        边界情况处理:
+        - None 或空字符串返回 False
+        - 只有 & 的字符串返回 False（无实际内容）
+        - 只有空白字符返回 False
+        - 多个 & 开头只识别第一个
+
+        Args:
+            prompt: 任务 prompt
+
+        Returns:
+            是否为云端请求
+        """
+        # 处理 None 和非字符串类型
+        if not prompt or not isinstance(prompt, str):
+            return False
+
+        stripped = prompt.strip()
+
+        # 空字符串
+        if not stripped:
+            return False
+
+        # Cloud 前缀
+        CLOUD_PREFIX = "&"
+
+        # 检查是否以 & 开头
+        if not stripped.startswith(CLOUD_PREFIX):
+            return False
+
+        # 确保 & 后面有实际内容（不只是空白）
+        content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
+        return len(content_after_prefix) > 0
+
+    async def _execute_via_cloud(
+        self,
+        instruction: str,
+        working_directory: str,
+        context: Optional[dict[str, Any]],
+        timeout: int,
+        session_id: Optional[str],
+        started_at: datetime,
+    ) -> CursorAgentResult:
+        """通过 CursorCloudClient 执行任务
+
+        使用 CloudTaskOptions 传递 model/working_directory/timeout/allow_write 等选项。
+
+        Args:
+            instruction: 给 Agent 的指令（可能带 & 前缀）
+            working_directory: 工作目录
+            context: 上下文信息
+            timeout: 超时时间
+            session_id: 可选的会话 ID
+            started_at: 开始时间
+
+        Returns:
+            执行结果
+        """
+        try:
+            # 延迟导入避免循环依赖
+            from cursor.cloud.client import CursorCloudClient
+            from cursor.cloud.task import CloudTaskOptions
+            from cursor.cloud_client import CloudAuthManager
+
+            # 构建完整的 prompt（包含上下文）
+            full_prompt = self._build_prompt(instruction, context)
+
+            # 构建 CloudTaskOptions，传递 model/working_directory/timeout/allow_write
+            task_options = CloudTaskOptions(
+                model=self.config.model,
+                working_directory=working_directory,
+                timeout=timeout,
+                allow_write=self.config.force_write,
+            )
+
+            # 创建 CloudAuthManager
+            auth_manager = CloudAuthManager()
+            # 如果 config 中有 api_key，设置到环境变量
+            if self.config.api_key:
+                os.environ.setdefault("CURSOR_API_KEY", self.config.api_key)
+
+            # 创建 CursorCloudClient
+            cloud_client = CursorCloudClient(
+                api_base=self.config.cloud_api_base,
+                agents_endpoint=self.config.cloud_agents_endpoint,
+                auth_manager=auth_manager,
+            )
+
+            logger.info(f"使用 Cloud 路由执行任务: {instruction[:50]}...")
+
+            # 调用 CursorCloudClient.execute()
+            cloud_result = await cloud_client.execute(
+                prompt=full_prompt,
+                options=task_options,
+                wait=True,
+                timeout=timeout,
+                session_id=session_id,
+            )
+
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            return CursorAgentResult(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                exit_code=0 if cloud_result.success else -1,
+                duration=duration,
+                started_at=started_at,
+                completed_at=completed_at,
+                files_modified=cloud_result.files_modified,
+                command_used="cloud-agent",
+            )
+
+        except asyncio.TimeoutError:
+            logger.error(f"Cloud Agent 执行超时 ({timeout}s)")
+            return CursorAgentResult(
+                success=False,
+                error=f"Cloud 执行超时 ({timeout}s)",
+                exit_code=-1,
+                duration=timeout,
+                started_at=started_at,
+            )
+        except Exception as e:
+            logger.error(f"Cloud Agent 执行异常: {e}")
             return CursorAgentResult(
                 success=False,
                 error=str(e),
@@ -450,9 +632,11 @@ class CursorAgentClient:
         if self.config.model:
             cmd.extend(["--model", self.config.model])
 
-        # 添加工作模式 (plan/ask/code)
+        # 添加工作模式 (plan/ask/agent)
+        # 兼容旧的 "code" 模式，映射为 "agent"
         if self.config.mode:
-            cmd.extend(["--mode", self.config.mode])
+            effective_mode = "agent" if self.config.mode == "code" else self.config.mode
+            cmd.extend(["--mode", effective_mode])
 
         # 添加输出格式
         # text: 纯文本输出

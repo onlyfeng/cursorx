@@ -386,7 +386,15 @@ def parse_args() -> argparse.Namespace:
         help="[iterate] 禁用多进程编排器，使用基本协程编排器",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # 标记用户是否显式设置了编排器选项
+    # 检查 sys.argv 中是否包含 --orchestrator 或 --no-mp
+    args._orchestrator_user_set = any(
+        arg in sys.argv for arg in ["--orchestrator", "--no-mp"]
+    )
+
+    return args
 
 
 # ============================================================
@@ -442,6 +450,14 @@ class TaskAnalyzer:
         "no_stream_log": ["禁用流式日志", "关闭流式", "no-stream", "简洁模式", "静默模式"],
         "no_auto_push": ["禁用推送", "不推送", "关闭推送", "no-push"],
     }
+
+    # 非并行/协程模式关键词映射（用于 iterate 模式的编排器选择）
+    NON_PARALLEL_KEYWORDS = [
+        "禁用多进程", "禁用 mp", "不使用多进程", "单进程",
+        "非并行", "顺序执行", "协程模式", "基本模式",
+        "basic 编排器", "basic编排器", "no-mp", "no_mp",
+        "--no-mp", "使用协程", "使用 basic",
+    ]
 
     # 无限迭代关键词
     UNLIMITED_KEYWORDS = ["无限", "持续", "一直", "不停", "循环", "max", "unlimited"]
@@ -522,6 +538,12 @@ class TaskAnalyzer:
         if any(kw in task_lower for kw in self.UNLIMITED_KEYWORDS):
             analysis.options["max_iterations"] = -1
             reasoning_parts.append("检测到无限迭代关键词")
+
+        # 检测非并行/协程模式关键词（影响 iterate 模式的编排器选择）
+        if any(kw.lower() in task_lower for kw in self.NON_PARALLEL_KEYWORDS):
+            analysis.options["no_mp"] = True
+            analysis.options["orchestrator"] = "basic"
+            reasoning_parts.append("检测到非并行关键词，使用协程编排器")
 
         # 提取 Worker 数量
         worker_match = re.search(r'(\d+)\s*(个)?\s*(worker|进程|并行)', task_lower)
@@ -721,8 +743,20 @@ class Runner:
         options["commit_per_iteration"] = commit_per_iteration
 
         # 编排器选项（用于 iterate 模式）
-        options["orchestrator"] = getattr(self.args, "orchestrator", "mp")
-        options["no_mp"] = getattr(self.args, "no_mp", False)
+        # 仅在用户未显式传入 --orchestrator/--no-mp 时，允许 analysis_options 覆盖
+        orchestrator_user_set = getattr(self.args, "_orchestrator_user_set", False)
+        if orchestrator_user_set:
+            # 用户显式设置，优先使用命令行参数
+            options["orchestrator"] = getattr(self.args, "orchestrator", "mp")
+            options["no_mp"] = getattr(self.args, "no_mp", False)
+        else:
+            # 用户未显式设置，允许自然语言分析结果覆盖
+            options["orchestrator"] = analysis_options.get(
+                "orchestrator", getattr(self.args, "orchestrator", "mp")
+            )
+            options["no_mp"] = analysis_options.get(
+                "no_mp", getattr(self.args, "no_mp", False)
+            )
 
         # 知识库注入选项（用于 MP 模式）
         options["enable_knowledge_injection"] = getattr(

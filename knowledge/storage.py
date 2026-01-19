@@ -853,6 +853,43 @@ class KnowledgeStorage:
         """根据 URL 获取文档 ID"""
         return self._url_to_id.get(url)
 
+    def get_content_hash_by_url(self, url: str) -> Optional[str]:
+        """根据 URL 获取文档内容哈希（fingerprint）
+
+        用于快速比较内容是否变化，无需加载完整文档。
+
+        Args:
+            url: 文档来源 URL
+
+        Returns:
+            内容哈希（16字符 SHA256 前缀），不存在时返回 None
+        """
+        doc_id = self._url_to_id.get(url)
+        if doc_id:
+            entry = self._index.get(doc_id)
+            if entry:
+                return entry.content_hash
+        return None
+
+    async def get_index_entry_by_url(self, url: str) -> Optional[IndexEntry]:
+        """根据 URL 获取索引条目
+
+        用于获取文档的摘要信息（不加载完整内容）。
+
+        Args:
+            url: 文档来源 URL
+
+        Returns:
+            索引条目，不存在时返回 None
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        doc_id = self._url_to_id.get(url)
+        if doc_id:
+            return self._index.get(doc_id)
+        return None
+
     async def save_documents_batch(
         self,
         docs: list[Document],

@@ -842,6 +842,78 @@ class TestTaskAnalyzer:
             mock_run.assert_not_called()
             assert analysis.mode == RunMode.KNOWLEDGE
 
+    def test_detect_non_parallel_keywords(self, mock_args: argparse.Namespace) -> None:
+        """验证检测非并行/协程模式关键词"""
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        # 测试多种非并行关键词
+        non_parallel_tasks = [
+            "自我迭代，非并行模式",
+            "禁用多进程执行任务",
+            "使用协程模式处理",
+            "单进程运行",
+            "顺序执行任务",
+            "使用 basic 编排器",
+            "no-mp 模式运行",
+            "基本模式执行",
+        ]
+
+        for task in non_parallel_tasks:
+            analysis = analyzer.analyze(task, mock_args)
+            # 验证 no_mp=True 或 orchestrator='basic'
+            no_mp_set = analysis.options.get("no_mp") is True
+            orchestrator_basic = analysis.options.get("orchestrator") == "basic"
+            assert no_mp_set or orchestrator_basic, (
+                f"任务 '{task}' 应该设置 no_mp=True 或 orchestrator='basic'，"
+                f"实际 no_mp={analysis.options.get('no_mp')}, "
+                f"orchestrator={analysis.options.get('orchestrator')}"
+            )
+            # 验证 reasoning 包含非并行相关信息
+            assert "非并行" in analysis.reasoning or "协程" in analysis.reasoning, (
+                f"任务 '{task}' 的 reasoning 应该包含非并行相关信息，"
+                f"实际: {analysis.reasoning}"
+            )
+
+    def test_non_parallel_with_iterate_mode(self, mock_args: argparse.Namespace) -> None:
+        """验证自我迭代模式+非并行关键词同时生效"""
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        analysis = analyzer.analyze("自我迭代，非并行模式，优化代码", mock_args)
+
+        # 验证模式为 ITERATE
+        assert analysis.mode == RunMode.ITERATE, (
+            f"应该检测到 ITERATE 模式，实际: {analysis.mode}"
+        )
+
+        # 验证非并行选项生效
+        assert analysis.options.get("no_mp") is True or analysis.options.get("orchestrator") == "basic", (
+            "应该同时设置非并行选项"
+        )
+
+    def test_non_parallel_options_merged_to_runner(self, mock_args: argparse.Namespace) -> None:
+        """验证非并行选项正确传递到 Runner._merge_options"""
+        # 设置 mock_args 的编排器相关属性（模拟命令行默认值）
+        mock_args.orchestrator = "mp"
+        mock_args.no_mp = False
+
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("自我迭代，非并行模式", mock_args)
+
+        # 验证分析结果包含非并行选项
+        assert analysis.options.get("no_mp") is True or analysis.options.get("orchestrator") == "basic"
+
+        # 创建 Runner 并验证 _merge_options
+        runner = Runner(mock_args)
+        merged = runner._merge_options(analysis.options)
+
+        # 合并后应保留非并行选项
+        # 注意：_merge_options 可能需要从 analysis.options 合并，或使用 args 默认值
+        # 验证合并逻辑正确传递了分析结果中的选项
+        assert merged.get("no_mp") is True or merged.get("orchestrator") == "basic", (
+            f"合并后的选项应包含非并行设置，实际: no_mp={merged.get('no_mp')}, "
+            f"orchestrator={merged.get('orchestrator')}"
+        )
+
 
 # ============================================================
 # TestRunner

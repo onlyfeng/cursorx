@@ -1598,7 +1598,7 @@ class TestIntegrationScenarios:
         """测试执行者工作流"""
         config = CursorAgentConfig(
             model="opus-4.5-thinking",
-            mode="code",
+            mode="agent",
             output_format="text",
             force_write=True,
         )
@@ -1622,7 +1622,46 @@ class TestIntegrationScenarios:
             # 验证执行者配置
             call_args = mock_exec.call_args.args
             assert "--mode" in call_args
-            assert "code" in call_args
+            assert "agent" in call_args
+            assert "--force" in call_args
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_worker_workflow_code_mode_compat(self):
+        """测试执行者工作流 - code 模式兼容性
+
+        注意: mode="code" 被映射为 "agent" 以保持向后兼容。
+        实际命令为: --mode agent
+        """
+        config = CursorAgentConfig(
+            model="opus-4.5-thinking",
+            mode="code",  # 使用旧的 code 模式
+            output_format="text",
+            force_write=True,
+        )
+        client = CursorAgentClient(config=config)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(
+            return_value=(b"File modified successfully", b"")
+        )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ) as mock_exec:
+            result = await client.execute(
+                "修改 src/main.py",
+                context={"files": ["src/main.py"]},
+            )
+
+            # 验证 code 模式被映射为 agent
+            call_args = mock_exec.call_args.args
+            assert "--mode" in call_args
+            mode_idx = call_args.index("--mode")
+            assert call_args[mode_idx + 1] == "agent"  # code 被映射为 agent
             assert "--force" in call_args
 
         assert result.success is True
