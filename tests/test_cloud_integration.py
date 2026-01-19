@@ -1447,6 +1447,294 @@ class TestCursorAgentClientCloudRouting:
         assert client._should_route_to_cloud("code & test") is False
 
 
+class TestSelfIteratorExecutionModeIntegration:
+    """测试 SelfIterator 与 Orchestrator 的 execution_mode 集成
+
+    覆盖场景：
+    1. execution_mode=cloud 时 SelfIterator 使用 basic 编排器且 OrchestratorConfig.execution_mode 正确
+    2. execution_mode=auto 时 SelfIterator 使用 basic 编排器且 OrchestratorConfig.execution_mode 正确
+    3. 验证 cloud_auth_config 正确传递到 Orchestrator
+    4. 验证 '&' 前缀自动切换到 Cloud 模式
+    """
+
+    @pytest.fixture
+    def cloud_iterate_args(self):
+        """创建 Cloud 模式的迭代参数"""
+        import argparse
+        return argparse.Namespace(
+            requirement="测试 Cloud 模式",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",  # 用户默认使用 mp
+            no_mp=False,
+            # Cloud 模式配置
+            execution_mode="cloud",
+            cloud_api_key="test-cloud-api-key",
+            cloud_auth_timeout=45,
+            _orchestrator_user_set=False,
+        )
+
+    @pytest.fixture
+    def auto_iterate_args(self):
+        """创建 Auto 模式的迭代参数"""
+        import argparse
+        return argparse.Namespace(
+            requirement="测试 Auto 模式",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            # Auto 模式配置
+            execution_mode="auto",
+            cloud_api_key="test-auto-api-key",
+            cloud_auth_timeout=30,
+            _orchestrator_user_set=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cloud_mode_orchestrator_config_execution_mode(
+        self, cloud_iterate_args
+    ):
+        """测试 Cloud 模式下 OrchestratorConfig.execution_mode 正确设置
+
+        验证：
+        1. SelfIterator 选择 basic 编排器
+        2. OrchestratorConfig 接收到 execution_mode=CLOUD
+        3. OrchestratorConfig 接收到正确的 cloud_auth_config
+        """
+        from scripts.run_iterate import SelfIterator
+        from cursor.executor import ExecutionMode
+
+        iterator = SelfIterator(cloud_iterate_args)
+        iterator.context.iteration_goal = "测试 Cloud 目标"
+
+        captured_config = None
+
+        def capture_config(*args, **kwargs):
+            nonlocal captured_config
+            captured_config = kwargs
+            return MagicMock()
+
+        with patch("scripts.run_iterate.OrchestratorConfig", side_effect=capture_config):
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig"):
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证 execution_mode
+                        assert captured_config is not None
+                        assert captured_config.get("execution_mode") == ExecutionMode.CLOUD
+
+                        # 验证 cloud_auth_config
+                        cloud_auth = captured_config.get("cloud_auth_config")
+                        assert cloud_auth is not None
+                        assert cloud_auth.api_key == "test-cloud-api-key"
+                        assert cloud_auth.auth_timeout == 45
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_orchestrator_config_execution_mode(
+        self, auto_iterate_args
+    ):
+        """测试 Auto 模式下 OrchestratorConfig.execution_mode 正确设置
+
+        验证：
+        1. SelfIterator 选择 basic 编排器
+        2. OrchestratorConfig 接收到 execution_mode=AUTO
+        3. OrchestratorConfig 接收到正确的 cloud_auth_config
+        """
+        from scripts.run_iterate import SelfIterator
+        from cursor.executor import ExecutionMode
+
+        iterator = SelfIterator(auto_iterate_args)
+        iterator.context.iteration_goal = "测试 Auto 目标"
+
+        captured_config = None
+
+        def capture_config(*args, **kwargs):
+            nonlocal captured_config
+            captured_config = kwargs
+            return MagicMock()
+
+        with patch("scripts.run_iterate.OrchestratorConfig", side_effect=capture_config):
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig"):
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证 execution_mode
+                        assert captured_config is not None
+                        assert captured_config.get("execution_mode") == ExecutionMode.AUTO
+
+                        # 验证 cloud_auth_config
+                        cloud_auth = captured_config.get("cloud_auth_config")
+                        assert cloud_auth is not None
+                        assert cloud_auth.api_key == "test-auto-api-key"
+
+    @pytest.mark.asyncio
+    async def test_cloud_mode_bypasses_mp_orchestrator(
+        self, cloud_iterate_args
+    ):
+        """测试 Cloud 模式完全绕过 MP 编排器
+
+        验证：
+        1. _run_with_mp_orchestrator 不被调用
+        2. _run_with_basic_orchestrator 被调用
+        3. 结果正确返回
+        """
+        from scripts.run_iterate import SelfIterator
+
+        iterator = SelfIterator(cloud_iterate_args)
+        iterator.context.iteration_goal = "测试 Cloud 绕过 MP"
+
+        mock_basic_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator,
+            "_run_with_mp_orchestrator",
+            new_callable=AsyncMock,
+        ) as mock_mp:
+            with patch.object(
+                iterator,
+                "_run_with_basic_orchestrator",
+                new_callable=AsyncMock,
+                return_value=mock_basic_result,
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # MP 不应被调用
+                    mock_mp.assert_not_called()
+
+                    # basic 应被调用
+                    mock_basic.assert_called_once()
+
+                    # 结果正确
+                    assert result["success"] is True
+                    assert result["iterations_completed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_bypasses_mp_orchestrator(
+        self, auto_iterate_args
+    ):
+        """测试 Auto 模式完全绕过 MP 编排器"""
+        from scripts.run_iterate import SelfIterator
+
+        iterator = SelfIterator(auto_iterate_args)
+        iterator.context.iteration_goal = "测试 Auto 绕过 MP"
+
+        mock_basic_result = {
+            "success": True,
+            "iterations_completed": 2,
+            "total_tasks_created": 4,
+            "total_tasks_completed": 4,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator,
+            "_run_with_mp_orchestrator",
+            new_callable=AsyncMock,
+        ) as mock_mp:
+            with patch.object(
+                iterator,
+                "_run_with_basic_orchestrator",
+                new_callable=AsyncMock,
+                return_value=mock_basic_result,
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # MP 不应被调用
+                    mock_mp.assert_not_called()
+
+                    # basic 应被调用
+                    mock_basic.assert_called_once()
+
+    def test_orchestrator_receives_execution_mode_from_config(
+        self, temp_working_dir
+    ):
+        """测试 Orchestrator 正确接收 execution_mode 配置"""
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.CLOUD,
+            cloud_auth_config=CloudAuthConfig(api_key="test-key"),
+        )
+
+        orchestrator = Orchestrator(config)
+
+        assert orchestrator.config.execution_mode == ExecutionMode.CLOUD
+        assert orchestrator.config.cloud_auth_config is not None
+        assert orchestrator.config.cloud_auth_config.api_key == "test-key"
+
+    def test_orchestrator_receives_auto_mode_from_config(
+        self, temp_working_dir
+    ):
+        """测试 Orchestrator 正确接收 AUTO 执行模式配置"""
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.AUTO,
+            cloud_auth_config=CloudAuthConfig(api_key="auto-key", auth_timeout=60),
+        )
+
+        orchestrator = Orchestrator(config)
+
+        assert orchestrator.config.execution_mode == ExecutionMode.AUTO
+        assert orchestrator.config.cloud_auth_config.api_key == "auto-key"
+        assert orchestrator.config.cloud_auth_config.auth_timeout == 60
+
+
 class TestIntegrationScenarios:
     """集成场景测试"""
 

@@ -299,8 +299,10 @@ python scripts/run_iterate.py --dry-run "分析改进点"
 | `--force-update` | 强制更新知识库 | False |
 | `--orchestrator` | 编排器类型: `mp`=多进程(默认), `basic`=协程模式 | `mp` |
 | `--no-mp` | 禁用多进程编排器，使用基本协程编排器 | False |
+| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `cli` |
 | `--auto-commit` | 迭代完成后自动提交代码更改 | False |
 | `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | False |
+| `--commit-per-iteration` | 每次迭代都提交（默认仅在全部完成时提交） | False |
 | `-v, --verbose` | 详细输出 | False |
 
 ### 多进程并行执行
@@ -308,7 +310,7 @@ python scripts/run_iterate.py --dry-run "分析改进点"
 自我迭代模式 **默认启用多进程并行执行**（`MultiProcessOrchestrator`），可显著提升任务执行效率：
 
 ```bash
-# 默认使用多进程编排器（推荐）
+# 默认使用多进程编排器（推荐，execution-mode=cli 时）
 python run.py --mode iterate "优化代码"
 python scripts/run_iterate.py "增加新功能支持"
 
@@ -319,7 +321,13 @@ python scripts/run_iterate.py --orchestrator mp "任务描述"
 # 禁用多进程，使用协程编排器
 python run.py --mode iterate --no-mp "任务描述"
 python scripts/run_iterate.py --orchestrator basic "任务描述"
+
+# 使用 Cloud/Auto 执行模式（自动使用 basic 编排器）
+python scripts/run_iterate.py --execution-mode auto "任务描述"
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 ```
+
+**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。
 
 ### 回退策略
 

@@ -569,10 +569,12 @@ Planner (规划者) → TaskQueue → Workers (执行者) → Reviewer (评审�
 | `MultiProcessOrchestrator` | `--orchestrator mp`（默认） | 多进程并行，适合复杂任务 |
 | `Orchestrator` | `--orchestrator basic` 或 `--no-mp` | 协程模式，适合简单任务或资源受限环境 |
 
+**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。此时即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。
+
 ### 运行示例
 
 ```bash
-# 默认使用多进程编排器（推荐）
+# 默认使用多进程编排器（推荐，execution-mode=cli 时）
 python run.py --mode iterate "优化代码"
 python scripts/run_iterate.py "增加新功能支持"
 
@@ -582,6 +584,10 @@ python run.py --mode iterate --orchestrator mp "任务描述" --workers 5
 # 禁用多进程，使用协程编排器
 python run.py --mode iterate --no-mp "任务描述"
 python scripts/run_iterate.py --orchestrator basic "任务描述"
+
+# 使用 Cloud/Auto 执行模式（自动使用 basic 编排器）
+python scripts/run_iterate.py --execution-mode auto "任务描述"
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 
 # 配合自动提交
 python run.py --mode iterate --auto-commit --auto-push "完成功能"
@@ -608,11 +614,20 @@ python run.py --mode iterate --auto-commit --auto-push "完成功能"
 |------|------|--------|
 | `--orchestrator` | 编排器类型: `mp`/`basic` | `mp` |
 | `--no-mp` | 禁用多进程编排器 | False |
+| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `cli` |
 | `--workers` | Worker 池大小 | 3 |
 | `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 10 |
+| `--skip-online` | 跳过在线文档检查 | False |
+| `--dry-run` | 仅分析不执行 | False |
 | `--auto-commit` | 启用自动提交（**必须显式指定才会提交**） | **False** |
 | `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | **False** |
 | `--commit-per-iteration` | 每次迭代都提交（默认仅在全部完成时提交，`run.py` 和 `scripts/run_iterate.py` 均支持） | False |
+| `-v, --verbose` | 详细输出（DEBUG 级别日志） | False |
+| `-q, --quiet` | 静默模式（仅 WARNING 及以上日志） | False |
+| `--log-level` | 日志级别: `DEBUG`/`INFO`/`WARNING`/`ERROR`（优先级高于 --verbose/--quiet） | `INFO` |
+| `--heartbeat-debug` | 启用心跳调试日志（仅调试时使用，默认关闭以减少日志输出） | False |
+| `--stall-diagnostics` | 启用卡死诊断日志（**默认关闭**，疑似卡死时再启用以排查问题） | **False** |
+| `--stall-diagnostics-level` | 诊断日志级别: `debug`/`info`/`warning`/`error`（启用诊断时默认 warning） | `warning` |
 
 ### 自动提交配置
 

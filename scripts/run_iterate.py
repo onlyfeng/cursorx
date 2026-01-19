@@ -6,19 +6,19 @@
 
 用法:
     # 完整自我迭代（检查在线更新 + 用户需求）
-    python scripts/self_iterate.py "增加对新斜杠命令的支持"
+    python scripts/run_iterate.py "增加对新斜杠命令的支持"
 
     # 仅基于知识库迭代（跳过在线检查）
-    python scripts/self_iterate.py --skip-online "优化 CLI 参数处理"
+    python scripts/run_iterate.py --skip-online "优化 CLI 参数处理"
 
     # 纯自动模式（无额外需求，仅检查更新）
-    python scripts/self_iterate.py
+    python scripts/run_iterate.py
 
     # 指定 changelog URL
-    python scripts/self_iterate.py --changelog-url "https://cursor.com/cn/changelog"
+    python scripts/run_iterate.py --changelog-url "https://cursor.com/cn/changelog"
 
     # 仅分析不执行
-    python scripts/self_iterate.py --dry-run "分析改进点"
+    python scripts/run_iterate.py --dry-run "分析改进点"
 """
 import argparse
 import asyncio
@@ -44,6 +44,8 @@ from coordinator import (
     OrchestratorConfig,
 )
 from cursor.client import CursorAgentConfig
+from cursor.cloud_client import CloudAuthConfig
+from cursor.executor import ExecutionMode
 from knowledge import (
     Document,
     FetchConfig,
@@ -69,6 +71,9 @@ CURSOR_DOC_URLS = [
     "https://cursor.com/cn/docs/cli/hooks",
     "https://cursor.com/cn/docs/cli/subagents",
     "https://cursor.com/cn/docs/cli/skills",
+    # Jan 16 2026: plan/ask 模式专页
+    "https://cursor.com/cn/docs/cli/modes/plan",
+    "https://cursor.com/cn/docs/cli/modes/ask",
 ]
 
 # 更新关键词模式（用于识别 Changelog 中的更新点）
@@ -91,6 +96,61 @@ DISABLE_MP_KEYWORDS = [
     "单进程", "basic", "no-mp", "no_mp",
     "禁用多进程", "禁用mp", "关闭多进程",
 ]
+
+# Cloud 前缀（& 开头表示使用 Cloud 执行）
+CLOUD_PREFIX = "&"
+
+
+def is_cloud_request(prompt: str) -> bool:
+    """检测是否为 Cloud 请求（以 & 开头）
+
+    边界情况处理:
+    - None 或空字符串返回 False
+    - 只有 & 的字符串返回 False（无实际内容）
+    - 只有空白字符返回 False
+    - & 后面需要有实际内容才认为是 cloud request
+
+    Args:
+        prompt: 任务 prompt
+
+    Returns:
+        是否为云端请求
+    """
+    # 处理 None 和非字符串类型
+    if not prompt or not isinstance(prompt, str):
+        return False
+
+    stripped = prompt.strip()
+
+    # 空字符串
+    if not stripped:
+        return False
+
+    # 检查是否以 & 开头
+    if not stripped.startswith(CLOUD_PREFIX):
+        return False
+
+    # 确保 & 后面有实际内容（不只是空白）
+    content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
+    return len(content_after_prefix) > 0
+
+
+def strip_cloud_prefix(prompt: str) -> str:
+    """去除 Cloud 前缀 &
+
+    Args:
+        prompt: 可能带 & 前缀的 prompt
+
+    Returns:
+        去除前缀后的 prompt
+    """
+    if not prompt or not isinstance(prompt, str):
+        return prompt or ""
+
+    stripped = prompt.strip()
+    if stripped.startswith(CLOUD_PREFIX):
+        return stripped[len(CLOUD_PREFIX):].strip()
+    return prompt
 
 
 # ============================================================
@@ -217,16 +277,16 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 示例:
   # 完整自我迭代（检查在线更新 + 用户需求）
-  python scripts/self_iterate.py "增加对新斜杠命令的支持"
+  python scripts/run_iterate.py "增加对新斜杠命令的支持"
 
   # 仅基于知识库迭代（跳过在线检查）
-  python scripts/self_iterate.py --skip-online "优化 CLI 参数处理"
+  python scripts/run_iterate.py --skip-online "优化 CLI 参数处理"
 
   # 纯自动模式（无额外需求，仅检查更新）
-  python scripts/self_iterate.py
+  python scripts/run_iterate.py
 
   # 仅分析不执行
-  python scripts/self_iterate.py --dry-run "分析改进点"
+  python scripts/run_iterate.py --dry-run "分析改进点"
         """,
     )
 
@@ -276,10 +336,76 @@ def parse_args() -> argparse.Namespace:
         help="强制更新知识库（即使内容未变化）",
     )
 
-    parser.add_argument(
+    # 日志控制参数组
+    log_group = parser.add_argument_group("日志控制")
+    log_verbosity = log_group.add_mutually_exclusive_group()
+    log_verbosity.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="详细输出",
+        help="详细输出（DEBUG 级别日志）",
+    )
+    log_verbosity.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="静默模式（仅 WARNING 及以上日志，默认行为已优化为较少日志）",
+    )
+    log_group.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="日志级别（默认: INFO，--verbose 时为 DEBUG，--quiet 时为 WARNING）",
+    )
+    log_group.add_argument(
+        "--heartbeat-debug",
+        action="store_true",
+        help="启用心跳调试日志（仅调试时使用，默认关闭以减少日志输出）",
+    )
+
+    # 卡死诊断参数组
+    # 设计目的：默认简洁输出避免刷屏，quiet 模式下降级到 DEBUG，verbose 模式下可启用更多诊断
+    stall_group = parser.add_argument_group("卡死诊断", "控制卡死检测和恢复的诊断输出")
+    stall_diag_toggle = stall_group.add_mutually_exclusive_group()
+    stall_diag_toggle.add_argument(
+        "--stall-diagnostics",
+        action="store_true",
+        dest="stall_diagnostics_enabled",
+        default=None,
+        help="启用卡死诊断日志（默认关闭，疑似卡死时再启用以排查问题）",
+    )
+    stall_diag_toggle.add_argument(
+        "--no-stall-diagnostics",
+        action="store_false",
+        dest="stall_diagnostics_enabled",
+        help="禁用卡死诊断日志（完全关闭摘要诊断输出）",
+    )
+    stall_group.add_argument(
+        "--stall-diagnostics-level",
+        type=str,
+        choices=["debug", "info", "warning", "error"],
+        default=None,
+        help="卡死诊断日志级别（默认: warning，quiet 模式下为 debug 以减少输出）",
+    )
+    stall_group.add_argument(
+        "--stall-recovery-interval",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="卡死检测/恢复间隔（秒，默认: 30.0）",
+    )
+    stall_group.add_argument(
+        "--execution-health-check-interval",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="执行阶段健康检查间隔（秒，默认: 30.0，不宜过低以避免频繁检查）",
+    )
+    stall_group.add_argument(
+        "--health-warning-cooldown",
+        type=float,
+        default=60.0,
+        metavar="SECONDS",
+        help="健康检查告警冷却时间（秒，同一 agent 在此时间内不重复告警，默认: 60.0）",
     )
 
     # 自动提交相关参数
@@ -321,6 +447,30 @@ def parse_args() -> argparse.Namespace:
         "--no-mp",
         action="store_true",
         help="禁用多进程编排器，使用基本协程编排器（等同于 --orchestrator basic）",
+    )
+
+    # 执行模式参数
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud"],
+        default="cli",
+        help="执行模式: cli=本地CLI(默认), auto=自动选择(Cloud优先), cloud=强制Cloud",
+    )
+
+    # Cloud 认证配置
+    parser.add_argument(
+        "--cloud-api-key",
+        type=str,
+        default=None,
+        help="Cloud API Key（可选，默认从 CURSOR_API_KEY 环境变量读取）",
+    )
+
+    parser.add_argument(
+        "--cloud-auth-timeout",
+        type=int,
+        default=30,
+        help="Cloud 认证超时时间（秒，默认 30）",
     )
 
     args = parser.parse_args()
@@ -699,6 +849,9 @@ class ChangelogAnalyzer:
         path = url.split('/')[-1]
         keywords = [path.replace('-', ' ')]
 
+        # 提取完整路径用于多级路径匹配（如 modes/plan, modes/ask）
+        full_path = '/'.join(url.split('/')[4:])  # 提取 docs/cli/ 之后的部分
+
         # 添加特定关键词映射
         # 包含 Jan 16 2026 新特性: plan/ask 模式、cloud relay、diff
         keyword_map = {
@@ -754,10 +907,23 @@ class ChangelogAnalyzer:
                 'interactive', '交互', '快捷键',
                 'diff view', 'diff 视图',
             ],
+            # Jan 16 2026: plan 模式专页
+            'modes/plan': [
+                'plan', 'plan mode', '规划模式', '--mode plan',
+                '规划', 'planner', '任务规划', '只读模式',
+                '分析', 'analyze', 'readonly',
+            ],
+            # Jan 16 2026: ask 模式专页
+            'modes/ask': [
+                'ask', 'ask mode', '问答模式', '--mode ask',
+                '问答', '咨询', 'question', 'query',
+                '只读', 'readonly', '解释',
+            ],
         }
 
         for key, kws in keyword_map.items():
-            if key in path:
+            # 支持单级路径（如 mcp）和多级路径（如 modes/plan）匹配
+            if key in path or key in full_path:
                 keywords.extend(kws)
 
         return keywords
@@ -904,6 +1070,7 @@ class KnowledgeUpdater:
         self,
         analysis: UpdateAnalysis,
         force: bool = False,
+        changelog_url: str = DEFAULT_CHANGELOG_URL,
     ) -> dict[str, Any]:
         """根据更新分析结果更新知识库
 
@@ -913,6 +1080,7 @@ class KnowledgeUpdater:
         Args:
             analysis: 更新分析结果
             force: 是否强制更新
+            changelog_url: 实际使用的 changelog URL（用于保存文档和 baseline key）
 
         Returns:
             更新结果统计
@@ -925,12 +1093,13 @@ class KnowledgeUpdater:
             "failed": 0,
             "urls_processed": [],
             "no_updates_detected": not analysis.has_updates,
+            "changelog_url": changelog_url,  # 记录实际使用的 URL
         }
 
         # 1. 保存 Changelog 内容
         if analysis.raw_content:
             changelog_doc = Document(
-                url=DEFAULT_CHANGELOG_URL,
+                url=changelog_url,  # 使用实际的 changelog_url 而非 DEFAULT_CHANGELOG_URL
                 title="Cursor Changelog",
                 content=analysis.raw_content,
                 metadata={
@@ -1201,8 +1370,17 @@ class SelfIterator:
             storage=self.knowledge_updater.storage,
         )
         self.goal_builder = IterationGoalBuilder()
+
+        # 处理 '&' 前缀：如果 requirement 以 '&' 开头，去除前缀
+        user_requirement = args.requirement
+        self._is_cloud_request = is_cloud_request(user_requirement)
+        if self._is_cloud_request:
+            user_requirement = strip_cloud_prefix(user_requirement)
+            logger.debug(f"检测到 '&' 前缀，原始 requirement: {args.requirement}")
+            logger.debug(f"处理后 requirement: {user_requirement}")
+
         self.context = IterationContext(
-            user_requirement=args.requirement,
+            user_requirement=user_requirement,
             dry_run=args.dry_run,
         )
 
@@ -1215,6 +1393,9 @@ class SelfIterator:
         print_header("自我迭代脚本")
         print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"用户需求: {self.args.requirement or '(无)'}")
+        if self._is_cloud_request:
+            print("Cloud 模式: 启用（检测到 '&' 前缀）")
+            print(f"实际任务: {self.context.user_requirement}")
         print(f"跳过在线检查: {self.args.skip_online}")
         print(f"仅分析模式: {self.args.dry_run}")
         if self.args.auto_commit:
@@ -1240,6 +1421,7 @@ class SelfIterator:
                 await self.knowledge_updater.update_from_analysis(
                     self.context.update_analysis,
                     force=self.args.force_update,
+                    changelog_url=self.args.changelog_url,  # 传入实际使用的 changelog_url
                 )
             else:
                 # 显示现有知识库统计
@@ -1441,17 +1623,164 @@ class SelfIterator:
 
         return result
 
+    def _get_log_level(self) -> str:
+        """获取日志级别
+
+        优先级:
+        1. 显式指定 --log-level 参数
+        2. --verbose 标志 → DEBUG
+        3. --quiet 标志 → WARNING
+        4. 默认值 → INFO
+
+        Returns:
+            日志级别字符串: DEBUG, INFO, WARNING, ERROR
+        """
+        # 优先使用显式指定的 --log-level
+        explicit_level = getattr(self.args, "log_level", None)
+        if explicit_level:
+            return explicit_level.upper()
+
+        # --verbose 标志
+        if getattr(self.args, "verbose", False):
+            return "DEBUG"
+
+        # --quiet 标志
+        if getattr(self.args, "quiet", False):
+            return "WARNING"
+
+        # 默认值
+        return "INFO"
+
+    def _get_stall_diagnostics_enabled(self) -> bool:
+        """获取卡死诊断是否启用
+
+        优先级:
+        1. 显式指定 --stall-diagnostics → 启用
+        2. 显式指定 --no-stall-diagnostics → 禁用
+        3. 默认关闭（疑似卡死时再启用）
+
+        Returns:
+            是否启用卡死诊断
+        """
+        # 显式指定
+        explicit_enabled = getattr(self.args, "stall_diagnostics_enabled", None)
+        if explicit_enabled is not None:
+            return explicit_enabled
+
+        # 默认关闭（疑似卡死时再启用 --stall-diagnostics）
+        return False
+
+    def _get_stall_diagnostics_level(self) -> str:
+        """获取卡死诊断日志级别
+
+        优先级:
+        1. 显式指定 --stall-diagnostics-level
+        2. --quiet 模式下自动降级到 debug（减少输出）
+        3. --verbose 模式下使用 info（更多诊断但不占用 warning）
+        4. 默认值 warning
+
+        设计目的:
+        - 默认 warning 级别在正常运行时提供关键诊断
+        - quiet 模式下降级到 debug 避免刷屏（仅真正的 ERROR 可见）
+        - verbose 模式下可启用更多诊断
+
+        Returns:
+            日志级别字符串: debug, info, warning, error
+        """
+        # 显式指定优先
+        explicit_level = getattr(self.args, "stall_diagnostics_level", None)
+        if explicit_level:
+            return explicit_level.lower()
+
+        # --quiet 模式下降级到 debug（减少输出，仅保留真正的 ERROR）
+        if getattr(self.args, "quiet", False):
+            return "debug"
+
+        # --verbose 模式下使用 info（比 warning 更详细但不占用 warning 级别）
+        if getattr(self.args, "verbose", False):
+            return "info"
+
+        # 默认 warning
+        return "warning"
+
+    def _get_execution_mode(self) -> ExecutionMode:
+        """获取执行模式
+
+        优先级:
+        1. 检测 requirement 是否以 '&' 开头，如果是则自动切换到 CLOUD 模式
+        2. 从命令行参数 --execution-mode 读取
+        3. 默认使用 CLI 模式
+
+        权限语义:
+        - Cloud 模式下 force_write 默认为 True（允许修改文件）
+        - auto_commit 独立于 force_write，需用户显式启用
+        - 确保 allow_write/force_write 的权限语义与 auto_commit 策略不冲突
+
+        Returns:
+            ExecutionMode 枚举值
+        """
+        # 优先检测 requirement 是否以 '&' 开头
+        requirement = getattr(self.args, "requirement", "")
+        if is_cloud_request(requirement):
+            logger.info(f"检测到 '&' 前缀，自动切换到 Cloud 模式")
+            # 去除 & 前缀，保留实际任务内容
+            # 注意：这里只是检测，不修改 args.requirement
+            # 实际 goal 会在 IterationGoalBuilder 中处理
+            return ExecutionMode.CLOUD
+
+        # 从命令行参数读取
+        mode_str = getattr(self.args, "execution_mode", "cli")
+        mode_map = {
+            "cli": ExecutionMode.CLI,
+            "auto": ExecutionMode.AUTO,
+            "cloud": ExecutionMode.CLOUD,
+        }
+        return mode_map.get(mode_str, ExecutionMode.CLI)
+
+    def _get_cloud_auth_config(self) -> Optional[CloudAuthConfig]:
+        """获取 Cloud 认证配置
+
+        优先级：
+        1. 命令行参数 --cloud-api-key
+        2. 环境变量 CURSOR_API_KEY
+        3. 如果都没有，返回 None
+
+        Returns:
+            CloudAuthConfig 或 None
+        """
+        import os
+
+        api_key = getattr(self.args, "cloud_api_key", None)
+        if not api_key:
+            api_key = os.environ.get("CURSOR_API_KEY")
+
+        if not api_key:
+            return None
+
+        auth_timeout = getattr(self.args, "cloud_auth_timeout", 30)
+        return CloudAuthConfig(
+            api_key=api_key,
+            auth_timeout=auth_timeout,
+        )
+
     def _get_orchestrator_type(self) -> str:
         """获取编排器类型
 
         优先级：
-        1. 用户显式设置的编排器选项（通过命令行参数 --orchestrator 或 --no-mp）
-        2. 从 requirement 中检测的非并行关键词
-        3. 默认值 "mp"
+        1. execution_mode != cli 时强制使用 basic（Cloud/Auto 模式不支持 MP）
+        2. 用户显式设置的编排器选项（通过命令行参数 --orchestrator 或 --no-mp）
+        3. 从 requirement 中检测的非并行关键词
+        4. 默认值 "mp"
 
         Returns:
             "mp" 或 "basic"
         """
+        # 0. 检查执行模式：Cloud/Auto 模式强制使用 basic 编排器
+        execution_mode = self._get_execution_mode()
+        if execution_mode != ExecutionMode.CLI:
+            # Cloud/Auto 模式不支持多进程编排器，强制使用 basic
+            return "basic"
+
         # 1. 检查用户是否显式设置了 no_mp
         if getattr(self.args, "no_mp", False):
             return "basic"
@@ -1525,6 +1854,8 @@ class SelfIterator:
         根据配置选择使用多进程编排器（MP）或协程编排器（basic）。
         MP 启动失败时自动回退到 basic 编排器。
 
+        策略：当 execution_mode != cli 时，强制使用 basic 编排器并给出清晰日志提示。
+
         Returns:
             执行结果
         """
@@ -1535,6 +1866,10 @@ class SelfIterator:
         if max_iterations == -1:
             print_info("无限迭代模式已启用（按 Ctrl+C 中断）")
 
+        # 获取执行模式
+        execution_mode = self._get_execution_mode()
+        print_info(f"执行模式: {execution_mode.value}")
+
         # 创建知识库管理器
         manager = KnowledgeManager(name=KB_NAME)
         await manager.initialize()
@@ -1543,6 +1878,20 @@ class SelfIterator:
         orchestrator_type = self._get_orchestrator_type()
         use_fallback = False
         result: dict[str, Any] = {}
+
+        # 检查 execution_mode 与 orchestrator 的兼容性
+        # Cloud/Auto 模式不支持多进程编排器
+        user_requested_mp = getattr(self.args, "orchestrator", "mp") == "mp" and not getattr(self.args, "no_mp", False)
+        if execution_mode != ExecutionMode.CLI and user_requested_mp:
+            # 用户请求使用 MP，但 execution_mode 是 Cloud/Auto
+            print_warning(
+                f"执行模式 '{execution_mode.value}' 不支持多进程编排器，"
+                "已自动切换到基本协程编排器（basic）"
+            )
+            logger.warning(
+                f"execution_mode={execution_mode.value} 不支持 MP 编排器，"
+                "自动切换到 basic 编排器"
+            )
 
         if orchestrator_type == "mp":
             # 尝试使用多进程编排器
@@ -1558,7 +1907,10 @@ class SelfIterator:
         else:
             # 直接使用基本编排器
             use_fallback = True
-            print_info("使用基本协程编排器（--no-mp 或 --orchestrator basic）")
+            if execution_mode != ExecutionMode.CLI:
+                print_info(f"使用基本协程编排器（执行模式: {execution_mode.value}）")
+            else:
+                print_info("使用基本协程编排器（--no-mp 或 --orchestrator basic）")
 
         if use_fallback:
             # 使用基本协程编排器
@@ -1664,6 +2016,13 @@ class SelfIterator:
             # 方案 B: 在 goal 构建阶段注入知识库上下文
             enhanced_goal = await self._build_enhanced_goal(self.context.iteration_goal, manager)
 
+            # 计算日志级别（优先级: --log-level > --verbose/--quiet > 默认 INFO）
+            log_level = self._get_log_level()
+
+            # 计算卡死诊断配置（quiet 模式下降级）
+            stall_diagnostics_enabled = self._get_stall_diagnostics_enabled()
+            stall_diagnostics_level = self._get_stall_diagnostics_level()
+
             config = MultiProcessOrchestratorConfig(
                 working_directory=str(project_root),
                 max_iterations=max_iterations,
@@ -1677,6 +2036,16 @@ class SelfIterator:
                 commit_per_iteration=getattr(self.args, "commit_per_iteration", False),
                 # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
                 commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
+                # 日志配置透传到子进程
+                verbose=getattr(self.args, "verbose", False),
+                log_level=log_level,
+                heartbeat_debug=getattr(self.args, "heartbeat_debug", False),
+                # 卡死诊断配置透传
+                stall_diagnostics_enabled=stall_diagnostics_enabled,
+                stall_diagnostics_level=stall_diagnostics_level,
+                stall_recovery_interval=getattr(self.args, "stall_recovery_interval", 30.0),
+                execution_health_check_interval=getattr(self.args, "execution_health_check_interval", 30.0),
+                health_warning_cooldown_seconds=getattr(self.args, "health_warning_cooldown", 60.0),
             )
 
             # 创建多进程编排器
@@ -1723,7 +2092,7 @@ class SelfIterator:
     ) -> dict[str, Any]:
         """使用基本协程编排器执行
 
-        支持 KnowledgeManager 注入和 auto_commit/auto_push。
+        支持 KnowledgeManager 注入、auto_commit/auto_push、execution_mode 和 cloud_auth_config。
 
         Args:
             max_iterations: 最大迭代次数
@@ -1733,7 +2102,15 @@ class SelfIterator:
             执行结果
         """
         logger.info("使用 Orchestrator (基本协程编排器)")
+
+        # 获取执行模式和 Cloud 认证配置
+        execution_mode = self._get_execution_mode()
+        cloud_auth_config = self._get_cloud_auth_config()
+
         print_info(f"协程编排器配置: worker_pool_size={self.args.workers}, max_iterations={max_iterations}")
+        print_info(f"执行模式: {execution_mode.value}")
+        if cloud_auth_config:
+            print_info("Cloud 认证: 已配置")
 
         cursor_config = CursorAgentConfig(working_directory=str(project_root))
 
@@ -1748,11 +2125,17 @@ class SelfIterator:
             commit_per_iteration=getattr(self.args, "commit_per_iteration", False),
             # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
             commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
+            # 执行模式和 Cloud 认证配置
+            execution_mode=execution_mode,
+            cloud_auth_config=cloud_auth_config,
         )
 
         # 创建编排器，注入知识库管理器
         orchestrator = Orchestrator(config, knowledge_manager=manager)
-        logger.info(f"协程编排器已创建: worker_pool_size={config.worker_pool_size}")
+        logger.info(
+            f"协程编排器已创建: worker_pool_size={config.worker_pool_size}, "
+            f"execution_mode={config.execution_mode.value}"
+        )
 
         # 执行
         print_info("开始执行迭代任务...")
@@ -1816,10 +2199,26 @@ class SelfIterator:
 # 日志配置
 # ============================================================
 
-def setup_logging(verbose: bool = False):
-    """配置日志"""
+def setup_logging(verbose: bool = False, quiet: bool = False, log_level: str = None):
+    """配置日志
+
+    Args:
+        verbose: 详细输出模式（DEBUG 级别）
+        quiet: 静默模式（WARNING 级别）
+        log_level: 显式指定的日志级别（优先级最高）
+    """
     logger.remove()
-    level = "DEBUG" if verbose else "INFO"
+
+    # 计算日志级别（优先级: log_level > verbose > quiet > 默认 INFO）
+    if log_level:
+        level = log_level.upper()
+    elif verbose:
+        level = "DEBUG"
+    elif quiet:
+        level = "WARNING"
+    else:
+        level = "INFO"
+
     logger.add(
         sys.stderr,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>",
@@ -1861,7 +2260,11 @@ def _detect_disable_mp_from_requirement(requirement: str) -> bool:
 def main():
     """主函数"""
     args = parse_args()
-    setup_logging(args.verbose)
+    setup_logging(
+        verbose=args.verbose,
+        quiet=getattr(args, "quiet", False),
+        log_level=getattr(args, "log_level", None),
+    )
 
     # 关键词检测：仅当用户未显式设置编排器时，从 requirement 检测是否需要禁用 MP
     # 条件：no_mp=False 且 orchestrator 为默认值 "mp" 且 _orchestrator_user_set=False

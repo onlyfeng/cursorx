@@ -310,7 +310,7 @@ def test_interface_consistency():
     SelfIterator 期望的属性一致。
     """
     # run.py 中 IterateArgs 定义的属性列表
-    # 参考 run.py 第 786-801 行
+    # 参考 run.py _run_iterate 方法中的 IterateArgs 类
     run_py_iterate_args_attrs = {
         "requirement",       # goal 映射
         "skip_online",
@@ -324,10 +324,13 @@ def test_interface_consistency():
         "auto_push",
         "commit_per_iteration",
         "commit_message",
+        "orchestrator",
+        "no_mp",
+        "_orchestrator_user_set",  # 元字段：标记用户是否显式设置编排器
     }
 
     # run_iterate.py 中 SelfIterator.__init__ 使用的属性
-    # 参考 run_iterate.py 第 799-807 行和 parse_args 函数
+    # 参考 run_iterate.py 中的 parse_args 函数和 SelfIterator._get_orchestrator_type
     run_iterate_expected_attrs = {
         "requirement",
         "skip_online",
@@ -340,6 +343,9 @@ def test_interface_consistency():
         "auto_commit",
         "auto_push",
         "commit_message",
+        "orchestrator",
+        "no_mp",
+        "_orchestrator_user_set",  # 用于防止关键词反向覆盖用户设置
     }
 
     # 检查 run.py 是否提供了 run_iterate.py 需要的所有属性
@@ -374,6 +380,9 @@ def test_interface_consistency():
             self.auto_push = opts.get("auto_push", False)
             self.commit_per_iteration = opts.get("commit_per_iteration", False)
             self.commit_message = opts.get("commit_message", "")
+            self.orchestrator = opts.get("orchestrator", "mp")
+            self.no_mp = opts.get("no_mp", False)
+            self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
 
     # 创建实例并验证所有属性存在
     args = IterateArgs("test goal", {})
@@ -381,6 +390,80 @@ def test_interface_consistency():
         assert hasattr(args, attr), f"IterateArgs 实例缺少属性: {attr}"
 
     print("✓ IterateArgs 实例属性验证通过")
+
+
+def test_orchestrator_user_set_override_protection():
+    """测试 _orchestrator_user_set 元字段保护用户设置不被关键词覆盖
+
+    验证当用户显式传入 --orchestrator/--no-mp 时，SelfIterator 不会被
+    requirement 中的非并行关键词反向覆盖。
+    """
+    from scripts.run_iterate import SelfIterator
+
+    # 模拟 run.py 中的 IterateArgs 类（与 run.py 保持同步）
+    class IterateArgs:
+        def __init__(self, goal: str, opts: dict):
+            self.requirement = goal
+            self.skip_online = opts.get("skip_online", False)
+            self.changelog_url = "https://cursor.com/cn/changelog"
+            self.dry_run = opts.get("dry_run", False)
+            self.max_iterations = str(opts.get("max_iterations", 5))
+            self.workers = opts.get("workers", 3)
+            self.force_update = opts.get("force_update", False)
+            self.verbose = opts.get("verbose", False)
+            self.auto_commit = opts.get("auto_commit", False)
+            self.auto_push = opts.get("auto_push", False)
+            self.commit_per_iteration = opts.get("commit_per_iteration", False)
+            self.commit_message = opts.get("commit_message", "")
+            self.orchestrator = opts.get("orchestrator", "mp")
+            self.no_mp = opts.get("no_mp", False)
+            self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+    # 场景1：用户显式设置 --orchestrator mp，requirement 包含非并行关键词
+    # 期望：用户设置优先，使用 mp 编排器
+    args_explicit_mp = IterateArgs("使用协程模式完成任务", {
+        "_orchestrator_user_set": True,
+        "orchestrator": "mp",
+    })
+    iterator = SelfIterator(args_explicit_mp)
+    result = iterator._get_orchestrator_type()
+    assert result == "mp", f"用户显式设置 mp 应优先，实际: {result}"
+    print("✓ 场景1: 显式 --orchestrator mp 不被关键词覆盖")
+
+    # 场景2：用户未显式设置，requirement 包含非并行关键词
+    # 期望：被关键词覆盖为 basic
+    args_auto = IterateArgs("使用协程模式完成任务", {
+        "_orchestrator_user_set": False,
+        "orchestrator": "mp",
+    })
+    iterator = SelfIterator(args_auto)
+    result = iterator._get_orchestrator_type()
+    assert result == "basic", f"未显式设置应被关键词覆盖为 basic，实际: {result}"
+    print("✓ 场景2: 未显式设置时被关键词覆盖为 basic")
+
+    # 场景3：用户显式设置 --no-mp
+    # 期望：使用 basic 编排器
+    args_no_mp = IterateArgs("完成任务", {
+        "_orchestrator_user_set": True,
+        "no_mp": True,
+    })
+    iterator = SelfIterator(args_no_mp)
+    result = iterator._get_orchestrator_type()
+    assert result == "basic", f"显式 --no-mp 应使用 basic，实际: {result}"
+    print("✓ 场景3: 显式 --no-mp 使用 basic 编排器")
+
+    # 场景4：用户显式设置 --orchestrator basic
+    # 期望：使用 basic 编排器
+    args_basic = IterateArgs("完成任务", {
+        "_orchestrator_user_set": True,
+        "orchestrator": "basic",
+    })
+    iterator = SelfIterator(args_basic)
+    result = iterator._get_orchestrator_type()
+    assert result == "basic", f"显式 --orchestrator basic 应使用 basic，实际: {result}"
+    print("✓ 场景4: 显式 --orchestrator basic 使用 basic 编排器")
+
+    print("✓ _orchestrator_user_set 覆盖保护测试通过")
 
 
 def test_requirements_installed():
@@ -473,6 +556,7 @@ def main():
         test_iterate_mode_detection,
         test_all_modules_import,
         test_interface_consistency,
+        test_orchestrator_user_set_override_protection,
         test_requirements_installed,
     ]
 

@@ -50,6 +50,10 @@ def base_iterate_args() -> argparse.Namespace:
         commit_per_iteration=False,
         orchestrator="mp",
         no_mp=False,
+        # 执行模式参数
+        execution_mode="cli",
+        cloud_api_key=None,
+        cloud_auth_timeout=30,
     )
 
 
@@ -730,6 +734,301 @@ class TestOrchestratorSelection:
 
 
 # ============================================================
+# TestExecutionModeSelection - 执行模式选择测试
+# ============================================================
+
+
+class TestExecutionModeSelection:
+    """测试 execution_mode 参数和相关逻辑
+
+    覆盖场景：
+    1. execution_mode=cli 时使用默认 mp 编排器
+    2. execution_mode=cloud/auto 时强制使用 basic 编排器
+    3. OrchestratorConfig 正确接收 execution_mode 和 cloud_auth_config
+    """
+
+    def test_get_execution_mode_cli(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=cli 返回 CLI 模式"""
+        from cursor.executor import ExecutionMode
+
+        base_iterate_args.execution_mode = "cli"
+        iterator = SelfIterator(base_iterate_args)
+
+        assert iterator._get_execution_mode() == ExecutionMode.CLI
+
+    def test_get_execution_mode_cloud(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=cloud 返回 CLOUD 模式"""
+        from cursor.executor import ExecutionMode
+
+        base_iterate_args.execution_mode = "cloud"
+        iterator = SelfIterator(base_iterate_args)
+
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+    def test_get_execution_mode_auto(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=auto 返回 AUTO 模式"""
+        from cursor.executor import ExecutionMode
+
+        base_iterate_args.execution_mode = "auto"
+        iterator = SelfIterator(base_iterate_args)
+
+        assert iterator._get_execution_mode() == ExecutionMode.AUTO
+
+    def test_execution_mode_cloud_forces_basic_orchestrator(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=cloud 时强制使用 basic 编排器
+
+        场景：用户设置 --execution-mode cloud 但未显式设置 --orchestrator
+        期望：SelfIterator 自动选择 basic 编排器
+        """
+        base_iterate_args.execution_mode = "cloud"
+        base_iterate_args.orchestrator = "mp"  # 默认 mp
+        base_iterate_args.no_mp = False
+        base_iterate_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(base_iterate_args)
+        assert iterator._get_orchestrator_type() == "basic", (
+            "execution_mode=cloud 时应强制使用 basic 编排器"
+        )
+
+    def test_execution_mode_auto_forces_basic_orchestrator(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=auto 时强制使用 basic 编排器
+
+        场景：用户设置 --execution-mode auto 且显式设置 --orchestrator mp
+        期望：SelfIterator 仍选择 basic 编排器（执行模式优先）
+        """
+        base_iterate_args.execution_mode = "auto"
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args.no_mp = False
+        base_iterate_args._orchestrator_user_set = True  # 用户显式设置了 mp
+
+        iterator = SelfIterator(base_iterate_args)
+        assert iterator._get_orchestrator_type() == "basic", (
+            "execution_mode=auto 时应强制使用 basic 编排器，即使用户显式设置 mp"
+        )
+
+    def test_execution_mode_cli_allows_mp_orchestrator(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=cli 时允许使用 mp 编排器"""
+        base_iterate_args.execution_mode = "cli"
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args.no_mp = False
+        base_iterate_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(base_iterate_args)
+        assert iterator._get_orchestrator_type() == "mp", (
+            "execution_mode=cli 时应允许使用 mp 编排器"
+        )
+
+    def test_get_cloud_auth_config_from_arg(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试从命令行参数获取 cloud_auth_config"""
+        base_iterate_args.cloud_api_key = "test-api-key-12345"
+        base_iterate_args.cloud_auth_timeout = 60
+
+        iterator = SelfIterator(base_iterate_args)
+        config = iterator._get_cloud_auth_config()
+
+        assert config is not None
+        assert config.api_key == "test-api-key-12345"
+        assert config.auth_timeout == 60
+
+    def test_get_cloud_auth_config_none_when_no_key(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试无 API Key 时返回 None"""
+        base_iterate_args.cloud_api_key = None
+        # 确保环境变量也没有设置
+        import os
+        with patch.dict(os.environ, {}, clear=True):
+            iterator = SelfIterator(base_iterate_args)
+            config = iterator._get_cloud_auth_config()
+
+            assert config is None
+
+    @pytest.mark.asyncio
+    async def test_basic_orchestrator_receives_execution_mode(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 basic 编排器正确接收 execution_mode 配置"""
+        from cursor.executor import ExecutionMode
+
+        base_iterate_args.execution_mode = "cloud"
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # 捕获传给 OrchestratorConfig 的参数
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig"):
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证配置参数
+                        MockConfig.assert_called_once()
+                        call_kwargs = MockConfig.call_args.kwargs
+                        assert call_kwargs.get("execution_mode") == ExecutionMode.CLOUD
+
+    @pytest.mark.asyncio
+    async def test_basic_orchestrator_receives_cloud_auth_config(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 basic 编排器正确接收 cloud_auth_config 配置"""
+        base_iterate_args.execution_mode = "cloud"
+        base_iterate_args.cloud_api_key = "test-cloud-key"
+        base_iterate_args.cloud_auth_timeout = 45
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig"):
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证 cloud_auth_config 参数
+                        MockConfig.assert_called_once()
+                        call_kwargs = MockConfig.call_args.kwargs
+                        cloud_auth = call_kwargs.get("cloud_auth_config")
+                        assert cloud_auth is not None
+                        assert cloud_auth.api_key == "test-cloud-key"
+                        assert cloud_auth.auth_timeout == 45
+
+    @pytest.mark.asyncio
+    async def test_execution_mode_cloud_uses_basic_orchestrator_path(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=cloud 时 SelfIterator 走 basic 编排器路径
+
+        完整场景验证：
+        1. 用户设置 --execution-mode cloud
+        2. 用户未设置 --no-mp（即默认使用 mp）
+        3. SelfIterator 应自动切换到 basic 编排器
+        4. 不应调用 _run_with_mp_orchestrator
+        """
+        base_iterate_args.execution_mode = "cloud"
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args.no_mp = False
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        mock_basic_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator,
+            "_run_with_mp_orchestrator",
+            new_callable=AsyncMock,
+        ) as mock_mp:
+            with patch.object(
+                iterator,
+                "_run_with_basic_orchestrator",
+                new_callable=AsyncMock,
+                return_value=mock_basic_result,
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # 验证 MP 编排器未被调用
+                    mock_mp.assert_not_called()
+
+                    # 验证 basic 编排器被调用
+                    mock_basic.assert_called_once()
+
+                    # 验证结果正确
+                    assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_execution_mode_auto_uses_basic_orchestrator_path(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 execution_mode=auto 时 SelfIterator 走 basic 编排器路径"""
+        base_iterate_args.execution_mode = "auto"
+        base_iterate_args.orchestrator = "mp"
+        base_iterate_args.no_mp = False
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        mock_basic_result = {
+            "success": True,
+            "iterations_completed": 2,
+            "total_tasks_created": 3,
+            "total_tasks_completed": 3,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator,
+            "_run_with_mp_orchestrator",
+            new_callable=AsyncMock,
+        ) as mock_mp:
+            with patch.object(
+                iterator,
+                "_run_with_basic_orchestrator",
+                new_callable=AsyncMock,
+                return_value=mock_basic_result,
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # 验证 MP 编排器未被调用
+                    mock_mp.assert_not_called()
+
+                    # 验证 basic 编排器被调用
+                    mock_basic.assert_called_once()
+
+
+# ============================================================
 # TestParseMaxIterations - 最大迭代次数解析测试
 # ============================================================
 
@@ -1040,6 +1339,14 @@ class TestChangelogParserRobust:
         assert any('mcp' in url for url in related_urls), \
             f"应包含 mcp 文档，实际: {related_urls}"
 
+        # Jan 16 2026: 应该匹配到 modes/plan 专页（因为包含 plan mode）
+        assert any('modes/plan' in url for url in related_urls), \
+            f"应包含 modes/plan 文档，实际: {related_urls}"
+
+        # Jan 16 2026: 应该匹配到 modes/ask 专页（因为包含 ask mode）
+        assert any('modes/ask' in url for url in related_urls), \
+            f"应包含 modes/ask 文档，实际: {related_urls}"
+
     def test_html_mixed_content_cleanup(self) -> None:
         """测试 HTML 混合内容清理"""
         analyzer = ChangelogAnalyzer()
@@ -1177,6 +1484,24 @@ class TestChangelogParserRobust:
         )
         overview_str = ' '.join(overview_keywords).lower()
         assert 'diff' in overview_str, "overview 应包含 diff 关键词"
+
+        # Jan 16 2026: 测试 modes/plan URL 的关键词
+        plan_keywords = analyzer._extract_doc_keywords(
+            "https://cursor.com/cn/docs/cli/modes/plan"
+        )
+        plan_str = ' '.join(plan_keywords).lower()
+        assert 'plan' in plan_str, "modes/plan 应包含 plan 关键词"
+        assert '规划模式' in plan_str or 'plan mode' in plan_str, \
+            "modes/plan 应包含规划模式关键词"
+
+        # Jan 16 2026: 测试 modes/ask URL 的关键词
+        ask_keywords = analyzer._extract_doc_keywords(
+            "https://cursor.com/cn/docs/cli/modes/ask"
+        )
+        ask_str = ' '.join(ask_keywords).lower()
+        assert 'ask' in ask_str, "modes/ask 应包含 ask 关键词"
+        assert '问答模式' in ask_str or 'ask mode' in ask_str, \
+            "modes/ask 应包含问答模式关键词"
 
 
 # ============================================================
@@ -2001,6 +2326,246 @@ class TestBaselineFingerprint:
         # 由于 _clean_content 规范化空行，指纹应相同
         assert fp1 == fp2
 
+    @pytest.mark.asyncio
+    async def test_custom_changelog_url_second_analysis_no_updates(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试自定义 changelog_url 时第二次分析返回 has_updates=False
+
+        场景：
+        1. 使用自定义 URL（非默认 DEFAULT_CHANGELOG_URL）
+        2. 第一次分析保存 fingerprint 时使用自定义 URL 作为 key
+        3. 第二次分析读取 fingerprint 时使用同一 URL 作为 key
+        4. 第二次应判定 has_updates=False
+        """
+        custom_url = "https://example.com/custom-changelog"
+        changelog_content = """
+## Jan 16, 2026
+
+### New Features
+- Custom changelog feature
+"""
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = changelog_content
+
+        # 创建 analyzer 使用自定义 URL
+        analyzer = ChangelogAnalyzer(
+            changelog_url=custom_url,
+            storage=mock_storage,
+        )
+
+        with patch.object(
+            analyzer.fetcher, "initialize", new_callable=AsyncMock
+        ):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                # 第一次分析 - 无基线
+                mock_storage.get_content_hash_by_url.return_value = None
+                first_result = await analyzer.analyze()
+
+                # 验证第一次有更新
+                assert first_result.has_updates is True
+
+                # 验证 analyzer 使用的是自定义 URL
+                assert analyzer.changelog_url == custom_url
+
+                # 计算 fingerprint
+                fingerprint = analyzer.compute_fingerprint(changelog_content)
+
+                # 第二次分析 - 设置基线（使用自定义 URL 作为 key）
+                mock_storage.get_content_hash_by_url.return_value = fingerprint
+                second_result = await analyzer.analyze()
+
+                # 验证第二次无更新
+                assert second_result.has_updates is False
+                assert second_result.summary == "未检测到新的更新"
+
+                # 验证 get_content_hash_by_url 使用的是自定义 URL
+                calls = mock_storage.get_content_hash_by_url.call_args_list
+                for call in calls:
+                    assert call.args[0] == custom_url
+
+    @pytest.mark.asyncio
+    async def test_update_from_analysis_uses_custom_changelog_url(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试 update_from_analysis 保存文档时使用传入的 changelog_url
+
+        验证：
+        1. 保存的文档 URL 是自定义 URL 而非 DEFAULT_CHANGELOG_URL
+        2. urls_processed 包含实际处理的 URL
+        3. 返回结果中 changelog_url 字段正确
+        """
+        custom_url = "https://example.com/custom-changelog"
+        changelog_content = "## Jan 16, 2026\n- Feature A"
+
+        analysis = UpdateAnalysis(
+            has_updates=True,
+            entries=[],
+            summary="检测到更新",
+            raw_content=changelog_content,
+            related_doc_urls=[],
+        )
+
+        # 捕获保存的文档
+        saved_docs: list[Any] = []
+
+        async def capture_save_document(doc: Any, force: bool = False) -> tuple[bool, str]:
+            saved_docs.append(doc)
+            return (True, "保存成功")
+
+        mock_storage.save_document = AsyncMock(side_effect=capture_save_document)
+
+        updater = KnowledgeUpdater()
+        updater.storage = mock_storage
+        updater.fetcher = MagicMock()
+        updater.fetcher.initialize = AsyncMock()
+        updater.fetcher.fetch = AsyncMock()
+        updater.manager = MagicMock()
+        updater.manager.initialize = AsyncMock()
+
+        await updater.initialize()
+        result = await updater.update_from_analysis(
+            analysis,
+            force=False,
+            changelog_url=custom_url,  # 传入自定义 URL
+        )
+
+        # 验证保存的文档使用自定义 URL
+        assert len(saved_docs) >= 1
+        changelog_doc = saved_docs[0]
+        assert changelog_doc.url == custom_url, \
+            f"期望 URL={custom_url}，实际={changelog_doc.url}"
+
+        # 验证返回结果包含 changelog_url 字段
+        assert result.get("changelog_url") == custom_url
+
+    @pytest.mark.asyncio
+    async def test_baseline_key_consistency_with_custom_url(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """测试基线 fingerprint 读取/写入使用同一 URL 作为 key
+
+        完整场景验证：
+        1. 使用自定义 URL 进行第一次分析
+        2. update_from_analysis 保存文档时使用同一自定义 URL
+        3. 第二次分析时 _get_baseline_fingerprint 使用同一自定义 URL 读取
+        4. 第二次分析返回 has_updates=False
+        """
+        custom_url = "https://cursor.com/cn/custom-changelog"
+        changelog_content = "## Jan 20, 2026\n- New feature"
+
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.success = True
+        mock_fetch_result.content = changelog_content
+        mock_fetch_result.method_used = MagicMock()
+        mock_fetch_result.method_used.value = "fetch"
+
+        # 创建 analyzer 使用自定义 URL，注入 storage
+        analyzer = ChangelogAnalyzer(
+            changelog_url=custom_url,
+            storage=mock_storage,
+        )
+
+        # 模拟首次分析：无基线
+        mock_storage.get_content_hash_by_url.return_value = None
+
+        with patch.object(analyzer.fetcher, "initialize", new_callable=AsyncMock):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                # 第一次分析
+                first_result = await analyzer.analyze()
+                assert first_result.has_updates is True
+
+        # 模拟 update_from_analysis 保存文档
+        updater = KnowledgeUpdater()
+        updater.storage = mock_storage
+        updater.fetcher = MagicMock()
+        updater.fetcher.initialize = AsyncMock()
+        updater.fetcher.fetch = AsyncMock()
+        updater.manager = MagicMock()
+        updater.manager.initialize = AsyncMock()
+
+        await updater.initialize()
+        update_result = await updater.update_from_analysis(
+            first_result,
+            changelog_url=custom_url,
+        )
+
+        # 验证保存时使用的是自定义 URL
+        assert update_result.get("changelog_url") == custom_url
+
+        # 模拟第二次分析：设置基线 fingerprint
+        fingerprint = analyzer.compute_fingerprint(changelog_content)
+        mock_storage.get_content_hash_by_url.return_value = fingerprint
+
+        with patch.object(analyzer.fetcher, "initialize", new_callable=AsyncMock):
+            with patch.object(
+                analyzer.fetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=mock_fetch_result,
+            ):
+                # 第二次分析
+                second_result = await analyzer.analyze()
+
+                # 验证第二次无更新
+                assert second_result.has_updates is False
+
+                # 验证 _get_baseline_fingerprint 使用的是自定义 URL
+                # 通过检查 get_content_hash_by_url 的调用参数
+                call_args = mock_storage.get_content_hash_by_url.call_args
+                assert call_args.args[0] == custom_url
+
+
+# ============================================================
+# TestCompatibilityEntry - 兼容入口测试
+# ============================================================
+
+
+class TestCompatibilityEntry:
+    """测试 scripts/self_iterate.py 兼容入口
+
+    覆盖场景：
+    1. 兼容入口正确导入 run_iterate.main
+    2. 兼容入口与 run_iterate 功能等效
+    """
+
+    def test_self_iterate_imports_run_iterate_main(self) -> None:
+        """测试兼容入口正确导入 run_iterate.main"""
+        # 验证 self_iterate 模块可以被导入
+        from scripts import self_iterate
+
+        # 验证 main 函数来自 run_iterate
+        from scripts.run_iterate import main as run_iterate_main
+        assert self_iterate.main is run_iterate_main, (
+            "self_iterate.main 应该是 run_iterate.main 的引用"
+        )
+
+    def test_self_iterate_module_has_docstring(self) -> None:
+        """测试兼容入口有正确的文档字符串"""
+        from scripts import self_iterate
+
+        assert self_iterate.__doc__ is not None
+        assert "兼容入口" in self_iterate.__doc__
+        assert "run_iterate" in self_iterate.__doc__
+
+    def test_self_iterate_callable(self) -> None:
+        """测试兼容入口的 main 函数可调用"""
+        from scripts import self_iterate
+
+        # 验证 main 是可调用的
+        assert callable(self_iterate.main)
+
 
 class TestIntegration:
     """集成测试"""
@@ -2079,3 +2644,647 @@ class TestIntegration:
                     # 验证错误被正确处理
                     assert result["success"] is False
                     assert "error" in result
+
+
+# ============================================================
+# TestOrchestratorRoutingRules - 编排器路由规则测试
+# ============================================================
+
+
+class TestOrchestratorRoutingRules:
+    """测试编排器路由规则和参数映射
+    
+    覆盖场景:
+    1. --orchestrator 和 --no-mp 命令行参数优先级
+    2. _orchestrator_user_set 元字段的作用
+    3. requirement 中非并行关键词的检测
+    4. 用户显式设置 vs 自然语言推断的优先级
+    """
+
+    @pytest.fixture
+    def routing_args(self) -> argparse.Namespace:
+        """创建用于路由测试的基础参数"""
+        return argparse.Namespace(
+            requirement="测试需求",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=False,
+        )
+
+    def test_orchestrator_user_set_true_overrides_keyword(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试 _orchestrator_user_set=True 时关键词不覆盖用户设置"""
+        # 用户显式设置 --orchestrator mp，但 requirement 包含非并行关键词
+        routing_args.requirement = "使用协程模式完成自我迭代"
+        routing_args.orchestrator = "mp"
+        routing_args._orchestrator_user_set = True
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        assert orch_type == "mp", (
+            "用户显式设置 --orchestrator mp 时，即使 requirement 包含 '协程模式'，"
+            "也应该使用 mp 编排器"
+        )
+
+    def test_orchestrator_user_set_false_allows_keyword_override(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试 _orchestrator_user_set=False 时关键词可以覆盖默认设置"""
+        # 用户未显式设置，requirement 包含非并行关键词
+        routing_args.requirement = "使用协程模式完成自我迭代"
+        routing_args.orchestrator = "mp"
+        routing_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        assert orch_type == "basic", (
+            "用户未显式设置时，requirement 包含 '协程模式' 应该触发 basic 编排器"
+        )
+
+    def test_no_mp_flag_always_uses_basic(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试 --no-mp 标志始终使用 basic 编排器"""
+        routing_args.no_mp = True
+        routing_args._orchestrator_user_set = True
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        assert orch_type == "basic", "--no-mp 标志应该始终使用 basic 编排器"
+
+    def test_explicit_orchestrator_basic_uses_basic(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试显式设置 --orchestrator basic 使用 basic 编排器"""
+        routing_args.orchestrator = "basic"
+        routing_args._orchestrator_user_set = True
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        assert orch_type == "basic", "--orchestrator basic 应该使用 basic 编排器"
+
+    def test_all_disable_mp_keywords_detected(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试所有禁用 MP 关键词都能被正确检测"""
+        disable_mp_keywords_requirements = [
+            "非并行模式执行",
+            "不并行处理",
+            "串行执行任务",
+            "协程模式运行",
+            "单进程处理",
+            "使用 basic 编排器",
+            "no-mp 模式",
+            "禁用多进程",
+            "禁用mp模式",
+            "关闭多进程",
+        ]
+
+        for requirement in disable_mp_keywords_requirements:
+            routing_args.requirement = requirement
+            routing_args._orchestrator_user_set = False
+
+            iterator = SelfIterator(routing_args)
+            orch_type = iterator._get_orchestrator_type()
+
+            assert orch_type == "basic", (
+                f"requirement='{requirement}' 应该触发 basic 编排器，"
+                f"实际返回 {orch_type}"
+            )
+
+    def test_no_keyword_uses_default_mp(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试无关键词时使用默认 mp 编排器"""
+        routing_args.requirement = "优化代码结构并添加单元测试"
+        routing_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        assert orch_type == "mp", "无非并行关键词时应该使用默认 mp 编排器"
+
+    def test_mixed_keywords_still_detects_disable_mp(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试混合关键词时仍能检测到禁用 MP"""
+        routing_args.requirement = "使用多进程和协程模式完成任务"
+        routing_args._orchestrator_user_set = False
+
+        iterator = SelfIterator(routing_args)
+        orch_type = iterator._get_orchestrator_type()
+
+        # 只要包含禁用关键词就应该触发 basic
+        assert orch_type == "basic", (
+            "包含 '协程模式' 时即使也包含 '多进程' 也应该触发 basic 编排器"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mp_config_receives_correct_options(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试 MP 编排器配置正确接收选项"""
+        routing_args.auto_commit = True
+        routing_args.commit_per_iteration = True
+        routing_args.workers = 5
+
+        iterator = SelfIterator(routing_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        with patch("scripts.run_iterate.MultiProcessOrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.MultiProcessOrchestrator") as MockMP:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    mock_config_instance = MagicMock()
+                    MockConfig.return_value = mock_config_instance
+
+                    mock_orch = MagicMock()
+                    mock_orch.run = AsyncMock(return_value={"success": True})
+                    MockMP.return_value = mock_orch
+
+                    await iterator._run_with_mp_orchestrator(3, mock_km)
+
+                    # 验证配置参数
+                    MockConfig.assert_called_once()
+                    call_kwargs = MockConfig.call_args.kwargs
+
+                    assert call_kwargs.get("worker_count") == 5
+                    assert call_kwargs.get("enable_auto_commit") is True
+                    assert call_kwargs.get("commit_per_iteration") is True
+                    assert call_kwargs.get("commit_on_complete") is False
+
+    @pytest.mark.asyncio
+    async def test_basic_config_receives_correct_options(
+        self, routing_args: argparse.Namespace
+    ) -> None:
+        """测试 basic 编排器配置正确接收选项"""
+        routing_args.auto_commit = True
+        routing_args.auto_push = True
+        routing_args.workers = 4
+
+        iterator = SelfIterator(routing_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig"):
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证配置参数
+                        MockConfig.assert_called_once()
+                        call_kwargs = MockConfig.call_args.kwargs
+
+                        assert call_kwargs.get("worker_pool_size") == 4
+                        assert call_kwargs.get("enable_auto_commit") is True
+                        assert call_kwargs.get("auto_push") is True
+
+
+# ============================================================
+# TestCommitDeduplication - 提交去重测试
+# ============================================================
+
+
+class TestCommitDeduplication:
+    """测试提交去重逻辑
+    
+    覆盖场景:
+    1. 编排器已提交时 SelfIterator 不再二次提交
+    2. 编排器未提交时 SelfIterator 执行提交
+    3. 各种 commits 结构的检测
+    """
+
+    @pytest.fixture
+    def dedup_args(self) -> argparse.Namespace:
+        """创建用于去重测试的参数"""
+        return argparse.Namespace(
+            requirement="测试提交去重",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=True,  # 启用自动提交
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=False,
+        )
+
+    def test_has_orchestrator_committed_with_total_commits(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试 total_commits > 0 时检测为已提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {"commits": {"total_commits": 2, "commit_hashes": ["a", "b"]}}
+        assert iterator._has_orchestrator_committed(result) is True
+
+    def test_has_orchestrator_committed_with_successful_commits(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试 successful_commits > 0 时检测为已提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {"commits": {"successful_commits": 1}}
+        assert iterator._has_orchestrator_committed(result) is True
+
+    def test_has_orchestrator_committed_with_iteration_commit_hash(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试 iteration 有 commit_hash 时检测为已提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {
+            "commits": {},
+            "iterations": [
+                {"id": 1, "commit_hash": "abc123"},
+            ]
+        }
+        assert iterator._has_orchestrator_committed(result) is True
+
+    def test_has_orchestrator_committed_empty_commits(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试空 commits 时检测为未提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {"commits": {}}
+        assert iterator._has_orchestrator_committed(result) is False
+
+    def test_has_orchestrator_committed_zero_total(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试 total_commits=0 时检测为未提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {"commits": {"total_commits": 0}}
+        assert iterator._has_orchestrator_committed(result) is False
+
+    def test_has_orchestrator_committed_no_commits_field(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试无 commits 字段时检测为未提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {"success": True}
+        assert iterator._has_orchestrator_committed(result) is False
+
+    def test_has_orchestrator_committed_empty_iteration_commit_hash(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试 iteration commit_hash 为空时检测为未提交"""
+        iterator = SelfIterator(dedup_args)
+
+        result = {
+            "commits": {},
+            "iterations": [
+                {"id": 1, "commit_hash": ""},
+                {"id": 2, "commit_hash": None},
+            ]
+        }
+        assert iterator._has_orchestrator_committed(result) is False
+
+    @pytest.mark.asyncio
+    async def test_skip_commit_when_orchestrator_already_committed(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试编排器已提交时跳过 SelfIterator 提交阶段"""
+        iterator = SelfIterator(dedup_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # 编排器返回已提交的结果
+        mp_result = {
+            "success": True,
+            "commits": {"total_commits": 1, "commit_hashes": ["abc"]},
+            "iterations_completed": 1,
+        }
+
+        with patch.object(
+            iterator, "_run_with_mp_orchestrator",
+            new_callable=AsyncMock, return_value=mp_result
+        ):
+            with patch.object(
+                iterator, "_run_commit_phase", new_callable=AsyncMock
+            ) as mock_commit:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    await iterator._run_agent_system()
+
+                    # _run_commit_phase 不应被调用
+                    mock_commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_commit_when_orchestrator_not_committed(
+        self, dedup_args: argparse.Namespace
+    ) -> None:
+        """测试编排器未提交时执行 SelfIterator 提交阶段"""
+        iterator = SelfIterator(dedup_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # 编排器返回未提交的结果
+        mp_result = {
+            "success": True,
+            "commits": {},
+            "iterations_completed": 1,
+            "total_tasks_completed": 2,
+        }
+
+        commit_result = {
+            "total_commits": 1,
+            "commit_hashes": ["def456"],
+            "pushed_commits": 0,
+        }
+
+        with patch.object(
+            iterator, "_run_with_mp_orchestrator",
+            new_callable=AsyncMock, return_value=mp_result
+        ):
+            with patch.object(
+                iterator, "_run_commit_phase",
+                new_callable=AsyncMock, return_value=commit_result
+            ) as mock_commit:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # _run_commit_phase 应被调用
+                    mock_commit.assert_called_once()
+
+                    # 验证结果包含提交信息
+                    assert result["commits"]["total_commits"] == 1
+
+
+# ============================================================
+# TestFallbackVsDegraded - 回退与降级区分测试
+# ============================================================
+
+
+class TestFallbackVsDegraded:
+    """测试 _fallback_required 与 degraded 的区分
+    
+    核心区别:
+    - _fallback_required: MP 编排器启动失败，需要回退到 basic
+    - degraded: MP 编排器运行过程中降级，不触发回退，保留部分结果
+    """
+
+    @pytest.fixture
+    def fallback_args(self) -> argparse.Namespace:
+        """创建用于回退测试的参数"""
+        return argparse.Namespace(
+            requirement="测试回退逻辑",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_required_triggers_basic_orchestrator(
+        self, fallback_args: argparse.Namespace
+    ) -> None:
+        """测试 _fallback_required=True 触发 basic 编排器"""
+        iterator = SelfIterator(fallback_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # MP 返回 _fallback_required
+        mp_startup_failure = {
+            "_fallback_required": True,
+            "_fallback_reason": "启动超时",
+        }
+
+        basic_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator, "_run_with_mp_orchestrator",
+            new_callable=AsyncMock, return_value=mp_startup_failure
+        ):
+            with patch.object(
+                iterator, "_run_with_basic_orchestrator",
+                new_callable=AsyncMock, return_value=basic_result
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # basic 编排器应被调用
+                    mock_basic.assert_called_once()
+                    assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_does_not_trigger_basic_fallback(
+        self, fallback_args: argparse.Namespace
+    ) -> None:
+        """测试 degraded=True 不触发 basic 回退"""
+        iterator = SelfIterator(fallback_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # MP 返回 degraded 结果（无 _fallback_required）
+        mp_degraded_result = {
+            "success": False,
+            "degraded": True,
+            "degradation_reason": "Planner 进程不健康",
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 1,
+            "commits": {},
+        }
+
+        with patch.object(
+            iterator, "_run_with_mp_orchestrator",
+            new_callable=AsyncMock, return_value=mp_degraded_result
+        ):
+            with patch.object(
+                iterator, "_run_with_basic_orchestrator",
+                new_callable=AsyncMock
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # basic 编排器不应被调用
+                    mock_basic.assert_not_called()
+
+                    # 验证保留 MP 的降级结果
+                    assert result["degraded"] is True
+                    assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_degraded_preserves_partial_work(
+        self, fallback_args: argparse.Namespace
+    ) -> None:
+        """测试降级时保留部分工作结果"""
+        iterator = SelfIterator(fallback_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        mp_degraded_result = {
+            "success": False,
+            "degraded": True,
+            "degradation_reason": "Worker 不健康",
+            "iterations_completed": 3,
+            "total_tasks_created": 10,
+            "total_tasks_completed": 7,
+            "total_tasks_failed": 3,
+            "commits": {"total_commits": 2, "commit_hashes": ["a", "b"]},
+        }
+
+        with patch.object(
+            iterator, "_run_with_mp_orchestrator",
+            new_callable=AsyncMock, return_value=mp_degraded_result
+        ):
+            with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                mock_km = MagicMock()
+                mock_km.initialize = AsyncMock()
+                MockKM.return_value = mock_km
+
+                result = await iterator._run_agent_system()
+
+                # 验证保留部分工作
+                assert result["iterations_completed"] == 3
+                assert result["total_tasks_completed"] == 7
+                assert result["commits"]["total_commits"] == 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_required_various_reasons(
+        self, fallback_args: argparse.Namespace
+    ) -> None:
+        """测试各种回退原因都能正确触发 basic"""
+        iterator = SelfIterator(fallback_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        fallback_reasons = [
+            ("启动超时", "timeout"),
+            ("进程创建失败", "os_error"),
+            ("运行时错误", "runtime_error"),
+        ]
+
+        for reason_cn, _ in fallback_reasons:
+            mp_failure = {
+                "_fallback_required": True,
+                "_fallback_reason": reason_cn,
+            }
+
+            basic_result = {"success": True, "iterations_completed": 1}
+
+            with patch.object(
+                iterator, "_run_with_mp_orchestrator",
+                new_callable=AsyncMock, return_value=mp_failure
+            ):
+                with patch.object(
+                    iterator, "_run_with_basic_orchestrator",
+                    new_callable=AsyncMock, return_value=basic_result
+                ) as mock_basic:
+                    with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        result = await iterator._run_agent_system()
+
+                        mock_basic.assert_called_once()
+                        assert result["success"] is True
+
+                        # 重置 mock
+                        mock_basic.reset_mock()
+
+    @pytest.mark.asyncio
+    async def test_degraded_various_reasons(
+        self, fallback_args: argparse.Namespace
+    ) -> None:
+        """测试各种降级原因的处理一致性"""
+        iterator = SelfIterator(fallback_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        degradation_reasons = [
+            "Planner 进程不健康",
+            "Reviewer 进程不健康",
+            "不健康 Worker 数量超过阈值: 3 > 1",
+        ]
+
+        for reason in degradation_reasons:
+            mp_degraded = {
+                "success": False,
+                "degraded": True,
+                "degradation_reason": reason,
+                "iterations_completed": 1,
+                "commits": {},
+            }
+
+            with patch.object(
+                iterator, "_run_with_mp_orchestrator",
+                new_callable=AsyncMock, return_value=mp_degraded
+            ):
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # 所有降级原因应有一致的字段结构
+                    assert result["success"] is False
+                    assert result["degraded"] is True
+                    assert result["degradation_reason"] == reason

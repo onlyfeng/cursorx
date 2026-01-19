@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from run import (
+    CLOUD_PREFIX,
     MODE_ALIASES,
     RunMode,
     TaskAnalysis,
     TaskAnalyzer,
     Runner,
+    is_cloud_request,
     parse_max_iterations,
+    strip_cloud_prefix,
     Colors,
     print_header,
     print_info,
@@ -149,6 +152,86 @@ class TestModeAliases:
         assert MODE_ALIASES["chat"] == RunMode.ASK
         assert MODE_ALIASES["question"] == RunMode.ASK
         assert MODE_ALIASES["q"] == RunMode.ASK
+
+    def test_cloud_aliases(self) -> None:
+        """验证 CLOUD 模式别名"""
+        assert MODE_ALIASES["cloud"] == RunMode.CLOUD
+        assert MODE_ALIASES["cloud-agent"] == RunMode.CLOUD
+        assert MODE_ALIASES["background"] == RunMode.CLOUD
+        assert MODE_ALIASES["bg"] == RunMode.CLOUD
+
+
+# ============================================================
+# TestCloudRequestHelpers - Cloud 请求辅助函数测试
+# ============================================================
+
+
+class TestCloudRequestHelpers:
+    """测试 is_cloud_request 和 strip_cloud_prefix 辅助函数"""
+
+    # ========== is_cloud_request 测试 ==========
+
+    def test_is_cloud_request_basic(self) -> None:
+        """验证基本的 '&' 前缀检测"""
+        assert is_cloud_request("& 任务") is True
+        assert is_cloud_request("&任务") is True
+        assert is_cloud_request("  & 任务") is True
+
+    def test_is_cloud_request_no_prefix(self) -> None:
+        """验证无 '&' 前缀返回 False"""
+        assert is_cloud_request("普通任务") is False
+        assert is_cloud_request("任务描述") is False
+
+    def test_is_cloud_request_empty(self) -> None:
+        """验证空值返回 False"""
+        assert is_cloud_request("") is False
+        assert is_cloud_request(None) is False
+        assert is_cloud_request("   ") is False
+
+    def test_is_cloud_request_only_ampersand(self) -> None:
+        """验证只有 '&' 符号返回 False"""
+        assert is_cloud_request("&") is False
+        assert is_cloud_request("&  ") is False
+        assert is_cloud_request("  &  ") is False
+
+    def test_is_cloud_request_ampersand_in_middle(self) -> None:
+        """验证 '&' 在中间不触发"""
+        assert is_cloud_request("任务 & 描述") is False
+        assert is_cloud_request("任务&描述") is False
+        assert is_cloud_request("任务&") is False
+
+    def test_is_cloud_request_non_string(self) -> None:
+        """验证非字符串类型返回 False"""
+        assert is_cloud_request(123) is False
+        assert is_cloud_request([]) is False
+        assert is_cloud_request({}) is False
+
+    # ========== strip_cloud_prefix 测试 ==========
+
+    def test_strip_cloud_prefix_basic(self) -> None:
+        """验证基本的前缀去除"""
+        assert strip_cloud_prefix("& 任务") == "任务"
+        assert strip_cloud_prefix("&任务") == "任务"
+
+    def test_strip_cloud_prefix_with_whitespace(self) -> None:
+        """验证带空白的前缀去除"""
+        assert strip_cloud_prefix("  & 任务  ") == "任务"
+        assert strip_cloud_prefix("& 任务描述") == "任务描述"
+
+    def test_strip_cloud_prefix_no_prefix(self) -> None:
+        """验证无前缀时保持原样"""
+        assert strip_cloud_prefix("普通任务") == "普通任务"
+        assert strip_cloud_prefix("任务描述") == "任务描述"
+
+    def test_strip_cloud_prefix_empty(self) -> None:
+        """验证空值处理"""
+        assert strip_cloud_prefix("") == ""
+        assert strip_cloud_prefix(None) == ""
+
+    def test_strip_cloud_prefix_only_ampersand(self) -> None:
+        """验证只有 '&' 时返回空字符串"""
+        assert strip_cloud_prefix("&") == ""
+        assert strip_cloud_prefix("&  ") == ""
 
 
 # ============================================================
@@ -913,6 +996,87 @@ class TestTaskAnalyzer:
             f"合并后的选项应包含非并行设置，实际: no_mp={merged.get('no_mp')}, "
             f"orchestrator={merged.get('orchestrator')}"
         )
+
+    # ========== Cloud 模式和 '&' 前缀测试 ==========
+
+    def test_detect_cloud_prefix_basic(self, mock_args: argparse.Namespace) -> None:
+        """验证检测 '&' 前缀并路由到 Cloud 模式"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("& 分析代码结构", mock_args)
+
+        assert analysis.mode == RunMode.CLOUD, "以 '&' 开头应使用 Cloud 模式"
+        assert analysis.goal == "分析代码结构", "goal 应去除 '&' 前缀"
+        assert "Cloud" in analysis.reasoning or "'&'" in analysis.reasoning
+
+    def test_detect_cloud_prefix_with_whitespace(self, mock_args: argparse.Namespace) -> None:
+        """验证检测带空白的 '&' 前缀"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("  & 分析代码", mock_args)
+
+        assert analysis.mode == RunMode.CLOUD
+        assert analysis.goal.strip() == "分析代码"
+
+    def test_detect_cloud_prefix_no_space(self, mock_args: argparse.Namespace) -> None:
+        """验证检测紧跟内容的 '&' 前缀"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("&分析代码结构", mock_args)
+
+        assert analysis.mode == RunMode.CLOUD
+        assert analysis.goal == "分析代码结构"
+
+    def test_no_cloud_for_only_ampersand(self, mock_args: argparse.Namespace) -> None:
+        """验证只有 '&' 符号不触发 Cloud 模式"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("&", mock_args)
+
+        assert analysis.mode != RunMode.CLOUD, "只有 '&' 不应触发 Cloud 模式"
+
+    def test_no_cloud_for_ampersand_whitespace(self, mock_args: argparse.Namespace) -> None:
+        """验证 '&' 后只有空白不触发 Cloud 模式"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("&   ", mock_args)
+
+        assert analysis.mode != RunMode.CLOUD
+
+    def test_no_cloud_for_ampersand_in_middle(self, mock_args: argparse.Namespace) -> None:
+        """验证 '&' 在中间不触发 Cloud 模式"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("任务 & 描述", mock_args)
+
+        assert analysis.mode != RunMode.CLOUD
+
+    def test_cloud_mode_sets_execution_mode_option(self, mock_args: argparse.Namespace) -> None:
+        """验证 Cloud 模式设置 execution_mode 选项"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        analysis = analyzer.analyze("& 后台执行任务", mock_args)
+
+        assert analysis.mode == RunMode.CLOUD
+        assert analysis.options.get("execution_mode") == "cloud"
+
+    def test_detect_cloud_keywords(self, mock_args: argparse.Namespace) -> None:
+        """验证检测 Cloud 模式关键词（不需要 '&' 前缀）"""
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        tasks = [
+            "使用云端执行任务",
+            "cloud agent 分析代码",
+            "后台执行代码审查",
+        ]
+
+        for task in tasks:
+            analysis = analyzer.analyze(task, mock_args)
+            assert analysis.mode == RunMode.CLOUD, f"任务 '{task}' 应使用 Cloud 模式"
+
+    def test_cloud_prefix_priority_over_keywords(self, mock_args: argparse.Namespace) -> None:
+        """验证 '&' 前缀优先于其他模式关键词"""
+        analyzer = TaskAnalyzer(use_agent=False)
+        # 同时包含 '&' 前缀和其他模式关键词
+        analysis = analyzer.analyze("& 自我迭代更新代码", mock_args)
+
+        # '&' 前缀应优先
+        assert analysis.mode == RunMode.CLOUD
+        # goal 应去除前缀
+        assert "自我迭代" in analysis.goal
 
 
 # ============================================================
@@ -2374,6 +2538,121 @@ class TestRunIterateMode:
         assert args.commit_per_iteration is False
         assert args.commit_message == ""
 
+    def test_iterate_args_orchestrator_user_set(self) -> None:
+        """测试 IterateArgs 的 _orchestrator_user_set 元字段"""
+        # 模拟 run.py 中的 IterateArgs 类（与 run.py 保持同步）
+        class IterateArgs:
+            def __init__(self, goal: str, opts: dict):
+                self.requirement = goal
+                self.skip_online = opts.get("skip_online", False)
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = opts.get("dry_run", False)
+                self.max_iterations = str(opts.get("max_iterations", 5))
+                self.workers = opts.get("workers", 3)
+                self.force_update = opts.get("force_update", False)
+                self.verbose = opts.get("verbose", False)
+                self.auto_commit = opts.get("auto_commit", False)
+                self.auto_push = opts.get("auto_push", False)
+                self.commit_per_iteration = opts.get("commit_per_iteration", False)
+                self.commit_message = opts.get("commit_message", "")
+                self.orchestrator = opts.get("orchestrator", "mp")
+                self.no_mp = opts.get("no_mp", False)
+                # 元字段：标记用户是否显式设置了编排器选项
+                self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+        # 测试默认值（未显式设置）
+        args_default = IterateArgs("测试任务", {})
+        assert args_default._orchestrator_user_set is False
+        assert args_default.orchestrator == "mp"
+        assert args_default.no_mp is False
+
+        # 测试用户显式设置 --orchestrator mp
+        args_mp_explicit = IterateArgs("测试任务", {
+            "_orchestrator_user_set": True,
+            "orchestrator": "mp",
+        })
+        assert args_mp_explicit._orchestrator_user_set is True
+        assert args_mp_explicit.orchestrator == "mp"
+
+        # 测试用户显式设置 --orchestrator basic
+        args_basic_explicit = IterateArgs("测试任务", {
+            "_orchestrator_user_set": True,
+            "orchestrator": "basic",
+        })
+        assert args_basic_explicit._orchestrator_user_set is True
+        assert args_basic_explicit.orchestrator == "basic"
+
+        # 测试用户显式设置 --no-mp
+        args_no_mp = IterateArgs("测试任务", {
+            "_orchestrator_user_set": True,
+            "no_mp": True,
+        })
+        assert args_no_mp._orchestrator_user_set is True
+        assert args_no_mp.no_mp is True
+
+    def test_orchestrator_user_set_prevents_keyword_override(self) -> None:
+        """验证显式设置编排器时，不会被 requirement 中的非并行关键词覆盖"""
+        from scripts.run_iterate import SelfIterator, _detect_disable_mp_from_requirement
+
+        # 模拟 run.py 中的 IterateArgs 类
+        class IterateArgs:
+            def __init__(self, goal: str, opts: dict):
+                self.requirement = goal
+                self.skip_online = opts.get("skip_online", False)
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = opts.get("dry_run", False)
+                self.max_iterations = str(opts.get("max_iterations", 5))
+                self.workers = opts.get("workers", 3)
+                self.force_update = opts.get("force_update", False)
+                self.verbose = opts.get("verbose", False)
+                self.auto_commit = opts.get("auto_commit", False)
+                self.auto_push = opts.get("auto_push", False)
+                self.commit_per_iteration = opts.get("commit_per_iteration", False)
+                self.commit_message = opts.get("commit_message", "")
+                self.orchestrator = opts.get("orchestrator", "mp")
+                self.no_mp = opts.get("no_mp", False)
+                self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+        # 场景1：包含非并行关键词，但用户显式设置了 --orchestrator mp
+        # 期望：使用 mp 编排器（不被关键词覆盖）
+        args_explicit_mp = IterateArgs("使用协程模式完成任务", {
+            "_orchestrator_user_set": True,
+            "orchestrator": "mp",
+        })
+        iterator_explicit_mp = SelfIterator(args_explicit_mp)
+        orchestrator_type = iterator_explicit_mp._get_orchestrator_type()
+        assert orchestrator_type == "mp", "显式设置 --orchestrator mp 时应使用 mp 编排器"
+
+        # 场景2：包含非并行关键词，用户未显式设置
+        # 期望：使用 basic 编排器（被关键词覆盖）
+        args_auto_detect = IterateArgs("使用协程模式完成任务", {
+            "_orchestrator_user_set": False,
+            "orchestrator": "mp",
+        })
+        iterator_auto_detect = SelfIterator(args_auto_detect)
+        orchestrator_type = iterator_auto_detect._get_orchestrator_type()
+        assert orchestrator_type == "basic", "未显式设置时应被关键词覆盖为 basic 编排器"
+
+        # 场景3：不包含非并行关键词，用户未显式设置
+        # 期望：使用默认 mp 编排器
+        args_no_keyword = IterateArgs("完成代码重构任务", {
+            "_orchestrator_user_set": False,
+            "orchestrator": "mp",
+        })
+        iterator_no_keyword = SelfIterator(args_no_keyword)
+        orchestrator_type = iterator_no_keyword._get_orchestrator_type()
+        assert orchestrator_type == "mp", "无非并行关键词时应使用默认 mp 编排器"
+
+        # 场景4：用户显式设置 --no-mp，即使没有非并行关键词
+        # 期望：使用 basic 编排器
+        args_explicit_no_mp = IterateArgs("完成代码重构任务", {
+            "_orchestrator_user_set": True,
+            "no_mp": True,
+        })
+        iterator_explicit_no_mp = SelfIterator(args_explicit_no_mp)
+        orchestrator_type = iterator_explicit_no_mp._get_orchestrator_type()
+        assert orchestrator_type == "basic", "显式设置 --no-mp 时应使用 basic 编排器"
+
     def test_self_iterator_init(self) -> None:
         """测试 SelfIterator 可以用 IterateArgs 初始化"""
         from scripts.run_iterate import SelfIterator
@@ -3480,3 +3759,314 @@ class TestAsyncMain:
 
             # 验证返回非零错误码
             assert exit_code == 1
+
+
+# ============================================================
+# TestRunToSelfIteratorParameterMapping - run.py → SelfIterator 参数映射测试
+# ============================================================
+
+
+class TestRunToSelfIteratorParameterMapping:
+    """测试 run.py _run_iterate 方法到 SelfIterator 的参数映射
+
+    确保 run.py 中的 IterateArgs 类正确映射所有参数到 SelfIterator，
+    包括新增的编排器选项和 _orchestrator_user_set 元字段。
+    """
+
+    @pytest.fixture
+    def runner_with_iterate_args(self) -> Runner:
+        """创建用于测试参数映射的 Runner 实例"""
+        args = argparse.Namespace(
+            task="测试任务",
+            mode="iterate",
+            directory=".",
+            workers=5,
+            max_iterations="8",
+            strict=False,
+            verbose=True,
+            skip_online=True,
+            dry_run=False,
+            force_update=True,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model="gpt-5.2-high",
+            worker_model="opus-4.5-thinking",
+            stream_log=True,
+            auto_commit=True,
+            auto_push=True,
+            commit_per_iteration=True,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=True,
+        )
+        return Runner(args)
+
+    def test_iterate_args_has_all_required_fields(self) -> None:
+        """验证 IterateArgs 类包含所有必需字段"""
+        # 模拟 run.py 中的 IterateArgs 类
+        class IterateArgs:
+            def __init__(self, goal: str, opts: dict):
+                self.requirement = goal
+                self.skip_online = opts.get("skip_online", False)
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = opts.get("dry_run", False)
+                self.max_iterations = str(opts.get("max_iterations", 5))
+                self.workers = opts.get("workers", 3)
+                self.force_update = opts.get("force_update", False)
+                self.verbose = opts.get("verbose", False)
+                self.auto_commit = opts.get("auto_commit", False)
+                self.auto_push = opts.get("auto_push", False)
+                self.commit_per_iteration = opts.get("commit_per_iteration", False)
+                self.commit_message = opts.get("commit_message", "")
+                self.orchestrator = opts.get("orchestrator", "mp")
+                self.no_mp = opts.get("no_mp", False)
+                self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+        # 必需字段列表
+        required_fields = [
+            "requirement",
+            "skip_online",
+            "changelog_url",
+            "dry_run",
+            "max_iterations",
+            "workers",
+            "force_update",
+            "verbose",
+            "auto_commit",
+            "auto_push",
+            "commit_per_iteration",
+            "commit_message",
+            "orchestrator",
+            "no_mp",
+            "_orchestrator_user_set",
+        ]
+
+        args = IterateArgs("测试任务", {})
+        for field in required_fields:
+            assert hasattr(args, field), f"IterateArgs 缺少字段: {field}"
+
+    def test_merge_options_passes_orchestrator_fields(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _merge_options 正确传递编排器相关字段"""
+        # 设置编排器选项
+        mock_args.orchestrator = "basic"
+        mock_args.no_mp = True
+        mock_args._orchestrator_user_set = True
+
+        runner = Runner(mock_args)
+        options = runner._merge_options({})
+
+        assert options["orchestrator"] == "basic"
+        assert options["no_mp"] is True
+
+    def test_merge_options_analysis_overrides_when_not_user_set(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _orchestrator_user_set=False 时 analysis_options 可覆盖"""
+        mock_args.orchestrator = "mp"
+        mock_args.no_mp = False
+        mock_args._orchestrator_user_set = False
+
+        runner = Runner(mock_args)
+
+        # 自然语言分析结果想覆盖为 basic
+        analysis_options = {"orchestrator": "basic", "no_mp": True}
+        options = runner._merge_options(analysis_options)
+
+        assert options["orchestrator"] == "basic"
+        assert options["no_mp"] is True
+
+    def test_merge_options_user_set_takes_priority(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _orchestrator_user_set=True 时用户设置优先"""
+        mock_args.orchestrator = "mp"
+        mock_args.no_mp = False
+        mock_args._orchestrator_user_set = True
+
+        runner = Runner(mock_args)
+
+        # 自然语言分析结果想覆盖为 basic，但用户显式设置了 mp
+        analysis_options = {"orchestrator": "basic", "no_mp": True}
+        options = runner._merge_options(analysis_options)
+
+        # 用户显式设置优先
+        assert options["orchestrator"] == "mp"
+        assert options["no_mp"] is False
+
+    @pytest.mark.asyncio
+    async def test_run_iterate_creates_iterate_args_with_orchestrator(
+        self, runner_with_iterate_args: Runner
+    ) -> None:
+        """验证 _run_iterate 正确创建包含编排器选项的 IterateArgs"""
+        import scripts.run_iterate
+
+        captured_args = None
+
+        def capture_self_iterator_init(args):
+            nonlocal captured_args
+            captured_args = args
+            mock_iterator = MagicMock()
+            mock_iterator.run = AsyncMock(return_value={"success": True})
+            return mock_iterator
+
+        with patch.object(
+            scripts.run_iterate, "SelfIterator",
+            side_effect=capture_self_iterator_init
+        ):
+            options = runner_with_iterate_args._merge_options({})
+            await runner_with_iterate_args._run_iterate("测试迭代任务", options)
+
+            # 验证 IterateArgs 被正确创建
+            assert captured_args is not None
+            assert captured_args.requirement == "测试迭代任务"
+            assert captured_args.workers == 5
+            assert captured_args.skip_online is True
+            assert captured_args.auto_commit is True
+            assert captured_args.auto_push is True
+            assert captured_args.commit_per_iteration is True
+            # 验证编排器选项
+            assert captured_args.orchestrator == "mp"
+            assert captured_args.no_mp is False
+            assert captured_args._orchestrator_user_set is True
+
+    @pytest.mark.asyncio
+    async def test_run_iterate_passes_orchestrator_user_set_from_args(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 _run_iterate 从 args 传递 _orchestrator_user_set"""
+        import scripts.run_iterate
+
+        # 设置原始 args 的 _orchestrator_user_set
+        mock_args._orchestrator_user_set = True
+        mock_args.orchestrator = "basic"
+        mock_args.no_mp = False
+
+        runner = Runner(mock_args)
+
+        captured_args = None
+
+        def capture_init(args):
+            nonlocal captured_args
+            captured_args = args
+            mock_iterator = MagicMock()
+            mock_iterator.run = AsyncMock(return_value={"success": True})
+            return mock_iterator
+
+        with patch.object(
+            scripts.run_iterate, "SelfIterator",
+            side_effect=capture_init
+        ):
+            options = runner._merge_options({})
+            await runner._run_iterate("测试任务", options)
+
+            # 验证 _orchestrator_user_set 被正确传递
+            assert captured_args._orchestrator_user_set is True
+            assert captured_args.orchestrator == "basic"
+
+    @pytest.mark.asyncio
+    async def test_run_iterate_max_iterations_converted_to_string(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 max_iterations 被正确转换为字符串"""
+        import scripts.run_iterate
+
+        mock_args.max_iterations = "15"
+
+        runner = Runner(mock_args)
+
+        captured_args = None
+
+        def capture_init(args):
+            nonlocal captured_args
+            captured_args = args
+            mock_iterator = MagicMock()
+            mock_iterator.run = AsyncMock(return_value={"success": True})
+            return mock_iterator
+
+        with patch.object(
+            scripts.run_iterate, "SelfIterator",
+            side_effect=capture_init
+        ):
+            options = runner._merge_options({"max_iterations": 15})
+            await runner._run_iterate("测试任务", options)
+
+            # 验证 max_iterations 是字符串类型
+            assert captured_args.max_iterations == "15"
+            assert isinstance(captured_args.max_iterations, str)
+
+    def test_task_analyzer_detects_non_parallel_keywords_for_iterate(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证 TaskAnalyzer 检测非并行关键词并设置编排器选项"""
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        # 自我迭代 + 非并行关键词
+        analysis = analyzer.analyze("自我迭代，使用协程模式完成", mock_args)
+
+        # 应该检测到 ITERATE 模式
+        assert analysis.mode == RunMode.ITERATE
+
+        # 应该设置非并行选项
+        assert analysis.options.get("no_mp") is True or \
+               analysis.options.get("orchestrator") == "basic"
+
+    def test_full_parameter_flow_from_run_to_self_iterator(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证完整参数流: TaskAnalyzer → Runner._merge_options → IterateArgs"""
+        # 设置命令行默认值
+        mock_args.orchestrator = "mp"
+        mock_args.no_mp = False
+        mock_args._orchestrator_user_set = False
+        mock_args.auto_commit = False
+        mock_args.auto_push = False
+        mock_args.commit_per_iteration = False
+
+        # 步骤1: TaskAnalyzer 分析任务
+        analyzer = TaskAnalyzer(use_agent=False)
+        task = "自我迭代，启用提交，使用协程模式"
+        analysis = analyzer.analyze(task, mock_args)
+
+        # 验证分析结果
+        assert analysis.mode == RunMode.ITERATE
+        # 应该检测到启用提交和非并行
+        assert analysis.options.get("auto_commit") is True
+        assert analysis.options.get("no_mp") is True or \
+               analysis.options.get("orchestrator") == "basic"
+
+        # 步骤2: Runner._merge_options 合并选项
+        runner = Runner(mock_args)
+        options = runner._merge_options(analysis.options)
+
+        # 验证合并后的选项
+        assert options["auto_commit"] is True
+        assert options["no_mp"] is True or options["orchestrator"] == "basic"
+
+        # 步骤3: 模拟 IterateArgs 创建（与 run.py 中一致）
+        class IterateArgs:
+            def __init__(self, goal: str, opts: dict):
+                self.requirement = goal
+                self.skip_online = opts.get("skip_online", False)
+                self.changelog_url = "https://cursor.com/cn/changelog"
+                self.dry_run = opts.get("dry_run", False)
+                self.max_iterations = str(opts.get("max_iterations", 5))
+                self.workers = opts.get("workers", 3)
+                self.force_update = opts.get("force_update", False)
+                self.verbose = opts.get("verbose", False)
+                self.auto_commit = opts.get("auto_commit", False)
+                self.auto_push = opts.get("auto_push", False)
+                self.commit_per_iteration = opts.get("commit_per_iteration", False)
+                self.commit_message = opts.get("commit_message", "")
+                self.orchestrator = opts.get("orchestrator", "mp")
+                self.no_mp = opts.get("no_mp", False)
+                self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+        iterate_args = IterateArgs(analysis.goal, options)
+
+        # 验证最终传递给 SelfIterator 的参数
+        assert iterate_args.requirement == task
+        assert iterate_args.auto_commit is True
+        assert iterate_args.no_mp is True or iterate_args.orchestrator == "basic"

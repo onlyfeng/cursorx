@@ -53,6 +53,11 @@ class RunMode(str, Enum):
     AUTO = "auto"             # 自动分析模式
     PLAN = "plan"             # 仅规划模式（不执行）
     ASK = "ask"               # 问答模式（直接对话）
+    CLOUD = "cloud"           # Cloud 模式（云端执行）
+
+
+# Cloud 前缀（& 开头表示使用 Cloud 执行）
+CLOUD_PREFIX = "&"
 
 
 # 模式别名映射
@@ -80,6 +85,10 @@ MODE_ALIASES = {
     "chat": RunMode.ASK,
     "question": RunMode.ASK,
     "q": RunMode.ASK,
+    "cloud": RunMode.CLOUD,
+    "cloud-agent": RunMode.CLOUD,
+    "background": RunMode.CLOUD,
+    "bg": RunMode.CLOUD,
 }
 
 
@@ -401,14 +410,71 @@ def parse_args() -> argparse.Namespace:
 # 自然语言任务分析
 # ============================================================
 
+def is_cloud_request(prompt: str) -> bool:
+    """检测是否为 Cloud 请求（以 & 开头）
+
+    边界情况处理:
+    - None 或空字符串返回 False
+    - 只有 & 的字符串返回 False（无实际内容）
+    - 只有空白字符返回 False
+    - & 后面需要有实际内容才认为是 cloud request
+
+    Args:
+        prompt: 任务 prompt
+
+    Returns:
+        是否为云端请求
+    """
+    # 处理 None 和非字符串类型
+    if not prompt or not isinstance(prompt, str):
+        return False
+
+    stripped = prompt.strip()
+
+    # 空字符串
+    if not stripped:
+        return False
+
+    # 检查是否以 & 开头
+    if not stripped.startswith(CLOUD_PREFIX):
+        return False
+
+    # 确保 & 后面有实际内容（不只是空白）
+    content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
+    return len(content_after_prefix) > 0
+
+
+def strip_cloud_prefix(prompt: str) -> str:
+    """去除 Cloud 前缀 &
+
+    Args:
+        prompt: 可能带 & 前缀的 prompt
+
+    Returns:
+        去除前缀后的 prompt
+    """
+    if not prompt or not isinstance(prompt, str):
+        return prompt or ""
+
+    stripped = prompt.strip()
+    if stripped.startswith(CLOUD_PREFIX):
+        return stripped[len(CLOUD_PREFIX):].strip()
+    return prompt
+
+
 class TaskAnalyzer:
     """任务分析器
 
     使用规则匹配和 Agent 分析自然语言任务，确定最佳运行模式。
+    支持 '&' 前缀自动识别为 Cloud 模式。
     """
 
     # 模式关键词映射
     MODE_KEYWORDS = {
+        RunMode.CLOUD: [
+            "云端", "cloud", "后台执行", "background",
+            "推送云端", "云端任务", "cloud agent",
+        ],
         RunMode.ITERATE: [
             "自我迭代", "self-iterate", "iterate", "迭代更新",
             "更新知识库", "检查更新", "changelog", "自我更新",
@@ -512,13 +578,24 @@ class TaskAnalyzer:
         analysis = TaskAnalysis(goal=task)
         reasoning_parts = []
 
-        # 检测模式关键词
-        for mode, keywords in self.MODE_KEYWORDS.items():
-            if any(kw.lower() in task_lower for kw in keywords):
-                analysis.mode = mode
-                matched = [kw for kw in keywords if kw.lower() in task_lower]
-                reasoning_parts.append(f"检测到 {mode.value} 模式关键词: {matched}")
-                break
+        # 优先检测 '&' 前缀（Cloud 模式）
+        if is_cloud_request(task):
+            analysis.mode = RunMode.CLOUD
+            # 设置 Cloud 模式相关选项
+            analysis.options["execution_mode"] = "cloud"
+            # 去除 '&' 前缀，保留实际任务内容
+            analysis.goal = strip_cloud_prefix(task)
+            reasoning_parts.append("检测到 '&' 前缀，使用 Cloud 模式")
+            # Cloud 模式默认不开启 auto_commit（安全策略）
+            # allow_write/force_write 由用户显式控制
+        else:
+            # 检测模式关键词
+            for mode, keywords in self.MODE_KEYWORDS.items():
+                if any(kw.lower() in task_lower for kw in keywords):
+                    analysis.mode = mode
+                    matched = [kw for kw in keywords if kw.lower() in task_lower]
+                    reasoning_parts.append(f"检测到 {mode.value} 模式关键词: {matched}")
+                    break
 
         # 检测启用选项关键词
         for option, keywords in self.OPTION_KEYWORDS.items():
@@ -682,6 +759,8 @@ class Runner:
             return await self._run_plan(goal, merged_options)
         elif mode == RunMode.ASK:
             return await self._run_ask(goal, merged_options)
+        elif mode == RunMode.CLOUD:
+            return await self._run_cloud(goal, merged_options)
         else:
             return await self._run_basic(goal, merged_options)
 
@@ -782,6 +861,7 @@ class Runner:
             RunMode.AUTO: "自动模式",
             RunMode.PLAN: "规划模式",
             RunMode.ASK: "问答模式",
+            RunMode.CLOUD: "Cloud 模式",
         }
         return names.get(mode, mode.value)
 
@@ -914,6 +994,10 @@ class Runner:
             knowledge_top_k=options.get("knowledge_top_k", 3),
             knowledge_max_chars_per_doc=options.get("knowledge_max_chars_per_doc", 1200),
             knowledge_max_total_chars=options.get("knowledge_max_total_chars", 3000),
+            # 日志配置透传到子进程（verbose 模式控制 DEBUG 日志输出）
+            verbose=options.get("verbose", False),
+            log_level="DEBUG" if options.get("verbose", False) else "INFO",
+            heartbeat_debug=False,  # 心跳调试日志默认关闭，避免刷屏
         )
 
         if options["max_iterations"] == -1:
@@ -1005,6 +1089,14 @@ class Runner:
                 # 编排器选项
                 self.orchestrator = opts.get("orchestrator", "mp")
                 self.no_mp = opts.get("no_mp", False)
+                # 元字段：标记用户是否显式设置了编排器选项
+                # 当 True 时，SelfIterator 不会被 requirement 中的非并行关键词覆盖
+                self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
+        # 从原始 args 中获取 _orchestrator_user_set 元字段
+        # 这确保用户显式传入 --orchestrator/--no-mp 时，SelfIterator 不会被
+        # requirement 中的非并行关键词反向覆盖
+        options["_orchestrator_user_set"] = getattr(self.args, "_orchestrator_user_set", False)
 
         iterate_args = IterateArgs(goal, options)
         iterator = SelfIterator(iterate_args)
@@ -1141,6 +1233,89 @@ class Runner:
         except Exception as e:
             print_error(f"问答异常: {e}")
             return {"success": False, "goal": goal, "mode": "ask", "error": str(e)}
+
+    async def _run_cloud(self, goal: str, options: dict) -> dict:
+        """运行 Cloud 模式（云端执行）
+
+        使用 CloudAgentExecutor 执行任务，特点:
+        - 任务在云端后台执行
+        - 支持自动轮询任务状态
+        - 权限语义：force_write 由用户显式控制，不受 auto_commit 影响
+
+        权限策略:
+        - Cloud 模式默认 force_write=True（允许修改文件）
+        - auto_commit 独立于 force_write，需用户显式启用
+        - 确保权限语义与 auto_commit 策略不冲突
+        """
+        from cursor.executor import CloudAgentExecutor, AgentExecutorFactory, ExecutionMode
+        from cursor.client import CursorAgentConfig
+        from cursor.cloud_client import CloudAuthConfig
+
+        print_info("Cloud 模式：任务将在云端执行...")
+
+        try:
+            # 构建 Cloud 认证配置
+            import os
+            api_key = os.environ.get("CURSOR_API_KEY")
+            cloud_auth_config = CloudAuthConfig(api_key=api_key) if api_key else None
+
+            # Cloud 模式下 force_write 默认为 True（允许修改文件）
+            # 但与 auto_commit 独立，auto_commit 仍需用户显式启用
+            force_write = options.get("force_write", True)
+
+            # 创建 Cloud 执行器
+            config = CursorAgentConfig(
+                working_directory=options.get("directory", str(project_root)),
+                timeout=options.get("max_iterations", 10) * 60,  # 动态超时
+                force_write=force_write,
+            )
+            executor = AgentExecutorFactory.create(
+                mode=ExecutionMode.CLOUD,
+                cli_config=config,
+                cloud_auth_config=cloud_auth_config,
+            )
+
+            # 执行任务
+            result = await executor.execute(
+                prompt=goal,
+                working_directory=options.get("directory", str(project_root)),
+                timeout=options.get("max_iterations", 10) * 60,
+            )
+
+            if result.success:
+                output = result.output.strip()
+                print("\n" + "=" * 60)
+                print("Cloud 执行结果")
+                print("=" * 60)
+                print(output[:2000] if len(output) > 2000 else output)
+                if len(output) > 2000:
+                    print("\n... (输出已截断)")
+                print("=" * 60 + "\n")
+
+                return {
+                    "success": True,
+                    "goal": goal,
+                    "mode": "cloud",
+                    "output": output,
+                    "session_id": result.session_id,
+                    "files_modified": result.files_modified,
+                }
+            else:
+                error_msg = result.error or "未知错误"
+                print_error(f"Cloud 执行失败: {error_msg}")
+                return {
+                    "success": False,
+                    "goal": goal,
+                    "mode": "cloud",
+                    "error": error_msg,
+                }
+
+        except asyncio.TimeoutError:
+            print_error("Cloud 执行超时")
+            return {"success": False, "goal": goal, "mode": "cloud", "error": "timeout"}
+        except Exception as e:
+            print_error(f"Cloud 执行异常: {e}")
+            return {"success": False, "goal": goal, "mode": "cloud", "error": str(e)}
 
 
 # ============================================================

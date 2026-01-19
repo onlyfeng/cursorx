@@ -420,13 +420,75 @@ python run.py --mode ask "解释这个函数的作用"
 ```bash
 # 默认：不自动提交（安全模式）
 python run.py --mode iterate "任务描述"
+python scripts/run_iterate.py "任务描述"
 
 # 显式启用自动提交（必须指定 --auto-commit）
 python run.py --mode iterate --auto-commit "完成功能"
+python scripts/run_iterate.py --auto-commit "完成功能"
 
 # 每次迭代都提交（run.py 和 scripts/run_iterate.py 均支持）
 python run.py --mode iterate --auto-commit --commit-per-iteration "分步完成"
+python scripts/run_iterate.py --auto-commit --commit-per-iteration "分步完成"
 ```
+
+**执行模式与编排器**（iterate 模式）:
+
+`--execution-mode` 控制任务的执行方式，影响编排器选择：
+
+```bash
+# 默认：本地 CLI 执行，支持多进程编排器（推荐）
+python scripts/run_iterate.py "任务描述"
+python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
+
+# Cloud/Auto 执行模式：强制使用 basic 编排器
+python scripts/run_iterate.py --execution-mode auto "任务描述"
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
+
+# 显式禁用多进程（使用协程编排器）
+python scripts/run_iterate.py --no-mp "任务描述"
+python scripts/run_iterate.py --orchestrator basic "任务描述"
+
+# 仅分析不执行
+python scripts/run_iterate.py --dry-run "分析改进点"
+
+# 跳过在线文档检查
+python scripts/run_iterate.py --skip-online "优化代码"
+
+# 日志控制：静默模式（仅 WARNING 及以上）
+python scripts/run_iterate.py --quiet "任务描述"
+python scripts/run_iterate.py -q "任务描述"
+
+# 日志控制：详细模式（DEBUG 级别）
+python scripts/run_iterate.py --verbose "任务描述"
+
+# 日志控制：精确指定日志级别
+python scripts/run_iterate.py --log-level WARNING "任务描述"
+python scripts/run_iterate.py --log-level ERROR "任务描述"
+
+# 调试心跳日志（仅调试时使用）
+python scripts/run_iterate.py --heartbeat-debug "任务描述"
+
+# ===== 卡死诊断运行模式 =====
+
+# 模式 1: 默认运行（诊断关闭，不输出任何诊断日志）
+python scripts/run_iterate.py "任务描述"
+
+# 模式 2: 启用诊断（疑似卡死时启用，输出 warning 级别诊断）
+python scripts/run_iterate.py --stall-diagnostics "任务描述"
+# 或指定其他日志级别：
+python scripts/run_iterate.py --stall-diagnostics --stall-diagnostics-level info "任务描述"
+
+# 模式 3: 完全静默（仅 ERROR 级别日志，适合自动化脚本）
+python scripts/run_iterate.py --log-level ERROR "任务描述"
+```
+
+**诊断与心跳日志说明**:
+- **默认行为**: `--stall-diagnostics` 关闭，不输出任何诊断日志，不占用 WARNING 级别
+- **启用诊断**: 遇到疑似卡死时，使用 `--stall-diagnostics` 启用（默认以 warning 级别输出）
+- **日志级别控制**: 使用 `--stall-diagnostics-level` 可指定诊断日志级别（debug/info/warning/error）
+- **心跳日志**: 仅在指定 `--heartbeat-debug` 时输出，用于调试进程间通信
+
+**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。
 
 **入口脚本验证检查清单**：
 
