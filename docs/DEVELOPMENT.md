@@ -444,6 +444,9 @@ python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描�
 python scripts/run_iterate.py --execution-mode auto "任务描述"
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 
+# 使用 & 前缀触发 Cloud 模式（等效于 --execution-mode cloud）
+python scripts/run_iterate.py "& 后台分析代码架构"
+
 # 显式禁用多进程（使用协程编排器）
 python scripts/run_iterate.py --no-mp "任务描述"
 python scripts/run_iterate.py --orchestrator basic "任务描述"
@@ -468,6 +471,17 @@ python scripts/run_iterate.py --log-level ERROR "任务描述"
 # 调试心跳日志（仅调试时使用）
 python scripts/run_iterate.py --heartbeat-debug "任务描述"
 
+# ===== 差异渲染（Diff 视图）=====
+
+# 启用流式控制台渲染器
+python scripts/run_iterate.py --stream-console-renderer "任务描述"
+
+# 启用逐词差异显示（Diff 视图增强）
+python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff "重构代码"
+
+# 使用高级终端渲染器（支持状态栏、打字效果等）
+python scripts/run_iterate.py --stream-advanced-renderer --stream-typing-effect "任务描述"
+
 # ===== 卡死诊断运行模式 =====
 
 # 模式 1: 默认运行（诊断关闭，不输出任何诊断日志）
@@ -488,7 +502,16 @@ python scripts/run_iterate.py --log-level ERROR "任务描述"
 - **日志级别控制**: 使用 `--stall-diagnostics-level` 可指定诊断日志级别（debug/info/warning/error）
 - **心跳日志**: 仅在指定 `--heartbeat-debug` 时输出，用于调试进程间通信
 
-**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。
+**MP 与 Cloud/Auto 不兼容约束**:
+- 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**
+- 使用 `&` 前缀触发的 Cloud 模式也会强制使用 basic 编排器
+- 即使显式指定 `--orchestrator mp` 也会自动切换到 basic 编排器
+- 原因：Cloud API 不支持多进程编排
+
+**`&` 前缀路由语义**:
+- `&` 必须在任务开头才会触发 Cloud 模式
+- `&` 后面必须有实际内容（只有 `&` 或 `& ` 不会触发）
+- 任务中间的 `&` 不会被识别为 Cloud 请求
 
 **入口脚本验证检查清单**：
 

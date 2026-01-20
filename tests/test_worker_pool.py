@@ -187,6 +187,112 @@ class TestWorkerPoolInit:
             assert config.name == f"worker-{i}"
 
 
+class TestWorkerPoolForceWriteConfig:
+    """WorkerPool force_write 配置测试
+
+    验证：
+    1. WorkerPool 初始化后每个 worker 的 cursor_config.force_write=True
+    2. 每个 worker 的 cursor_config.stream_agent_id 唯一
+    """
+
+    def test_workers_force_write_enabled(self):
+        """测试 WorkerPool 中所有 Worker 的 force_write=True"""
+        from cursor.client import CursorAgentConfig
+
+        # 创建 WorkerConfig，确保 force_write=True
+        cursor_config = CursorAgentConfig(force_write=True)
+        worker_config = WorkerConfig(
+            name="test-worker",
+            working_directory="/tmp/test",
+            cursor_config=cursor_config,
+        )
+
+        pool = WorkerPool(size=3, worker_config=worker_config)
+        pool.initialize()
+
+        # 验证每个 worker 的 cursor_config.force_write=True
+        for worker in pool.workers:
+            assert worker.worker_config.cursor_config.force_write is True, \
+                f"Worker {worker.id} 的 force_write 应为 True"
+
+    def test_workers_stream_agent_id_unique(self):
+        """测试 WorkerPool 中每个 Worker 的 stream_agent_id 唯一"""
+        from cursor.client import CursorAgentConfig
+
+        cursor_config = CursorAgentConfig(force_write=True)
+        worker_config = WorkerConfig(
+            name="test-worker",
+            working_directory="/tmp/test",
+            cursor_config=cursor_config,
+        )
+
+        pool = WorkerPool(size=5, worker_config=worker_config)
+        pool.initialize()
+
+        # 收集所有 worker 的 stream_agent_id
+        stream_agent_ids = []
+        for worker in pool.workers:
+            stream_agent_id = worker.worker_config.cursor_config.stream_agent_id
+            assert stream_agent_id is not None, \
+                f"Worker {worker.id} 的 stream_agent_id 不应为 None"
+            stream_agent_ids.append(stream_agent_id)
+
+        # 验证唯一性
+        assert len(stream_agent_ids) == len(set(stream_agent_ids)), \
+            f"Worker stream_agent_id 不唯一: {stream_agent_ids}"
+
+    def test_workers_inherit_cursor_config(self):
+        """测试 WorkerPool 正确传递 cursor_config 到每个 Worker"""
+        from cursor.client import CursorAgentConfig
+
+        # 创建带有自定义配置的 cursor_config
+        cursor_config = CursorAgentConfig(
+            force_write=True,
+            model="custom-model",
+            timeout=600,
+        )
+        worker_config = WorkerConfig(
+            name="test-worker",
+            working_directory="/custom/path",
+            cursor_config=cursor_config,
+        )
+
+        pool = WorkerPool(size=3, worker_config=worker_config)
+        pool.initialize()
+
+        # 验证每个 worker 继承了正确的配置
+        for worker in pool.workers:
+            assert worker.worker_config.cursor_config.model == "custom-model", \
+                f"Worker {worker.id} 的 model 配置不正确"
+            assert worker.worker_config.cursor_config.timeout == 600, \
+                f"Worker {worker.id} 的 timeout 配置不正确"
+            assert worker.worker_config.working_directory == "/custom/path", \
+                f"Worker {worker.id} 的 working_directory 配置不正确"
+
+    def test_initialize_workers_have_independent_cursor_configs(self, worker_config):
+        """测试每个 Worker 拥有独立的 CursorAgentConfig（stream_agent_id 不相同）"""
+        pool = WorkerPool(size=3, worker_config=worker_config)
+        pool.initialize()
+
+        # 验证每个 worker 拥有独立的 stream_agent_id
+        stream_agent_ids = [w.worker_config.cursor_config.stream_agent_id for w in pool.workers]
+
+        # 所有 stream_agent_id 都不为空
+        assert all(agent_id is not None for agent_id in stream_agent_ids), \
+            "所有 Worker 的 stream_agent_id 都应该被设置"
+
+        # 所有 stream_agent_id 互不相同
+        assert len(set(stream_agent_ids)) == len(stream_agent_ids), \
+            f"每个 Worker 的 stream_agent_id 应该独立且不相同，实际: {stream_agent_ids}"
+
+        # 验证 cursor_config 对象本身是独立的（不是同一个引用）
+        cursor_configs = [w.worker_config.cursor_config for w in pool.workers]
+        for i in range(len(cursor_configs)):
+            for j in range(i + 1, len(cursor_configs)):
+                assert cursor_configs[i] is not cursor_configs[j], \
+                    f"Worker {i} 和 Worker {j} 不应共享同一个 cursor_config 实例"
+
+
 # ==================== 任务分配测试 ====================
 
 

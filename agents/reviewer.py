@@ -101,6 +101,9 @@ class ReviewerAgent(BaseAgent):
         )
         super().__init__(agent_config)
         self.reviewer_config = config
+
+        # 应用 ask 模式配置（--mode=ask 仅回答问题，不修改文件）
+        self._apply_ask_mode_config(self.reviewer_config.cursor_config)
         self._apply_stream_config(self.reviewer_config.cursor_config)
 
         # 使用 AgentExecutorFactory 创建执行器
@@ -283,6 +286,19 @@ class ReviewerAgent(BaseAgent):
             "summary": output,
             "suggestions": ["无法解析评审结果，建议继续迭代"],
         }
+
+    def _apply_ask_mode_config(self, cursor_config: CursorAgentConfig) -> None:
+        """应用 ask 模式配置
+
+        ask 模式特点:
+        - 使用 --mode=ask 参数
+        - 仅回答问题，不修改文件
+        - 强制禁用 force_write 以确保不会意外修改文件
+        - 即使用户传入 force_write=True 也会被覆盖为 False
+        """
+        cursor_config.mode = "ask"
+        # 强制禁用 force_write（覆盖用户配置）
+        cursor_config.force_write = False
 
     def _apply_stream_config(self, cursor_config: CursorAgentConfig) -> None:
         """注入流式日志配置与 Agent 标识"""

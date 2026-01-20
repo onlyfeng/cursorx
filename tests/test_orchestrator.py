@@ -287,6 +287,282 @@ class TestStreamConfigApplication:
         assert cursor_config.stream_log_raw_dir == "/custom/raw/"
 
 
+class TestWorkerForceWriteConfig:
+    """测试 Worker 的 force_write 配置
+
+    验证：
+    1. Worker 的 cursor_config.force_write=True（需要能修改文件）
+    2. 每个 Worker 的 cursor_config.stream_agent_id 唯一
+    3. Planner/Reviewer 的 force_write=False（只读角色）
+    """
+
+    def test_workers_force_write_enabled(self) -> None:
+        """测试所有 Worker 的 force_write=True"""
+        config = OrchestratorConfig(worker_pool_size=3)
+        orchestrator = Orchestrator(config)
+
+        # 验证每个 worker 的 cursor_config.force_write=True
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.force_write is True, \
+                f"Worker {worker.id} 的 force_write 应为 True，实际为 {worker.worker_config.cursor_config.force_write}"
+
+    def test_workers_stream_agent_id_unique(self) -> None:
+        """测试每个 Worker 的 stream_agent_id 唯一"""
+        config = OrchestratorConfig(worker_pool_size=5)
+        orchestrator = Orchestrator(config)
+
+        # 收集所有 worker 的 stream_agent_id
+        stream_agent_ids = []
+        for worker in orchestrator.worker_pool.workers:
+            stream_agent_id = worker.worker_config.cursor_config.stream_agent_id
+            assert stream_agent_id is not None, \
+                f"Worker {worker.id} 的 stream_agent_id 不应为 None"
+            stream_agent_ids.append(stream_agent_id)
+
+        # 验证唯一性
+        assert len(stream_agent_ids) == len(set(stream_agent_ids)), \
+            f"Worker stream_agent_id 不唯一: {stream_agent_ids}"
+
+    def test_planner_force_write_disabled(self) -> None:
+        """测试 Planner 的 force_write=False"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # Planner 不应该修改文件
+        assert orchestrator.planner.planner_config.cursor_config.force_write is False, \
+            "Planner 的 force_write 应为 False（只读角色）"
+
+    def test_reviewer_force_write_disabled(self) -> None:
+        """测试 Reviewer 的 force_write=False"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # Reviewer 不应该修改文件
+        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, \
+            "Reviewer 的 force_write 应为 False（只读角色）"
+
+    def test_workers_force_write_with_custom_config(self) -> None:
+        """测试使用自定义 cursor_config 时 Worker 的 force_write 仍为 True"""
+        from cursor.client import CursorAgentConfig
+
+        # 创建一个 force_write=False 的 cursor_config
+        custom_cursor_config = CursorAgentConfig(
+            force_write=False,  # 显式设置为 False
+            model="test-model",
+        )
+
+        config = OrchestratorConfig(
+            worker_pool_size=2,
+            cursor_config=custom_cursor_config,
+        )
+        orchestrator = Orchestrator(config)
+
+        # 即使传入的 cursor_config.force_write=False，Worker 也应该被覆盖为 True
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.force_write is True, \
+                f"Worker {worker.id} 的 force_write 应被强制设置为 True"
+
+
+class TestAgentModeAndForceWriteConfig:
+    """测试各角色的 mode 和 force_write 配置
+
+    确保：
+    1. Worker 使用 mode='agent' 且 force_write=True（允许修改文件）
+    2. Planner 使用 mode='plan' 且 force_write=False（只读）
+    3. Reviewer 使用 force_write=False（只读）
+    """
+
+    def test_worker_force_write_enabled(self) -> None:
+        """验证 Worker 的 force_write=True 配置"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # 验证所有 Worker 的 force_write=True
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.force_write is True, \
+                f"Worker {worker.id} 的 force_write 应为 True"
+
+    def test_worker_agent_mode(self) -> None:
+        """验证 Worker 的 mode='agent' 配置"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # 验证所有 Worker 的 mode='agent'
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.mode == 'agent', \
+                f"Worker {worker.id} 的 mode 应为 'agent'"
+
+    def test_planner_force_write_disabled(self) -> None:
+        """验证 Planner 的 force_write=False 配置"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        assert orchestrator.planner.planner_config.cursor_config.force_write is False, \
+            "Planner 的 force_write 应为 False（只读）"
+
+    def test_planner_plan_mode(self) -> None:
+        """验证 Planner 的 mode='plan' 配置（由 PlannerAgent 内部设置）"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # Planner 默认使用 plan 模式（在 PlannerAgent._apply_plan_mode_config 中设置）
+        assert orchestrator.planner.planner_config.cursor_config.mode == 'plan', \
+            "Planner 的 mode 应为 'plan'"
+
+    def test_reviewer_force_write_disabled(self) -> None:
+        """验证 Reviewer 的 force_write=False 配置"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, \
+            "Reviewer 的 force_write 应为 False（只读）"
+
+    def test_reviewer_ask_mode(self) -> None:
+        """验证 Reviewer 的 mode='ask' 配置"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        # Reviewer 使用 ask 模式（在 ReviewerAgent._apply_ask_mode_config 中设置）
+        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == 'ask', \
+            "Reviewer 的 mode 应为 'ask'"
+
+    def test_worker_force_write_affects_cursor_client(self) -> None:
+        """验证 Worker 的 force_write=True 能传递到 CursorAgentClient
+
+        此测试确保 --force 参数能正确应用到 CLI 命令构建中
+        """
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        for worker in orchestrator.worker_pool.workers:
+            # 验证 cursor_client 的配置也有 force_write=True
+            assert worker.cursor_client.config.force_write is True, \
+                f"Worker {worker.id} 的 cursor_client.config.force_write 应为 True"
+
+    def test_planner_readonly_guarantee(self) -> None:
+        """验证 Planner 只读保证（mode='plan' + force_write=False）"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        planner_config = orchestrator.planner.planner_config.cursor_config
+        assert planner_config.mode == 'plan', "Planner 应使用 plan 模式"
+        assert planner_config.force_write is False, "Planner 不应允许写入"
+
+    def test_reviewer_readonly_guarantee(self) -> None:
+        """验证 Reviewer 只读保证（mode='ask' + force_write=False）"""
+        config = OrchestratorConfig()
+        orchestrator = Orchestrator(config)
+
+        reviewer_config = orchestrator.reviewer.reviewer_config.cursor_config
+        assert reviewer_config.mode == 'ask', "Reviewer 应使用 ask 模式"
+        assert reviewer_config.force_write is False, "Reviewer 不应允许写入"
+
+
+class TestRoleBasedExecutionMode:
+    """测试角色级执行模式路由
+
+    验证：
+    1. 角色级执行模式正确传递到各 Agent
+    2. 默认继承全局 execution_mode
+    3. Planner/Reviewer 只读语义仍然生效
+    """
+
+    def test_role_execution_mode_default_inherits_global(self) -> None:
+        """测试角色级执行模式默认继承全局 execution_mode"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            execution_mode=ExecutionMode.CLOUD,
+        )
+
+        # 角色级执行模式默认为 None，表示继承全局
+        assert config.planner_execution_mode is None
+        assert config.worker_execution_mode is None
+        assert config.reviewer_execution_mode is None
+
+        # 创建编排器时会自动继承
+        orchestrator = Orchestrator(config)
+
+        # 验证各 Agent 使用了正确的执行模式
+        # 由于默认继承，所有角色应使用全局 execution_mode
+        assert orchestrator.config.execution_mode == ExecutionMode.CLOUD
+
+    def test_role_execution_mode_custom_override(self) -> None:
+        """测试自定义角色级执行模式覆盖全局设置"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            execution_mode=ExecutionMode.CLI,
+            planner_execution_mode=ExecutionMode.CLOUD,
+            worker_execution_mode=ExecutionMode.AUTO,
+            # reviewer 不设置，应继承全局 CLI
+        )
+
+        # 验证配置值
+        assert config.execution_mode == ExecutionMode.CLI
+        assert config.planner_execution_mode == ExecutionMode.CLOUD
+        assert config.worker_execution_mode == ExecutionMode.AUTO
+        assert config.reviewer_execution_mode is None
+
+    def test_planner_readonly_with_custom_execution_mode(self) -> None:
+        """测试 Planner 使用自定义执行模式时仍保持只读语义"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            planner_execution_mode=ExecutionMode.CLOUD,
+        )
+        orchestrator = Orchestrator(config)
+
+        # Planner 应保持只读语义
+        assert orchestrator.planner.planner_config.cursor_config.force_write is False
+        assert orchestrator.planner.planner_config.cursor_config.mode == 'plan'
+
+    def test_reviewer_readonly_with_custom_execution_mode(self) -> None:
+        """测试 Reviewer 使用自定义执行模式时仍保持只读语义"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            reviewer_execution_mode=ExecutionMode.CLOUD,
+        )
+        orchestrator = Orchestrator(config)
+
+        # Reviewer 应保持只读语义
+        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False
+        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == 'ask'
+
+    def test_worker_force_write_with_custom_execution_mode(self) -> None:
+        """测试 Worker 使用自定义执行模式时保持写入权限"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            worker_execution_mode=ExecutionMode.CLOUD,
+        )
+        orchestrator = Orchestrator(config)
+
+        # Worker 应保持写入权限
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.cursor_config.force_write is True
+            assert worker.worker_config.cursor_config.mode == 'agent'
+
+    def test_role_execution_mode_propagation_to_agent_config(self) -> None:
+        """测试角色级执行模式正确传递到 Agent 配置"""
+        from cursor.executor import ExecutionMode
+
+        config = OrchestratorConfig(
+            execution_mode=ExecutionMode.CLI,
+            planner_execution_mode=ExecutionMode.PLAN,
+            worker_execution_mode=ExecutionMode.AUTO,
+            reviewer_execution_mode=ExecutionMode.ASK,
+        )
+        orchestrator = Orchestrator(config)
+
+        # 验证各 Agent 收到正确的执行模式
+        assert orchestrator.planner.planner_config.execution_mode == ExecutionMode.PLAN
+        for worker in orchestrator.worker_pool.workers:
+            assert worker.worker_config.execution_mode == ExecutionMode.AUTO
+        assert orchestrator.reviewer.reviewer_config.execution_mode == ExecutionMode.ASK
+
+
 class TestAutoCommitDefaultDisabled:
     """回归测试：验证 enable_auto_commit 默认禁用时的行为
 

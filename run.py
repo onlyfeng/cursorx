@@ -40,6 +40,10 @@ sys.path.insert(0, str(project_root))
 
 from loguru import logger
 
+from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from cursor.cloud_client import CloudAuthConfig
+from cursor.executor import ExecutionMode
+
 # ============================================================
 # 运行模式定义
 # ============================================================
@@ -54,10 +58,6 @@ class RunMode(str, Enum):
     PLAN = "plan"             # 仅规划模式（不执行）
     ASK = "ask"               # 问答模式（直接对话）
     CLOUD = "cloud"           # Cloud 模式（云端执行）
-
-
-# Cloud 前缀（& 开头表示使用 Cloud 执行）
-CLOUD_PREFIX = "&"
 
 
 # 模式别名映射
@@ -395,6 +395,135 @@ def parse_args() -> argparse.Namespace:
         help="[iterate] 禁用多进程编排器，使用基本协程编排器",
     )
 
+    # 执行模式参数（全局，尤其对 iterate 模式有效）
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud"],
+        default="cli",
+        help="执行模式: cli=本地CLI(默认), auto=自动选择(Cloud优先), cloud=强制Cloud",
+    )
+
+    # 角色级执行模式参数（可选，默认继承全局 execution-mode）
+    parser.add_argument(
+        "--planner-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud", "plan"],
+        default=None,
+        help="规划者执行模式（默认继承 --execution-mode）",
+    )
+
+    parser.add_argument(
+        "--worker-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud"],
+        default=None,
+        help="执行者执行模式（默认继承 --execution-mode）",
+    )
+
+    parser.add_argument(
+        "--reviewer-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud", "ask"],
+        default=None,
+        help="评审者执行模式（默认继承 --execution-mode）",
+    )
+
+    # Cloud 认证参数（与 scripts/run_iterate.py 对齐）
+    parser.add_argument(
+        "--cloud-api-key",
+        type=str,
+        default=None,
+        help="Cloud API Key（可选，默认从 CURSOR_API_KEY 环境变量读取）",
+    )
+
+    parser.add_argument(
+        "--cloud-auth-timeout",
+        type=int,
+        default=30,
+        help="Cloud 认证超时时间（秒，默认 30）",
+    )
+
+    parser.add_argument(
+        "--cloud-timeout",
+        type=int,
+        default=600,
+        help="Cloud 执行超时时间（秒，默认 600，即 10 分钟）",
+    )
+
+    # 流式控制台渲染参数（默认关闭，避免噪声）
+    stream_render_group = parser.add_argument_group("流式控制台渲染")
+
+    stream_render_group.add_argument(
+        "--stream-console-renderer",
+        action="store_true",
+        dest="stream_console_renderer",
+        default=False,
+        help="启用流式控制台渲染器（默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-advanced-renderer",
+        action="store_true",
+        dest="stream_advanced_renderer",
+        default=False,
+        help="使用高级终端渲染器（支持状态栏、打字效果等，默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-typing-effect",
+        action="store_true",
+        dest="stream_typing_effect",
+        default=False,
+        help="启用打字机效果（默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-typing-delay",
+        type=float,
+        default=0.02,
+        metavar="SECONDS",
+        help="打字延迟（秒，默认 0.02）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-word-mode",
+        action="store_true",
+        dest="stream_word_mode",
+        default=True,
+        help="逐词输出模式（默认开启）",
+    )
+
+    stream_render_group.add_argument(
+        "--no-stream-word-mode",
+        action="store_false",
+        dest="stream_word_mode",
+        help="逐字符输出模式（禁用逐词模式）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-color-enabled",
+        action="store_true",
+        dest="stream_color_enabled",
+        default=True,
+        help="启用颜色输出（默认开启）",
+    )
+
+    stream_render_group.add_argument(
+        "--no-stream-color",
+        action="store_false",
+        dest="stream_color_enabled",
+        help="禁用颜色输出",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-show-word-diff",
+        action="store_true",
+        dest="stream_show_word_diff",
+        default=False,
+        help="显示逐词差异（默认关闭）",
+    )
+
     args = parser.parse_args()
 
     # 标记用户是否显式设置了编排器选项
@@ -409,57 +538,6 @@ def parse_args() -> argparse.Namespace:
 # ============================================================
 # 自然语言任务分析
 # ============================================================
-
-def is_cloud_request(prompt: str) -> bool:
-    """检测是否为 Cloud 请求（以 & 开头）
-
-    边界情况处理:
-    - None 或空字符串返回 False
-    - 只有 & 的字符串返回 False（无实际内容）
-    - 只有空白字符返回 False
-    - & 后面需要有实际内容才认为是 cloud request
-
-    Args:
-        prompt: 任务 prompt
-
-    Returns:
-        是否为云端请求
-    """
-    # 处理 None 和非字符串类型
-    if not prompt or not isinstance(prompt, str):
-        return False
-
-    stripped = prompt.strip()
-
-    # 空字符串
-    if not stripped:
-        return False
-
-    # 检查是否以 & 开头
-    if not stripped.startswith(CLOUD_PREFIX):
-        return False
-
-    # 确保 & 后面有实际内容（不只是空白）
-    content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
-    return len(content_after_prefix) > 0
-
-
-def strip_cloud_prefix(prompt: str) -> str:
-    """去除 Cloud 前缀 &
-
-    Args:
-        prompt: 可能带 & 前缀的 prompt
-
-    Returns:
-        去除前缀后的 prompt
-    """
-    if not prompt or not isinstance(prompt, str):
-        return prompt or ""
-
-    stripped = prompt.strip()
-    if stripped.startswith(CLOUD_PREFIX):
-        return stripped[len(CLOUD_PREFIX):].strip()
-    return prompt
 
 
 class TaskAnalyzer:
@@ -647,13 +725,23 @@ class TaskAnalyzer:
 - mp: 多进程模式，适合需要并行执行的大型任务
 - knowledge: 知识库增强模式，适合需要参考文档的任务
 - iterate: 自我迭代模式，适合需要检查更新、更新知识库的任务
+- cloud: 云端执行模式，适合后台长时间运行的任务（'&' 前缀触发）
+- plan: 规划模式，仅分析任务并生成执行计划，不修改文件
+- ask: 问答模式，直接与 Agent 对话，不修改文件
 
 可用选项：
-- skip_online: 跳过在线文档检查
-- dry_run: 仅分析不执行
-- strict: 严格评审模式
-- max_iterations: 最大迭代次数（-1 表示无限）
-- workers: Worker 数量
+- skip_online: 跳过在线文档检查 (bool)
+- dry_run: 仅分析不执行 (bool)
+- strict: 严格评审模式 (bool)
+- max_iterations: 最大迭代次数，-1 表示无限 (int)
+- workers: Worker 数量 (int)
+- auto_commit: 启用自动提交 (bool)
+- auto_push: 启用自动推送，需配合 auto_commit (bool)
+- commit_per_iteration: 每次迭代都提交 (bool)
+- stream_log: 启用流式日志 (bool)
+- no_mp: 禁用多进程编排器，使用协程模式 (bool)
+- orchestrator: 编排器类型，"mp" 或 "basic" (str)
+- execution_mode: 执行模式，"cli"/"cloud"/"auto" (str)
 
 请以 JSON 格式返回分析结果：
 {{
@@ -849,6 +937,53 @@ class Runner:
             self.args, "knowledge_max_total_chars", 3000
         )
 
+        # 执行模式（优先使用分析结果，否则使用命令行参数）
+        # 当 '&' 前缀触发 Cloud 模式时，analysis_options 中会设置 execution_mode="cloud"
+        if "execution_mode" in analysis_options:
+            options["execution_mode"] = analysis_options["execution_mode"]
+        else:
+            options["execution_mode"] = getattr(self.args, "execution_mode", "cli")
+
+        # Cloud 认证配置
+        options["cloud_api_key"] = getattr(self.args, "cloud_api_key", None)
+        options["cloud_auth_timeout"] = getattr(self.args, "cloud_auth_timeout", 30)
+        # Cloud 执行超时（独立于 max_iterations）
+        options["cloud_timeout"] = getattr(self.args, "cloud_timeout", 600)
+
+        # 角色级执行模式（可选，默认继承全局 execution_mode）
+        options["planner_execution_mode"] = getattr(
+            self.args, "planner_execution_mode", None
+        )
+        options["worker_execution_mode"] = getattr(
+            self.args, "worker_execution_mode", None
+        )
+        options["reviewer_execution_mode"] = getattr(
+            self.args, "reviewer_execution_mode", None
+        )
+
+        # 流式控制台渲染配置（默认关闭）
+        options["stream_console_renderer"] = getattr(
+            self.args, "stream_console_renderer", False
+        )
+        options["stream_advanced_renderer"] = getattr(
+            self.args, "stream_advanced_renderer", False
+        )
+        options["stream_typing_effect"] = getattr(
+            self.args, "stream_typing_effect", False
+        )
+        options["stream_typing_delay"] = getattr(
+            self.args, "stream_typing_delay", 0.02
+        )
+        options["stream_word_mode"] = getattr(
+            self.args, "stream_word_mode", True
+        )
+        options["stream_color_enabled"] = getattr(
+            self.args, "stream_color_enabled", True
+        )
+        options["stream_show_word_diff"] = getattr(
+            self.args, "stream_show_word_diff", False
+        )
+
         return options
 
     def _get_mode_name(self, mode: RunMode) -> str:
@@ -864,6 +999,75 @@ class Runner:
             RunMode.CLOUD: "Cloud 模式",
         }
         return names.get(mode, mode.value)
+
+    def _get_execution_mode(self, options: dict) -> ExecutionMode:
+        """获取执行模式
+
+        Args:
+            options: 合并后的选项字典
+
+        Returns:
+            ExecutionMode 枚举值
+        """
+        mode_str = options.get("execution_mode", "cli")
+        mode_map = {
+            "cli": ExecutionMode.CLI,
+            "auto": ExecutionMode.AUTO,
+            "cloud": ExecutionMode.CLOUD,
+        }
+        return mode_map.get(mode_str, ExecutionMode.CLI)
+
+    def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
+        """解析执行模式字符串为 ExecutionMode 枚举
+
+        Args:
+            mode_str: 执行模式字符串（cli/auto/cloud/plan/ask）或 None
+
+        Returns:
+            ExecutionMode 枚举值或 None
+        """
+        if mode_str is None:
+            return None
+
+        mode_map = {
+            "cli": ExecutionMode.CLI,
+            "auto": ExecutionMode.AUTO,
+            "cloud": ExecutionMode.CLOUD,
+            "plan": ExecutionMode.PLAN,
+            "ask": ExecutionMode.ASK,
+        }
+        return mode_map.get(mode_str.lower())
+
+    def _get_cloud_auth_config(self, options: dict) -> Optional[CloudAuthConfig]:
+        """获取 Cloud 认证配置
+
+        优先级：
+        1. --cloud-api-key 参数
+        2. CURSOR_API_KEY 环境变量
+
+        Args:
+            options: 合并后的选项字典
+
+        Returns:
+            CloudAuthConfig 或 None（未配置 key 时）
+        """
+        import os
+
+        # 优先使用 --cloud-api-key 参数
+        api_key = options.get("cloud_api_key")
+        # 回退到环境变量
+        if not api_key:
+            api_key = os.environ.get("CURSOR_API_KEY")
+
+        if not api_key:
+            return None
+
+        # 认证超时配置
+        auth_timeout = options.get("cloud_auth_timeout", 30)
+        return CloudAuthConfig(
+            api_key=api_key,
+            auth_timeout=auth_timeout,
+        )
 
     async def _search_knowledge_docs(self, query: str) -> list[dict[str, Any]]:
         """搜索知识库文档
@@ -928,6 +1132,21 @@ class Runner:
             working_directory=options["directory"],
         )
 
+        # 获取执行模式和 Cloud 认证配置
+        execution_mode = self._get_execution_mode(options)
+        cloud_auth_config = self._get_cloud_auth_config(options)
+
+        # 解析角色级执行模式（可选，默认继承全局 execution_mode）
+        planner_exec_mode = self._parse_execution_mode(
+            options.get("planner_execution_mode")
+        )
+        worker_exec_mode = self._parse_execution_mode(
+            options.get("worker_execution_mode")
+        )
+        reviewer_exec_mode = self._parse_execution_mode(
+            options.get("reviewer_execution_mode")
+        )
+
         config = OrchestratorConfig(
             working_directory=options["directory"],
             max_iterations=options["max_iterations"],
@@ -942,6 +1161,21 @@ class Runner:
             planner_model=options.get("planner_model", "gpt-5.2-high"),
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
             reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
+            # 执行模式和 Cloud 认证配置
+            execution_mode=execution_mode,
+            cloud_auth_config=cloud_auth_config,
+            # 角色级执行模式（可选）
+            planner_execution_mode=planner_exec_mode,
+            worker_execution_mode=worker_exec_mode,
+            reviewer_execution_mode=reviewer_exec_mode,
+            # 流式控制台渲染配置
+            stream_console_renderer=options.get("stream_console_renderer", False),
+            stream_advanced_renderer=options.get("stream_advanced_renderer", False),
+            stream_typing_effect=options.get("stream_typing_effect", False),
+            stream_typing_delay=options.get("stream_typing_delay", 0.02),
+            stream_word_mode=options.get("stream_word_mode", True),
+            stream_color_enabled=options.get("stream_color_enabled", True),
+            stream_show_word_diff=options.get("stream_show_word_diff", False),
         )
 
         if options["max_iterations"] == -1:
@@ -956,8 +1190,19 @@ class Runner:
         支持知识库增强：
         - 方案 B: 当指定 --search-knowledge 时，搜索知识库并将文档拼接到 goal
         - 方案 C: 通过 enable_knowledge_search 配置启用 MP 任务级知识库注入
+
+        注意: MP 编排器不支持 Cloud/Auto 执行模式，如果用户指定了非 CLI 执行模式，
+        会发出警告但继续使用 CLI 模式执行（MP 编排器内部始终使用本地 CLI）。
         """
         from coordinator import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+
+        # MP 编排器不支持 Cloud/Auto 执行模式，检查并发出警告
+        execution_mode_str = options.get("execution_mode", "cli")
+        if execution_mode_str != "cli":
+            print_warning(
+                f"MP 编排器不支持执行模式 '{execution_mode_str}'，"
+                "将使用 CLI 模式执行。如需使用 Cloud/Auto 模式，请使用 --orchestrator basic"
+            )
 
         # 方案 B: 搜索知识库并增强 goal
         enhanced_goal = goal
@@ -987,6 +1232,11 @@ class Runner:
             commit_per_iteration=options.get("commit_per_iteration", False),
             # commit_on_complete 语义：当 commit_per_iteration=False 时默认仅在完成时提交
             commit_on_complete=not options.get("commit_per_iteration", False),
+            # 执行模式配置（MP 主要使用 CLI，但保持配置兼容性）
+            execution_mode=execution_mode_str,
+            planner_execution_mode=options.get("planner_execution_mode"),
+            worker_execution_mode=options.get("worker_execution_mode"),
+            reviewer_execution_mode=options.get("reviewer_execution_mode"),
             # 知识库配置（方案 C）
             enable_knowledge_search=enable_knowledge_search,
             # 知识库注入配置
@@ -1045,6 +1295,21 @@ class Runner:
             working_directory=options["directory"],
         )
 
+        # 获取执行模式和 Cloud 认证配置
+        execution_mode = self._get_execution_mode(options)
+        cloud_auth_config = self._get_cloud_auth_config(options)
+
+        # 解析角色级执行模式（可选）
+        planner_exec_mode = self._parse_execution_mode(
+            options.get("planner_execution_mode")
+        )
+        worker_exec_mode = self._parse_execution_mode(
+            options.get("worker_execution_mode")
+        )
+        reviewer_exec_mode = self._parse_execution_mode(
+            options.get("reviewer_execution_mode")
+        )
+
         config = OrchestratorConfig(
             working_directory=options["directory"],
             max_iterations=options["max_iterations"],
@@ -1055,6 +1320,21 @@ class Runner:
             enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
+            # 执行模式和 Cloud 认证配置
+            execution_mode=execution_mode,
+            cloud_auth_config=cloud_auth_config,
+            # 角色级执行模式（可选）
+            planner_execution_mode=planner_exec_mode,
+            worker_execution_mode=worker_exec_mode,
+            reviewer_execution_mode=reviewer_exec_mode,
+            # 流式控制台渲染配置
+            stream_console_renderer=options.get("stream_console_renderer", False),
+            stream_advanced_renderer=options.get("stream_advanced_renderer", False),
+            stream_typing_effect=options.get("stream_typing_effect", False),
+            stream_typing_delay=options.get("stream_typing_delay", 0.02),
+            stream_word_mode=options.get("stream_word_mode", True),
+            stream_color_enabled=options.get("stream_color_enabled", True),
+            stream_show_word_diff=options.get("stream_show_word_diff", False),
         )
 
         if options["max_iterations"] == -1:
@@ -1092,6 +1372,18 @@ class Runner:
                 # 元字段：标记用户是否显式设置了编排器选项
                 # 当 True 时，SelfIterator 不会被 requirement 中的非并行关键词覆盖
                 self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+                # 执行模式和 Cloud 认证参数（与 scripts/run_iterate.py 对齐）
+                self.execution_mode = opts.get("execution_mode", "cli")
+                self.cloud_api_key = opts.get("cloud_api_key", None)
+                self.cloud_auth_timeout = opts.get("cloud_auth_timeout", 30)
+                # 流式控制台渲染配置
+                self.stream_console_renderer = opts.get("stream_console_renderer", False)
+                self.stream_advanced_renderer = opts.get("stream_advanced_renderer", False)
+                self.stream_typing_effect = opts.get("stream_typing_effect", False)
+                self.stream_typing_delay = opts.get("stream_typing_delay", 0.02)
+                self.stream_word_mode = opts.get("stream_word_mode", True)
+                self.stream_color_enabled = opts.get("stream_color_enabled", True)
+                self.stream_show_word_diff = opts.get("stream_show_word_diff", False)
 
         # 从原始 args 中获取 _orchestrator_user_set 元字段
         # 这确保用户显式传入 --orchestrator/--no-mp 时，SelfIterator 不会被
@@ -1246,27 +1538,50 @@ class Runner:
         - Cloud 模式默认 force_write=True（允许修改文件）
         - auto_commit 独立于 force_write，需用户显式启用
         - 确保权限语义与 auto_commit 策略不冲突
+
+        超时策略:
+        - 使用独立的 --cloud-timeout 参数（默认 600 秒）
+        - 不从 max_iterations 推导，避免 -1 等特殊值导致问题
         """
-        from cursor.executor import CloudAgentExecutor, AgentExecutorFactory, ExecutionMode
+        from cursor.executor import AgentExecutorFactory, ExecutionMode
         from cursor.client import CursorAgentConfig
-        from cursor.cloud_client import CloudAuthConfig
 
         print_info("Cloud 模式：任务将在云端执行...")
 
-        try:
-            # 构建 Cloud 认证配置
-            import os
-            api_key = os.environ.get("CURSOR_API_KEY")
-            cloud_auth_config = CloudAuthConfig(api_key=api_key) if api_key else None
+        # 复用已有的 Cloud 认证配置获取逻辑
+        # 优先级：--cloud-api-key > CURSOR_API_KEY 环境变量
+        cloud_auth_config = self._get_cloud_auth_config(options)
 
+        # 检查 API key 是否已配置
+        if cloud_auth_config is None:
+            error_msg = (
+                "未配置 Cloud API Key。请通过以下方式之一配置:\n"
+                "  1. 命令行参数: --cloud-api-key YOUR_KEY\n"
+                "  2. 环境变量: export CURSOR_API_KEY=YOUR_KEY\n"
+                "  3. 运行 'agent login' 进行登录认证"
+            )
+            print_error(error_msg)
+            return {
+                "success": False,
+                "goal": goal,
+                "mode": "cloud",
+                "error": "未配置 API Key",
+                "session_id": None,
+            }
+
+        try:
             # Cloud 模式下 force_write 默认为 True（允许修改文件）
             # 但与 auto_commit 独立，auto_commit 仍需用户显式启用
             force_write = options.get("force_write", True)
 
-            # 创建 Cloud 执行器
+            # 使用独立的 Cloud 超时参数（不从 max_iterations 推导）
+            # 默认 600 秒（10 分钟），可通过 --cloud-timeout 覆盖
+            cloud_timeout = options.get("cloud_timeout", 600)
+
+            # 创建 Cloud 执行器配置
             config = CursorAgentConfig(
                 working_directory=options.get("directory", str(project_root)),
-                timeout=options.get("max_iterations", 10) * 60,  # 动态超时
+                timeout=cloud_timeout,
                 force_write=force_write,
             )
             executor = AgentExecutorFactory.create(
@@ -1279,26 +1594,35 @@ class Runner:
             result = await executor.execute(
                 prompt=goal,
                 working_directory=options.get("directory", str(project_root)),
-                timeout=options.get("max_iterations", 10) * 60,
+                timeout=cloud_timeout,
             )
 
             if result.success:
                 output = result.output.strip()
+                session_id = result.session_id
+
                 print("\n" + "=" * 60)
                 print("Cloud 执行结果")
                 print("=" * 60)
                 print(output[:2000] if len(output) > 2000 else output)
                 if len(output) > 2000:
                     print("\n... (输出已截断)")
-                print("=" * 60 + "\n")
+                print("=" * 60)
+
+                # 输出 session_id 使用说明
+                if session_id:
+                    print(f"\n{Colors.CYAN}会话 ID: {session_id}{Colors.NC}")
+                    print(f"{Colors.CYAN}恢复会话: agent --resume {session_id}{Colors.NC}\n")
 
                 return {
                     "success": True,
                     "goal": goal,
                     "mode": "cloud",
                     "output": output,
-                    "session_id": result.session_id,
+                    "session_id": session_id,
                     "files_modified": result.files_modified,
+                    # 标准化输出字段，方便脚本解析
+                    "resume_command": f"agent --resume {session_id}" if session_id else None,
                 }
             else:
                 error_msg = result.error or "未知错误"
@@ -1308,14 +1632,28 @@ class Runner:
                     "goal": goal,
                     "mode": "cloud",
                     "error": error_msg,
+                    "session_id": result.session_id,
                 }
 
         except asyncio.TimeoutError:
-            print_error("Cloud 执行超时")
-            return {"success": False, "goal": goal, "mode": "cloud", "error": "timeout"}
+            cloud_timeout = options.get("cloud_timeout", 600)
+            print_error(f"Cloud 执行超时 ({cloud_timeout}s)")
+            return {
+                "success": False,
+                "goal": goal,
+                "mode": "cloud",
+                "error": f"执行超时 ({cloud_timeout}s)",
+                "session_id": None,
+            }
         except Exception as e:
             print_error(f"Cloud 执行异常: {e}")
-            return {"success": False, "goal": goal, "mode": "cloud", "error": str(e)}
+            return {
+                "success": False,
+                "goal": goal,
+                "mode": "cloud",
+                "error": str(e),
+                "session_id": None,
+            }
 
 
 # ============================================================

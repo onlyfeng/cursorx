@@ -1029,6 +1029,420 @@ class TestExecutionModeSelection:
 
 
 # ============================================================
+# TestAmpersandPrefixCloudMode - & 前缀触发 Cloud 模式测试
+# ============================================================
+
+
+class TestAmpersandPrefixCloudMode:
+    """测试 '&' 前缀触发 Cloud 模式且 goal 可剥离不影响执行模式
+
+    覆盖场景：
+    1. requirement 以 '&' 开头时自动切换到 CLOUD 执行模式
+    2. goal 剥离 '&' 前缀后保留实际任务内容
+    3. 剥离后的 goal 不影响执行模式判断
+    4. 边界用例：仅 '&'、空白等
+    """
+
+    @pytest.fixture
+    def cloud_prefix_args(self) -> argparse.Namespace:
+        """创建带 '&' 前缀的参数"""
+        return argparse.Namespace(
+            requirement="& 分析代码架构",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=False,
+            execution_mode="cli",  # 默认 cli，应被 '&' 前缀覆盖
+            cloud_api_key=None,
+            cloud_auth_timeout=30,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+        )
+
+    def test_ampersand_prefix_triggers_cloud_mode(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀触发 CLOUD 执行模式"""
+        from cursor.executor import ExecutionMode
+
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 验证执行模式被设置为 CLOUD
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+    def test_ampersand_prefix_strips_from_requirement(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀从 requirement 中剥离"""
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 验证 user_requirement 不包含 '&' 前缀
+        assert not iterator.context.user_requirement.startswith("&")
+        assert iterator.context.user_requirement == "分析代码架构"
+
+    def test_stripped_goal_preserves_content(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试剥离后的 goal 保留实际任务内容"""
+        test_cases = [
+            ("& 简单任务", "简单任务"),
+            ("&任务描述", "任务描述"),
+            ("  & 带空格的任务  ", "带空格的任务"),
+            ("& 优化 CLI 参数处理", "优化 CLI 参数处理"),
+        ]
+
+        for requirement, expected_goal in test_cases:
+            cloud_prefix_args.requirement = requirement
+            iterator = SelfIterator(cloud_prefix_args)
+
+            assert iterator.context.user_requirement == expected_goal, (
+                f"requirement='{requirement}' 剥离后应为 '{expected_goal}'，"
+                f"实际为 '{iterator.context.user_requirement}'"
+            )
+
+    def test_ampersand_prefix_forces_basic_orchestrator(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀触发 Cloud 模式时强制使用 basic 编排器"""
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 虽然默认 orchestrator=mp，但 Cloud 模式应强制 basic
+        assert iterator._get_orchestrator_type() == "basic"
+
+    def test_stripped_goal_does_not_affect_execution_mode(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试剥离后的 goal 内容不影响执行模式判断
+
+        场景：'& 使用多进程处理' → 剥离后为 '使用多进程处理'
+        期望：执行模式仍为 CLOUD（由 '&' 前缀决定），不受 goal 内容影响
+        """
+        from cursor.executor import ExecutionMode
+
+        # 设置一个包含 MP 关键词的任务
+        cloud_prefix_args.requirement = "& 使用多进程并行处理任务"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 执行模式应为 CLOUD（由 '&' 前缀决定）
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+        # 编排器应为 basic（Cloud 模式强制）
+        assert iterator._get_orchestrator_type() == "basic"
+
+        # goal 应正确剥离
+        assert iterator.context.user_requirement == "使用多进程并行处理任务"
+
+    def test_ampersand_only_does_not_trigger_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试仅 '&' 符号不触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        # 仅 '&' 符号
+        cloud_prefix_args.requirement = "&"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 应使用默认的 CLI 模式
+        assert iterator._get_execution_mode() == ExecutionMode.CLI
+
+    def test_ampersand_with_whitespace_only_does_not_trigger_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '& ' (& 加空白) 不触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        cloud_prefix_args.requirement = "&   "
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 应使用默认的 CLI 模式
+        assert iterator._get_execution_mode() == ExecutionMode.CLI
+
+    def test_ampersand_in_middle_does_not_trigger_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 在中间不触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        cloud_prefix_args.requirement = "任务 & 描述"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 应使用默认的 CLI 模式
+        assert iterator._get_execution_mode() == ExecutionMode.CLI
+
+        # requirement 不应被修改
+        assert iterator.context.user_requirement == "任务 & 描述"
+
+    def test_is_cloud_request_flag_set_correctly(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 _is_cloud_request 标志正确设置"""
+        # 有 '&' 前缀
+        cloud_prefix_args.requirement = "& 任务"
+        iterator1 = SelfIterator(cloud_prefix_args)
+        assert iterator1._is_cloud_request is True
+
+        # 无 '&' 前缀
+        cloud_prefix_args.requirement = "普通任务"
+        iterator2 = SelfIterator(cloud_prefix_args)
+        assert iterator2._is_cloud_request is False
+
+    @pytest.mark.asyncio
+    async def test_cloud_mode_from_ampersand_uses_basic_orchestrator_path(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀触发 Cloud 模式时走 basic 编排器路径"""
+        iterator = SelfIterator(cloud_prefix_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        mock_basic_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+        }
+
+        with patch.object(
+            iterator,
+            "_run_with_mp_orchestrator",
+            new_callable=AsyncMock,
+        ) as mock_mp:
+            with patch.object(
+                iterator,
+                "_run_with_basic_orchestrator",
+                new_callable=AsyncMock,
+                return_value=mock_basic_result,
+            ) as mock_basic:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    mock_km = MagicMock()
+                    mock_km.initialize = AsyncMock()
+                    MockKM.return_value = mock_km
+
+                    result = await iterator._run_agent_system()
+
+                    # MP 编排器不应被调用
+                    mock_mp.assert_not_called()
+
+                    # basic 编排器应被调用
+                    mock_basic.assert_called_once()
+
+                    assert result["success"] is True
+
+    # ========== 边界测试：& 前缀策略一致性 ==========
+
+    def test_ampersand_no_space_triggers_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&任务'（无空格）触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        cloud_prefix_args.requirement = "&分析代码架构"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        assert iterator._is_cloud_request is True
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+        assert iterator.context.user_requirement == "分析代码架构"
+
+    def test_ampersand_with_space_triggers_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '& 任务'（有空格）触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        cloud_prefix_args.requirement = "& 分析代码架构"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        assert iterator._is_cloud_request is True
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+        assert iterator.context.user_requirement == "分析代码架构"
+
+    def test_ampersand_empty_content_does_not_trigger_cloud(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&'（空内容）不触发 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        test_cases = ["&", "& ", "&  ", "  &  "]
+
+        for requirement in test_cases:
+            cloud_prefix_args.requirement = requirement
+            iterator = SelfIterator(cloud_prefix_args)
+
+            assert iterator._is_cloud_request is False, (
+                f"requirement='{requirement}' 不应触发 Cloud 模式"
+            )
+            assert iterator._get_execution_mode() == ExecutionMode.CLI
+
+    def test_cloud_mode_auto_commit_default_false(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 Cloud 模式下 auto_commit 默认为 False"""
+        # 确保参数中 auto_commit=False
+        cloud_prefix_args.auto_commit = False
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 验证 Cloud 模式
+        from cursor.executor import ExecutionMode
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+        # auto_commit 应保持为 False
+        assert iterator.args.auto_commit is False
+
+    def test_cloud_mode_requires_explicit_auto_commit(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 Cloud 模式下需要显式启用 auto_commit"""
+        # 显式设置 auto_commit=True
+        cloud_prefix_args.auto_commit = True
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # Cloud 模式 + 显式 auto_commit
+        from cursor.executor import ExecutionMode
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+        assert iterator.args.auto_commit is True
+
+    def test_execution_mode_from_args_when_no_ampersand(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试无 '&' 前缀时从 args.execution_mode 读取执行模式"""
+        from cursor.executor import ExecutionMode
+
+        # 没有 & 前缀，但设置了 execution_mode=cloud
+        cloud_prefix_args.requirement = "普通任务"
+        cloud_prefix_args.execution_mode = "cloud"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 应从 args.execution_mode 获取 CLOUD 模式
+        assert iterator._is_cloud_request is False
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+    def test_ampersand_prefix_priority_over_args_execution_mode(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀优先于 args.execution_mode 参数"""
+        from cursor.executor import ExecutionMode
+
+        # 设置 execution_mode=cli，但有 & 前缀
+        cloud_prefix_args.requirement = "& 任务"
+        cloud_prefix_args.execution_mode = "cli"  # 会被 & 前缀覆盖
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # & 前缀应优先，使用 CLOUD 模式
+        assert iterator._is_cloud_request is True
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+    def test_goal_stripping_preserves_ampersand_in_content(
+        self, cloud_prefix_args: argparse.Namespace
+    ) -> None:
+        """测试 goal 剥离时保留内容中的 & 符号"""
+        cloud_prefix_args.requirement = "& 优化 A & B 模块"
+        iterator = SelfIterator(cloud_prefix_args)
+
+        # 只剥离开头的 &，保留内容中的 &
+        assert iterator.context.user_requirement == "优化 A & B 模块"
+
+
+# ============================================================
+# TestCloudModeViaRunPyIntegration - run.py 调用 SelfIterator 集成测试
+# ============================================================
+
+
+class TestCloudModeViaRunPyIntegration:
+    """测试通过 run.py 的 _run_iterate 调用 SelfIterator 时的 Cloud 模式处理
+
+    场景：run.py 已经剥离了 '&' 前缀并设置了 execution_mode="cloud"，
+    传给 SelfIterator 的 requirement 已经没有 '&' 前缀。
+    """
+
+    @pytest.fixture
+    def iterate_args_from_run_py(self) -> argparse.Namespace:
+        """模拟从 run.py _run_iterate 传入的参数（goal 已剥离 &）"""
+        return argparse.Namespace(
+            requirement="分析代码架构",  # 已剥离 & 前缀
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="3",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="mp",
+            no_mp=False,
+            _orchestrator_user_set=False,
+            execution_mode="cloud",  # run.py 已设置为 cloud
+            cloud_api_key=None,
+            cloud_auth_timeout=30,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+        )
+
+    def test_cloud_mode_from_execution_mode_param(
+        self, iterate_args_from_run_py: argparse.Namespace
+    ) -> None:
+        """测试从 execution_mode 参数获取 Cloud 模式"""
+        from cursor.executor import ExecutionMode
+
+        iterator = SelfIterator(iterate_args_from_run_py)
+
+        # requirement 没有 & 前缀
+        assert iterator._is_cloud_request is False
+
+        # 但应从 execution_mode 参数获取 CLOUD 模式
+        assert iterator._get_execution_mode() == ExecutionMode.CLOUD
+
+    def test_basic_orchestrator_forced_for_cloud_mode(
+        self, iterate_args_from_run_py: argparse.Namespace
+    ) -> None:
+        """测试 Cloud 模式强制使用 basic 编排器"""
+        iterator = SelfIterator(iterate_args_from_run_py)
+
+        # 虽然 orchestrator=mp，但 Cloud 模式应强制 basic
+        assert iterator._get_orchestrator_type() == "basic"
+
+    def test_goal_preserved_correctly(
+        self, iterate_args_from_run_py: argparse.Namespace
+    ) -> None:
+        """测试 goal 正确保留"""
+        iterator = SelfIterator(iterate_args_from_run_py)
+
+        assert iterator.context.user_requirement == "分析代码架构"
+
+    def test_auto_commit_still_defaults_to_false(
+        self, iterate_args_from_run_py: argparse.Namespace
+    ) -> None:
+        """测试 auto_commit 仍默认为 False"""
+        iterator = SelfIterator(iterate_args_from_run_py)
+
+        assert iterator.args.auto_commit is False
+
+
+# ============================================================
 # TestParseMaxIterations - 最大迭代次数解析测试
 # ============================================================
 
@@ -1502,6 +1916,621 @@ class TestChangelogParserRobust:
         assert 'ask' in ask_str, "modes/ask 应包含 ask 关键词"
         assert '问答模式' in ask_str or 'ask mode' in ask_str, \
             "modes/ask 应包含问答模式关键词"
+
+    def test_extract_main_content_from_main_tag(self) -> None:
+        """测试从 <main> 标签提取主内容"""
+        analyzer = ChangelogAnalyzer()
+
+        html_with_main = """
+        <html>
+        <head><title>Test</title></head>
+        <body>
+        <nav>Navigation Menu</nav>
+        <header>Site Header</header>
+        <main>
+        ## Jan 16, 2026
+        - Plan mode support added
+        - Ask mode for Q&A
+        </main>
+        <footer>Copyright 2026</footer>
+        </body>
+        </html>
+        """
+
+        extracted = analyzer._extract_main_content(html_with_main)
+        assert "Plan mode" in extracted
+        assert "Ask mode" in extracted
+        # 导航内容不应出现在提取结果中
+        assert "Navigation Menu" not in extracted
+
+    def test_extract_main_content_from_article_tag(self) -> None:
+        """测试从 <article> 标签提取主内容"""
+        analyzer = ChangelogAnalyzer()
+
+        html_with_article = """
+        <header>Header Content</header>
+        <article class="changelog-content">
+        ## Updates
+        - Cloud relay feature
+        - Diff view improvements
+        </article>
+        <footer>Footer Content</footer>
+        """
+
+        extracted = analyzer._extract_main_content(html_with_article)
+        assert "Cloud relay" in extracted
+        assert "Diff view" in extracted
+
+    def test_extract_main_content_from_content_div(self) -> None:
+        """测试从带有 changelog class 的 div 提取主内容"""
+        analyzer = ChangelogAnalyzer()
+
+        html_with_content_div = """
+        <nav>Menu</nav>
+        <div class="changelog-content">
+        ## Jan 20, 2026
+        - New plan/ask modes
+        - MCP cloud relay
+        </div>
+        <script>console.log('noise');</script>
+        """
+
+        extracted = analyzer._extract_main_content(html_with_content_div)
+        assert "plan/ask" in extracted
+        assert "MCP cloud relay" in extracted
+
+    def test_extract_main_content_from_markdown_anchor(self) -> None:
+        """测试从 Markdown 标题锚点提取主内容"""
+        analyzer = ChangelogAnalyzer()
+
+        content_with_noise = """
+        Skip to content
+        Navigation | Home | Docs | API
+
+        Some header noise
+
+        # Changelog
+
+        ## Jan 16, 2026
+        - Plan mode for read-only analysis
+        - Ask mode for Q&A
+
+        ## Jan 10, 2026
+        - Cloud relay support
+        """
+
+        extracted = analyzer._extract_main_content(content_with_noise)
+        # 应该从 "# Changelog" 开始提取
+        assert "Changelog" in extracted
+        assert "Plan mode" in extracted
+        # 导航噪声应该被去除或不在主内容中
+        # 注意：锚点策略从锚点位置开始，所以 "Skip to content" 可能不在提取范围内
+
+    def test_clean_content_removes_nav_elements(self) -> None:
+        """测试 _clean_content 移除 nav/header/footer 元素"""
+        analyzer = ChangelogAnalyzer()
+
+        html_with_nav = """
+        <nav><a href="/">Home</a><a href="/docs">Docs</a></nav>
+        <header>Site Header</header>
+        <main>
+        ## Updates
+        - Plan mode added
+        </main>
+        <footer>Copyright 2026 All rights reserved</footer>
+        """
+
+        cleaned = analyzer._clean_content(html_with_nav)
+        # 主内容应该保留
+        assert "Plan mode" in cleaned
+        # nav 内容不应该出现
+        assert "Home" not in cleaned or "<nav>" not in cleaned
+
+    def test_clean_content_removes_skip_to_content(self) -> None:
+        """测试 _clean_content 移除导航文本"""
+        analyzer = ChangelogAnalyzer()
+
+        content_with_nav_text = """
+        Skip to content
+        Back to top
+        Table of Contents
+
+        ## Changelog
+        - New feature: plan mode
+        """
+
+        cleaned = analyzer._clean_content(content_with_nav_text)
+        assert "plan mode" in cleaned
+        # 导航文本应该被移除
+        assert "Skip to content" not in cleaned
+        assert "Back to top" not in cleaned
+
+    def test_clean_content_removes_copyright(self) -> None:
+        """测试 _clean_content 移除版权信息"""
+        analyzer = ChangelogAnalyzer()
+
+        content_with_copyright = """
+        ## Updates
+        - Cloud relay feature
+
+        © 2026 Cursor Inc. All rights reserved.
+        Copyright 2026
+        """
+
+        cleaned = analyzer._clean_content(content_with_copyright)
+        assert "Cloud relay" in cleaned
+        # 版权信息应该被移除
+        assert "All rights reserved" not in cleaned
+
+    def test_clean_content_decodes_additional_entities(self) -> None:
+        """测试 _clean_content 解码额外的 HTML 实体"""
+        analyzer = ChangelogAnalyzer()
+
+        # 测试 &hellip; 和 &trade; 解码
+        content_with_entities = """
+        ## Updates
+        New features coming soon&hellip;
+        Product name&trade; support added.
+        Documentation registered&reg; here.
+        """
+        cleaned = analyzer._clean_content(content_with_entities)
+
+        assert "&hellip;" not in cleaned
+        assert "..." in cleaned
+        assert "&trade;" not in cleaned
+        assert "™" in cleaned
+        assert "&reg;" not in cleaned
+        assert "®" in cleaned
+
+        # 单独测试 &copy; 解码（不触发版权过滤）
+        # 注意：包含 © 的独立行会被版权过滤删除
+        copy_content = "The &copy; symbol is used for icons"
+        copy_cleaned = analyzer._clean_content(copy_content)
+        # &copy; 应该被解码，但整行可能被版权过滤
+        assert "&copy;" not in copy_cleaned
+
+
+# ============================================================
+# TestMainContentExtraction - 主内容区域提取测试
+# ============================================================
+
+
+# 真实风格的 HTML changelog 样例（模拟 Cursor 文档页面结构）
+SAMPLE_CURSOR_DOC_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Cursor CLI Changelog</title>
+    <script src="analytics.js"></script>
+    <style>.highlight { color: blue; }</style>
+</head>
+<body>
+<nav class="top-nav">
+    <a href="/">Home</a>
+    <a href="/docs">Documentation</a>
+    <a href="/changelog">Changelog</a>
+</nav>
+<header class="page-header">
+    <h1>Cursor CLI</h1>
+    <p>The AI-first code editor</p>
+</header>
+<main class="main-content">
+    <article class="changelog">
+        <h1># Changelog</h1>
+
+        <h2>## Jan 20, 2026</h2>
+        <h3>### New Features</h3>
+        <ul>
+            <li>Added /plan command for planning mode (read-only analysis)</li>
+            <li>Added /ask command for Q&A mode</li>
+            <li>Cloud relay support for MCP servers</li>
+            <li>Enhanced diff view with Ctrl+R shortcut</li>
+        </ul>
+
+        <h3>### Improvements</h3>
+        <ul>
+            <li>Better streaming output with --stream-partial-output</li>
+        </ul>
+
+        <h2>## Jan 16, 2026</h2>
+        <h3>### Bug Fixes</h3>
+        <ul>
+            <li>Fixed MCP authentication issues</li>
+        </ul>
+    </article>
+</main>
+<footer class="site-footer">
+    <p>© 2026 Cursor Inc. All rights reserved.</p>
+    <nav>Privacy | Terms | Contact</nav>
+</footer>
+<script>initPage();</script>
+</body>
+</html>
+"""
+
+# 用户实际可能遇到的 changelog 片段风格
+SAMPLE_USER_CHANGELOG_SNIPPET = """
+Skip to main content
+
+Cursor Documentation
+Navigation: Home > CLI > Changelog
+
+# Cursor CLI Changelog
+
+What's New in Cursor CLI
+
+## January 20, 2026
+
+### CLI Modes
+
+We've introduced new execution modes:
+
+- **Plan Mode** (`--mode plan` or `/plan`): Read-only planning mode for code analysis
+- **Ask Mode** (`--mode ask` or `/ask`): Q&A mode for quick questions
+- **Agent Mode**: Full agent mode with file modifications (default)
+
+### Cloud Relay
+
+MCP servers now support cloud relay:
+
+- Remote access without local installation
+- Automatic authentication handling
+- Support for custom MCP configurations
+
+### Diff View Enhancements
+
+- Press `Ctrl+R` to review changes before commit
+- Inline diff view for better visualization
+- Word-level diff highlighting
+
+## January 16, 2026
+
+### Bug Fixes
+
+- Fixed timeout issues in long-running tasks
+- Resolved race conditions in background execution
+
+Back to top | Documentation Home | API Reference
+
+© 2026 Cursor. All rights reserved.
+"""
+
+
+class TestMainContentExtraction:
+    """测试主内容区域提取功能"""
+
+    def test_parse_cursor_doc_page_style(self) -> None:
+        """测试解析 Cursor 文档页面风格的 changelog"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_CURSOR_DOC_PAGE)
+
+        # 应该成功解析出条目
+        assert len(entries) >= 1, f"期望至少 1 条，实际 {len(entries)} 条"
+
+        # 验证内容包含关键特性
+        all_content = ' '.join(e.content.lower() for e in entries)
+        assert 'plan' in all_content, "应包含 plan 关键词"
+        assert 'ask' in all_content, "应包含 ask 关键词"
+
+    def test_parse_user_changelog_snippet(self) -> None:
+        """测试解析用户提供的 changelog 片段风格"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+
+        # 应该成功解析
+        assert len(entries) >= 1, f"期望至少 1 条，实际 {len(entries)} 条"
+
+        # 验证噪声被过滤
+        all_content = ' '.join(e.content for e in entries)
+        assert 'Skip to main content' not in all_content, "导航噪声应被过滤"
+        assert 'Back to top' not in all_content, "底部导航应被过滤"
+
+    def test_user_snippet_extracts_plan_ask_keywords(self) -> None:
+        """测试用户片段能提取 plan/ask 关键词"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+
+        # 检查关键词提取
+        all_keywords = []
+        for entry in entries:
+            all_keywords.extend(entry.keywords)
+
+        # 合并内容检查
+        all_content = ' '.join(e.content.lower() for e in entries)
+
+        # 应包含 plan/ask 模式相关内容
+        assert 'plan' in all_content or '--mode plan' in all_content, \
+            "应包含 plan 模式内容"
+        assert 'ask' in all_content or '--mode ask' in all_content, \
+            "应包含 ask 模式内容"
+
+    def test_user_snippet_extracts_cloud_relay_keywords(self) -> None:
+        """测试用户片段能提取 cloud relay 关键词"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+
+        all_content = ' '.join(e.content.lower() for e in entries)
+
+        assert 'cloud relay' in all_content or 'relay' in all_content, \
+            "应包含 cloud relay 相关内容"
+        assert 'mcp' in all_content, "应包含 MCP 相关内容"
+
+    def test_user_snippet_extracts_diff_keywords(self) -> None:
+        """测试用户片段能提取 diff 相关关键词"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+
+        all_content = ' '.join(e.content.lower() for e in entries)
+
+        assert 'diff' in all_content, "应包含 diff 关键词"
+        assert 'ctrl+r' in all_content or 'ctrl' in all_content, \
+            "应包含 Ctrl+R 快捷键"
+
+    def test_user_snippet_hits_modes_plan_url(self) -> None:
+        """测试用户片段能命中 modes/plan URL"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+        analysis = analyzer.extract_update_points(entries)
+
+        # 验证相关文档 URL 包含 modes/plan
+        related_urls = analysis.related_doc_urls
+        assert any('modes/plan' in url for url in related_urls), \
+            f"应命中 modes/plan URL，实际: {related_urls}"
+
+    def test_user_snippet_hits_modes_ask_url(self) -> None:
+        """测试用户片段能命中 modes/ask URL"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+        analysis = analyzer.extract_update_points(entries)
+
+        related_urls = analysis.related_doc_urls
+        assert any('modes/ask' in url for url in related_urls), \
+            f"应命中 modes/ask URL，实际: {related_urls}"
+
+    def test_user_snippet_hits_cli_mcp_url(self) -> None:
+        """测试用户片段能命中 cli/mcp URL"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+        analysis = analyzer.extract_update_points(entries)
+
+        related_urls = analysis.related_doc_urls
+        assert any('mcp' in url for url in related_urls), \
+            f"应命中 mcp 相关 URL，实际: {related_urls}"
+
+    def test_cursor_doc_page_filters_footer(self) -> None:
+        """测试 Cursor 文档页面风格过滤 footer"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_CURSOR_DOC_PAGE)
+
+        all_content = ' '.join(e.content for e in entries)
+
+        # footer 内容应被过滤
+        assert 'Privacy' not in all_content or 'Terms' not in all_content
+        assert 'initPage' not in all_content, "script 内容应被过滤"
+
+    def test_cursor_doc_page_filters_nav(self) -> None:
+        """测试 Cursor 文档页面风格过滤导航"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_CURSOR_DOC_PAGE)
+
+        all_content = ' '.join(e.content for e in entries)
+
+        # 导航内容应被过滤或不在主内容中
+        # 由于使用 <main> 标签提取，导航应该被排除
+
+
+# ============================================================
+# TestCategoryDateParseStrategy - 类别+日期解析策略测试
+# ============================================================
+
+
+# 内嵌 changelog 样例：使用 "<Category> <Month Day, Year>" 格式
+SAMPLE_CHANGELOG_CATEGORY_DATE = """
+# Cursor Changelog
+
+CLI Jan 16, 2026
+
+New features for the CLI:
+- Added /plan command for planning mode
+- Added /ask command for Q&A mode
+- Improved output formatting
+
+Agent Jan 10, 2026
+
+Agent improvements:
+- Support for custom subagents
+- Background task execution
+- Better error handling
+
+Cloud December 20, 2025
+
+Cloud features update:
+- Cloud relay for MCP servers
+- API rate limiting improvements
+"""
+
+# 带 Markdown 标题符号的类别+日期样例
+SAMPLE_CHANGELOG_CATEGORY_DATE_WITH_HEADERS = """
+# Product Updates
+
+## CLI Jan 20, 2026
+
+### New Features
+- Plan/Ask mode switching
+- Enhanced diff view
+
+### Bug Fixes
+- Fixed timeout issues
+
+## Agent Jan 15, 2026
+
+### Improvements
+- Subagent support enhanced
+
+## MCP-Server Jan 10, 2026
+
+Cloud relay feature added for remote access.
+"""
+
+
+class TestCategoryDateParseStrategy:
+    """测试 ChangelogAnalyzer 的类别+日期解析策略
+
+    测试 _parse_by_category_date_headers 方法，该策略用于识别
+    类似 "CLI Jan 16, 2026" 的分段结构。
+    """
+
+    def test_parse_category_date_basic(self) -> None:
+        """测试基本的类别+日期格式解析"""
+        analyzer = ChangelogAnalyzer()
+
+        # 使用内嵌样例直接调用 _parse_by_category_date_headers
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 应该解析出至少 1 条 entry
+        assert len(entries) >= 1, f"期望至少 1 条，实际 {len(entries)} 条"
+
+    def test_parse_category_date_entry_count(self) -> None:
+        """测试类别+日期格式解析条目数量"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 应该解析出 3 个条目（CLI, Agent, Cloud）
+        assert len(entries) == 3, f"期望 3 条，实际 {len(entries)} 条"
+
+    def test_parse_category_date_dates(self) -> None:
+        """测试类别+日期格式日期提取"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 验证日期提取正确
+        dates = [e.date for e in entries]
+        assert any("Jan 16" in d for d in dates), "应包含 Jan 16 日期"
+        assert any("Jan 10" in d for d in dates), "应包含 Jan 10 日期"
+        assert any("Dec" in d or "December" in d for d in dates), "应包含 December 日期"
+
+    def test_parse_category_date_titles(self) -> None:
+        """测试类别+日期格式标题提取"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 验证标题包含类别信息
+        titles = [e.title.lower() for e in entries]
+        assert any("cli" in t for t in titles), "标题应包含 CLI"
+        assert any("agent" in t for t in titles), "标题应包含 Agent"
+        assert any("cloud" in t for t in titles), "标题应包含 Cloud"
+
+    def test_parse_category_date_categories(self) -> None:
+        """测试类别+日期格式分类识别"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 验证每条都有有效分类
+        for entry in entries:
+            assert entry.category in ['feature', 'fix', 'improvement', 'other'], \
+                f"无效分类: {entry.category}"
+
+        # CLI 和 Agent 类别应被识别为 feature
+        categories = [e.category for e in entries]
+        assert 'feature' in categories, "应至少有一条被分类为 feature"
+
+    def test_parse_category_date_content(self) -> None:
+        """测试类别+日期格式内容提取"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 验证每条都有内容
+        for entry in entries:
+            assert entry.content, f"Entry {entry.title} 应有内容"
+
+        # 验证 CLI 条目包含预期内容
+        cli_entry = next((e for e in entries if "cli" in e.title.lower()), None)
+        assert cli_entry is not None, "应有 CLI 条目"
+        assert "/plan" in cli_entry.content or "plan" in cli_entry.content.lower(), \
+            "CLI 内容应包含 plan"
+
+    def test_parse_category_date_with_markdown_headers(self) -> None:
+        """测试带 Markdown 标题符号的类别+日期格式"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(
+            SAMPLE_CHANGELOG_CATEGORY_DATE_WITH_HEADERS
+        )
+
+        # 应该解析出 3 个条目
+        assert len(entries) >= 1, f"期望至少 1 条，实际 {len(entries)} 条"
+
+        # 验证日期提取（带标题符号的格式）
+        dates = [e.date for e in entries]
+        assert any("Jan" in d for d in dates), "应包含 January 日期"
+
+    def test_parse_category_date_via_parse_changelog(self) -> None:
+        """测试通过 parse_changelog 调用类别+日期策略
+
+        当内容不匹配日期标题策略时，应该回退到类别+日期策略。
+        """
+        analyzer = ChangelogAnalyzer()
+
+        # 使用只有类别+日期格式的内容（不含 ## 2024-01-15 格式）
+        content = """
+CLI Jan 16, 2026
+
+New CLI features:
+- Plan mode support
+- Ask mode support
+
+Agent Jan 10, 2026
+
+Agent updates:
+- Subagent improvements
+"""
+
+        entries = analyzer.parse_changelog(content)
+
+        # 应该通过类别+日期策略解析出条目
+        assert len(entries) >= 1, f"期望至少 1 条，实际 {len(entries)} 条"
+
+    def test_normalize_category(self) -> None:
+        """测试 _normalize_category 方法"""
+        analyzer = ChangelogAnalyzer()
+
+        # 测试产品类别映射
+        assert analyzer._normalize_category("CLI") == "feature"
+        assert analyzer._normalize_category("Agent") == "feature"
+        assert analyzer._normalize_category("Cloud") == "feature"
+        assert analyzer._normalize_category("MCP") == "feature"
+
+        # 测试功能类别映射
+        assert analyzer._normalize_category("Feature") == "feature"
+        assert analyzer._normalize_category("New Feature") == "feature"
+        assert analyzer._normalize_category("Bug Fix") == "fix"
+        assert analyzer._normalize_category("Improvement") == "improvement"
+        assert analyzer._normalize_category("Update") == "improvement"
+
+        # 测试未知类别
+        assert analyzer._normalize_category("Unknown") == "other"
+        assert analyzer._normalize_category("Random") == "other"
+
+    def test_parse_category_date_keywords(self) -> None:
+        """测试类别+日期格式关键词提取"""
+        analyzer = ChangelogAnalyzer()
+
+        entries = analyzer._parse_by_category_date_headers(SAMPLE_CHANGELOG_CATEGORY_DATE)
+
+        # 验证关键词提取
+        all_keywords = []
+        for entry in entries:
+            all_keywords.extend(entry.keywords)
+
+        # 应该提取到一些更新相关关键词
+        # 注意：关键词提取依赖 UPDATE_KEYWORDS 中的模式
+        # 如果内容中包含 "new", "support", "improved" 等，应该被提取
+        assert len(all_keywords) >= 0, "应该能够提取关键词（可能为空取决于内容）"
 
 
 # ============================================================

@@ -24,6 +24,7 @@ from typing import Any, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from core.cloud_utils import CLOUD_PREFIX, is_cloud_request as _is_cloud_request_util
 from cursor.streaming import (
     AdvancedTerminalRenderer,
     StreamEvent,
@@ -165,6 +166,9 @@ class CursorAgentConfig(BaseModel):
     # 是否显示状态栏（仅 stream_advanced_renderer=True 时生效）
     stream_show_status_bar: bool = True
 
+    # 是否显示逐词差异（仅 stream_console_renderer=True 时生效）
+    stream_show_word_diff: bool = False
+
     # 是否使用非交互模式（-p 参数）
     # 非交互模式下，Agent 具有完全写入权限
     non_interactive: bool = True
@@ -254,7 +258,9 @@ class CursorAgentResult(BaseModel):
 
     # 额外信息
     files_modified: list[str] = Field(default_factory=list)
+    files_edited: list[str] = Field(default_factory=list)
     command_used: str = ""
+    session_id: Optional[str] = None  # 从 system/init 事件提取的会话 ID
 
 
 class CursorAgentClient:
@@ -365,7 +371,9 @@ class CursorAgentClient:
                 started_at=started_at,
                 completed_at=completed_at,
                 files_modified=result.get("files_modified", []),
+                files_edited=result.get("files_edited", []),
                 command_used=result.get("command", ""),
+                session_id=result.get("session_id"),
             )
 
         except asyncio.TimeoutError:
@@ -420,6 +428,8 @@ class CursorAgentClient:
     def _is_cloud_request(prompt: str) -> bool:
         """检测是否是云端请求（以 & 开头）
 
+        委托给 core.cloud_utils.is_cloud_request 实现。
+
         边界情况处理:
         - None 或空字符串返回 False
         - 只有 & 的字符串返回 False（无实际内容）
@@ -432,26 +442,7 @@ class CursorAgentClient:
         Returns:
             是否为云端请求
         """
-        # 处理 None 和非字符串类型
-        if not prompt or not isinstance(prompt, str):
-            return False
-
-        stripped = prompt.strip()
-
-        # 空字符串
-        if not stripped:
-            return False
-
-        # Cloud 前缀
-        CLOUD_PREFIX = "&"
-
-        # 检查是否以 & 开头
-        if not stripped.startswith(CLOUD_PREFIX):
-            return False
-
-        # 确保 & 后面有实际内容（不只是空白）
-        content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
-        return len(content_after_prefix) > 0
+        return _is_cloud_request_util(prompt)
 
     async def _execute_via_cloud(
         self,
@@ -464,7 +455,11 @@ class CursorAgentClient:
     ) -> CursorAgentResult:
         """通过 CursorCloudClient 执行任务
 
-        使用 CloudTaskOptions 传递 model/working_directory/timeout/allow_write 等选项。
+        使用 CloudClientFactory.execute_task() 统一执行入口，确保配置来源优先级一致：
+        显式参数 > config.api_key > 环境变量 CURSOR_API_KEY
+
+        此方法与 CloudAgentExecutor.execute() 使用相同的 CloudClientFactory 方法，
+        确保两条 Cloud 执行路径在 allow_write/timeout/session_id 恢复能力上行为一致。
 
         Args:
             instruction: 给 Agent 的指令（可能带 & 前缀）
@@ -479,43 +474,23 @@ class CursorAgentClient:
         """
         try:
             # 延迟导入避免循环依赖
-            from cursor.cloud.client import CursorCloudClient
-            from cursor.cloud.task import CloudTaskOptions
-            from cursor.cloud_client import CloudAuthManager
+            from cursor.cloud_client import CloudClientFactory
 
             # 构建完整的 prompt（包含上下文）
             full_prompt = self._build_prompt(instruction, context)
 
-            # 构建 CloudTaskOptions，传递 model/working_directory/timeout/allow_write
-            task_options = CloudTaskOptions(
-                model=self.config.model,
+            logger.info(f"使用 Cloud 路由执行任务: {instruction[:50]}...")
+
+            # 使用 CloudClientFactory.execute_task() 统一执行入口
+            # 配置来源优先级: 显式参数 > config.api_key > 环境变量
+            cloud_result = await CloudClientFactory.execute_task(
+                prompt=full_prompt,
+                agent_config=self.config,
                 working_directory=working_directory,
                 timeout=timeout,
                 allow_write=self.config.force_write,
-            )
-
-            # 创建 CloudAuthManager
-            auth_manager = CloudAuthManager()
-            # 如果 config 中有 api_key，设置到环境变量
-            if self.config.api_key:
-                os.environ.setdefault("CURSOR_API_KEY", self.config.api_key)
-
-            # 创建 CursorCloudClient
-            cloud_client = CursorCloudClient(
-                api_base=self.config.cloud_api_base,
-                agents_endpoint=self.config.cloud_agents_endpoint,
-                auth_manager=auth_manager,
-            )
-
-            logger.info(f"使用 Cloud 路由执行任务: {instruction[:50]}...")
-
-            # 调用 CursorCloudClient.execute()
-            cloud_result = await cloud_client.execute(
-                prompt=full_prompt,
-                options=task_options,
-                wait=True,
-                timeout=timeout,
                 session_id=session_id,
+                wait=True,
             )
 
             completed_at = datetime.now()
@@ -531,6 +506,7 @@ class CursorAgentClient:
                 completed_at=completed_at,
                 files_modified=cloud_result.files_modified,
                 command_used="cloud-agent",
+                session_id=cloud_result.task.task_id if cloud_result.task else None,
             )
 
         except asyncio.TimeoutError:
@@ -777,10 +753,14 @@ class CursorAgentClient:
                 typing_delay=self.config.stream_typing_delay if self.config.stream_typing_effect else 0.0,
                 word_mode=self.config.stream_word_mode,
                 show_status_bar=self.config.stream_show_status_bar,
+                show_word_diff=self.config.stream_show_word_diff,
             )
         else:
             # 使用基础渲染器
-            return TerminalStreamRenderer(verbose=self.config.stream_console_verbose)
+            return TerminalStreamRenderer(
+                verbose=self.config.stream_console_verbose,
+                show_word_diff=self.config.stream_show_word_diff,
+            )
 
     async def _handle_stream_json_process(
         self,
@@ -792,6 +772,10 @@ class CursorAgentClient:
         使用 StreamRenderer 接口进行控制台渲染，日志记录与渲染解耦。
         对于 AdvancedTerminalRenderer 特有的 start/finish 方法，
         通过鸭子类型（hasattr）检查进行处理。
+
+        增强功能:
+        - 累计 DiffInfo.path / ToolCallInfo.path 形成去重后的 files_modified/files_edited
+        - 从 system/init 事件中提取 session_id
         """
         stream_logger = self._build_stream_logger()
         terminal_renderer = self._build_terminal_renderer()
@@ -804,6 +788,13 @@ class CursorAgentClient:
         tool_count = 0
         diff_count = 0
         accumulated_text_len = 0
+
+        # 文件跟踪 (去重使用 set)
+        files_modified_set: set[str] = set()  # 写入/创建的文件
+        files_edited_set: set[str] = set()    # 编辑/修改的文件
+
+        # 会话 ID 跟踪
+        session_id: Optional[str] = None
 
         stderr_task = asyncio.create_task(
             self._collect_stream(process.stderr, deadline, stderr_chunks)
@@ -842,6 +833,29 @@ class CursorAgentClient:
                             diff_count += 1
                         if event.type == StreamEventType.ASSISTANT and event.content:
                             accumulated_text_len += len(event.content)
+
+                    # 从 system/init 事件中提取 session_id
+                    if event.type == StreamEventType.SYSTEM_INIT:
+                        session_id = event.data.get("session_id")
+
+                    # 收集文件修改信息
+                    if event.type in (StreamEventType.TOOL_STARTED, StreamEventType.TOOL_COMPLETED):
+                        if event.tool_call and event.tool_call.path:
+                            # 写入操作 -> files_modified
+                            if event.tool_call.tool_type == "write":
+                                files_modified_set.add(event.tool_call.path)
+                            # 编辑/替换操作 -> files_edited
+                            elif event.tool_call.is_diff or event.tool_call.tool_type in ("edit", "str_replace"):
+                                files_edited_set.add(event.tool_call.path)
+
+                    # 差异事件中收集编辑的文件
+                    if event.type in (StreamEventType.DIFF, StreamEventType.DIFF_STARTED, StreamEventType.DIFF_COMPLETED):
+                        # 优先从 diff_info 提取路径
+                        if event.diff_info and event.diff_info.path:
+                            files_edited_set.add(event.diff_info.path)
+                        # 回退到 tool_call 提取路径
+                        elif event.tool_call and event.tool_call.path:
+                            files_edited_set.add(event.tool_call.path)
 
                     # 收集输出内容
                     if event.type == StreamEventType.ASSISTANT:
@@ -903,6 +917,9 @@ class CursorAgentClient:
             "error": error_msg,
             "exit_code": process.returncode,
             "command": cmd_desc,
+            "files_modified": list(files_modified_set),
+            "files_edited": list(files_edited_set),
+            "session_id": session_id,
         }
 
     def _render_event_to_terminal(

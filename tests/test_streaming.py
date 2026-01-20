@@ -18,6 +18,8 @@ from cursor.streaming import (
     format_colored_diff,
     format_diff,
     format_inline_diff,
+    format_word_diff,
+    format_word_diff_line,
     get_diff_stats,
     parse_stream_event,
 )
@@ -773,6 +775,201 @@ def test_get_diff_stats() -> None:
     assert 0 <= stats["similarity"] <= 1
 
 
+# ============== Token/Word-Level Diff 函数测试 ==============
+
+
+def test_format_word_diff_line_basic() -> None:
+    """测试单行词级差异基本功能"""
+    old_line = "hello world"
+    new_line = "hello universe"
+
+    # 非 ANSI 模式，使用文本标记
+    result = format_word_diff_line(old_line, new_line, use_ansi=False)
+
+    # 应该包含删除标记和插入标记
+    assert "[-world-]" in result
+    assert "{+universe+}" in result
+    # "hello" 应该保持不变
+    assert "hello" in result
+
+
+def test_format_word_diff_line_ansi() -> None:
+    """测试单行词级差异 ANSI 颜色输出"""
+    old_line = "foo bar"
+    new_line = "foo baz"
+
+    result = format_word_diff_line(old_line, new_line, use_ansi=True)
+
+    # 应该包含 ANSI 颜色码（删除用红色，插入用绿色）
+    assert "\033[31m" in result  # 红色（删除）
+    assert "\033[32m" in result  # 绿色（插入）
+    assert "\033[0m" in result   # 重置
+
+
+def test_format_word_diff_line_no_change() -> None:
+    """测试无变化的行"""
+    line = "same content here"
+
+    result = format_word_diff_line(line, line, use_ansi=False)
+
+    # 应该输出原始内容，无标记
+    assert result == "same content here"
+    assert "[-" not in result
+    assert "{+" not in result
+
+
+def test_format_word_diff_line_full_replace() -> None:
+    """测试完全替换的行"""
+    old_line = "old content"
+    new_line = "new stuff"
+
+    result = format_word_diff_line(old_line, new_line, use_ansi=False)
+
+    # 应该标记删除和插入
+    assert "[-old-]" in result or "[-old content-]" in result
+    assert "{+new+}" in result or "{+new stuff+}" in result
+
+
+def test_format_word_diff_line_insertion_only() -> None:
+    """测试纯插入的情况"""
+    old_line = "start end"
+    new_line = "start middle end"
+
+    result = format_word_diff_line(old_line, new_line, use_ansi=False)
+
+    # 应该包含插入标记
+    assert "{+middle+}" in result or "{+" in result
+
+
+def test_format_word_diff_line_deletion_only() -> None:
+    """测试纯删除的情况"""
+    old_line = "start middle end"
+    new_line = "start end"
+
+    result = format_word_diff_line(old_line, new_line, use_ansi=False)
+
+    # 应该包含删除标记
+    assert "[-middle-]" in result or "[-" in result
+
+
+def test_format_word_diff_multiline() -> None:
+    """测试多行词级差异"""
+    old_text = "line1 unchanged\nline2 old value\nline3 stays"
+    new_text = "line1 unchanged\nline2 new value\nline3 stays"
+
+    result = format_word_diff(old_text, new_text, use_ansi=False)
+
+    # 第一行和第三行应该标记为相同（使用空格前缀）
+    assert "  line1 unchanged" in result
+    assert "  line3 stays" in result
+
+    # 第二行应该是替换，使用 ~ 前缀和词级差异标记
+    assert "~ " in result
+    # 检查词级差异标记
+    assert "[-old-]" in result
+    assert "{+new+}" in result
+
+
+def test_format_word_diff_pure_insert() -> None:
+    """测试纯插入行"""
+    old_text = "line1"
+    new_text = "line1\nline2"
+
+    result = format_word_diff(old_text, new_text, use_ansi=False)
+
+    # 应该有插入行标记
+    assert "+ line2" in result
+
+
+def test_format_word_diff_pure_delete() -> None:
+    """测试纯删除行"""
+    old_text = "line1\nline2"
+    new_text = "line1"
+
+    result = format_word_diff(old_text, new_text, use_ansi=False)
+
+    # 应该有删除行标记
+    assert "- line2" in result
+
+
+def test_format_word_diff_ansi_colors() -> None:
+    """测试多行词级差异 ANSI 颜色"""
+    old_text = "old line here"
+    new_text = "new line here"
+
+    result = format_word_diff(old_text, new_text, use_ansi=True)
+
+    # 应该包含 ANSI 颜色码
+    assert "\033[" in result
+    # 替换行应该用 ~ 标记
+    assert "~ " in result
+
+
+def test_format_word_diff_complex_change() -> None:
+    """测试复杂的多行变更"""
+    old_text = """def hello():
+    print("Hello World")
+    return True"""
+
+    new_text = """def hello():
+    print("Hello Universe")
+    return False"""
+
+    result = format_word_diff(old_text, new_text, use_ansi=False)
+
+    # 第一行应该相同
+    assert "  def hello():" in result
+
+    # 应该检测到 World -> Universe 和 True -> False 的变化
+    # 使用 ~ 前缀表示替换行
+    assert "~ " in result
+
+    # 检查词级差异标记存在
+    lines = result.split("\n")
+    replace_lines = [l for l in lines if l.startswith("~ ")]
+    assert len(replace_lines) >= 2  # 至少有两行替换
+
+
+def test_format_word_diff_empty_strings() -> None:
+    """测试空字符串处理"""
+    result = format_word_diff("", "", use_ansi=False)
+    assert result == ""
+
+
+def test_format_word_diff_line_with_whitespace() -> None:
+    """测试包含空白符的行"""
+    old_line = "hello   world"
+    new_line = "hello  universe"
+
+    result = format_word_diff_line(old_line, new_line, use_ansi=False)
+
+    # 应该正确处理空白符变化
+    assert "hello" in result
+    # 空白符数量变化可能被检测为差异
+    # 关键是不应该崩溃
+
+
+def test_format_word_diff_structure_validation() -> None:
+    """验证词级差异输出的结构正确性"""
+    old_text = "function old_name(arg1)"
+    new_text = "function new_name(arg1, arg2)"
+
+    # 非 ANSI 模式
+    result_text = format_word_diff(old_text, new_text, use_ansi=False)
+
+    # 检查结构：应该包含删除和插入标记
+    assert "[-" in result_text and "-]" in result_text, "应该包含删除标记"
+    assert "{+" in result_text and "+}" in result_text, "应该包含插入标记"
+
+    # ANSI 模式
+    result_ansi = format_word_diff(old_text, new_text, use_ansi=True)
+
+    # 检查结构：应该包含 ANSI 颜色码
+    assert "\033[31m" in result_ansi, "应该包含红色删除标记"
+    assert "\033[32m" in result_ansi, "应该包含绿色插入标记"
+    assert "\033[0m" in result_ansi, "应该包含重置码"
+
+
 # ============== AdvancedTerminalRenderer 与 StreamRenderer 接口兼容性测试 ==============
 
 
@@ -940,6 +1137,235 @@ def test_advanced_terminal_renderer_interface_signature() -> None:
     # 验证所有抽象方法都被实现
     for method_name in stream_renderer_methods:
         assert method_name in advanced_methods, f"方法 {method_name} 未在 AdvancedTerminalRenderer 中实现"
+
+
+# ============== 渲染器逐词差异显示测试 ==============
+
+
+def test_terminal_stream_renderer_show_word_diff_init() -> None:
+    """测试 TerminalStreamRenderer 逐词差异参数初始化"""
+    renderer = TerminalStreamRenderer(verbose=True, show_word_diff=True)
+    assert renderer.verbose is True
+    assert renderer.show_word_diff is True
+
+    renderer_default = TerminalStreamRenderer(verbose=True)
+    assert renderer_default.show_word_diff is False
+
+
+def test_terminal_stream_renderer_word_diff_output(capsys) -> None:
+    """测试 TerminalStreamRenderer 逐词差异输出"""
+    renderer = TerminalStreamRenderer(verbose=True, show_word_diff=True)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 应该包含逐词差异标题
+    assert "逐词差异" in captured.out
+    # 应该包含文件路径
+    assert "test.py" in captured.out
+
+
+def test_terminal_stream_renderer_word_diff_disabled(capsys) -> None:
+    """测试 TerminalStreamRenderer 禁用逐词差异时不显示"""
+    renderer = TerminalStreamRenderer(verbose=True, show_word_diff=False)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 不应该包含逐词差异标题
+    assert "逐词差异" not in captured.out
+
+
+def test_advanced_terminal_renderer_show_word_diff_init() -> None:
+    """测试 AdvancedTerminalRenderer 逐词差异参数初始化"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=False,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=True,
+    )
+    assert renderer.show_word_diff is True
+
+    renderer_default = AdvancedTerminalRenderer(
+        use_color=False,
+        output=output,
+    )
+    assert renderer_default.show_word_diff is False
+
+
+def test_advanced_terminal_renderer_word_diff_output() -> None:
+    """测试 AdvancedTerminalRenderer 逐词差异输出"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=False,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=True,
+    )
+
+    diff_info = DiffInfo(
+        path="src/app.py",
+        old_string="return old_value",
+        new_string="return new_value",
+    )
+
+    renderer.start()
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+    renderer.finish()
+
+    result = output.getvalue()
+
+    # 应该包含逐词差异标题
+    assert "逐词差异" in result
+    # 应该包含文件路径
+    assert "src/app.py" in result
+
+
+def test_advanced_terminal_renderer_word_diff_ansi_colors() -> None:
+    """测试 AdvancedTerminalRenderer 逐词差异 ANSI 颜色"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=True,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=True,
+    )
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="foo bar",
+        new_string="foo baz",
+    )
+
+    renderer.start()
+    renderer.render_diff_completed(
+        tool=ToolCallInfo(tool_type="edit", path="test.py", success=True, is_diff=True),
+        diff_info=diff_info,
+        show_diff=True,
+    )
+    renderer.finish()
+
+    result = output.getvalue()
+
+    # 应该包含 ANSI 颜色码
+    assert "\033[" in result
+    # 应该包含逐词差异标题
+    assert "逐词差异" in result
+
+
+def test_advanced_terminal_renderer_word_diff_disabled() -> None:
+    """测试 AdvancedTerminalRenderer 禁用逐词差异时不显示"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=False,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=False,  # 禁用
+    )
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    renderer.start()
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+    renderer.finish()
+
+    result = output.getvalue()
+
+    # 不应该包含逐词差异标题
+    assert "逐词差异" not in result
+
+
+def test_advanced_terminal_renderer_word_diff_empty_strings() -> None:
+    """测试 AdvancedTerminalRenderer 空字符串时不显示逐词差异"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=False,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=True,
+    )
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="",  # 空字符串
+        new_string="new content",
+    )
+
+    renderer.start()
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+    renderer.finish()
+
+    result = output.getvalue()
+
+    # 当 old_string 为空时，不应该显示逐词差异
+    assert "逐词差异" not in result
+
+
+def test_word_diff_with_progress_tracker() -> None:
+    """测试 ProgressTracker 与逐词差异渲染器配合"""
+    output = io.StringIO()
+    renderer = AdvancedTerminalRenderer(
+        use_color=False,
+        typing_delay=0,
+        show_status_bar=False,
+        output=output,
+        show_word_diff=True,
+    )
+
+    tracker = ProgressTracker(
+        verbose=False,
+        show_diff=True,
+        renderer=renderer,
+    )
+
+    # 触发 DIFF_COMPLETED 事件
+    diff_info = DiffInfo(
+        path="app.py",
+        old_string="old code here",
+        new_string="new code here",
+    )
+
+    tracker.on_event(
+        StreamEvent(
+            type=StreamEventType.DIFF_COMPLETED,
+            tool_call=ToolCallInfo(
+                tool_type="edit",
+                path="app.py",
+                success=True,
+                is_diff=True,
+            ),
+            diff_info=diff_info,
+        )
+    )
+
+    result = output.getvalue()
+
+    # 应该包含逐词差异
+    assert "逐词差异" in result
 
 
 # ============== _build_terminal_renderer 配置测试 ==============
@@ -1472,6 +1898,130 @@ class TestReadLinesLongLineHandling:
         asyncio.run(run_test())
 
 
+# ============== stream-json session_id 和 files_modified 提取测试 ==============
+
+
+def test_parse_stream_event_system_init_with_session_id() -> None:
+    """测试从 system/init 事件中提取 session_id"""
+    line = json.dumps({
+        "type": "system",
+        "subtype": "init",
+        "model": "opus-4.5-thinking",
+        "session_id": "test-session-uuid-12345"
+    })
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.SYSTEM_INIT
+    assert event.model == "opus-4.5-thinking"
+    assert event.data.get("session_id") == "test-session-uuid-12345"
+
+
+def test_parse_stream_event_tool_call_with_path() -> None:
+    """测试 tool_call 事件能正确提取 path"""
+    line = json.dumps({
+        "type": "tool_call",
+        "subtype": "completed",
+        "tool_call": {
+            "writeToolCall": {
+                "args": {"path": "/src/main.py"},
+                "result": {"success": {"linesCreated": 10}}
+            }
+        }
+    })
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.TOOL_COMPLETED
+    assert event.tool_call is not None
+    assert event.tool_call.tool_type == "write"
+    assert event.tool_call.path == "/src/main.py"
+
+
+def test_parse_stream_event_diff_with_path() -> None:
+    """测试 diff 事件能正确提取 path"""
+    line = json.dumps({
+        "type": "diff",
+        "path": "/src/utils.py",
+        "old_string": "old code",
+        "new_string": "new code"
+    })
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.DIFF
+    assert event.diff_info is not None
+    assert event.diff_info.path == "/src/utils.py"
+
+
+def test_parse_stream_event_str_replace_tool_call() -> None:
+    """测试 strReplaceToolCall 能正确提取编辑信息"""
+    line = json.dumps({
+        "type": "tool_call",
+        "subtype": "completed",
+        "tool_call": {
+            "strReplaceToolCall": {
+                "args": {
+                    "path": "/src/config.py",
+                    "old_string": "DEBUG = False",
+                    "new_string": "DEBUG = True"
+                },
+                "result": {"success": {}}
+            }
+        }
+    })
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.DIFF_COMPLETED
+    assert event.tool_call is not None
+    assert event.tool_call.tool_type == "str_replace"
+    assert event.tool_call.path == "/src/config.py"
+    assert event.tool_call.is_diff is True
+
+
+def test_parse_multiple_ndjson_lines_extract_files_and_session() -> None:
+    """测试解析多个 NDJSON 行并提取 files_modified 和 session_id"""
+    ndjson_lines = [
+        '{"type": "system", "subtype": "init", "model": "gpt-5.2-high", "session_id": "session-abc-123"}',
+        '{"type": "assistant", "message": {"content": [{"text": "开始处理..."}]}}',
+        '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}, "result": {"success": {}}}}}',
+        '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "existing.py", "old_string": "old", "new_string": "new"}, "result": {"success": {}}}}}',
+        '{"type": "diff", "path": "another.py", "old_string": "a", "new_string": "b"}',
+        '{"type": "result", "duration_ms": 500}',
+    ]
+
+    session_id = None
+    files_modified = set()
+    files_edited = set()
+
+    for line in ndjson_lines:
+        event = parse_stream_event(line)
+        if event is None:
+            continue
+
+        # 提取 session_id
+        if event.type == StreamEventType.SYSTEM_INIT:
+            session_id = event.data.get("session_id")
+
+        # 提取 files_modified (write 操作)
+        if event.type in (StreamEventType.TOOL_STARTED, StreamEventType.TOOL_COMPLETED):
+            if event.tool_call and event.tool_call.path:
+                if event.tool_call.tool_type == "write":
+                    files_modified.add(event.tool_call.path)
+                elif event.tool_call.is_diff:
+                    files_edited.add(event.tool_call.path)
+
+        # 提取 files_edited (diff 操作)
+        if event.type in (StreamEventType.DIFF, StreamEventType.DIFF_STARTED, StreamEventType.DIFF_COMPLETED):
+            if event.diff_info and event.diff_info.path:
+                files_edited.add(event.diff_info.path)
+            elif event.tool_call and event.tool_call.path:
+                files_edited.add(event.tool_call.path)
+
+    # 验证结果
+    assert session_id == "session-abc-123"
+    assert "new_file.py" in files_modified
+    assert "existing.py" in files_edited
+    assert "another.py" in files_edited
+
+
 def test_read_stream_lines_long_line_logging() -> None:
     """验证超长行处理时的日志记录（使用 loguru）"""
     from io import StringIO
@@ -1530,3 +2080,129 @@ def test_read_stream_lines_long_line_logging() -> None:
     # 验证行被正确读取
     assert len(lines) == 1
     assert lines[0] == "long_line_recovered"
+
+
+# ============== 非 verbose 模式下逐词差异显示测试 ==============
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_render_diff(capsys) -> None:
+    """测试非 verbose 模式下开启 show_word_diff 时 render_diff 显示逐词差异"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=True)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 应该包含逐词差异标题（即使在非 verbose 模式下）
+    assert "逐词差异" in captured.out
+    # 应该包含文件路径
+    assert "test.py" in captured.out
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_render_diff_completed(capsys) -> None:
+    """测试非 verbose 模式下开启 show_word_diff 时 render_diff_completed 显示逐词差异"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=True)
+
+    tool = ToolCallInfo(
+        tool_type="edit",
+        path="src/main.py",
+        success=True,
+        is_diff=True,
+    )
+
+    diff_info = DiffInfo(
+        path="src/main.py",
+        old_string="return old_value",
+        new_string="return new_value",
+    )
+
+    renderer.render_diff_completed(tool=tool, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 应该包含逐词差异标题（即使在非 verbose 模式下）
+    assert "逐词差异" in captured.out
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_disabled(capsys) -> None:
+    """测试非 verbose 模式下关闭 show_word_diff 时不显示逐词差异"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=False)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 不应该包含逐词差异标题
+    assert "逐词差异" not in captured.out
+    # 但应该包含文件路径
+    assert "test.py" in captured.out
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_empty_strings(capsys) -> None:
+    """测试非 verbose 模式下空字符串时不显示逐词差异"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=True)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="",  # 空字符串
+        new_string="new content",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 空字符串时不应该显示逐词差异
+    assert "逐词差异" not in captured.out
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_show_diff_false(capsys) -> None:
+    """测试非 verbose 模式下 show_diff=False 时不显示逐词差异"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=True)
+
+    diff_info = DiffInfo(
+        path="test.py",
+        old_string="hello world",
+        new_string="hello universe",
+    )
+
+    # show_diff=False
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=False)
+
+    captured = capsys.readouterr()
+
+    # show_diff=False 时不应该显示逐词差异
+    assert "逐词差异" not in captured.out
+
+
+def test_terminal_stream_renderer_non_verbose_word_diff_content_check(capsys) -> None:
+    """测试非 verbose 模式下逐词差异内容正确性"""
+    renderer = TerminalStreamRenderer(verbose=False, show_word_diff=True)
+
+    diff_info = DiffInfo(
+        path="app.py",
+        old_string="def old_function():",
+        new_string="def new_function():",
+    )
+
+    renderer.render_diff(diff_count=1, diff_info=diff_info, show_diff=True)
+
+    captured = capsys.readouterr()
+
+    # 应该包含逐词差异标题
+    assert "逐词差异" in captured.out
+    # 应该包含替换行标记 (~) 或者差异内容
+    # 由于 old_function -> new_function 是词级替换，应该有相关标记
+    assert "~" in captured.out or "old_function" in captured.out or "new_function" in captured.out

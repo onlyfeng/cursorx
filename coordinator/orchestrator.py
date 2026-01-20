@@ -54,6 +54,14 @@ class OrchestratorConfig(BaseModel):
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
+    # 流式控制台渲染配置（默认关闭，避免噪声）
+    stream_console_renderer: bool = False      # 启用流式控制台渲染器
+    stream_advanced_renderer: bool = False     # 使用高级终端渲染器
+    stream_typing_effect: bool = False         # 启用打字机效果
+    stream_typing_delay: float = 0.02          # 打字延迟（秒）
+    stream_word_mode: bool = True              # 逐词输出模式
+    stream_color_enabled: bool = True          # 启用颜色输出
+    stream_show_word_diff: bool = False        # 显示逐词差异
     # 自动提交配置
     enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
     auto_push: bool = False            # 是否自动推送
@@ -66,6 +74,11 @@ class OrchestratorConfig(BaseModel):
     planner_model: str = 'gpt-5.2-high'           # 规划者模型
     worker_model: str = 'opus-4.5-thinking'       # 执行者模型
     reviewer_model: str = 'opus-4.5-thinking'     # 评审者模型
+    # 角色级执行模式配置（默认继承全局 execution_mode）
+    # 若为 None，则使用全局 execution_mode
+    planner_execution_mode: Optional[ExecutionMode] = None  # 规划者执行模式
+    worker_execution_mode: Optional[ExecutionMode] = None   # 执行者执行模式
+    reviewer_execution_mode: Optional[ExecutionMode] = None # 评审者执行模式
 
 
 class Orchestrator:
@@ -114,15 +127,38 @@ class Orchestrator:
         if config.cursor_config.timeout == 300:
             reviewer_cursor_config.timeout = 120
 
+        # 设置各角色的工作模式和写入权限
+        # - Planner: mode='plan', force_write=False（只读，仅分析规划）
+        #   注：Planner 的 mode 在 PlannerAgent._apply_plan_mode_config 中设置
+        # - Reviewer: mode='ask', force_write=False（只读，仅评审）
+        #   注：Reviewer 的 mode 在 ReviewerAgent._apply_ask_mode_config 中也会设置
+        # - Worker: mode='agent', force_write=True（完整代理模式，允许修改文件）
+        planner_cursor_config.force_write = False  # 确保 Planner 不会修改文件
+        reviewer_cursor_config.mode = 'ask'        # Reviewer 使用问答模式
+        reviewer_cursor_config.force_write = False  # 确保 Reviewer 不会修改文件
+        worker_cursor_config.mode = 'agent'        # Worker 使用完整代理模式
+        worker_cursor_config.force_write = True    # Worker 允许修改文件（--force）
+
+        # 解析角色级执行模式（默认继承全局 execution_mode）
+        planner_exec_mode = config.planner_execution_mode or config.execution_mode
+        worker_exec_mode = config.worker_execution_mode or config.execution_mode
+        reviewer_exec_mode = config.reviewer_execution_mode or config.execution_mode
+
         # 记录执行模式和各角色模型
         logger.info(f"编排器使用执行模式: {config.execution_mode.value}")
+        if (config.planner_execution_mode or config.worker_execution_mode
+                or config.reviewer_execution_mode):
+            logger.info(
+                f"角色级执行模式 - Planner: {planner_exec_mode.value}, "
+                f"Worker: {worker_exec_mode.value}, Reviewer: {reviewer_exec_mode.value}"
+            )
         logger.info(f"各角色模型配置 - Planner: {config.planner_model}, "
                     f"Worker: {config.worker_model}, Reviewer: {config.reviewer_model}")
 
         self.planner = PlannerAgent(PlannerConfig(
             working_directory=config.working_directory,
             cursor_config=planner_cursor_config,
-            execution_mode=config.execution_mode,
+            execution_mode=planner_exec_mode,
             cloud_auth_config=config.cloud_auth_config,
         ))
 
@@ -130,7 +166,7 @@ class Orchestrator:
             working_directory=config.working_directory,
             strict_mode=config.strict_review,
             cursor_config=reviewer_cursor_config,
-            execution_mode=config.execution_mode,
+            execution_mode=reviewer_exec_mode,
             cloud_auth_config=config.cloud_auth_config,
         ))
 
@@ -141,7 +177,7 @@ class Orchestrator:
             worker_config=WorkerConfig(
                 working_directory=config.working_directory,
                 cursor_config=worker_cursor_config,
-                execution_mode=config.execution_mode,
+                execution_mode=worker_exec_mode,
                 cloud_auth_config=config.cloud_auth_config,
             ),
             knowledge_manager=knowledge_manager,
@@ -167,12 +203,27 @@ class Orchestrator:
             self.state.register_agent(self.committer.id, AgentRole.COMMITTER)
 
     def _apply_stream_config(self) -> None:
-        """将流式日志配置注入 CursorAgentConfig"""
+        """将流式日志和渲染配置注入 CursorAgentConfig
+
+        注入的配置项:
+        - 流式日志配置: stream_events_enabled, stream_log_console, stream_log_detail_dir, stream_log_raw_dir
+        - 流式渲染配置: stream_console_renderer, stream_advanced_renderer, stream_typing_effect,
+                       stream_typing_delay, stream_word_mode, stream_color_enabled, stream_show_word_diff
+        """
         cursor_config = self.config.cursor_config
+        # 流式日志配置
         cursor_config.stream_events_enabled = self.config.stream_events_enabled
         cursor_config.stream_log_console = self.config.stream_log_console
         cursor_config.stream_log_detail_dir = self.config.stream_log_detail_dir
         cursor_config.stream_log_raw_dir = self.config.stream_log_raw_dir
+        # 流式控制台渲染配置
+        cursor_config.stream_console_renderer = self.config.stream_console_renderer
+        cursor_config.stream_advanced_renderer = self.config.stream_advanced_renderer
+        cursor_config.stream_typing_effect = self.config.stream_typing_effect
+        cursor_config.stream_typing_delay = self.config.stream_typing_delay
+        cursor_config.stream_word_mode = self.config.stream_word_mode
+        cursor_config.stream_color_enabled = self.config.stream_color_enabled
+        cursor_config.stream_show_word_diff = self.config.stream_show_word_diff
 
     def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
         """设置知识库管理器（延迟初始化）

@@ -1,5 +1,6 @@
 """核心抽象层"""
 from .base import AgentRole, AgentStatus, BaseAgent
+from .cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
 from .knowledge import (
     CURSOR_KEYWORDS,
     FALLBACK_CHARS_PER_DOC,
@@ -38,6 +39,10 @@ __all__ = [
     "IterationState",
     "IterationStatus",
     "SystemState",
+    # Cloud 工具
+    "CLOUD_PREFIX",
+    "is_cloud_request",
+    "strip_cloud_prefix",
     # 知识库共享模块
     "CURSOR_KEYWORDS",
     "KnowledgeDoc",

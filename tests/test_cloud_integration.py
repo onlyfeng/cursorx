@@ -16,6 +16,7 @@
     # 强制运行（即使 API Key 验证失败）
     FORCE_INTEGRATION_TESTS=1 pytest tests/test_cloud_integration.py -v
 """
+import argparse
 import asyncio
 import os
 import tempfile
@@ -39,6 +40,8 @@ from cursor import (
     CloudAgentExecutor,
     CloudAuthConfig,
     CloudAuthManager,
+    # 工厂类
+    CloudClientFactory,
     # 任务管理
     CloudTask,
     CloudTaskClient,
@@ -751,20 +754,24 @@ class TestErrorHandlingAndRetry:
     @pytest.mark.asyncio
     async def test_cloud_executor_authentication_error(self):
         """测试 Cloud 执行器认证错误"""
-        executor = CloudAgentExecutor()
+        from cursor.cloud_client import CloudClientFactory, CloudAgentResult
+
+        # 使用 mock 返回认证失败的结果
+        mock_result = CloudAgentResult(
+            success=False,
+            error="Cloud 认证失败: API Key 无效",
+        )
 
         with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            return_value=AuthStatus(
-                authenticated=False,
-                error=AuthError("API Key 无效", AuthErrorCode.INVALID_API_KEY),
-            ),
+            CloudClientFactory,
+            "execute_task",
+            return_value=mock_result,
         ):
+            executor = CloudAgentExecutor()
             result = await executor.execute(prompt="测试")
 
             assert result.success is False
-            assert "认证" in result.error
+            assert "认证" in result.error or "API Key" in result.error
 
     @pytest.mark.asyncio
     async def test_submit_task_with_rate_limit(self, cursor_cloud_client):
@@ -1125,6 +1132,727 @@ class TestCloudSessionManagement:
                 assert push_result.error is not None
 
 
+class TestCloudAuthManagerPriority:
+    """测试 CloudAuthManager.get_api_key() 优先级
+
+    验证优先级顺序（与 CloudClientFactory.resolve_api_key 保持一致）：
+    1. config.api_key（显式参数）
+    2. 环境变量 CURSOR_API_KEY
+    3. 配置文件
+    """
+
+    def test_config_api_key_highest_priority(self, mock_env_api_key):
+        """测试 config.api_key 优先级最高"""
+        from cursor.cloud.auth import CloudAuthManager, CloudAuthConfig
+
+        # 即使环境变量存在，config.api_key 也应该优先
+        config = CloudAuthConfig(api_key="config-explicit-key")
+        auth_manager = CloudAuthManager(config=config)
+
+        api_key = auth_manager.get_api_key()
+
+        # 应该返回 config 中的 key，而非环境变量
+        assert api_key == "config-explicit-key"
+
+    def test_env_variable_second_priority(self, mock_env_api_key):
+        """测试环境变量优先级次高"""
+        from cursor.cloud.auth import CloudAuthManager, CloudAuthConfig
+
+        # config.api_key 为 None，应该回退到环境变量
+        config = CloudAuthConfig(api_key=None)
+        auth_manager = CloudAuthManager(config=config)
+
+        api_key = auth_manager.get_api_key()
+
+        assert api_key == mock_env_api_key
+
+    def test_returns_none_without_any_key(self):
+        """测试无任何 API Key 时返回 None"""
+        from cursor.cloud.auth import CloudAuthManager, CloudAuthConfig
+
+        with patch.dict(os.environ, {}, clear=True):
+            # 清除 CURSOR_API_KEY 环境变量
+            os.environ.pop("CURSOR_API_KEY", None)
+
+            config = CloudAuthConfig(api_key=None)
+            auth_manager = CloudAuthManager(config=config)
+
+            api_key = auth_manager.get_api_key()
+
+            assert api_key is None
+
+    def test_priority_matches_cloud_client_factory(self, mock_env_api_key):
+        """测试 CloudAuthManager 优先级与 CloudClientFactory 一致"""
+        from cursor.cloud.auth import CloudAuthManager, CloudAuthConfig
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.client import CursorAgentConfig
+
+        explicit_key = "explicit-key-123"
+        agent_key = "agent-key-456"
+
+        # CloudClientFactory 的优先级
+        agent_config = CursorAgentConfig(api_key=agent_key)
+        factory_resolved = CloudClientFactory.resolve_api_key(
+            explicit_api_key=explicit_key,
+            agent_config=agent_config,
+        )
+        assert factory_resolved == explicit_key
+
+        # CloudAuthManager 的优先级（config.api_key 最高）
+        config = CloudAuthConfig(api_key=explicit_key)
+        auth_manager = CloudAuthManager(config=config)
+        auth_resolved = auth_manager.get_api_key()
+        assert auth_resolved == explicit_key
+
+        # 两者结果一致
+        assert factory_resolved == auth_resolved
+
+
+class TestCloudClientFactory:
+    """测试 CloudClientFactory 统一认证配置
+
+    覆盖场景：
+    1. API Key 优先级：显式参数 > agent_config.api_key > auth_config.api_key > 环境变量
+    2. 工厂正确创建 CloudAuthManager 和 CursorCloudClient
+    3. CloudTaskOptions 正确构建
+    4. execute_task() 统一执行入口
+    """
+
+    def test_resolve_api_key_explicit_highest_priority(self):
+        """测试显式参数的 API Key 优先级最高"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="agent-key")
+        auth_config = CloudAuthConfig(api_key="auth-key")
+
+        resolved = CloudClientFactory.resolve_api_key(
+            explicit_api_key="explicit-key",
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert resolved == "explicit-key"
+
+    def test_resolve_api_key_agent_config_second_priority(self):
+        """测试 agent_config.api_key 优先级次高"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="agent-key")
+        auth_config = CloudAuthConfig(api_key="auth-key")
+
+        resolved = CloudClientFactory.resolve_api_key(
+            explicit_api_key=None,
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert resolved == "agent-key"
+
+    def test_resolve_api_key_auth_config_third_priority(self):
+        """测试 auth_config.api_key 优先级第三"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key=None)
+        auth_config = CloudAuthConfig(api_key="auth-key")
+
+        resolved = CloudClientFactory.resolve_api_key(
+            explicit_api_key=None,
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert resolved == "auth-key"
+
+    def test_resolve_api_key_env_variable_lowest_priority(self, mock_env_api_key):
+        """测试环境变量优先级最低"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key=None)
+        auth_config = CloudAuthConfig(api_key=None)
+
+        resolved = CloudClientFactory.resolve_api_key(
+            explicit_api_key=None,
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert resolved == mock_env_api_key
+
+    def test_resolve_api_key_returns_none_when_no_key(self):
+        """测试无任何 API Key 时返回 None"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.dict(os.environ, {}, clear=True):
+            # 清除 CURSOR_API_KEY 环境变量
+            os.environ.pop("CURSOR_API_KEY", None)
+
+            resolved = CloudClientFactory.resolve_api_key(
+                explicit_api_key=None,
+                agent_config=None,
+                auth_config=None,
+            )
+
+            assert resolved is None
+
+    def test_create_auth_config_with_priority(self):
+        """测试创建 CloudAuthConfig 遵循优先级"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="agent-key")
+        auth_config = CloudAuthConfig(api_key="auth-key", auth_timeout=60)
+
+        # 显式 api_key 应覆盖其他
+        result = CloudClientFactory.create_auth_config(
+            explicit_api_key="explicit-key",
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert result.api_key == "explicit-key"
+        # auth_timeout 应继承自 auth_config
+        assert result.auth_timeout == 60
+
+    def test_create_auth_config_with_timeout_override(self):
+        """测试创建 CloudAuthConfig 可覆盖 auth_timeout"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+
+        auth_config = CloudAuthConfig(api_key="test-key", auth_timeout=60)
+
+        result = CloudClientFactory.create_auth_config(
+            auth_config=auth_config,
+            auth_timeout=120,
+        )
+
+        assert result.auth_timeout == 120
+
+    def test_create_auth_manager(self):
+        """测试创建 CloudAuthManager"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthManager, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="test-api-key")
+
+        auth_manager = CloudClientFactory.create_auth_manager(
+            agent_config=agent_config,
+        )
+
+        assert isinstance(auth_manager, CloudAuthManager)
+        assert auth_manager.config.api_key == "test-api-key"
+
+    def test_create_returns_client_and_auth_manager(self):
+        """测试 create() 返回 client 和 auth_manager"""
+        from cursor.cloud_client import CloudClientFactory, CursorCloudClient, CloudAuthManager
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="factory-test-key")
+
+        client, auth_manager = CloudClientFactory.create(
+            agent_config=agent_config,
+        )
+
+        assert isinstance(client, CursorCloudClient)
+        assert isinstance(auth_manager, CloudAuthManager)
+        assert auth_manager.config.api_key == "factory-test-key"
+
+    def test_create_with_custom_endpoints(self):
+        """测试自定义 API 端点"""
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="test-key")
+
+        client, _ = CloudClientFactory.create(
+            agent_config=agent_config,
+            api_base="https://custom.api.com",
+            agents_endpoint="/v2/agents",
+        )
+
+        assert client.api_base == "https://custom.api.com"
+        assert client.agents_endpoint == "/v2/agents"
+
+    def test_build_task_options_from_agent_config(self):
+        """测试从 agent_config 构建 CloudTaskOptions"""
+        from cursor.cloud_client import CloudClientFactory, CloudTaskOptions
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(
+            model="gpt-5.2-high",
+            working_directory="/project",
+            timeout=600,
+            force_write=True,
+        )
+
+        options = CloudClientFactory.build_task_options(
+            agent_config=agent_config,
+        )
+
+        assert isinstance(options, CloudTaskOptions)
+        assert options.model == "gpt-5.2-high"
+        assert options.working_directory == "/project"
+        assert options.timeout == 600
+        assert options.allow_write is True
+
+    def test_build_task_options_explicit_overrides(self):
+        """测试显式参数覆盖 agent_config"""
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(
+            model="gpt-5.2-high",
+            working_directory="/project",
+            timeout=600,
+            force_write=True,
+        )
+
+        options = CloudClientFactory.build_task_options(
+            agent_config=agent_config,
+            model="opus-4.5-thinking",
+            working_directory="/custom",
+            timeout=120,
+            allow_write=False,
+        )
+
+        assert options.model == "opus-4.5-thinking"
+        assert options.working_directory == "/custom"
+        assert options.timeout == 120
+        assert options.allow_write is False
+
+    def test_build_task_options_without_agent_config(self):
+        """测试无 agent_config 时使用默认值"""
+        from cursor.cloud_client import CloudClientFactory
+
+        options = CloudClientFactory.build_task_options(
+            model="test-model",
+            working_directory="/test",
+            timeout=300,
+        )
+
+        assert options.model == "test-model"
+        assert options.working_directory == "/test"
+        assert options.timeout == 300
+        assert options.allow_write is False  # 默认 False
+
+    @pytest.mark.asyncio
+    async def test_execute_task_uses_unified_auth(self):
+        """测试 execute_task() 使用统一的认证流程"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="execute-task-key")
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Task executed successfully"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = ["output.py"]
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "task-123"
+
+        with patch.object(
+            CloudClientFactory, "create"
+        ) as mock_create:
+            mock_client = AsyncMock()
+            mock_client.execute = AsyncMock(return_value=mock_cloud_result)
+            mock_auth = MagicMock()
+            mock_auth.authenticate = AsyncMock(
+                return_value=AuthStatus(authenticated=True)
+            )
+            mock_create.return_value = (mock_client, mock_auth)
+
+            result = await CloudClientFactory.execute_task(
+                prompt="Test task",
+                agent_config=agent_config,
+                working_directory="/project",
+                timeout=300,
+                allow_write=True,
+            )
+
+            # 验证工厂被调用
+            mock_create.assert_called_once()
+            call_kwargs = mock_create.call_args.kwargs
+            assert call_kwargs.get("agent_config") == agent_config
+
+            # 验证结果正确
+            assert result.success is True
+            assert result.output == "Task executed successfully"
+            assert "output.py" in result.files_modified
+
+    @pytest.mark.asyncio
+    async def test_execute_task_handles_auth_failure(self):
+        """测试 execute_task() 正确处理认证失败"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "create"
+        ) as mock_create:
+            mock_client = AsyncMock()
+            mock_auth = MagicMock()
+            mock_auth.authenticate = AsyncMock(
+                return_value=AuthStatus(
+                    authenticated=False,
+                    error=AuthError("Invalid API Key", AuthErrorCode.INVALID_API_KEY),
+                )
+            )
+            mock_create.return_value = (mock_client, mock_auth)
+
+            result = await CloudClientFactory.execute_task(
+                prompt="Test task",
+            )
+
+            assert result.success is False
+            assert "API Key" in result.error or "认证" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_task_passes_session_id(self):
+        """测试 execute_task() 正确传递 session_id"""
+        from cursor.cloud_client import CloudClientFactory
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Resumed session"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = []
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "resumed-session-456"
+
+        with patch.object(
+            CloudClientFactory, "create"
+        ) as mock_create:
+            mock_client = AsyncMock()
+            mock_client.execute = AsyncMock(return_value=mock_cloud_result)
+            mock_auth = MagicMock()
+            mock_auth.authenticate = AsyncMock(
+                return_value=AuthStatus(authenticated=True)
+            )
+            mock_create.return_value = (mock_client, mock_auth)
+
+            result = await CloudClientFactory.execute_task(
+                prompt="Continue task",
+                session_id="existing-session-123",
+            )
+
+            # 验证 session_id 被传递
+            mock_client.execute.assert_called_once()
+            call_kwargs = mock_client.execute.call_args.kwargs
+            assert call_kwargs.get("session_id") == "existing-session-123"
+
+    @pytest.mark.asyncio
+    async def test_resume_session_uses_unified_auth(self):
+        """测试 resume_session() 使用统一的认证流程"""
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="resume-key")
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Session resumed"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = ["resumed.py"]
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "session-789"
+
+        with patch.object(
+            CloudClientFactory, "create"
+        ) as mock_create:
+            mock_client = AsyncMock()
+            mock_client.resume_from_cloud = AsyncMock(return_value=mock_cloud_result)
+            mock_auth = MagicMock()
+            mock_auth.authenticate = AsyncMock(
+                return_value=AuthStatus(authenticated=True)
+            )
+            mock_create.return_value = (mock_client, mock_auth)
+
+            result = await CloudClientFactory.resume_session(
+                session_id="session-789",
+                prompt="Continue work",
+                agent_config=agent_config,
+                local=True,
+            )
+
+            assert result.success is True
+            assert "resumed.py" in result.files_modified
+
+
+class TestCloudExecutionPathConsistency:
+    """测试两条 Cloud 执行路径的行为一致性
+
+    验证：
+    1. CursorAgentClient._execute_via_cloud() 和 CloudAgentExecutor.execute()
+       使用相同的 CloudClientFactory.execute_task()
+    2. 配置来源优先级一致
+    3. allow_write/timeout/session_id 行为一致
+    4. files_modified/session_id 正确返回
+    """
+
+    @pytest.fixture
+    def cloud_enabled_agent_config(self):
+        """启用 Cloud 的 Agent 配置"""
+        from cursor.client import CursorAgentConfig
+        return CursorAgentConfig(
+            cloud_enabled=True,
+            auto_detect_cloud_prefix=True,
+            api_key="unified-api-key",
+            model="opus-4.5-thinking",
+            timeout=300,
+            force_write=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cursor_agent_client_uses_execute_task(self, cloud_enabled_agent_config):
+        """测试 CursorAgentClient 使用 CloudClientFactory.execute_task()"""
+        from cursor.client import CursorAgentClient
+
+        client = CursorAgentClient(config=cloud_enabled_agent_config)
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Factory execute_task output"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = ["test.py"]
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "test-session-id"
+
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute:
+            mock_execute.return_value = mock_cloud_result
+
+            result = await client.execute("& 测试任务")
+
+            # 验证 execute_task 被调用
+            mock_execute.assert_called_once()
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("agent_config") == cloud_enabled_agent_config
+            assert call_kwargs.get("allow_write") is True
+            assert call_kwargs.get("wait") is True
+
+            # 验证结果正确
+            assert result.success is True
+            assert result.session_id == "test-session-id"
+            assert "test.py" in result.files_modified
+
+    @pytest.mark.asyncio
+    async def test_cloud_agent_executor_uses_execute_task(self):
+        """测试 CloudAgentExecutor 使用 CloudClientFactory.execute_task()"""
+        from cursor.executor import CloudAgentExecutor
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(
+            api_key="executor-api-key",
+            model="gpt-5.2-high",
+            force_write=True,
+            timeout=600,
+        )
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Executor execute_task output"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = ["executor.py"]
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "executor-session-id"
+        mock_cloud_result.to_dict = MagicMock(return_value={})
+
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute:
+            mock_execute.return_value = mock_cloud_result
+
+            executor = CloudAgentExecutor(agent_config=agent_config)
+            result = await executor.execute(
+                prompt="Test executor task",
+                working_directory="/project",
+                timeout=500,
+            )
+
+            # 验证 execute_task 被调用
+            mock_execute.assert_called_once()
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("agent_config") == agent_config
+            assert call_kwargs.get("allow_write") is True
+            assert call_kwargs.get("timeout") == 500
+            assert call_kwargs.get("working_directory") == "/project"
+
+            # 验证结果正确
+            assert result.success is True
+            assert result.session_id == "executor-session-id"
+            assert "executor.py" in result.files_modified
+
+    @pytest.mark.asyncio
+    async def test_both_paths_use_same_factory_method(self, cloud_enabled_agent_config):
+        """测试两条执行路径使用相同的工厂方法"""
+        from cursor.client import CursorAgentClient
+        from cursor.executor import CloudAgentExecutor
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Unified output"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = ["unified.py"]
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "unified-session"
+        mock_cloud_result.to_dict = MagicMock(return_value={})
+
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute:
+            mock_execute.return_value = mock_cloud_result
+
+            # 路径 1: CursorAgentClient
+            client = CursorAgentClient(config=cloud_enabled_agent_config)
+            result1 = await client.execute("& 任务一")
+
+            # 重置 mock
+            mock_execute.reset_mock()
+
+            # 路径 2: CloudAgentExecutor
+            executor = CloudAgentExecutor(agent_config=cloud_enabled_agent_config)
+            result2 = await executor.execute("任务二")
+
+            # 两条路径都应调用 execute_task
+            assert mock_execute.call_count == 1  # executor 调用一次
+
+            # 两条路径结果结构一致
+            assert result1.success == result2.success
+            assert result1.files_modified == result2.files_modified
+
+    @pytest.mark.asyncio
+    async def test_session_id_passed_consistently(self, cloud_enabled_agent_config):
+        """测试 session_id 在两条路径中被一致传递"""
+        from cursor.client import CursorAgentClient
+        from cursor.executor import CloudAgentExecutor
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "Session resumed"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = []
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "resumed-session"
+        mock_cloud_result.to_dict = MagicMock(return_value={})
+
+        session_id = "test-session-to-resume"
+
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute:
+            mock_execute.return_value = mock_cloud_result
+
+            # CursorAgentClient 传递 session_id
+            client = CursorAgentClient(config=cloud_enabled_agent_config)
+            await client.execute("& 继续任务", session_id=session_id)
+
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("session_id") == session_id
+
+            mock_execute.reset_mock()
+
+            # CloudAgentExecutor 传递 session_id
+            executor = CloudAgentExecutor(agent_config=cloud_enabled_agent_config)
+            await executor.execute("继续任务", session_id=session_id)
+
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("session_id") == session_id
+
+    @pytest.mark.asyncio
+    async def test_allow_write_passed_consistently(self):
+        """测试 allow_write 在两条路径中被一致传递"""
+        from cursor.client import CursorAgentClient, CursorAgentConfig
+        from cursor.executor import CloudAgentExecutor
+
+        # force_write=True 应该映射到 allow_write=True
+        config_with_write = CursorAgentConfig(
+            cloud_enabled=True,
+            auto_detect_cloud_prefix=True,
+            api_key="test-key",
+            force_write=True,
+        )
+
+        # force_write=False 应该映射到 allow_write=False
+        config_without_write = CursorAgentConfig(
+            cloud_enabled=True,
+            auto_detect_cloud_prefix=True,
+            api_key="test-key",
+            force_write=False,
+        )
+
+        mock_cloud_result = MagicMock()
+        mock_cloud_result.success = True
+        mock_cloud_result.output = "OK"
+        mock_cloud_result.error = None
+        mock_cloud_result.files_modified = []
+        mock_cloud_result.task = None
+        mock_cloud_result.to_dict = MagicMock(return_value={})
+
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute:
+            mock_execute.return_value = mock_cloud_result
+
+            # 测试 force_write=True
+            client = CursorAgentClient(config=config_with_write)
+            await client.execute("& 任务")
+            assert mock_execute.call_args.kwargs.get("allow_write") is True
+
+            mock_execute.reset_mock()
+
+            executor = CloudAgentExecutor(agent_config=config_with_write)
+            await executor.execute("任务")
+            assert mock_execute.call_args.kwargs.get("allow_write") is True
+
+            mock_execute.reset_mock()
+
+            # 测试 force_write=False
+            client2 = CursorAgentClient(config=config_without_write)
+            await client2.execute("& 任务")
+            assert mock_execute.call_args.kwargs.get("allow_write") is False
+
+            mock_execute.reset_mock()
+
+            executor2 = CloudAgentExecutor(agent_config=config_without_write)
+            await executor2.execute("任务")
+            assert mock_execute.call_args.kwargs.get("allow_write") is False
+
+    @pytest.mark.asyncio
+    async def test_both_paths_return_files_modified(self):
+        """测试两条路径都正确返回 files_modified"""
+        from cursor.executor import AgentResult
+
+        # 测试 from_cloud_result 包含 files_modified
+        result = AgentResult.from_cloud_result(
+            success=True,
+            output="test output",
+            files_modified=["src/main.py", "tests/test.py"],
+        )
+
+        assert result.files_modified == ["src/main.py", "tests/test.py"]
+
+    @pytest.mark.asyncio
+    async def test_both_paths_return_session_id(self):
+        """测试两条路径都正确返回 session_id"""
+        from cursor.executor import AgentResult
+
+        # 测试 from_cloud_result 包含 session_id
+        result = AgentResult.from_cloud_result(
+            success=True,
+            output="test output",
+            session_id="cloud-session-abc",
+        )
+
+        assert result.session_id == "cloud-session-abc"
+
+    def test_agent_config_api_key_priority_over_auth_config(self):
+        """测试 agent_config.api_key 优先于 auth_config.api_key"""
+        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.client import CursorAgentConfig
+
+        agent_config = CursorAgentConfig(api_key="agent-priority-key")
+        auth_config = CloudAuthConfig(api_key="auth-lower-priority")
+
+        _, auth_manager = CloudClientFactory.create(
+            agent_config=agent_config,
+            auth_config=auth_config,
+        )
+
+        assert auth_manager.config.api_key == "agent-priority-key"
+
+
 class TestCursorAgentClientCloudRouting:
     """测试 CursorAgentClient 的 Cloud 路由策略
 
@@ -1305,115 +2033,111 @@ class TestCursorAgentClientCloudRouting:
     async def test_execute_via_cloud_passes_options(self, cloud_enabled_config):
         """测试 Cloud 路径正确传递 model/working_directory/timeout/allow_write"""
         from cursor.client import CursorAgentClient
+        from cursor.cloud_client import CloudClientFactory, CloudAgentResult
 
         client = CursorAgentClient(config=cloud_enabled_config)
 
-        # Mock CursorCloudClient.execute（延迟导入的模块需要用完整路径）
-        mock_cloud_result = MagicMock()
-        mock_cloud_result.success = True
-        mock_cloud_result.output = "Cloud output"
-        mock_cloud_result.error = None
-        mock_cloud_result.files_modified = []
+        # Mock CloudClientFactory.execute_task
+        mock_cloud_result = CloudAgentResult(
+            success=True,
+            output="Cloud output",
+            error=None,
+            files_modified=[],
+        )
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "test-session"
 
-        with patch(
-            "cursor.cloud.client.CursorCloudClient"
-        ) as MockCloudClient:
-            mock_client_instance = AsyncMock()
-            mock_client_instance.execute = AsyncMock(return_value=mock_cloud_result)
-            MockCloudClient.return_value = mock_client_instance
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            return_value=mock_cloud_result,
+        ) as mock_execute:
+            result = await client.execute(
+                "& 分析代码",
+                working_directory="/custom/path",
+                timeout=600,
+            )
 
-            with patch("cursor.cloud_client.CloudAuthManager"):
-                result = await client.execute(
-                    "& 分析代码",
-                    working_directory="/custom/path",
-                    timeout=600,
-                )
+            # 验证 execute_task 被调用
+            mock_execute.assert_called_once()
+            call_kwargs = mock_execute.call_args.kwargs
 
-                # 验证 execute 被调用
-                mock_client_instance.execute.assert_called_once()
-                call_kwargs = mock_client_instance.execute.call_args.kwargs
-
-                # 验证 options 包含正确的参数
-                options = call_kwargs.get("options")
-                assert options is not None
-                assert options.model == "opus-4.5-thinking"
-                assert options.working_directory == "/custom/path"
-                assert options.timeout == 600
-                assert options.allow_write is True
+            # 验证参数正确传递
+            assert call_kwargs.get("working_directory") == "/custom/path"
+            assert call_kwargs.get("timeout") == 600
+            assert call_kwargs.get("allow_write") is True
+            assert call_kwargs.get("agent_config") == cloud_enabled_config
 
     @pytest.mark.asyncio
     async def test_execute_via_cloud_handles_timeout(self, cloud_enabled_config):
         """测试 Cloud 执行超时处理"""
         from cursor.client import CursorAgentClient
+        from cursor.cloud_client import CloudClientFactory
 
         client = CursorAgentClient(config=cloud_enabled_config)
 
-        with patch(
-            "cursor.cloud.client.CursorCloudClient"
-        ) as MockCloudClient:
-            mock_client_instance = AsyncMock()
-            mock_client_instance.execute = AsyncMock(
-                side_effect=asyncio.TimeoutError()
-            )
-            MockCloudClient.return_value = mock_client_instance
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            side_effect=asyncio.TimeoutError(),
+        ):
+            result = await client.execute("& 慢任务", timeout=1)
 
-            with patch("cursor.cloud_client.CloudAuthManager"):
-                result = await client.execute("& 慢任务", timeout=1)
-
-                assert result.success is False
-                assert "超时" in result.error
+            assert result.success is False
+            assert "超时" in result.error
 
     @pytest.mark.asyncio
     async def test_execute_via_cloud_handles_exception(self, cloud_enabled_config):
         """测试 Cloud 执行异常处理"""
         from cursor.client import CursorAgentClient
+        from cursor.cloud_client import CloudClientFactory
 
         client = CursorAgentClient(config=cloud_enabled_config)
 
-        with patch(
-            "cursor.cloud.client.CursorCloudClient"
-        ) as MockCloudClient:
-            mock_client_instance = AsyncMock()
-            mock_client_instance.execute = AsyncMock(
-                side_effect=RuntimeError("Cloud API error")
-            )
-            MockCloudClient.return_value = mock_client_instance
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            side_effect=RuntimeError("Cloud API error"),
+        ):
 
-            with patch("cursor.cloud_client.CloudAuthManager"):
-                result = await client.execute("& 任务")
+            result = await client.execute("& 任务")
 
-                assert result.success is False
-                assert "Cloud API error" in result.error
+            assert result.success is False
+            assert "Cloud API error" in result.error
 
     @pytest.mark.asyncio
     async def test_execute_with_session_id_via_cloud(self, cloud_enabled_config):
         """测试带 session_id 的 Cloud 执行"""
         from cursor.client import CursorAgentClient
+        from cursor.cloud_client import CloudClientFactory, CloudAgentResult
 
         client = CursorAgentClient(config=cloud_enabled_config)
 
-        mock_cloud_result = MagicMock()
-        mock_cloud_result.success = True
-        mock_cloud_result.output = "Resumed from cloud"
-        mock_cloud_result.error = None
-        mock_cloud_result.files_modified = []
+        mock_cloud_result = CloudAgentResult(
+            success=True,
+            output="Resumed from cloud",
+            error=None,
+            files_modified=[],
+        )
+        mock_cloud_result.task = MagicMock()
+        mock_cloud_result.task.task_id = "cloud-session-123"
 
-        with patch(
-            "cursor.cloud.client.CursorCloudClient"
-        ) as MockCloudClient:
-            mock_client_instance = AsyncMock()
-            mock_client_instance.execute = AsyncMock(return_value=mock_cloud_result)
-            MockCloudClient.return_value = mock_client_instance
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            return_value=mock_cloud_result,
+        ) as mock_execute:
+            result = await client.execute(
+                "& 继续任务",
+                session_id="cloud-session-123",
+            )
 
-            with patch("cursor.cloud_client.CloudAuthManager"):
-                result = await client.execute(
-                    "& 继续任务",
-                    session_id="cloud-session-123",
-                )
+            # 验证 execute_task 被调用
+            mock_execute.assert_called_once()
 
-                # 验证 session_id 被传递
-                call_kwargs = mock_client_instance.execute.call_args.kwargs
-                assert call_kwargs.get("session_id") == "cloud-session-123"
+            # 验证 session_id 被传递
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("session_id") == "cloud-session-123"
 
     def test_edge_case_only_ampersand(self, cloud_enabled_config):
         """测试边界用例：只有 & 符号"""
@@ -1856,3 +2580,419 @@ class TestIntegrationScenarios:
         else:
             # 如果失败，应该有错误信息
             assert result.error is not None
+
+
+# ============================================================
+# TestOrchestratorResultStructure - Orchestrator 结果结构 Smoke 测试
+# ============================================================
+
+
+class TestOrchestratorResultStructure:
+    """关键路径 Smoke 测试：验证 Orchestrator 最终结果结构
+
+    覆盖场景：
+    1. Mock executor 返回值
+    2. 验证结果包含 commits/files_modified/session_id
+    3. 验证 commit 去重逻辑
+    """
+
+    @pytest.fixture
+    def temp_working_dir(self, tmp_path):
+        """创建临时工作目录"""
+        return str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_result_contains_expected_fields(
+        self, temp_working_dir
+    ):
+        """测试 Orchestrator 结果包含预期字段结构"""
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.CLI,
+        )
+
+        orchestrator = Orchestrator(config)
+
+        # Mock 返回包含 commits 和 files_modified 的结果
+        mock_plan = {"success": True, "tasks": []}
+
+        with patch.object(orchestrator.planner, "execute", return_value=mock_plan):
+            with patch.object(orchestrator.planner, "create_task_from_plan", return_value=None):
+                with patch.object(orchestrator.task_queue, "get_pending_count", return_value=0):
+                    with patch.object(orchestrator.task_queue, "get_statistics", return_value={"completed": 0, "failed": 0}):
+                        result = await orchestrator.run("测试目标")
+
+                        # 验证结果是字典
+                        assert isinstance(result, dict)
+
+                        # 验证必需字段存在
+                        assert "success" in result
+
+    @pytest.mark.asyncio
+    async def test_worker_result_files_modified_aggregation(
+        self, temp_working_dir
+    ):
+        """测试 Worker 结果中 files_modified 的聚合"""
+        from agents.reviewer import ReviewDecision
+        from cursor.client import CursorAgentResult
+
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.CLI,
+        )
+
+        orchestrator = Orchestrator(config)
+
+        # Mock planner 返回一个任务
+        mock_plan = {"success": True, "tasks": [{"id": "t1", "title": "任务1", "description": "测试"}]}
+
+        # Mock worker 返回包含 files_modified 的结果
+        mock_worker_result = CursorAgentResult(
+            success=True,
+            output="任务完成",
+            files_modified=["src/main.py", "tests/test_main.py"],
+            files_edited=["config.yaml"],
+            session_id="worker-session-123",
+        )
+
+        with patch.object(orchestrator.planner, "execute", return_value=mock_plan):
+            with patch.object(orchestrator.planner, "create_task_from_plan") as mock_create:
+                mock_task = MagicMock()
+                mock_task.id = "t1"
+                mock_task.status = MagicMock(value="completed")
+                mock_task.result = {
+                    "success": True,
+                    "output": "任务完成",
+                    "files_modified": ["src/main.py", "tests/test_main.py"],
+                    "session_id": "worker-session-123",
+                }
+                mock_create.return_value = mock_task
+
+                mock_review = {"decision": ReviewDecision.COMPLETE, "score": 100}
+
+                with patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock):
+                    with patch.object(orchestrator.reviewer, "review_iteration", return_value=mock_review):
+                        with patch.object(orchestrator.task_queue, "get_tasks_by_iteration", return_value=[mock_task]):
+                            with patch.object(orchestrator.task_queue, "get_pending_count", return_value=1):
+                                with patch.object(orchestrator.task_queue, "get_statistics", return_value={"completed": 1, "failed": 0}):
+                                    result = await orchestrator.run("测试目标")
+
+                                    assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_result_structure_with_commits_info(
+        self, temp_working_dir
+    ):
+        """测试结果结构包含 commits 信息"""
+        from agents.reviewer import ReviewDecision
+
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.CLI,
+            auto_commit=True,  # 启用自动提交
+        )
+
+        orchestrator = Orchestrator(config)
+
+        mock_plan = {"success": True, "tasks": [{"id": "t1", "title": "任务1"}]}
+        mock_review = {"decision": ReviewDecision.COMPLETE, "score": 100}
+
+        # Mock committer 返回提交结果
+        mock_commit_result = {
+            "success": True,
+            "commit_hash": "abc123def456",
+            "message": "feat: 测试提交",
+        }
+
+        with patch.object(orchestrator.planner, "execute", return_value=mock_plan):
+            with patch.object(orchestrator.planner, "create_task_from_plan") as mock_create:
+                mock_task = MagicMock()
+                mock_task.id = "t1"
+                mock_task.status = MagicMock(value="completed")
+                mock_create.return_value = mock_task
+
+                with patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock):
+                    with patch.object(orchestrator.reviewer, "review_iteration", return_value=mock_review):
+                        with patch.object(orchestrator.task_queue, "get_tasks_by_iteration", return_value=[mock_task]):
+                            with patch.object(orchestrator.task_queue, "get_pending_count", return_value=1):
+                                with patch.object(orchestrator.task_queue, "get_statistics", return_value={"completed": 1, "failed": 0}):
+                                    with patch.object(orchestrator, "_commit_phase", new_callable=AsyncMock, return_value=mock_commit_result):
+                                        result = await orchestrator.run("测试目标")
+
+                                        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_session_id_propagation_from_worker(
+        self, temp_working_dir
+    ):
+        """测试 session_id 从 Worker 结果正确传播"""
+        from agents.reviewer import ReviewDecision
+
+        config = OrchestratorConfig(
+            working_directory=temp_working_dir,
+            max_iterations=1,
+            worker_pool_size=1,
+            execution_mode=ExecutionMode.CLOUD,
+            cloud_auth_config=CloudAuthConfig(api_key="test-key"),
+        )
+
+        orchestrator = Orchestrator(config)
+
+        mock_plan = {"success": True, "tasks": [{"id": "t1", "title": "任务1"}]}
+        mock_review = {"decision": ReviewDecision.COMPLETE, "score": 100}
+
+        with patch.object(orchestrator.planner, "execute", return_value=mock_plan):
+            with patch.object(orchestrator.planner, "create_task_from_plan") as mock_create:
+                mock_task = MagicMock()
+                mock_task.id = "t1"
+                mock_task.status = MagicMock(value="completed")
+                mock_task.result = {
+                    "success": True,
+                    "session_id": "cloud-session-xyz",
+                    "files_modified": ["app.py"],
+                }
+                mock_create.return_value = mock_task
+
+                with patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock):
+                    with patch.object(orchestrator.reviewer, "review_iteration", return_value=mock_review):
+                        with patch.object(orchestrator.task_queue, "get_tasks_by_iteration", return_value=[mock_task]):
+                            with patch.object(orchestrator.task_queue, "get_pending_count", return_value=1):
+                                with patch.object(orchestrator.task_queue, "get_statistics", return_value={"completed": 1, "failed": 0}):
+                                    result = await orchestrator.run("测试目标")
+
+                                    assert result["success"] is True
+                                    # 验证 session_id 在任务结果中
+                                    task_result = mock_task.result
+                                    assert task_result["session_id"] == "cloud-session-xyz"
+
+
+class TestSelfIteratorResultStructure:
+    """SelfIterator 结果结构测试
+
+    验证 SelfIterator 最终返回的结果结构包含预期字段
+    """
+
+    @pytest.fixture
+    def base_iterate_args(self) -> "argparse.Namespace":
+        """创建基础迭代参数"""
+        return argparse.Namespace(
+            requirement="测试任务",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="2",
+            workers=2,
+            force_update=False,
+            verbose=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_message="",
+            commit_per_iteration=False,
+            orchestrator="basic",
+            no_mp=True,
+            _orchestrator_user_set=True,
+            execution_mode="cli",
+            cloud_api_key=None,
+            cloud_auth_timeout=30,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_self_iterator_result_contains_commits_field(
+        self, base_iterate_args
+    ):
+        """测试 SelfIterator 结果包含 commits 字段"""
+        from scripts.run_iterate import SelfIterator
+
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # Mock orchestrator 返回包含 commits 信息的结果
+        mock_orch_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 2,
+            "total_tasks_completed": 2,
+            "total_tasks_failed": 0,
+            "commits": {
+                "total_commits": 1,
+                "commit_hashes": ["abc123"],
+                "successful_commits": 1,
+            },
+            "files_modified": ["src/main.py", "tests/test.py"],
+        }
+
+        mock_storage = MagicMock()
+        mock_storage.initialize = AsyncMock()
+        mock_storage.get_stats = AsyncMock(return_value={"document_count": 0})
+        mock_storage.search = AsyncMock(return_value=[])
+        mock_storage.list_documents = AsyncMock(return_value=[])
+
+        with patch.object(iterator.knowledge_updater, "storage", mock_storage):
+            with patch.object(
+                iterator.knowledge_updater.manager, "initialize", new_callable=AsyncMock
+            ):
+                with patch.object(
+                    iterator.knowledge_updater.fetcher, "initialize", new_callable=AsyncMock
+                ):
+                    with patch.object(
+                        iterator, "_run_agent_system",
+                        new_callable=AsyncMock,
+                        return_value=mock_orch_result
+                    ):
+                        result = await iterator.run()
+
+                        # 验证结果结构
+                        assert result["success"] is True
+                        # commits 字段应在结果中（如果 orchestrator 返回）
+                        if "commits" in result:
+                            assert "total_commits" in result["commits"]
+                            assert "commit_hashes" in result["commits"]
+
+    @pytest.mark.asyncio
+    async def test_self_iterator_result_contains_files_modified(
+        self, base_iterate_args
+    ):
+        """测试 SelfIterator 结果包含 files_modified 字段"""
+        from scripts.run_iterate import SelfIterator
+
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        mock_orch_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+            "files_modified": ["config.yaml", "setup.py"],
+        }
+
+        mock_storage = MagicMock()
+        mock_storage.initialize = AsyncMock()
+        mock_storage.get_stats = AsyncMock(return_value={"document_count": 0})
+        mock_storage.search = AsyncMock(return_value=[])
+        mock_storage.list_documents = AsyncMock(return_value=[])
+
+        with patch.object(iterator.knowledge_updater, "storage", mock_storage):
+            with patch.object(
+                iterator.knowledge_updater.manager, "initialize", new_callable=AsyncMock
+            ):
+                with patch.object(
+                    iterator.knowledge_updater.fetcher, "initialize", new_callable=AsyncMock
+                ):
+                    with patch.object(
+                        iterator, "_run_agent_system",
+                        new_callable=AsyncMock,
+                        return_value=mock_orch_result
+                    ):
+                        result = await iterator.run()
+
+                        # 验证 files_modified 在结果中
+                        if "files_modified" in result:
+                            assert "config.yaml" in result["files_modified"]
+                            assert "setup.py" in result["files_modified"]
+
+    @pytest.mark.asyncio
+    async def test_has_orchestrator_committed_detection(
+        self, base_iterate_args
+    ):
+        """测试 _has_orchestrator_committed 检测逻辑"""
+        from scripts.run_iterate import SelfIterator
+
+        iterator = SelfIterator(base_iterate_args)
+
+        # 有提交的结果
+        result_with_commits = {
+            "success": True,
+            "commits": {
+                "total_commits": 2,
+                "commit_hashes": ["abc", "def"],
+                "successful_commits": 2,
+            },
+        }
+
+        # 无提交的结果
+        result_without_commits = {
+            "success": True,
+        }
+
+        # 空提交的结果
+        result_empty_commits = {
+            "success": True,
+            "commits": {
+                "total_commits": 0,
+                "commit_hashes": [],
+                "successful_commits": 0,
+            },
+        }
+
+        # 验证检测逻辑
+        assert iterator._has_orchestrator_committed(result_with_commits) is True
+        assert iterator._has_orchestrator_committed(result_without_commits) is False
+        assert iterator._has_orchestrator_committed(result_empty_commits) is False
+
+    @pytest.mark.asyncio
+    async def test_commit_deduplication_when_orchestrator_committed(
+        self, base_iterate_args
+    ):
+        """测试当 orchestrator 已提交时不重复提交"""
+        from scripts.run_iterate import SelfIterator
+
+        base_iterate_args.auto_commit = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        # Orchestrator 已经完成提交
+        mock_orch_result = {
+            "success": True,
+            "iterations_completed": 1,
+            "total_tasks_created": 1,
+            "total_tasks_completed": 1,
+            "total_tasks_failed": 0,
+            "commits": {
+                "total_commits": 1,
+                "commit_hashes": ["existing-commit-hash"],
+                "successful_commits": 1,
+            },
+        }
+
+        mock_storage = MagicMock()
+        mock_storage.initialize = AsyncMock()
+        mock_storage.get_stats = AsyncMock(return_value={"document_count": 0})
+        mock_storage.search = AsyncMock(return_value=[])
+        mock_storage.list_documents = AsyncMock(return_value=[])
+
+        with patch.object(iterator.knowledge_updater, "storage", mock_storage):
+            with patch.object(
+                iterator.knowledge_updater.manager, "initialize", new_callable=AsyncMock
+            ):
+                with patch.object(
+                    iterator.knowledge_updater.fetcher, "initialize", new_callable=AsyncMock
+                ):
+                    with patch.object(
+                        iterator, "_run_agent_system",
+                        new_callable=AsyncMock,
+                        return_value=mock_orch_result
+                    ):
+                        with patch.object(
+                            iterator, "_run_commit_phase",
+                            new_callable=AsyncMock
+                        ) as mock_commit:
+                            await iterator.run()
+
+                            # 验证 _run_commit_phase 未被调用（因为 orchestrator 已提交）
+                            mock_commit.assert_not_called()

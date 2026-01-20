@@ -445,6 +445,21 @@ agent resume <session_id>
 - 支持会话恢复（`--resume`）继续之前的任务
 - 适合长时间运行的分析或重构任务
 
+**`&` 前缀路由语义**:
+
+| 输入 | 是否触发 Cloud 模式 | 说明 |
+|------|---------------------|------|
+| `& 分析代码` | ✓ 是 | 正常触发 |
+| `&分析代码` | ✓ 是 | 无空格也有效 |
+| `&` | ✗ 否 | 只有 `&` 无实际内容 |
+| `&   ` | ✗ 否 | `&` 后仅有空白 |
+| `分析 & 代码` | ✗ 否 | `&` 不在开头 |
+
+**Cloud 模式的自动提交**:
+- Cloud 模式下 **默认不开启** `auto_commit`（安全策略）
+- 如需提交，必须显式指定 `--auto-commit`
+- `allow_write/force_write` 由用户显式控制
+
 ### 基本使用
 
 ```python
@@ -529,13 +544,18 @@ result = await cloud_executor.wait_for_task(task_id, timeout=600)
 
 **执行模式对比**:
 
-| 模式 | 描述 | 只读 | 使用场景 |
-|------|------|------|----------|
-| `CLI` | 本地 CLI 执行 | 否 | 本地开发、完整代理功能 |
-| `CLOUD` | Cloud API 执行 | 否 | 后台任务、长时间运行 |
-| `AUTO` | 自动选择（Cloud 优先，回退 CLI） | 否 | 推荐默认选择 |
-| `PLAN` | 规划模式 | **是** | 任务分析、代码审查 |
-| `ASK` | 问答模式 | **是** | 代码解释、咨询 |
+| 模式 | 描述 | 只读 | 支持 MP 编排器 | 使用场景 |
+|------|------|------|----------------|----------|
+| `CLI` | 本地 CLI 执行 | 否 | ✓ 是 | 本地开发、完整代理功能 |
+| `CLOUD` | Cloud API 执行 | 否 | ✗ 否（强制 basic） | 后台任务、长时间运行 |
+| `AUTO` | 自动选择（Cloud 优先，回退 CLI） | 否 | ✗ 否（强制 basic） | 推荐默认选择 |
+| `PLAN` | 规划模式 | **是** | ✓ 是 | 任务分析、代码审查 |
+| `ASK` | 问答模式 | **是** | ✓ 是 | 代码解释、咨询 |
+
+**编排器兼容性说明**:
+- **MP 编排器** (`MultiProcessOrchestrator`): 仅在 `execution_mode=cli` 时可用
+- **Cloud/Auto 模式**: 强制使用 basic 编排器，因为 Cloud API 不支持多进程编排
+- 系统会自动检测并切换，无需手动处理
 
 ### 错误处理
 
@@ -589,9 +609,17 @@ python scripts/run_iterate.py --orchestrator basic "任务描述"
 python scripts/run_iterate.py --execution-mode auto "任务描述"
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 
+# 使用 & 前缀触发 Cloud 模式（等效于 --execution-mode cloud）
+python scripts/run_iterate.py "& 后台分析代码架构"
+
 # 配合自动提交
 python run.py --mode iterate --auto-commit --auto-push "完成功能"
+
+# 启用差异渲染（Diff 视图增强）
+python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff "重构代码"
 ```
+
+**注意**: 当使用 `&` 前缀或 `--execution-mode cloud/auto` 时，即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。
 
 ### 回退策略
 
@@ -610,6 +638,8 @@ python run.py --mode iterate --auto-commit --auto-push "完成功能"
 
 ### 参数参考
 
+#### 核心执行参数
+
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--orchestrator` | 编排器类型: `mp`/`basic` | `mp` |
@@ -619,15 +649,47 @@ python run.py --mode iterate --auto-commit --auto-push "完成功能"
 | `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 10 |
 | `--skip-online` | 跳过在线文档检查 | False |
 | `--dry-run` | 仅分析不执行 | False |
+
+**重要**: MP 编排器与 Cloud/Auto 执行模式**不兼容**。当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会**强制使用 basic 编排器**，即使显式指定 `--orchestrator mp` 也会自动切换。
+
+#### 自动提交参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
 | `--auto-commit` | 启用自动提交（**必须显式指定才会提交**） | **False** |
 | `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | **False** |
 | `--commit-per-iteration` | 每次迭代都提交（默认仅在全部完成时提交，`run.py` 和 `scripts/run_iterate.py` 均支持） | False |
+
+#### 日志与诊断参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
 | `-v, --verbose` | 详细输出（DEBUG 级别日志） | False |
 | `-q, --quiet` | 静默模式（仅 WARNING 及以上日志） | False |
 | `--log-level` | 日志级别: `DEBUG`/`INFO`/`WARNING`/`ERROR`（优先级高于 --verbose/--quiet） | `INFO` |
 | `--heartbeat-debug` | 启用心跳调试日志（仅调试时使用，默认关闭以减少日志输出） | False |
 | `--stall-diagnostics` | 启用卡死诊断日志（**默认关闭**，疑似卡死时再启用以排查问题） | **False** |
 | `--stall-diagnostics-level` | 诊断日志级别: `debug`/`info`/`warning`/`error`（启用诊断时默认 warning） | `warning` |
+
+#### 流式控制台渲染参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--stream-console-renderer` | 启用流式控制台渲染器 | False |
+| `--stream-advanced-renderer` | 使用高级终端渲染器（支持状态栏、打字效果等） | False |
+| `--stream-show-word-diff` | 显示逐词差异（Diff 视图增强） | False |
+| `--stream-typing-effect` | 启用打字机效果 | False |
+| `--stream-typing-delay` | 打字延迟（秒） | 0.02 |
+| `--stream-word-mode` / `--no-stream-word-mode` | 逐词/逐字符输出模式 | True |
+| `--stream-color-enabled` / `--no-stream-color` | 颜色输出开关 | True |
+
+#### Cloud 认证参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--cloud-api-key` | Cloud API Key（可选） | 环境变量 `CURSOR_API_KEY` |
+| `--cloud-auth-timeout` | Cloud 认证超时时间（秒） | 30 |
+| `--cloud-timeout` | Cloud 执行超时时间（秒，仅 `run.py` 支持） | 600 |
 
 ### 自动提交配置
 

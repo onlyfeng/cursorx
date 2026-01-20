@@ -37,6 +37,7 @@ sys.path.insert(0, str(project_root))
 from loguru import logger
 
 from agents.committer import CommitterAgent, CommitterConfig
+from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
 from coordinator import (
     MultiProcessOrchestrator,
     MultiProcessOrchestratorConfig,
@@ -74,6 +75,16 @@ CURSOR_DOC_URLS = [
     # Jan 16 2026: plan/ask 模式专页
     "https://cursor.com/cn/docs/cli/modes/plan",
     "https://cursor.com/cn/docs/cli/modes/ask",
+    # Jan 20 2026: 审阅与代码评审
+    "https://cursor.com/cn/docs/agent/review",
+    "https://cursor.com/cn/docs/cli/cookbook/code-review",
+    # Jan 20 2026: Cloud Agent（云代理能力）
+    "https://cursor.com/cn/docs/cloud-agent",
+    "https://cursor.com/cn/docs/cloud-agent/overview",
+    "https://cursor.com/cn/docs/cloud-agent/getting-started",
+    "https://cursor.com/cn/docs/cloud-agent/api",
+    "https://cursor.com/cn/docs/cloud-agent/api/streaming",
+    "https://cursor.com/cn/docs/cloud-agent/api/sessions",
 ]
 
 # 更新关键词模式（用于识别 Changelog 中的更新点）
@@ -96,61 +107,6 @@ DISABLE_MP_KEYWORDS = [
     "单进程", "basic", "no-mp", "no_mp",
     "禁用多进程", "禁用mp", "关闭多进程",
 ]
-
-# Cloud 前缀（& 开头表示使用 Cloud 执行）
-CLOUD_PREFIX = "&"
-
-
-def is_cloud_request(prompt: str) -> bool:
-    """检测是否为 Cloud 请求（以 & 开头）
-
-    边界情况处理:
-    - None 或空字符串返回 False
-    - 只有 & 的字符串返回 False（无实际内容）
-    - 只有空白字符返回 False
-    - & 后面需要有实际内容才认为是 cloud request
-
-    Args:
-        prompt: 任务 prompt
-
-    Returns:
-        是否为云端请求
-    """
-    # 处理 None 和非字符串类型
-    if not prompt or not isinstance(prompt, str):
-        return False
-
-    stripped = prompt.strip()
-
-    # 空字符串
-    if not stripped:
-        return False
-
-    # 检查是否以 & 开头
-    if not stripped.startswith(CLOUD_PREFIX):
-        return False
-
-    # 确保 & 后面有实际内容（不只是空白）
-    content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
-    return len(content_after_prefix) > 0
-
-
-def strip_cloud_prefix(prompt: str) -> str:
-    """去除 Cloud 前缀 &
-
-    Args:
-        prompt: 可能带 & 前缀的 prompt
-
-    Returns:
-        去除前缀后的 prompt
-    """
-    if not prompt or not isinstance(prompt, str):
-        return prompt or ""
-
-    stripped = prompt.strip()
-    if stripped.startswith(CLOUD_PREFIX):
-        return stripped[len(CLOUD_PREFIX):].strip()
-    return prompt
 
 
 # ============================================================
@@ -458,6 +414,31 @@ def parse_args() -> argparse.Namespace:
         help="执行模式: cli=本地CLI(默认), auto=自动选择(Cloud优先), cloud=强制Cloud",
     )
 
+    # 角色级执行模式参数（可选，默认继承全局 execution-mode）
+    parser.add_argument(
+        "--planner-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud", "plan"],
+        default=None,
+        help="规划者执行模式（默认继承 --execution-mode）",
+    )
+
+    parser.add_argument(
+        "--worker-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud"],
+        default=None,
+        help="执行者执行模式（默认继承 --execution-mode）",
+    )
+
+    parser.add_argument(
+        "--reviewer-execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud", "ask"],
+        default=None,
+        help="评审者执行模式（默认继承 --execution-mode）",
+    )
+
     # Cloud 认证配置
     parser.add_argument(
         "--cloud-api-key",
@@ -471,6 +452,79 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="Cloud 认证超时时间（秒，默认 30）",
+    )
+
+    # 流式控制台渲染参数（默认关闭，避免噪声）
+    stream_render_group = parser.add_argument_group("流式控制台渲染")
+
+    stream_render_group.add_argument(
+        "--stream-console-renderer",
+        action="store_true",
+        dest="stream_console_renderer",
+        default=False,
+        help="启用流式控制台渲染器（默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-advanced-renderer",
+        action="store_true",
+        dest="stream_advanced_renderer",
+        default=False,
+        help="使用高级终端渲染器（支持状态栏、打字效果等，默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-typing-effect",
+        action="store_true",
+        dest="stream_typing_effect",
+        default=False,
+        help="启用打字机效果（默认关闭）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-typing-delay",
+        type=float,
+        default=0.02,
+        metavar="SECONDS",
+        help="打字延迟（秒，默认 0.02）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-word-mode",
+        action="store_true",
+        dest="stream_word_mode",
+        default=True,
+        help="逐词输出模式（默认开启）",
+    )
+
+    stream_render_group.add_argument(
+        "--no-stream-word-mode",
+        action="store_false",
+        dest="stream_word_mode",
+        help="逐字符输出模式（禁用逐词模式）",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-color-enabled",
+        action="store_true",
+        dest="stream_color_enabled",
+        default=True,
+        help="启用颜色输出（默认开启）",
+    )
+
+    stream_render_group.add_argument(
+        "--no-stream-color",
+        action="store_false",
+        dest="stream_color_enabled",
+        help="禁用颜色输出",
+    )
+
+    stream_render_group.add_argument(
+        "--stream-show-word-diff",
+        action="store_true",
+        dest="stream_show_word_diff",
+        default=False,
+        help="显示逐词差异（默认关闭）",
     )
 
     args = parser.parse_args()
@@ -530,6 +584,7 @@ class ChangelogAnalyzer:
         """清理 HTML/Markdown 混合内容
 
         移除 HTML 标签、多余空白等，保留纯文本和 Markdown 格式。
+        支持主内容区域截取：当检测到明确的内容锚点时，截取主内容区域以降低噪声。
 
         Args:
             content: 原始内容
@@ -540,20 +595,28 @@ class ChangelogAnalyzer:
         if not content:
             return ""
 
-        # 移除 HTML 注释
+        # 1. 尝试截取主内容区域（降低噪声干扰）
+        content = self._extract_main_content(content)
+
+        # 2. 移除 HTML 注释
         content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
 
-        # 移除 script 和 style 标签及内容
+        # 3. 移除 script 和 style 标签及内容
         content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
 
-        # 移除常见 HTML 标签，保留内容
+        # 4. 移除 nav、header、footer 等导航元素
+        content = re.sub(r'<nav[^>]*>.*?</nav>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<header[^>]*>.*?</header>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<footer[^>]*>.*?</footer>', '', content, flags=re.DOTALL | re.IGNORECASE)
+
+        # 5. 移除常见 HTML 标签，保留内容
         # 保留 <a> 标签的文本
         content = re.sub(r'<a[^>]*>([^<]*)</a>', r'\1', content, flags=re.IGNORECASE)
         # 移除其他标签
         content = re.sub(r'<[^>]+>', '', content)
 
-        # 解码常见 HTML 实体
+        # 6. 解码常见 HTML 实体
         html_entities = {
             '&nbsp;': ' ',
             '&lt;': '<',
@@ -563,18 +626,107 @@ class ChangelogAnalyzer:
             '&#39;': "'",
             '&mdash;': '—',
             '&ndash;': '–',
+            '&hellip;': '...',
+            '&copy;': '©',
+            '&reg;': '®',
+            '&trade;': '™',
         }
         for entity, char in html_entities.items():
             content = content.replace(entity, char)
 
-        # 移除多余空行（保留最多2个连续空行）
+        # 7. 移除常见的网页噪声模式
+        # 移除 "Skip to content"、"Back to top" 等导航文本
+        content = re.sub(
+            r'\b(?:Skip to (?:content|main)|Back to top|Jump to|'
+            r'Table of Contents|Navigation|Menu|Search)\b[^\n]*',
+            '', content, flags=re.IGNORECASE
+        )
+
+        # 移除版权信息行
+        content = re.sub(
+            r'^.*(?:©|Copyright|All [Rr]ights [Rr]eserved).*$',
+            '', content, flags=re.MULTILINE
+        )
+
+        # 8. 移除多余空行（保留最多2个连续空行）
         content = re.sub(r'\n{3,}', '\n\n', content)
 
-        # 移除行首行尾空白
+        # 9. 移除行首行尾空白
         lines = [line.strip() for line in content.split('\n')]
         content = '\n'.join(lines)
 
         return content.strip()
+
+    def _extract_main_content(self, content: str) -> str:
+        """尝试从页面中提取主内容区域
+
+        使用多种策略尝试定位主内容区域：
+        1. 检测 <main>、<article> 等语义标签
+        2. 检测常见的内容容器 class/id（如 changelog、content、main-content）
+        3. 检测 Markdown 标题锚点（如 # Changelog、## Updates）
+        4. 如果无法定位，返回原始内容
+
+        Args:
+            content: 原始 HTML/Markdown 内容
+
+        Returns:
+            提取出的主内容区域，或原始内容（如无法定位）
+        """
+        # 策略1: 提取 <main> 标签内容
+        main_match = re.search(
+            r'<main[^>]*>(.*?)</main>',
+            content, flags=re.DOTALL | re.IGNORECASE
+        )
+        if main_match:
+            logger.debug("使用 <main> 标签提取主内容")
+            return main_match.group(1)
+
+        # 策略2: 提取 <article> 标签内容
+        article_match = re.search(
+            r'<article[^>]*>(.*?)</article>',
+            content, flags=re.DOTALL | re.IGNORECASE
+        )
+        if article_match:
+            logger.debug("使用 <article> 标签提取主内容")
+            return article_match.group(1)
+
+        # 策略3: 提取带有 changelog/content 相关 class/id 的 div
+        # 匹配 class="changelog" 或 id="main-content" 等
+        content_div_match = re.search(
+            r'<div[^>]*(?:class|id)=["\'][^"\']*'
+            r'(?:changelog|main-content|content-area|page-content|docs-content)'
+            r'[^"\']*["\'][^>]*>(.*?)</div>',
+            content, flags=re.DOTALL | re.IGNORECASE
+        )
+        if content_div_match:
+            logger.debug("使用内容容器 div 提取主内容")
+            return content_div_match.group(1)
+
+        # 策略4: 检测 Markdown 标题锚点
+        # 查找第一个 changelog 相关的标题
+        anchor_patterns = [
+            # "# Changelog" 或 "# 更新日志"
+            r'(#{1,2}\s*(?:Changelog|Updates?|更新日志|版本历史|What\'s New).*)',
+            # 日期格式标题（如 "## Jan 16, 2026" 或 "## 2026-01-16"）
+            r'(#{1,2}\s*(?:\d{4}[-/]\d{2}[-/]\d{2}|'
+            r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+            r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+            r'\s+\d{1,2}[,\s]+\d{4}).*)',
+        ]
+
+        for pattern in anchor_patterns:
+            anchor_match = re.search(pattern, content, flags=re.IGNORECASE)
+            if anchor_match:
+                # 从锚点位置开始截取到文档末尾
+                start_pos = anchor_match.start()
+                extracted = content[start_pos:]
+                # 如果提取的内容足够长（至少100字符），使用它
+                if len(extracted) >= 100:
+                    logger.debug(f"使用 Markdown 锚点提取主内容，起始: {anchor_match.group()[:50]}...")
+                    return extracted
+
+        # 策略5: 如果无法定位主内容区域，返回原始内容
+        return content
 
     def _parse_by_date_headers(self, content: str) -> list[ChangelogEntry]:
         """策略1: 按日期标题块解析（优先）
@@ -612,8 +764,134 @@ class ChangelogAnalyzer:
 
         return entries
 
+    def _parse_by_category_date_headers(self, content: str) -> list[ChangelogEntry]:
+        """策略2: 按类别+日期标题块解析
+
+        匹配格式如：CLI Jan 16, 2026、Agent Dec 10, 2025、
+        Feature January 20 2026 等 "<Category> <Month Day, Year>" 格式。
+
+        这种格式常见于按产品或功能分类的 changelog，每个分类下
+        有独立的日期标识。
+
+        Args:
+            content: 清理后的内容
+
+        Returns:
+            解析出的条目列表
+        """
+        entries: list[ChangelogEntry] = []
+
+        # 匹配 "<Category> <Month Day, Year>" 格式
+        # 例如: CLI Jan 16, 2026 或 Agent December 20 2025
+        # Category: 1-3个单词（字母/数字/连字符），日期：月份 日, 年
+        category_date_pattern = (
+            r'\n(?='
+            r'(?:#{1,3}\s*)?'  # 可选的 markdown 标题符号
+            r'(?:[\w-]+(?:\s+[\w-]+){0,2})\s+'  # 类别：1-3个单词
+            r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+            r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+            r'\s+\d{1,2}[,\s]+\d{4}'  # 日期：月 日, 年
+            r')'
+        )
+
+        sections = re.split(category_date_pattern, content, flags=re.IGNORECASE)
+
+        for section in sections:
+            if not section.strip():
+                continue
+
+            entry = self._parse_category_date_section(section)
+            if entry and (entry.date or entry.content):
+                entries.append(entry)
+
+        return entries
+
+    def _parse_category_date_section(self, section: str) -> Optional[ChangelogEntry]:
+        """解析类别+日期格式的 section
+
+        Args:
+            section: 单个 section 的内容
+
+        Returns:
+            解析出的 ChangelogEntry，解析失败返回 None
+        """
+        if not section.strip():
+            return None
+
+        entry = ChangelogEntry()
+        lines = section.strip().split('\n')
+
+        if lines:
+            title_line = lines[0].strip()
+
+            # 移除可能的 markdown 标题符号
+            title_line = re.sub(r'^#+\s*', '', title_line)
+
+            # 尝试提取类别和日期
+            # 格式: <Category> <Month Day, Year>
+            category_date_match = re.match(
+                r'^([\w-]+(?:\s+[\w-]+){0,2})\s+'
+                r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+                r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+                r'\s+\d{1,2}[,\s]+\d{4})',
+                title_line, re.IGNORECASE
+            )
+
+            if category_date_match:
+                category_part = category_date_match.group(1).strip()
+                date_part = category_date_match.group(2).strip()
+
+                entry.category = self._normalize_category(category_part)
+                entry.date = date_part
+                entry.title = title_line
+
+        # 提取内容
+        entry.content = '\n'.join(lines[1:]).strip()
+
+        # 如果没有从标题行获取到 category，尝试从内容分析
+        if not entry.category or entry.category == 'other':
+            entry.category = self._categorize_content(entry.content)
+
+        # 提取关键词
+        for pattern in UPDATE_KEYWORDS:
+            matches = re.findall(pattern, entry.content, re.IGNORECASE)
+            entry.keywords.extend(matches)
+
+        return entry if entry.content or entry.date else None
+
+    def _normalize_category(self, category_str: str) -> str:
+        """标准化类别字符串
+
+        将类别字符串映射到标准分类（feature, fix, improvement, other）。
+
+        Args:
+            category_str: 原始类别字符串（如 CLI, Agent, Feature 等）
+
+        Returns:
+            标准化的类别: feature, fix, improvement, other
+        """
+        cat_lower = category_str.lower()
+
+        # 特性相关
+        if any(kw in cat_lower for kw in ['feature', 'new', 'add', 'launch']):
+            return 'feature'
+
+        # 修复相关
+        if any(kw in cat_lower for kw in ['fix', 'bug', 'patch', 'hotfix']):
+            return 'fix'
+
+        # 改进相关
+        if any(kw in cat_lower for kw in ['improve', 'enhance', 'update', 'optim']):
+            return 'improvement'
+
+        # CLI/Agent 等产品类别，默认为 feature
+        if any(kw in cat_lower for kw in ['cli', 'agent', 'cloud', 'mcp', 'hook']):
+            return 'feature'
+
+        return 'other'
+
     def _parse_by_version_headers(self, content: str) -> list[ChangelogEntry]:
-        """策略2: 按版本标题块解析（备用）
+        """策略3: 按版本标题块解析（备用）
 
         匹配格式如：## v1.0.0、### Version 2.1
 
@@ -770,8 +1048,9 @@ class ChangelogAnalyzer:
 
         使用分层解析策略：
         1. 优先按日期标题块解析
-        2. 备用按版本标题块解析
-        3. 保底将全页作为单条 entry
+        2. 按类别+日期标题块解析（如 "CLI Jan 16, 2026"）
+        3. 备用按版本标题块解析
+        4. 保底将全页作为单条 entry
 
         Args:
             content: Changelog 页面内容
@@ -794,13 +1073,19 @@ class ChangelogAnalyzer:
             logger.debug(f"使用日期标题策略解析，得到 {len(entries)} 条")
             return entries
 
-        # 策略2: 按版本标题块解析
+        # 策略2: 按类别+日期标题块解析（如 "CLI Jan 16, 2026"）
+        entries = self._parse_by_category_date_headers(cleaned_content)
+        if entries:
+            logger.debug(f"使用类别+日期标题策略解析，得到 {len(entries)} 条")
+            return entries
+
+        # 策略3: 按版本标题块解析
         entries = self._parse_by_version_headers(cleaned_content)
         if entries:
             logger.debug(f"使用版本标题策略解析，得到 {len(entries)} 条")
             return entries
 
-        # 策略3: 保底全页单条
+        # 策略4: 保底全页单条
         logger.debug("使用保底策略，全页作为单条 entry")
         return self._parse_fallback(cleaned_content)
 
@@ -854,6 +1139,7 @@ class ChangelogAnalyzer:
 
         # 添加特定关键词映射
         # 包含 Jan 16 2026 新特性: plan/ask 模式、cloud relay、diff
+        # 包含 Jan 20 2026 新特性: agent review、code-review cookbook、cloud-agent
         keyword_map = {
             # 基础参数文档
             'parameters': [
@@ -918,6 +1204,50 @@ class ChangelogAnalyzer:
                 'ask', 'ask mode', '问答模式', '--mode ask',
                 '问答', '咨询', 'question', 'query',
                 '只读', 'readonly', '解释',
+            ],
+            # Jan 20 2026: Agent Review 审阅功能
+            'agent/review': [
+                'review', '审阅', '代码审阅', '变更审阅',
+                'diff', 'Ctrl+R', 'accept', 'reject',
+                '接受', '拒绝', '变更', 'changes',
+                'inline diff', '内联差异',
+            ],
+            # Jan 20 2026: CLI Cookbook - 代码评审
+            'cookbook/code-review': [
+                'code review', '代码评审', '代码审查',
+                'pr review', 'pull request', 'PR',
+                '评审', '审查', 'review workflow',
+                'gh pr', 'git diff', 'reviewer',
+            ],
+            # Jan 20 2026: Cloud Agent 云代理
+            'cloud-agent': [
+                'cloud agent', '云代理', '云端代理',
+                'cloud', '云端', 'remote agent',
+                'background task', '后台任务',
+                '&', 'cloud relay', '云中继',
+            ],
+            'cloud-agent/overview': [
+                'cloud agent', '云代理', 'overview',
+                '概览', '云端执行', 'remote execution',
+            ],
+            'cloud-agent/getting-started': [
+                'getting started', '快速开始', '入门',
+                'cloud setup', '云端配置',
+            ],
+            'cloud-agent/api': [
+                'cloud api', '云端 API', 'api',
+                'REST', 'endpoint', '接口',
+                'programmatic', '程序化调用',
+            ],
+            'cloud-agent/api/streaming': [
+                'streaming', '流式', '流式响应',
+                'stream', 'SSE', 'server-sent events',
+                'real-time', '实时',
+            ],
+            'cloud-agent/api/sessions': [
+                'session', '会话', 'sessions',
+                'resume', '恢复会话', 'session_id',
+                '会话管理', 'session management',
             ],
         }
 
@@ -1737,6 +2067,27 @@ class SelfIterator:
         }
         return mode_map.get(mode_str, ExecutionMode.CLI)
 
+    def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
+        """解析执行模式字符串为 ExecutionMode 枚举
+
+        Args:
+            mode_str: 执行模式字符串（cli/auto/cloud/plan/ask）或 None
+
+        Returns:
+            ExecutionMode 枚举值或 None
+        """
+        if mode_str is None:
+            return None
+
+        mode_map = {
+            "cli": ExecutionMode.CLI,
+            "auto": ExecutionMode.AUTO,
+            "cloud": ExecutionMode.CLOUD,
+            "plan": ExecutionMode.PLAN,
+            "ask": ExecutionMode.ASK,
+        }
+        return mode_map.get(mode_str.lower())
+
     def _get_cloud_auth_config(self) -> Optional[CloudAuthConfig]:
         """获取 Cloud 认证配置
 
@@ -2036,6 +2387,11 @@ class SelfIterator:
                 commit_per_iteration=getattr(self.args, "commit_per_iteration", False),
                 # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
                 commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
+                # 执行模式配置（MP 主要使用 CLI，但保持配置兼容性）
+                execution_mode=getattr(self.args, "execution_mode", "cli"),
+                planner_execution_mode=getattr(self.args, "planner_execution_mode", None),
+                worker_execution_mode=getattr(self.args, "worker_execution_mode", None),
+                reviewer_execution_mode=getattr(self.args, "reviewer_execution_mode", None),
                 # 日志配置透传到子进程
                 verbose=getattr(self.args, "verbose", False),
                 log_level=log_level,
@@ -2046,6 +2402,14 @@ class SelfIterator:
                 stall_recovery_interval=getattr(self.args, "stall_recovery_interval", 30.0),
                 execution_health_check_interval=getattr(self.args, "execution_health_check_interval", 30.0),
                 health_warning_cooldown_seconds=getattr(self.args, "health_warning_cooldown", 60.0),
+                # 流式控制台渲染配置透传
+                stream_console_renderer=getattr(self.args, "stream_console_renderer", False),
+                stream_advanced_renderer=getattr(self.args, "stream_advanced_renderer", False),
+                stream_typing_effect=getattr(self.args, "stream_typing_effect", False),
+                stream_typing_delay=getattr(self.args, "stream_typing_delay", 0.02),
+                stream_word_mode=getattr(self.args, "stream_word_mode", True),
+                stream_color_enabled=getattr(self.args, "stream_color_enabled", True),
+                stream_show_word_diff=getattr(self.args, "stream_show_word_diff", False),
             )
 
             # 创建多进程编排器
@@ -2114,6 +2478,17 @@ class SelfIterator:
 
         cursor_config = CursorAgentConfig(working_directory=str(project_root))
 
+        # 解析角色级执行模式（可选）
+        planner_exec_mode = self._parse_execution_mode(
+            getattr(self.args, "planner_execution_mode", None)
+        )
+        worker_exec_mode = self._parse_execution_mode(
+            getattr(self.args, "worker_execution_mode", None)
+        )
+        reviewer_exec_mode = self._parse_execution_mode(
+            getattr(self.args, "reviewer_execution_mode", None)
+        )
+
         config = OrchestratorConfig(
             working_directory=str(project_root),
             max_iterations=max_iterations,
@@ -2128,6 +2503,18 @@ class SelfIterator:
             # 执行模式和 Cloud 认证配置
             execution_mode=execution_mode,
             cloud_auth_config=cloud_auth_config,
+            # 角色级执行模式（可选）
+            planner_execution_mode=planner_exec_mode,
+            worker_execution_mode=worker_exec_mode,
+            reviewer_execution_mode=reviewer_exec_mode,
+            # 流式控制台渲染配置透传
+            stream_console_renderer=getattr(self.args, "stream_console_renderer", False),
+            stream_advanced_renderer=getattr(self.args, "stream_advanced_renderer", False),
+            stream_typing_effect=getattr(self.args, "stream_typing_effect", False),
+            stream_typing_delay=getattr(self.args, "stream_typing_delay", 0.02),
+            stream_word_mode=getattr(self.args, "stream_word_mode", True),
+            stream_color_enabled=getattr(self.args, "stream_color_enabled", True),
+            stream_show_word_diff=getattr(self.args, "stream_show_word_diff", False),
         )
 
         # 创建编排器，注入知识库管理器

@@ -232,23 +232,27 @@ class CloudAuthManager:
     def get_api_key(self) -> Optional[str]:
         """获取 API Key
 
-        优先级:
-        1. 环境变量 CURSOR_API_KEY
-        2. 配置中直接设置的 api_key
+        优先级（与 CloudClientFactory.resolve_api_key 保持一致）:
+        1. 配置中直接设置的 api_key（显式参数传入）
+        2. 环境变量 CURSOR_API_KEY
         3. 项目配置文件 (config.yaml)
         4. 全局配置文件 (~/.cursor/config.json)
         5. CLI 配置文件 (~/.cursor/cli-config.json)
+
+        注意: 此优先级与 CloudClientFactory.resolve_api_key() 保持一致，
+        确保两条 Cloud 执行路径（CursorAgentClient._execute_via_cloud 和
+        CloudAgentExecutor.execute）的认证行为统一。
         """
-        # 1. 环境变量
+        # 1. 配置中直接设置（优先级最高）
+        if self.config.api_key:
+            logger.debug("从配置对象获取 API Key（显式传入）")
+            return self.config.api_key
+
+        # 2. 环境变量
         env_key = os.environ.get("CURSOR_API_KEY")
         if env_key:
             logger.debug("从环境变量 CURSOR_API_KEY 获取 API Key")
             return env_key
-
-        # 2. 配置中直接设置
-        if self.config.api_key:
-            logger.debug("从配置对象获取 API Key")
-            return self.config.api_key
 
         # 3. 项目配置文件
         project_key = self._read_api_key_from_yaml(self.config.config_file)

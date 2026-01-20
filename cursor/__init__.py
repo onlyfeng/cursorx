@@ -11,6 +11,8 @@ from .cloud_client import (
     CloudAuthConfig,
     # 认证管理
     CloudAuthManager,
+    # 工厂类（统一认证与客户端构造）
+    CloudClientFactory,
     CloudTask,
     # 任务管理
     CloudTaskClient,
@@ -121,6 +123,8 @@ __all__ = [
     "CloudTask",
     "CloudTaskOptions",
     "CloudAgentResult",
+    # Cloud Client 工厂（统一认证与客户端构造）
+    "CloudClientFactory",
     # Cloud Agent 别名（兼容性）
     "CloudAgentClient",
     "CloudAgentConfig",

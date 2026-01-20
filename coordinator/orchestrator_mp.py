@@ -49,10 +49,28 @@ class MultiProcessOrchestratorConfig(BaseModel):
     planner_model: str = "gpt-5.2-high"           # 规划者使用 GPT 5.2 High
     worker_model: str = "opus-4.5-thinking"       # 执行者使用 Claude 4.5 Opus (Thinking)
     reviewer_model: str = "opus-4.5-thinking"     # 评审者使用 Claude 4.5 Opus (Thinking)
+
+    # 执行模式配置（MP 模式主要使用 CLI，但支持配置以便与 basic 编排器保持一致）
+    # 注意：MP 编排器内部子进程始终使用 CLI 执行，这些配置主要用于透传和兼容性
+    execution_mode: str = "cli"                   # 全局执行模式: cli, cloud, auto
+    # 角色级执行模式配置（默认继承全局 execution_mode）
+    # 若为 None，则使用全局 execution_mode
+    # 注意：MP 子进程实际使用 CLI 执行，这些配置用于记录和透传
+    planner_execution_mode: Optional[str] = None  # 规划者执行模式
+    worker_execution_mode: Optional[str] = None   # 执行者执行模式
+    reviewer_execution_mode: Optional[str] = None # 评审者执行模式
     stream_events_enabled: bool = True   # 默认启用流式日志
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
+    # 流式控制台渲染配置（默认关闭，避免噪声）
+    stream_console_renderer: bool = False      # 启用流式控制台渲染器
+    stream_advanced_renderer: bool = False     # 使用高级终端渲染器
+    stream_typing_effect: bool = False         # 启用打字机效果
+    stream_typing_delay: float = 0.02          # 打字延迟（秒）
+    stream_word_mode: bool = True              # 逐词输出模式
+    stream_color_enabled: bool = True          # 启用颜色输出
+    stream_show_word_diff: bool = False        # 显示逐词差异
 
     # 自动提交配置（与 OrchestratorConfig 对齐）
     enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
@@ -981,11 +999,29 @@ class MultiProcessOrchestrator:
             "heartbeat_debug": self.config.heartbeat_debug,
         }
 
+        # 解析角色级执行模式（默认继承全局 execution_mode）
+        # 注意：MP 子进程实际使用 CLI 执行，这些配置主要用于记录和透传
+        planner_exec_mode = self.config.planner_execution_mode or self.config.execution_mode
+        worker_exec_mode = self.config.worker_execution_mode or self.config.execution_mode
+        reviewer_exec_mode = self.config.reviewer_execution_mode or self.config.execution_mode
+
+        # 记录角色级执行模式（如果有配置差异）
+        if (self.config.planner_execution_mode or self.config.worker_execution_mode
+                or self.config.reviewer_execution_mode):
+            logger.info(
+                f"角色级执行模式 - Planner: {planner_exec_mode}, "
+                f"Worker: {worker_exec_mode}, Reviewer: {reviewer_exec_mode}"
+            )
+
         # 创建 Planner - 使用 GPT 5.2-high
+        # 注意：Planner 强制使用 mode='plan' 和 force_write=False（只读语义）
         planner_config = {
             "working_directory": self.config.working_directory,
             "timeout": int(self.config.planning_timeout),
             "model": self.config.planner_model,
+            "mode": "plan",           # 规划模式（只读）
+            "force_write": False,     # 确保不会修改文件
+            "execution_mode": planner_exec_mode,  # 角色执行模式
             "stream_events_enabled": self.config.stream_events_enabled,
             "stream_log_console": self.config.stream_log_console,
             "stream_log_detail_dir": self.config.stream_log_detail_dir,
@@ -1005,10 +1041,14 @@ class MultiProcessOrchestrator:
         logger.info(f"Planner 进程已创建: {self.planner_id} (模型: {self.config.planner_model})")
 
         # 创建 Workers - 使用 opus-4.5-thinking
+        # 注意：Worker 使用 mode='agent' 和 force_write=True（允许修改文件）
         worker_config = {
             "working_directory": self.config.working_directory,
             "task_timeout": int(self.config.execution_timeout),
             "model": self.config.worker_model,
+            "mode": "agent",          # 完整代理模式
+            "force_write": True,      # 允许修改文件
+            "execution_mode": worker_exec_mode,  # 角色执行模式
             "stream_events_enabled": self.config.stream_events_enabled,
             "stream_log_console": self.config.stream_log_console,
             "stream_log_detail_dir": self.config.stream_log_detail_dir,
@@ -1029,10 +1069,14 @@ class MultiProcessOrchestrator:
             logger.info(f"Worker 进程已创建: {worker_id} (模型: {self.config.worker_model})")
 
         # 创建 Reviewer - 使用 opus-4.5-thinking
+        # 注意：Reviewer 强制使用 mode='ask' 和 force_write=False（只读语义）
         reviewer_config = {
             "working_directory": self.config.working_directory,
             "timeout": int(self.config.review_timeout),
             "model": self.config.reviewer_model,
+            "mode": "ask",            # 问答模式（只读）
+            "force_write": False,     # 确保不会修改文件
+            "execution_mode": reviewer_exec_mode,  # 角色执行模式
             "strict_mode": self.config.strict_review,
             "stream_events_enabled": self.config.stream_events_enabled,
             "stream_log_console": self.config.stream_log_console,

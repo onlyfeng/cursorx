@@ -26,6 +26,7 @@ from cursor.client import (
     CursorAgentResult,
     ModelPresets,
 )
+from cursor.executor import AgentResult
 
 
 # ==================== CursorAgentConfig 测试 ====================
@@ -173,6 +174,156 @@ class TestCursorAgentResult:
 
         assert result.started_at == started
         assert result.completed_at is None
+
+    def test_result_with_session_id(self):
+        """测试包含 session_id 的结果"""
+        result = CursorAgentResult(
+            success=True,
+            output="完成",
+            session_id="test-session-12345",
+        )
+
+        assert result.session_id == "test-session-12345"
+
+    def test_result_with_files_edited(self):
+        """测试包含 files_edited 的结果"""
+        result = CursorAgentResult(
+            success=True,
+            output="已编辑文件",
+            files_modified=["new_file.py"],
+            files_edited=["edited_file.py", "another.py"],
+        )
+
+        assert "new_file.py" in result.files_modified
+        assert "edited_file.py" in result.files_edited
+        assert "another.py" in result.files_edited
+
+    def test_result_full_stream_json_fields(self):
+        """测试完整的 stream-json 相关字段"""
+        result = CursorAgentResult(
+            success=True,
+            output="任务完成",
+            session_id="session-uuid-abc",
+            files_modified=["created.py"],
+            files_edited=["modified.py"],
+            command_used="agent -p '...' --model opus-4.5-thinking",
+        )
+
+        assert result.session_id == "session-uuid-abc"
+        assert result.files_modified == ["created.py"]
+        assert result.files_edited == ["modified.py"]
+
+
+# ==================== AgentResult.from_cli_result 测试 ====================
+
+
+class TestAgentResultFromCliResult:
+    """AgentResult.from_cli_result 转换测试"""
+
+    def test_from_cli_result_basic(self):
+        """测试基本转换"""
+        cli_result = CursorAgentResult(
+            success=True,
+            output="完成",
+            exit_code=0,
+            duration=1.5,
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        assert agent_result.success is True
+        assert agent_result.output == "完成"
+        assert agent_result.exit_code == 0
+        assert agent_result.duration == 1.5
+        assert agent_result.executor_type == "cli"
+
+    def test_from_cli_result_with_session_id(self):
+        """测试透传 session_id"""
+        cli_result = CursorAgentResult(
+            success=True,
+            output="任务完成",
+            session_id="session-from-stream-json",
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        assert agent_result.session_id == "session-from-stream-json"
+
+    def test_from_cli_result_merges_files(self):
+        """测试合并 files_modified 和 files_edited"""
+        cli_result = CursorAgentResult(
+            success=True,
+            output="文件操作完成",
+            files_modified=["new_file.py"],
+            files_edited=["edited1.py", "edited2.py"],
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        # files_modified 应包含所有文件
+        assert "new_file.py" in agent_result.files_modified
+        assert "edited1.py" in agent_result.files_modified
+        assert "edited2.py" in agent_result.files_modified
+
+    def test_from_cli_result_no_duplicates_in_merged_files(self):
+        """测试合并时不产生重复"""
+        cli_result = CursorAgentResult(
+            success=True,
+            output="文件操作完成",
+            files_modified=["shared.py", "only_modified.py"],
+            files_edited=["shared.py", "only_edited.py"],
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        # 文件不应该重复
+        assert agent_result.files_modified.count("shared.py") == 1
+        assert "only_modified.py" in agent_result.files_modified
+        assert "only_edited.py" in agent_result.files_modified
+
+    def test_from_cli_result_empty_files(self):
+        """测试空文件列表"""
+        cli_result = CursorAgentResult(
+            success=True,
+            output="无文件操作",
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        assert agent_result.files_modified == []
+        assert agent_result.session_id is None
+
+    def test_from_cli_result_preserves_timestamps(self):
+        """测试保留时间戳"""
+        started = datetime.now()
+        completed = datetime.now()
+
+        cli_result = CursorAgentResult(
+            success=True,
+            output="完成",
+            started_at=started,
+            completed_at=completed,
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        assert agent_result.started_at == started
+        assert agent_result.completed_at == completed
+
+    def test_from_cli_result_with_error(self):
+        """测试包含错误的结果转换"""
+        cli_result = CursorAgentResult(
+            success=False,
+            output="",
+            error="执行失败",
+            exit_code=-1,
+        )
+
+        agent_result = AgentResult.from_cli_result(cli_result)
+
+        assert agent_result.success is False
+        assert agent_result.error == "执行失败"
+        assert agent_result.exit_code == -1
 
 
 # ==================== CursorAgentClient 初始化测试 ====================
@@ -463,6 +614,124 @@ class TestStreamExecute:
         client = CursorAgentClient(config=config)
 
         assert client.config.stream_partial_output is True
+
+    @pytest.mark.asyncio
+    async def test_stream_json_extract_session_id(self):
+        """测试 stream-json 模式下能正确提取 session_id"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟包含 session_id 的 stream-json 输出
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "test-session-uuid-12345"}',
+            '{"type": "assistant", "message": {"content": [{"text": "完成"}]}}',
+            '{"type": "result", "duration_ms": 100}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("测试 session_id")
+
+        assert result.success is True
+        assert result.session_id == "test-session-uuid-12345"
+
+    @pytest.mark.asyncio
+    async def test_stream_json_extract_files_modified_and_edited(self):
+        """测试 stream-json 模式下能正确提取 files_modified 和 files_edited"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟包含文件操作的 stream-json 输出
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "session-abc"}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}, "result": {"success": {}}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "existing.py", "old_string": "old", "new_string": "new"}, "result": {"success": {}}}}}',
+            '{"type": "diff", "path": "another.py", "old_string": "a", "new_string": "b"}',
+            '{"type": "result", "duration_ms": 200}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("测试文件操作")
+
+        assert result.success is True
+        assert result.session_id == "session-abc"
+        # files_modified 应包含 write 操作的文件
+        assert "new_file.py" in result.files_modified
+        # files_edited 应包含 str_replace 和 diff 操作的文件
+        assert "existing.py" in result.files_edited
+        assert "another.py" in result.files_edited
+
+    @pytest.mark.asyncio
+    async def test_stream_json_files_deduplication(self):
+        """测试 stream-json 模式下文件列表去重"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟对同一文件多次操作
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"strReplaceToolCall": {"args": {"path": "same_file.py", "old_string": "a", "new_string": "b"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "same_file.py", "old_string": "a", "new_string": "b"}, "result": {"success": {}}}}}',
+            '{"type": "diff", "path": "same_file.py", "old_string": "c", "new_string": "d"}',
+            '{"type": "result", "duration_ms": 100}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("测试去重")
+
+        assert result.success is True
+        # 文件应该只出现一次（去重）
+        assert result.files_edited.count("same_file.py") == 1
 
 
 # ==================== 命令构建测试 ====================
@@ -785,6 +1054,239 @@ class TestCheckAgentAvailable:
 
 
 # ==================== 输出解析测试 ====================
+
+
+class TestStreamJsonFilesModifiedSessionIdExtraction:
+    """stream-json 输入样本驱动测试：files_modified/session_id 提取"""
+
+    @pytest.mark.asyncio
+    async def test_extract_session_id_from_system_init(self):
+        """测试从 system/init 事件提取 session_id"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟 stream-json 输出，包含 session_id
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "sess-abc123"}',
+            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "开始处理..."}]}}',
+            '{"type": "result", "duration_ms": 500}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("测试任务")
+
+        assert result.success is True
+        assert result.session_id == "sess-abc123"
+
+    @pytest.mark.asyncio
+    async def test_extract_files_modified_from_tool_calls(self):
+        """测试从 tool_call 事件提取 files_modified"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟 stream-json 输出，包含写入文件的工具调用
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "src/main.py"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "src/main.py"}, "result": {"success": {"linesCreated": 50}}}}}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "src/utils.py"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "src/utils.py"}, "result": {"success": {"linesCreated": 20}}}}}',
+            '{"type": "result", "duration_ms": 1000}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("创建文件")
+
+        assert result.success is True
+        assert "src/main.py" in result.files_modified
+        assert "src/utils.py" in result.files_modified
+
+    @pytest.mark.asyncio
+    async def test_extract_files_edited_from_str_replace_tool(self):
+        """测试从 str_replace 工具调用提取 files_edited"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 模拟 stream-json 输出，包含编辑文件的工具调用
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"strReplaceToolCall": {"args": {"path": "config.yaml"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "config.yaml"}, "result": {"success": true}}}}',
+            '{"type": "result", "duration_ms": 300}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("修改配置")
+
+        assert result.success is True
+        assert "config.yaml" in result.files_edited
+
+    @pytest.mark.asyncio
+    async def test_combined_session_id_and_files_modified(self):
+        """测试同时提取 session_id 和 files_modified"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 完整的 stream-json 样本
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "combined-sess-xyz"}',
+            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "开始创建文件..."}]}}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}, "result": {"success": {"linesCreated": 100}}}}}',
+            '{"type": "assistant", "message": {"content": [{"type": "text", "text": "文件创建完成"}]}}',
+            '{"type": "result", "duration_ms": 2000}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("创建新文件")
+
+        # 验证 session_id 和 files_modified 都被正确提取
+        assert result.success is True
+        assert result.session_id == "combined-sess-xyz"
+        assert "new_file.py" in result.files_modified
+        assert "开始创建文件..." in result.output or "文件创建完成" in result.output
+
+    @pytest.mark.asyncio
+    async def test_files_modified_deduplication(self):
+        """测试 files_modified 去重"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # 同一文件多次写入应该去重
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}, "result": {"success": {}}}}}',
+            '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}}}}',
+            '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}, "result": {"success": {}}}}}',
+            '{"type": "result", "duration_ms": 100}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("重复写入")
+
+        # 验证去重：同一文件只出现一次
+        assert result.files_modified.count("repeated.py") == 1
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_when_not_present(self):
+        """测试没有 session_id 时返回 None"""
+        config = CursorAgentConfig(output_format="stream-json")
+        client = CursorAgentClient(config=config)
+
+        # system/init 事件没有 session_id
+        stream_lines = [
+            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            '{"type": "result", "duration_ms": 100}',
+        ]
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[(line + "\n").encode() for line in stream_lines] + [b""]
+        )
+        mock_stderr = AsyncMock()
+        mock_stderr.readline = AsyncMock(return_value=b"")
+
+        mock_process = AsyncMock()
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            client.config.stream_events_enabled = False
+            result = await client.execute("无 session")
+
+        assert result.success is True
+        assert result.session_id is None
 
 
 class TestOutputParsing:

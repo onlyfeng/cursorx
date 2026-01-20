@@ -27,7 +27,12 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from cursor.client import CursorAgentClient, CursorAgentConfig, CursorAgentResult
-from cursor.cloud_client import AuthStatus, CloudAuthConfig, CloudAuthManager
+from cursor.cloud_client import (
+    AuthStatus,
+    CloudAuthConfig,
+    CloudAuthManager,
+    CloudClientFactory,
+)
 
 # 导入 Cloud Client 相关类
 from cursor.cloud.client import CloudAgentResult, CursorCloudClient
@@ -63,7 +68,21 @@ class AgentResult(BaseModel):
 
     @classmethod
     def from_cli_result(cls, result: CursorAgentResult) -> "AgentResult":
-        """从 CLI 执行结果转换"""
+        """从 CLI 执行结果转换
+
+        透传 CursorAgentResult 中的所有关键字段，包括:
+        - session_id: 从 stream-json system/init 事件提取的会话 ID
+        - files_modified: 写入/创建的文件列表
+        - files_edited: 编辑/修改的文件列表 (合并到 files_modified)
+        """
+        # 合并 files_modified 和 files_edited 到 files_modified 列表
+        all_files = list(result.files_modified)
+        # 添加 files_edited 中不在 files_modified 中的文件
+        files_edited = getattr(result, 'files_edited', []) or []
+        for f in files_edited:
+            if f not in all_files:
+                all_files.append(f)
+
         return cls(
             success=result.success,
             output=result.output,
@@ -73,7 +92,8 @@ class AgentResult(BaseModel):
             started_at=result.started_at,
             completed_at=result.completed_at,
             executor_type="cli",
-            files_modified=result.files_modified,
+            files_modified=all_files,
+            session_id=result.session_id,
         )
 
     @classmethod
@@ -85,8 +105,22 @@ class AgentResult(BaseModel):
         duration: float = 0.0,
         session_id: Optional[str] = None,
         raw_result: Optional[dict[str, Any]] = None,
+        files_modified: Optional[list[str]] = None,
     ) -> "AgentResult":
-        """从 Cloud API 结果转换"""
+        """从 Cloud API 结果转换
+
+        Args:
+            success: 是否成功
+            output: 输出内容
+            error: 错误信息
+            duration: 执行时长（秒）
+            session_id: 会话 ID
+            raw_result: 原始结果字典
+            files_modified: 修改的文件列表
+
+        Returns:
+            AgentResult 实例
+        """
         now = datetime.now()
         return cls(
             success=success,
@@ -98,6 +132,7 @@ class AgentResult(BaseModel):
             executor_type="cloud",
             session_id=session_id,
             raw_result=raw_result,
+            files_modified=files_modified or [],
         )
 
 
@@ -373,6 +408,12 @@ class CloudAgentExecutor:
     - 使用 -b (background) 模式提交后台任务
     - 支持任务状态轮询和结果获取
     - 支持会话恢复功能
+    - 使用 CloudClientFactory 统一认证配置优先级
+
+    配置来源优先级（从高到低）：
+    1. agent_config.api_key
+    2. auth_config.api_key
+    3. 环境变量 CURSOR_API_KEY
     """
 
     def __init__(
@@ -383,6 +424,9 @@ class CloudAgentExecutor:
     ):
         """初始化 Cloud 执行器
 
+        使用 CloudClientFactory 统一创建认证管理器和客户端，
+        确保配置来源优先级一致。
+
         Args:
             auth_config: Cloud 认证配置
             agent_config: Agent 配置（用于模型、超时等设置）
@@ -390,16 +434,22 @@ class CloudAgentExecutor:
         """
         self._auth_config = auth_config or CloudAuthConfig()
         self._agent_config = agent_config or CursorAgentConfig()
-        self._auth_manager = CloudAuthManager(self._auth_config)
         self._available: Optional[bool] = None
         self._auth_status: Optional[AuthStatus] = None
 
-        # 初始化 Cloud Client
+        # 使用 CloudClientFactory 统一创建认证管理器和客户端
+        # 配置来源优先级: agent_config.api_key > auth_config.api_key > 环境变量
         if cloud_client is not None:
             self._cloud_client = cloud_client
+            # 使用工厂创建认证管理器以保持一致性
+            self._auth_manager = CloudClientFactory.create_auth_manager(
+                agent_config=self._agent_config,
+                auth_config=self._auth_config,
+            )
         else:
-            self._cloud_client = CursorCloudClient(
-                auth_manager=self._auth_manager,
+            self._cloud_client, self._auth_manager = CloudClientFactory.create(
+                agent_config=self._agent_config,
+                auth_config=self._auth_config,
             )
 
     @property
@@ -430,15 +480,22 @@ class CloudAgentExecutor:
     ) -> AgentResult:
         """通过 Cloud API 执行任务
 
-        使用 CursorCloudClient 提交任务到云端执行。
-        默认使用后台模式 (-b) 提交任务并轮询结果。
+        使用 CloudClientFactory.execute_task() 统一执行入口。
+        此方法与 CursorAgentClient._execute_via_cloud() 使用相同的工厂方法，
+        确保两条 Cloud 执行路径在 allow_write/timeout/session_id 恢复能力上行为一致。
+
+        配置来源优先级:
+        1. 显式参数（timeout, working_directory 等）
+        2. agent_config 中的对应值
+        3. auth_config 中的对应值
+        4. 环境变量 CURSOR_API_KEY
 
         Args:
             prompt: 任务提示（可带 & 前缀）
-            context: 上下文信息
+            context: 上下文信息（暂不使用，保持接口兼容）
             working_directory: 工作目录
             timeout: 超时时间（秒）
-            background: 是否使用后台模式（默认 True）
+            background: 是否使用后台模式（默认 True，暂不使用）
             session_id: 可选的会话 ID（用于恢复会话）
 
         Returns:
@@ -448,37 +505,32 @@ class CloudAgentExecutor:
         timeout_sec = timeout or self._agent_config.timeout
 
         try:
-            # 验证认证状态
-            if not self._auth_status or not self._auth_status.authenticated:
-                self._auth_status = await self._auth_manager.authenticate()
-
-            if not self._auth_status.authenticated:
-                error_msg = self._auth_status.error or "未认证"
-                return AgentResult(
-                    success=False,
-                    error=f"Cloud 认证失败: {error_msg}",
-                    executor_type="cloud",
-                    started_at=started_at,
-                    completed_at=datetime.now(),
-                )
-
-            # 构建任务选项
-            task_options = CloudTaskOptions(
-                model=self._agent_config.model,
-                working_directory=working_directory or ".",
-                allow_write=self._agent_config.force_write,
-                timeout=timeout_sec,
-            )
-
-            # 使用 CursorCloudClient 执行任务
-            result = await self._execute_via_cloud_client(
+            # 使用 CloudClientFactory.execute_task() 统一执行入口
+            # 配置来源优先级与 CursorAgentClient._execute_via_cloud() 一致
+            cloud_result = await CloudClientFactory.execute_task(
                 prompt=prompt,
-                options=task_options,
+                agent_config=self._agent_config,
+                auth_config=self._auth_config,
+                working_directory=working_directory or ".",
                 timeout=timeout_sec,
+                allow_write=self._agent_config.force_write,
                 session_id=session_id,
+                wait=True,
             )
 
-            return result
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            # 转换为 AgentResult，包含 files_modified 以与 CursorAgentClient 行为一致
+            return AgentResult.from_cloud_result(
+                success=cloud_result.success,
+                output=cloud_result.output,
+                error=cloud_result.error,
+                duration=duration,
+                session_id=cloud_result.task.task_id if cloud_result.task else None,
+                raw_result=cloud_result.to_dict(),
+                files_modified=cloud_result.files_modified,
+            )
 
         except asyncio.TimeoutError:
             return AgentResult(
@@ -498,67 +550,6 @@ class CloudAgentExecutor:
                 completed_at=datetime.now(),
             )
 
-    async def _execute_via_cloud_client(
-        self,
-        prompt: str,
-        options: CloudTaskOptions,
-        timeout: int,
-        session_id: Optional[str] = None,
-    ) -> AgentResult:
-        """通过 CursorCloudClient 执行任务
-
-        使用 Cloud Client 的 execute 方法：
-        1. 如果 prompt 以 & 开头，自动识别为云端请求
-        2. 使用后台模式提交任务
-        3. 轮询等待任务完成
-        4. 返回执行结果
-        """
-        started_at = datetime.now()
-
-        try:
-            # 使用 CursorCloudClient 执行
-            # 默认等待任务完成（wait=True）
-            cloud_result: CloudAgentResult = await self._cloud_client.execute(
-                prompt=prompt,
-                options=options,
-                wait=True,
-                timeout=timeout,
-                session_id=session_id,
-            )
-
-            completed_at = datetime.now()
-            duration = (completed_at - started_at).total_seconds()
-
-            # 转换为 AgentResult
-            return AgentResult.from_cloud_result(
-                success=cloud_result.success,
-                output=cloud_result.output,
-                error=cloud_result.error,
-                duration=duration,
-                session_id=cloud_result.task.task_id if cloud_result.task else None,
-                raw_result=cloud_result.to_dict(),
-            )
-
-        except asyncio.TimeoutError:
-            logger.error(f"Cloud Client 执行超时 ({timeout}s)")
-            return AgentResult(
-                success=False,
-                error=f"Cloud API 执行超时 ({timeout}s)",
-                executor_type="cloud",
-                started_at=started_at,
-                completed_at=datetime.now(),
-            )
-        except Exception as e:
-            error_msg = str(e) if str(e) else type(e).__name__
-            logger.error(f"Cloud Client 执行失败: {error_msg}")
-            return AgentResult(
-                success=False,
-                error=error_msg,
-                executor_type="cloud",
-                started_at=started_at,
-                completed_at=datetime.now(),
-            )
-
     async def submit_background_task(
         self,
         prompt: str,
@@ -571,7 +562,7 @@ class CloudAgentExecutor:
 
         Args:
             prompt: 任务提示
-            options: 任务选项
+            options: 任务选项（如果为 None，使用 agent_config 构建默认选项）
 
         Returns:
             包含 task_id 的结果（可用于后续查询）
@@ -589,6 +580,12 @@ class CloudAgentExecutor:
                     executor_type="cloud",
                     started_at=started_at,
                     completed_at=datetime.now(),
+                )
+
+            # 如果未提供选项，使用工厂构建默认选项
+            if options is None:
+                options = CloudClientFactory.build_task_options(
+                    agent_config=self._agent_config,
                 )
 
             # 提交任务（不等待完成）
@@ -665,6 +662,9 @@ class CloudAgentExecutor:
     ) -> AgentResult:
         """恢复云端会话
 
+        使用 CloudClientFactory.resume_session() 统一入口。
+        此方法与 CursorAgentClient 的会话恢复行为一致。
+
         Args:
             session_id: 会话 ID
             prompt: 可选的附加提示
@@ -675,10 +675,13 @@ class CloudAgentExecutor:
         started_at = datetime.now()
 
         try:
-            cloud_result = await self._cloud_client.resume_from_cloud(
-                task_id=session_id,
-                local=True,
+            # 使用 CloudClientFactory.resume_session() 统一入口
+            cloud_result = await CloudClientFactory.resume_session(
+                session_id=session_id,
                 prompt=prompt,
+                agent_config=self._agent_config,
+                auth_config=self._auth_config,
+                local=True,
             )
 
             completed_at = datetime.now()
@@ -691,6 +694,7 @@ class CloudAgentExecutor:
                 duration=duration,
                 session_id=session_id,
                 raw_result=cloud_result.to_dict(),
+                files_modified=cloud_result.files_modified,
             )
 
         except Exception as e:

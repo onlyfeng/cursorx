@@ -185,6 +185,171 @@ def get_diff_stats(old_string: str, new_string: str) -> dict:
     }
 
 
+# ============== Token/Word-Level Diff 函数 ==============
+
+def _tokenize_line(line: str) -> List[str]:
+    """将行分割为 token（词和空白符）
+
+    Args:
+        line: 输入行
+
+    Returns:
+        token 列表
+    """
+    import re
+    # 分割为词和非词字符（保留空白符和标点作为独立 token）
+    tokens = re.findall(r'\S+|\s+', line)
+    return tokens
+
+
+def format_word_diff_line(old_line: str, new_line: str, use_ansi: bool = True) -> str:
+    """生成单行的词级差异，使用 SequenceMatcher 比较 token
+
+    对替换行做词级比较，输出带标记或 ANSI 颜色的内联差异。
+
+    Args:
+        old_line: 原行内容
+        new_line: 新行内容
+        use_ansi: 是否使用 ANSI 颜色码
+
+    Returns:
+        带有词级差异标记的字符串
+    """
+    # ANSI 颜色码
+    RED = "\033[31m" if use_ansi else ""
+    GREEN = "\033[32m" if use_ansi else ""
+    RED_BG = "\033[41m" if use_ansi else ""      # 红色背景（删除高亮）
+    GREEN_BG = "\033[42m" if use_ansi else ""    # 绿色背景（插入高亮）
+    RESET = "\033[0m" if use_ansi else ""
+    STRIKETHROUGH = "\033[9m" if use_ansi else ""  # 删除线
+
+    # 文本标记（非 ANSI 模式）
+    DEL_START = "[-" if not use_ansi else ""
+    DEL_END = "-]" if not use_ansi else ""
+    INS_START = "{+" if not use_ansi else ""
+    INS_END = "+}" if not use_ansi else ""
+
+    old_tokens = _tokenize_line(old_line)
+    new_tokens = _tokenize_line(new_line)
+
+    matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens)
+
+    result_parts: List[str] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            # 相同的 token 直接输出
+            result_parts.extend(old_tokens[i1:i2])
+        elif tag == "delete":
+            # 删除的 token
+            deleted = "".join(old_tokens[i1:i2])
+            if use_ansi:
+                result_parts.append(f"{RED}{STRIKETHROUGH}{deleted}{RESET}")
+            else:
+                result_parts.append(f"{DEL_START}{deleted}{DEL_END}")
+        elif tag == "insert":
+            # 插入的 token
+            inserted = "".join(new_tokens[j1:j2])
+            if use_ansi:
+                result_parts.append(f"{GREEN}{inserted}{RESET}")
+            else:
+                result_parts.append(f"{INS_START}{inserted}{INS_END}")
+        elif tag == "replace":
+            # 替换的 token：先显示删除，再显示插入
+            deleted = "".join(old_tokens[i1:i2])
+            inserted = "".join(new_tokens[j1:j2])
+            if use_ansi:
+                result_parts.append(f"{RED}{STRIKETHROUGH}{deleted}{RESET}")
+                result_parts.append(f"{GREEN}{inserted}{RESET}")
+            else:
+                result_parts.append(f"{DEL_START}{deleted}{DEL_END}")
+                result_parts.append(f"{INS_START}{inserted}{INS_END}")
+
+    return "".join(result_parts)
+
+
+def format_word_diff(old_string: str, new_string: str, use_ansi: bool = True) -> str:
+    """生成词级差异格式，对替换行做词级 SequenceMatcher 比较
+
+    对于相同行：原样输出
+    对于纯删除行：标记为删除
+    对于纯插入行：标记为插入
+    对于替换行：进行词级差异比较，输出内联差异
+
+    Args:
+        old_string: 原内容
+        new_string: 新内容
+        use_ansi: 是否使用 ANSI 颜色码
+
+    Returns:
+        带有词级差异标记的字符串
+    """
+    # ANSI 颜色码
+    RED = "\033[31m" if use_ansi else ""
+    GREEN = "\033[32m" if use_ansi else ""
+    DIM = "\033[2m" if use_ansi else ""
+    RESET = "\033[0m" if use_ansi else ""
+
+    old_lines = old_string.splitlines()
+    new_lines = new_string.splitlines()
+
+    result: List[str] = []
+
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            # 相同的行，使用 dim 颜色
+            for line in old_lines[i1:i2]:
+                if use_ansi:
+                    result.append(f"{DIM}  {line}{RESET}")
+                else:
+                    result.append(f"  {line}")
+        elif tag == "delete":
+            # 纯删除行
+            for line in old_lines[i1:i2]:
+                if use_ansi:
+                    result.append(f"{RED}- {line}{RESET}")
+                else:
+                    result.append(f"- {line}")
+        elif tag == "insert":
+            # 纯插入行
+            for line in new_lines[j1:j2]:
+                if use_ansi:
+                    result.append(f"{GREEN}+ {line}{RESET}")
+                else:
+                    result.append(f"+ {line}")
+        elif tag == "replace":
+            # 替换：对每对行进行词级差异比较
+            old_block = old_lines[i1:i2]
+            new_block = new_lines[j1:j2]
+
+            # 尝试一对一匹配进行词级差异
+            max_pairs = min(len(old_block), len(new_block))
+
+            for idx in range(max_pairs):
+                word_diff = format_word_diff_line(
+                    old_block[idx], new_block[idx], use_ansi
+                )
+                result.append(f"~ {word_diff}")
+
+            # 处理剩余的删除行
+            for idx in range(max_pairs, len(old_block)):
+                if use_ansi:
+                    result.append(f"{RED}- {old_block[idx]}{RESET}")
+                else:
+                    result.append(f"- {old_block[idx]}")
+
+            # 处理剩余的插入行
+            for idx in range(max_pairs, len(new_block)):
+                if use_ansi:
+                    result.append(f"{GREEN}+ {new_block[idx]}{RESET}")
+                else:
+                    result.append(f"+ {new_block[idx]}")
+
+    return "\n".join(result)
+
+
 class StreamEventType(str, Enum):
     """流式事件类型"""
     # 系统事件
@@ -855,13 +1020,15 @@ class TerminalStreamRenderer(StreamRenderer):
     支持详细模式和精简模式输出
     """
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, show_word_diff: bool = False):
         """初始化渲染器
 
         Args:
             verbose: 是否使用详细输出模式
+            show_word_diff: 是否显示逐词差异（仅在 verbose+show_diff 时生效）
         """
         self.verbose = verbose
+        self.show_word_diff = show_word_diff
 
     def render_init(self, model: str) -> None:
         """渲染初始化事件"""
@@ -940,7 +1107,31 @@ class TerminalStreamRenderer(StreamRenderer):
                     diff_info.new_string,
                 )
                 print(f"   📊 +{stats['insertions']} -{stats['deletions']} 行")
-        # 精简模式不显示完成详情
+
+                # 展示逐词差异内容（可选）
+                if self.show_word_diff and diff_info.old_string and diff_info.new_string:
+                    word_diff = format_word_diff(
+                        diff_info.old_string,
+                        diff_info.new_string,
+                        use_ansi=True,
+                    )
+                    print("   ─── 逐词差异 ───")
+                    for line in word_diff.split("\n"):
+                        print(f"   {line}")
+                    print("   ─────────────────")
+        else:
+            # 非 verbose 模式：当启用逐词差异时，也显示简化的逐词差异输出
+            if show_diff and self.show_word_diff and diff_info:
+                if diff_info.old_string and diff_info.new_string:
+                    word_diff = format_word_diff(
+                        diff_info.old_string,
+                        diff_info.new_string,
+                        use_ansi=True,
+                    )
+                    print("─── 逐词差异 ───", flush=True)
+                    for line in word_diff.split("\n"):
+                        print(line, flush=True)
+                    print("─────────────────", flush=True)
 
     def render_diff(
         self,
@@ -957,9 +1148,33 @@ class TerminalStreamRenderer(StreamRenderer):
             if show_diff:
                 stats = get_diff_stats(diff_info.old_string, diff_info.new_string)
                 print(f"   📊 +{stats['insertions']} -{stats['deletions']} 行")
+
+                # 展示逐词差异内容（可选）
+                if self.show_word_diff and diff_info.old_string and diff_info.new_string:
+                    word_diff = format_word_diff(
+                        diff_info.old_string,
+                        diff_info.new_string,
+                        use_ansi=True,
+                    )
+                    print("   ─── 逐词差异 ───")
+                    for line in word_diff.split("\n"):
+                        print(f"   {line}")
+                    print("   ─────────────────")
         else:
             if diff_info.path:
                 print(f"[差异] {diff_info.path}", flush=True)
+            # 非 verbose 模式：当启用逐词差异时，也显示简化的逐词差异输出
+            if show_diff and self.show_word_diff:
+                if diff_info.old_string and diff_info.new_string:
+                    word_diff = format_word_diff(
+                        diff_info.old_string,
+                        diff_info.new_string,
+                        use_ansi=True,
+                    )
+                    print("─── 逐词差异 ───", flush=True)
+                    for line in word_diff.split("\n"):
+                        print(line, flush=True)
+                    print("─────────────────", flush=True)
 
     def render_result(self, duration_ms: int, tool_count: int, text_length: int) -> None:
         """渲染结果事件"""
@@ -1368,6 +1583,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         min_width: int = 40,
         max_width: Optional[int] = None,
         output: Optional["sys.stdout"] = None,
+        show_word_diff: bool = False,
     ) -> None:
         """初始化终端流式渲染器
 
@@ -1380,6 +1596,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
             min_width: 最小终端宽度
             max_width: 最大终端宽度，None 表示使用实际终端宽度
             output: 输出流，默认为 sys.stdout
+            show_word_diff: 是否显示逐词差异（仅在 show_diff 时生效）
         """
         self.use_color = use_color
         self.typing_delay = typing_delay
@@ -1389,6 +1606,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         self.min_width = min_width
         self.max_width = max_width
         self.output = output or sys.stdout
+        self.show_word_diff = show_word_diff
 
         # 状态追踪
         self.model: str = ""
@@ -1508,6 +1726,19 @@ class AdvancedTerminalRenderer(StreamRenderer):
         self._write(self._color(" ✓\n", "green"))
         self.current_line_len = 0
 
+        # 展示逐词差异内容（可选）
+        if show_diff and self.show_word_diff and diff_info:
+            if diff_info.old_string and diff_info.new_string:
+                word_diff = format_word_diff(
+                    diff_info.old_string,
+                    diff_info.new_string,
+                    use_ansi=self.use_color,
+                )
+                self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
+                for line in word_diff.split("\n"):
+                    self._write(f"   {line}\n")
+                self._write(self._color("   ─────────────────\n", "dim"))
+
     def render_diff(
         self,
         diff_count: int,
@@ -1539,6 +1770,20 @@ class AdvancedTerminalRenderer(StreamRenderer):
                 self._write(stats_msg)
             self._write(self._color(" ✓\n", "green"))
             self.current_line_len = 0
+
+            # 展示逐词差异内容（可选）
+            if show_diff and self.show_word_diff:
+                if diff_info.old_string and diff_info.new_string:
+                    word_diff = format_word_diff(
+                        diff_info.old_string,
+                        diff_info.new_string,
+                        use_ansi=self.use_color,
+                    )
+                    self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
+                    for line in word_diff.split("\n"):
+                        self._write(f"   {line}\n")
+                    self._write(self._color("   ─────────────────\n", "dim"))
+
         self._update_status_bar()
 
     def render_result(self, duration_ms: int, tool_count: int, text_length: int) -> None:

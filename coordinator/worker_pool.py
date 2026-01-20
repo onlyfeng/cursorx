@@ -34,11 +34,17 @@ class WorkerPool:
         """初始化 Worker 池"""
         self.workers = []
         for i in range(self.size):
+            # 为每个 Worker 创建独立的 CursorAgentConfig 副本（深拷贝）
+            # 确保每个 Worker 的 stream_agent_id/role/name 保持独立
+            cursor_config_copy = self.worker_config.cursor_config.model_copy(deep=True)
+
             config = WorkerConfig(
                 name=f"worker-{i}",
                 working_directory=self.worker_config.working_directory,
                 task_timeout=self.worker_config.task_timeout,
-                cursor_config=self.worker_config.cursor_config,
+                cursor_config=cursor_config_copy,
+                execution_mode=self.worker_config.execution_mode,
+                cloud_auth_config=self.worker_config.cloud_auth_config,
                 enable_knowledge_search=self.worker_config.enable_knowledge_search,
                 knowledge_search_top_k=self.worker_config.knowledge_search_top_k,
             )
