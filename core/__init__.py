@@ -1,6 +1,25 @@
 """核心抽象层"""
 from .base import AgentRole, AgentStatus, BaseAgent
 from .cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from .config import (
+    # 默认值常量
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_PLANNING_TIMEOUT,
+    DEFAULT_WORKER_TIMEOUT,
+    DEFAULT_REVIEW_TIMEOUT,
+    DEFAULT_AGENT_CLI_TIMEOUT,
+    DEFAULT_CLOUD_TIMEOUT,
+    DEFAULT_CLOUD_AUTH_TIMEOUT,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_WORKER_POOL_SIZE,
+    # 配置管理器
+    ConfigManager,
+    get_config,
+    get_model_config,
+    get_timeout_config,
+)
 from .knowledge import (
     CURSOR_KEYWORDS,
     FALLBACK_CHARS_PER_DOC,
@@ -55,4 +74,20 @@ __all__ = [
     "MAX_CLI_ASK_CHARS_PER_DOC",
     "FALLBACK_CHARS_PER_DOC",
     "MIN_DOCS_ON_FALLBACK",
+    # 配置管理
+    "DEFAULT_PLANNER_MODEL",
+    "DEFAULT_WORKER_MODEL",
+    "DEFAULT_REVIEWER_MODEL",
+    "DEFAULT_PLANNING_TIMEOUT",
+    "DEFAULT_WORKER_TIMEOUT",
+    "DEFAULT_REVIEW_TIMEOUT",
+    "DEFAULT_AGENT_CLI_TIMEOUT",
+    "DEFAULT_CLOUD_TIMEOUT",
+    "DEFAULT_CLOUD_AUTH_TIMEOUT",
+    "DEFAULT_MAX_ITERATIONS",
+    "DEFAULT_WORKER_POOL_SIZE",
+    "ConfigManager",
+    "get_config",
+    "get_model_config",
+    "get_timeout_config",
 ]

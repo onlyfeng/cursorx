@@ -14,6 +14,17 @@ from agents.planner_process import PlannerAgentProcess
 from agents.reviewer_process import ReviewDecision, ReviewerAgentProcess
 from agents.worker_process import WorkerAgentProcess
 from core.base import AgentRole
+from core.config import (
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_PLANNING_TIMEOUT,
+    DEFAULT_WORKER_TIMEOUT,
+    DEFAULT_REVIEW_TIMEOUT,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_WORKER_POOL_SIZE,
+    get_config,
+)
 from core.knowledge import (
     CURSOR_KEYWORDS,
     MAX_CHARS_PER_DOC,
@@ -31,24 +42,27 @@ from tasks.task import Task, TaskStatus
 
 
 class MultiProcessOrchestratorConfig(BaseModel):
-    """多进程编排器配置"""
+    """多进程编排器配置
+
+    默认值从 config.yaml 加载，通过 core.config 模块统一管理。
+    """
     working_directory: str = "."
-    max_iterations: int = 10
-    worker_count: int = 3              # Worker 进程数量
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    worker_count: int = DEFAULT_WORKER_POOL_SIZE  # Worker 进程数量
     enable_sub_planners: bool = True
     strict_review: bool = False
 
-    # 超时设置
-    planning_timeout: float = 300.0    # 规划超时
-    execution_timeout: float = 500.0   # 单任务执行超时
-    review_timeout: float = 120.0      # 评审超时
+    # 超时设置 - 默认值从 core.config 获取
+    planning_timeout: float = DEFAULT_PLANNING_TIMEOUT    # 规划超时
+    execution_timeout: float = DEFAULT_WORKER_TIMEOUT     # 单任务执行超时
+    review_timeout: float = DEFAULT_REVIEW_TIMEOUT        # 评审超时
 
-    # 模型配置 - 不同 Agent 使用不同模型
+    # 模型配置 - 默认值从 core.config 获取
     # 可用模型: gpt-5.2-high, opus-4.5-thinking, gpt-5.2-codex, sonnet-4.5-thinking 等
     # 使用 `agent models` 查看完整列表
-    planner_model: str = "gpt-5.2-high"           # 规划者使用 GPT 5.2 High
-    worker_model: str = "opus-4.5-thinking"       # 执行者使用 Claude 4.5 Opus (Thinking)
-    reviewer_model: str = "gpt-5.2-codex"         # 评审者使用 GPT 5.2 Codex
+    planner_model: str = DEFAULT_PLANNER_MODEL    # 规划者模型
+    worker_model: str = DEFAULT_WORKER_MODEL      # 执行者模型
+    reviewer_model: str = DEFAULT_REVIEWER_MODEL  # 评审者模型
 
     # 执行模式配置（MP 模式主要使用 CLI，但支持配置以便与 basic 编排器保持一致）
     # 注意：MP 编排器内部子进程始终使用 CLI 执行，这些配置主要用于透传和兼容性

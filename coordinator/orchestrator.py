@@ -13,6 +13,14 @@ from agents.committer import CommitterAgent, CommitterConfig
 from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
 from core.base import AgentRole
+from core.config import (
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_REVIEW_TIMEOUT,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_WORKER_POOL_SIZE,
+)
 from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState
 from cursor.client import CursorAgentConfig
 from cursor.cloud_client import CloudAuthConfig
@@ -26,12 +34,15 @@ if TYPE_CHECKING:
 
 
 class OrchestratorConfig(BaseModel):
-    """编排器配置"""
+    """编排器配置
+
+    默认值从 config.yaml 加载，通过 core.config 模块统一管理。
+    """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     working_directory: str = "."
-    max_iterations: int = 10           # 最大迭代次数
-    worker_pool_size: int = 3          # Worker 池大小
+    max_iterations: int = DEFAULT_MAX_ITERATIONS    # 最大迭代次数
+    worker_pool_size: int = DEFAULT_WORKER_POOL_SIZE  # Worker 池大小
     enable_sub_planners: bool = True   # 是否启用子规划者
     strict_review: bool = False        # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
@@ -70,10 +81,10 @@ class OrchestratorConfig(BaseModel):
     # Cloud Agent 配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
     cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
-    # 各角色模型配置
-    planner_model: str = 'gpt-5.2-high'           # 规划者模型
-    worker_model: str = 'opus-4.5-thinking'       # 执行者模型
-    reviewer_model: str = 'gpt-5.2-codex'         # 评审者模型
+    # 各角色模型配置 - 默认值从 core.config 获取
+    planner_model: str = DEFAULT_PLANNER_MODEL    # 规划者模型
+    worker_model: str = DEFAULT_WORKER_MODEL      # 执行者模型
+    reviewer_model: str = DEFAULT_REVIEWER_MODEL  # 评审者模型
     # 角色级执行模式配置（默认继承全局 execution_mode）
     # 若为 None，则使用全局 execution_mode
     planner_execution_mode: Optional[ExecutionMode] = None  # 规划者执行模式
@@ -122,10 +133,11 @@ class Orchestrator:
         worker_cursor_config.model = config.worker_model
 
         # 超时设置：
-        # - 规划默认 300s（CursorAgentConfig 默认即为 300s）
-        # - 评审默认 120s（若用户显式修改了 cursor_config.timeout，则尊重用户配置）
+        # - 规划默认使用 CursorAgentConfig 的默认超时
+        # - 评审默认使用 config.yaml 中的 reviewer.timeout（默认 300s）
+        # - 若用户显式修改了 cursor_config.timeout，则尊重用户配置
         if config.cursor_config.timeout == 300:
-            reviewer_cursor_config.timeout = 120
+            reviewer_cursor_config.timeout = int(DEFAULT_REVIEW_TIMEOUT)
 
         # 设置各角色的工作模式和写入权限
         # - Planner: mode='plan', force_write=False（只读，仅分析规划）

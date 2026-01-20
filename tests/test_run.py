@@ -2056,9 +2056,9 @@ class TestRunMpMode:
         assert config.worker_count == 3
         assert config.enable_sub_planners is True
         assert config.strict_review is False
-        assert config.planning_timeout == 300.0
-        assert config.execution_timeout == 500.0
-        assert config.review_timeout == 120.0
+        assert config.planning_timeout == 500.0
+        assert config.execution_timeout == 600.0
+        assert config.review_timeout == 300.0
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
         assert config.reviewer_model == "gpt-5.2-codex"

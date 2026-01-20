@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from core.config import DEFAULT_WORKER_MODEL, DEFAULT_WORKER_TIMEOUT
 from cursor.client import CursorAgentClient, CursorAgentConfig
 from process.message_queue import ProcessMessage, ProcessMessageType
 from process.worker import AgentWorkerProcess
@@ -166,13 +167,13 @@ Shell 命令限制（重要）:
 
     def on_start(self) -> None:
         """进程启动初始化"""
-        # 创建 agent CLI 客户端 - 使用 opus-4.5-thinking 进行编码
+        # 创建 agent CLI 客户端 - 使用 DEFAULT_WORKER_MODEL 进行编码
         # 使用 --force 允许直接修改文件
         stream_enabled = self.config.get("stream_events_enabled", False)
         cursor_config = CursorAgentConfig(
             working_directory=self.config.get("working_directory", "."),
-            timeout=self.config.get("task_timeout", 300),
-            model=self.config.get("model", "opus-4.5-thinking"),
+            timeout=self.config.get("task_timeout", int(DEFAULT_WORKER_TIMEOUT)),
+            model=self.config.get("model", DEFAULT_WORKER_MODEL),
             output_format="stream-json" if stream_enabled else "text",
             non_interactive=True,  # 非交互模式
             force_write=True,      # --force 允许直接修改文件

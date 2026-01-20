@@ -41,6 +41,16 @@ sys.path.insert(0, str(project_root))
 from loguru import logger
 
 from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from core.config import (
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_CLOUD_TIMEOUT,
+    DEFAULT_CLOUD_AUTH_TIMEOUT,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_WORKER_POOL_SIZE,
+    get_config,
+)
 from cursor.cloud_client import CloudAuthConfig
 from cursor.executor import ExecutionMode
 
@@ -212,15 +222,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-w", "--workers",
         type=int,
-        default=3,
-        help="Worker 数量 (默认: 3)",
+        default=DEFAULT_WORKER_POOL_SIZE,
+        help=f"Worker 数量 (默认: {DEFAULT_WORKER_POOL_SIZE})",
     )
 
     parser.add_argument(
         "-m", "--max-iterations",
         type=str,
-        default="10",
-        help="最大迭代次数 (默认: 10，MAX/-1 表示无限迭代)",
+        default=str(DEFAULT_MAX_ITERATIONS),
+        help=f"最大迭代次数 (默认: {DEFAULT_MAX_ITERATIONS}，MAX/-1 表示无限迭代)",
     )
 
     parser.add_argument(
@@ -314,26 +324,26 @@ def parse_args() -> argparse.Namespace:
         help="[mp] 知识库注入时总字符上限 (默认: 3000)",
     )
 
-    # 多进程模式专用参数
+    # 多进程模式专用参数 - 默认值从 config.yaml 加载
     parser.add_argument(
         "--planner-model",
         type=str,
-        default="gpt-5.2-high",
-        help="[mp] 规划者模型",
+        default=DEFAULT_PLANNER_MODEL,
+        help=f"[mp] 规划者模型 (默认: {DEFAULT_PLANNER_MODEL})",
     )
 
     parser.add_argument(
         "--worker-model",
         type=str,
-        default="opus-4.5-thinking",
-        help="[mp] 执行者模型",
+        default=DEFAULT_WORKER_MODEL,
+        help=f"[mp] 执行者模型 (默认: {DEFAULT_WORKER_MODEL})",
     )
 
     parser.add_argument(
         "--reviewer-model",
         type=str,
-        default="gpt-5.2-codex",
-        help="[mp] 评审者模型",
+        default=DEFAULT_REVIEWER_MODEL,
+        help=f"[mp] 评审者模型 (默认: {DEFAULT_REVIEWER_MODEL})",
     )
 
     # 流式日志（默认开启）
@@ -440,15 +450,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cloud-auth-timeout",
         type=int,
-        default=30,
-        help="Cloud 认证超时时间（秒，默认 30）",
+        default=DEFAULT_CLOUD_AUTH_TIMEOUT,
+        help=f"Cloud 认证超时时间（秒，默认 {DEFAULT_CLOUD_AUTH_TIMEOUT}）",
     )
 
     parser.add_argument(
         "--cloud-timeout",
         type=int,
-        default=600,
-        help="Cloud 执行超时时间（秒，默认 600，即 10 分钟）",
+        default=DEFAULT_CLOUD_TIMEOUT,
+        help=f"Cloud 执行超时时间（秒，默认 {DEFAULT_CLOUD_TIMEOUT}，即 10 分钟）",
     )
 
     # Cloud 后台模式参数
@@ -966,9 +976,13 @@ class Runner:
 
         # Cloud 认证配置
         options["cloud_api_key"] = getattr(self.args, "cloud_api_key", None)
-        options["cloud_auth_timeout"] = getattr(self.args, "cloud_auth_timeout", 30)
+        options["cloud_auth_timeout"] = getattr(
+            self.args, "cloud_auth_timeout", DEFAULT_CLOUD_AUTH_TIMEOUT
+        )
         # Cloud 执行超时（独立于 max_iterations）
-        options["cloud_timeout"] = getattr(self.args, "cloud_timeout", 600)
+        options["cloud_timeout"] = getattr(
+            self.args, "cloud_timeout", DEFAULT_CLOUD_TIMEOUT
+        )
 
         # Cloud 后台模式配置
         # 优先级：
@@ -1197,9 +1211,9 @@ class Runner:
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
             # 模型配置
-            planner_model=options.get("planner_model", "gpt-5.2-high"),
-            worker_model=options.get("worker_model", "opus-4.5-thinking"),
-            reviewer_model=options.get("reviewer_model", "gpt-5.2-codex"),
+            planner_model=options.get("planner_model", DEFAULT_PLANNER_MODEL),
+            worker_model=options.get("worker_model", DEFAULT_WORKER_MODEL),
+            reviewer_model=options.get("reviewer_model", DEFAULT_REVIEWER_MODEL),
             # 执行模式和 Cloud 认证配置
             execution_mode=execution_mode,
             cloud_auth_config=cloud_auth_config,
@@ -1261,9 +1275,9 @@ class Runner:
             max_iterations=options["max_iterations"],
             worker_count=options["workers"],
             strict_review=options.get("strict", False),
-            planner_model=options.get("planner_model", "gpt-5.2-high"),
-            worker_model=options.get("worker_model", "opus-4.5-thinking"),
-            reviewer_model=options.get("reviewer_model", "gpt-5.2-codex"),
+            planner_model=options.get("planner_model", DEFAULT_PLANNER_MODEL),
+            worker_model=options.get("worker_model", DEFAULT_WORKER_MODEL),
+            reviewer_model=options.get("reviewer_model", DEFAULT_REVIEWER_MODEL),
             stream_events_enabled=options.get("stream_log", False),
             # 自动提交配置透传（默认禁用）
             enable_auto_commit=options.get("auto_commit", False),
