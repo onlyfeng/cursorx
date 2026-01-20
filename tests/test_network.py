@@ -651,33 +651,123 @@ class TestEgressIPManagerRetry:
         assert config is not None
 
 
-# ==================== EgressIPManager 配置文件测试 ====================
+# ==================== EgressIPManager 配置来源测试 ====================
 
 
 class TestEgressIPManagerConfig:
-    """EgressIPManager 配置文件测试"""
+    """EgressIPManager 配置来源测试
 
-    def test_load_config_from_yaml(self, temp_cache_dir):
-        """从 YAML 配置文件加载设置"""
-        import yaml
+    验证 TTL 配置统一从 core.config 获取，确保来源一致性。
+    """
 
-        config_path = temp_cache_dir / "config.yaml"
-        config_data = {
-            "cloud_agent": {
-                "egress_ip_cache_ttl": 7200,
-            }
-        }
-        with open(config_path, "w") as f:
-            yaml.dump(config_data, f)
+    def test_ttl_from_core_config(self, temp_cache_dir, monkeypatch):
+        """TTL 默认从 core.config.get_config() 获取"""
+        from core.config import ConfigManager, CloudAgentConfig
 
-        manager = EgressIPManager(cache_dir=temp_cache_dir, config_path=config_path)
-        assert manager.cache_ttl == 7200
+        # 重置 ConfigManager 单例
+        ConfigManager.reset_instance()
 
-    def test_load_config_missing_file(self, temp_cache_dir):
-        """配置文件不存在时使用默认值"""
-        config_path = temp_cache_dir / "nonexistent.yaml"
-        manager = EgressIPManager(cache_dir=temp_cache_dir, config_path=config_path)
-        assert manager.cache_ttl == 3600  # 默认值
+        # 创建自定义配置
+        custom_ttl = 5400  # 1.5 小时
+        mock_cloud_config = CloudAgentConfig(egress_ip_cache_ttl=custom_ttl)
+
+        # Mock get_config 返回自定义 TTL
+        def mock_get_config():
+            class MockConfig:
+                cloud_agent = mock_cloud_config
+            return MockConfig()
+
+        monkeypatch.setattr("cursor.network.get_config", mock_get_config)
+
+        # 不传入 cache_ttl，应从 core.config 获取
+        manager = EgressIPManager(cache_dir=temp_cache_dir)
+        assert manager.cache_ttl == custom_ttl
+
+        # 清理
+        ConfigManager.reset_instance()
+
+    def test_ttl_from_cloud_config_object(self, temp_cache_dir):
+        """TTL 从传入的 CloudAgentConfig 对象获取"""
+        from core.config import CloudAgentConfig
+
+        custom_ttl = 7200
+        cloud_config = CloudAgentConfig(egress_ip_cache_ttl=custom_ttl)
+
+        manager = EgressIPManager(
+            cache_dir=temp_cache_dir,
+            cloud_config=cloud_config
+        )
+        assert manager.cache_ttl == custom_ttl
+
+    def test_ttl_explicit_override(self, temp_cache_dir):
+        """显式传入 cache_ttl 参数覆盖配置值"""
+        from core.config import CloudAgentConfig
+
+        # 即使传入 cloud_config，显式 cache_ttl 优先
+        cloud_config = CloudAgentConfig(egress_ip_cache_ttl=3600)
+        explicit_ttl = 9000
+
+        manager = EgressIPManager(
+            cache_dir=temp_cache_dir,
+            cache_ttl=explicit_ttl,
+            cloud_config=cloud_config
+        )
+        assert manager.cache_ttl == explicit_ttl
+
+    def test_ttl_priority_order(self, temp_cache_dir, monkeypatch):
+        """验证 TTL 配置优先级: 显式参数 > cloud_config > get_config()"""
+        from core.config import ConfigManager, CloudAgentConfig
+
+        ConfigManager.reset_instance()
+
+        # 设置 mock get_config 返回 1000
+        def mock_get_config():
+            class MockConfig:
+                cloud_agent = CloudAgentConfig(egress_ip_cache_ttl=1000)
+            return MockConfig()
+        monkeypatch.setattr("cursor.network.get_config", mock_get_config)
+
+        # 场景 1: 仅使用 get_config() 默认值
+        manager1 = EgressIPManager(cache_dir=temp_cache_dir)
+        assert manager1.cache_ttl == 1000
+
+        # 场景 2: 传入 cloud_config 覆盖
+        cloud_config = CloudAgentConfig(egress_ip_cache_ttl=2000)
+        manager2 = EgressIPManager(cache_dir=temp_cache_dir, cloud_config=cloud_config)
+        assert manager2.cache_ttl == 2000
+
+        # 场景 3: 显式 cache_ttl 参数最高优先
+        manager3 = EgressIPManager(
+            cache_dir=temp_cache_dir,
+            cache_ttl=3000,
+            cloud_config=cloud_config
+        )
+        assert manager3.cache_ttl == 3000
+
+        ConfigManager.reset_instance()
+
+    def test_ttl_consistency_with_config_yaml(self, temp_cache_dir, monkeypatch):
+        """确保 TTL 来源与 config.yaml 中 cloud_agent.egress_ip_cache_ttl 一致"""
+        from core.config import ConfigManager, get_config as real_get_config
+
+        # 重置并获取真实配置
+        ConfigManager.reset_instance()
+
+        # 获取配置文件中的 TTL 值
+        try:
+            config = real_get_config()
+            config_ttl = config.cloud_agent.egress_ip_cache_ttl
+        except Exception:
+            # 如果无法加载配置，使用默认值
+            config_ttl = 3600
+
+        # 不 mock，使用真实的 get_config
+        manager = EgressIPManager(cache_dir=temp_cache_dir)
+
+        # manager 的 TTL 应与 config 一致
+        assert manager.cache_ttl == config_ttl
+
+        ConfigManager.reset_instance()
 
 
 # ==================== 模块级便捷函数测试 ====================

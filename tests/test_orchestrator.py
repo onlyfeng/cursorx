@@ -13,7 +13,12 @@ class TestOrchestratorConfig:
     """测试 OrchestratorConfig 默认值"""
 
     def test_default_values(self) -> None:
-        """验证 OrchestratorConfig 所有默认值正确"""
+        """验证 OrchestratorConfig 所有默认值正确
+
+        stream 字段使用 tri-state 设计：
+        - None: 使用 config.yaml 中的值（通过 get_config().logging.stream_json 获取）
+        - 显式传入: 使用调用方传入的值
+        """
         config = OrchestratorConfig()
 
         assert config.working_directory == "."
@@ -21,11 +26,12 @@ class TestOrchestratorConfig:
         assert config.worker_pool_size == 3
         assert config.enable_sub_planners is True
         assert config.strict_review is False
-        assert config.stream_events_enabled is True  # 默认启用
-        assert config.stream_log_console is True
+        # tri-state 设计：stream 字段默认为 None，由 Orchestrator._resolve_config_values 解析
+        assert config.stream_events_enabled is None
+        assert config.stream_log_console is None
+        assert config.stream_log_detail_dir is None
+        assert config.stream_log_raw_dir is None
         assert config.enable_auto_commit is False  # 默认禁用自动提交（需显式开启）
-        assert config.stream_log_detail_dir == "logs/stream_json/detail/"
-        assert config.stream_log_raw_dir == "logs/stream_json/raw/"
 
     def test_cursor_config_default(self) -> None:
         """验证嵌套的 CursorAgentConfig 使用默认工厂正确创建"""
@@ -219,14 +225,25 @@ class TestModelConfigPerRole:
             logger.remove(handler_id)
 
     def test_orchestrator_uses_different_models_per_role(self) -> None:
-        """验证 Planner 使用 gpt-5.2-high，Worker 使用 opus-4.5-thinking，Reviewer 使用 gpt-5.2-codex"""
+        """验证 Planner 使用 gpt-5.2-high，Worker 使用 opus-4.5-thinking，Reviewer 使用 gpt-5.2-codex
+
+        tri-state 设计说明:
+        - OrchestratorConfig.planner_model 等字段默认为 None
+        - 实际使用的模型值通过 _resolved_config 从 config.yaml 解析获取
+        - 此测试验证解析后的模型配置正确应用到各角色
+        """
         config = OrchestratorConfig()
         orchestrator = Orchestrator(config)
 
-        # 验证默认模型配置
-        assert config.planner_model == "gpt-5.2-high"
-        assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "gpt-5.2-codex"
+        # tri-state 设计：原始 config 中的模型字段为 None（表示使用 config.yaml 值）
+        assert config.planner_model is None
+        assert config.worker_model is None
+        assert config.reviewer_model is None
+
+        # 验证解析后的模型配置（来自 config.yaml 或 DEFAULT_* 常量）
+        assert orchestrator._resolved_config["planner_model"] == "gpt-5.2-high"
+        assert orchestrator._resolved_config["worker_model"] == "opus-4.5-thinking"
+        assert orchestrator._resolved_config["reviewer_model"] == "gpt-5.2-codex"
 
         # 验证 Planner 使用正确的模型
         assert orchestrator.planner.planner_config.cursor_config.model == "gpt-5.2-high"

@@ -1157,6 +1157,74 @@ class TestKnowledgeBaseStats:
 # 集成测试
 # ============================================================
 
+# ============================================================
+# 第五部分: CLI 配置集成测试
+# ============================================================
+
+class TestKnowledgeCLIConfigIntegration:
+    """测试 knowledge_cli 配置集成"""
+
+    def test_search_default_limit_from_config(self):
+        """测试 search 命令默认 limit 来自配置"""
+        from core.config import get_config, ConfigManager
+        from scripts.knowledge_cli import create_parser
+
+        # 重置配置单例以获取最新配置
+        ConfigManager.reset_instance()
+        config = get_config()
+        expected_top_k = config.indexing.search.top_k
+
+        # 创建 parser 并解析不带 --limit 的参数
+        parser = create_parser()
+        args = parser.parse_args(["search", "test query"])
+
+        # 验证默认值来自配置
+        assert args.limit == expected_top_k, (
+            f"默认 limit 应为配置值 {expected_top_k}，实际为 {args.limit}"
+        )
+
+    def test_search_cli_override_default_limit(self):
+        """测试 CLI 参数可以覆盖配置的默认 limit"""
+        from scripts.knowledge_cli import create_parser
+
+        parser = create_parser()
+
+        # 使用 --limit 覆盖
+        args_limit = parser.parse_args(["search", "--limit", "25", "test query"])
+        assert args_limit.limit == 25
+
+        # 使用 -n 覆盖
+        args_n = parser.parse_args(["search", "-n", "30", "test query"])
+        assert args_n.limit == 30
+
+        # 使用 --top-k 覆盖
+        args_topk = parser.parse_args(["search", "--top-k", "15", "test query"])
+        assert args_topk.limit == 15
+
+    def test_search_help_shows_config_source(self):
+        """测试帮助文本显示配置来源"""
+        from scripts.knowledge_cli import create_parser
+        import io
+        import sys
+
+        parser = create_parser()
+
+        # 捕获帮助输出
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            parser.parse_args(["search", "--help"])
+        except SystemExit:
+            pass  # argparse 在 --help 后会 exit
+        help_output = sys.stdout.getvalue()
+        sys.stdout = old_stdout
+
+        # 验证帮助文本包含配置来源说明
+        assert "config.yaml" in help_output or "indexing.search.top_k" in help_output, (
+            "帮助文本应说明默认值来自 config.yaml"
+        )
+
+
 class TestIntegration:
     """集成测试"""
 

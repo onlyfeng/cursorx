@@ -235,9 +235,11 @@ class CloudAuthManager:
         优先级（与 CloudClientFactory.resolve_api_key 保持一致）:
         1. 配置中直接设置的 api_key（显式参数传入）
         2. 环境变量 CURSOR_API_KEY
-        3. 项目配置文件 (config.yaml)
-        4. 全局配置文件 (~/.cursor/config.json)
-        5. CLI 配置文件 (~/.cursor/cli-config.json)
+        3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+        4. 项目配置文件 (config.yaml)
+           - YAML 路径优先级: cloud_agent.api_key > agent_cli.api_key > auth.api_key
+        5. 全局配置文件 (~/.cursor/config.json)
+        6. CLI 配置文件 (~/.cursor/cli-config.json)
 
         注意: 此优先级与 CloudClientFactory.resolve_api_key() 保持一致，
         确保两条 Cloud 执行路径（CursorAgentClient._execute_via_cloud 和
@@ -248,25 +250,31 @@ class CloudAuthManager:
             logger.debug("从配置对象获取 API Key（显式传入）")
             return self.config.api_key
 
-        # 2. 环境变量
+        # 2. 环境变量 CURSOR_API_KEY
         env_key = os.environ.get("CURSOR_API_KEY")
         if env_key:
             logger.debug("从环境变量 CURSOR_API_KEY 获取 API Key")
             return env_key
 
-        # 3. 项目配置文件
+        # 3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+        env_cloud_key = os.environ.get("CURSOR_CLOUD_API_KEY")
+        if env_cloud_key:
+            logger.debug("从环境变量 CURSOR_CLOUD_API_KEY 获取 API Key")
+            return env_cloud_key
+
+        # 4. 项目配置文件
         project_key = self._read_api_key_from_yaml(self.config.config_file)
         if project_key:
             logger.debug(f"从项目配置文件 {self.config.config_file} 获取 API Key")
             return project_key
 
-        # 4. 全局配置文件
+        # 5. 全局配置文件
         global_key = self._read_api_key_from_json(self.config.global_config_file)
         if global_key:
             logger.debug("从全局配置文件获取 API Key")
             return global_key
 
-        # 5. CLI 配置文件
+        # 6. CLI 配置文件
         cli_key = self._read_api_key_from_json(self.config.cli_config_file)
         if cli_key:
             logger.debug("从 CLI 配置文件获取 API Key")
@@ -275,7 +283,16 @@ class CloudAuthManager:
         return None
 
     def _read_api_key_from_yaml(self, file_path: str) -> Optional[str]:
-        """从 YAML 配置文件读取 API Key"""
+        """从 YAML 配置文件读取 API Key
+
+        YAML 路径优先级（从高到低）：
+        1. cloud_agent.api_key（推荐，与 CloudClientFactory.resolve_api_key 一致）
+        2. agent_cli.api_key（旧路径，向后兼容）
+        3. auth.api_key（旧路径，向后兼容）
+
+        注意: 此优先级与 CloudClientFactory.resolve_api_key() 中对 config.yaml
+        的读取保持一致，确保两条 Cloud 执行路径的认证行为统一。
+        """
         if not YAML_AVAILABLE:
             return None
 
@@ -287,17 +304,29 @@ class CloudAuthManager:
             with open(path) as f:
                 config = yaml.safe_load(f)
 
-            # 尝试多种路径
-            # agent_cli.api_key
-            if config and "agent_cli" in config:
-                api_key = config["agent_cli"].get("api_key")
+            if not config:
+                return None
+
+            # 尝试多种路径，按优先级顺序
+            # 1. cloud_agent.api_key（推荐路径，优先级最高）
+            if "cloud_agent" in config:
+                api_key = config["cloud_agent"].get("api_key")
                 if api_key:
+                    logger.debug("从 YAML 路径 cloud_agent.api_key 读取 API Key")
                     return api_key
 
-            # auth.api_key
-            if config and "auth" in config:
+            # 2. agent_cli.api_key（旧路径，向后兼容）
+            if "agent_cli" in config:
+                api_key = config["agent_cli"].get("api_key")
+                if api_key:
+                    logger.debug("从 YAML 路径 agent_cli.api_key 读取 API Key（旧路径）")
+                    return api_key
+
+            # 3. auth.api_key（旧路径，向后兼容）
+            if "auth" in config:
                 api_key = config["auth"].get("api_key")
                 if api_key:
+                    logger.debug("从 YAML 路径 auth.api_key 读取 API Key（旧路径）")
                     return api_key
 
             return None

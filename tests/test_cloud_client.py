@@ -268,11 +268,14 @@ class TestCloudAuthManager:
             assert key == "test-config-api-key"
 
     def test_get_api_key_priority(self, auth_config, mock_env_api_key):
-        """API Key 优先级: 环境变量 > 配置"""
+        """API Key 优先级: 配置对象 api_key > 环境变量 > config.yaml
+
+        配置对象中的 api_key 被视为显式传入参数，优先级最高。
+        """
         manager = CloudAuthManager(config=auth_config)
         key = manager.get_api_key()
-        # 环境变量优先
-        assert key == mock_env_api_key
+        # 配置对象中的 api_key 优先（被视为显式传入）
+        assert key == "test-config-api-key"
 
     @pytest.mark.asyncio
     async def test_authenticate_no_api_key(self):
@@ -974,19 +977,26 @@ class TestCloudAgentExecutor:
     @pytest.mark.asyncio
     async def test_execute_not_authenticated(self):
         """未认证时执行失败"""
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.cloud.client import CloudAgentResult
+
         executor = CloudAgentExecutor()
 
+        # Mock CloudClientFactory.execute_task 返回认证失败
+        mock_result = CloudAgentResult(
+            success=False,
+            error="Cloud 认证失败: 未认证",
+        )
+
         with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            return_value=AuthStatus(
-                authenticated=False,
-                error=AuthError("未认证", AuthErrorCode.INVALID_API_KEY),
-            ),
+            CloudClientFactory,
+            "execute_task",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             result = await executor.execute(prompt="test")
             assert result.success is False
-            assert "认证" in result.error
+            assert "认证" in result.error or "未认证" in result.error
 
     @pytest.mark.asyncio
     async def test_check_available(self):
@@ -1592,3 +1602,479 @@ class TestRetryMechanism:
                     # 应该回退到 CLI
                     assert result.success is True
                     assert result.executor_type == "cli"
+
+
+# ========== CloudAgentConfig 解析与注入测试 ==========
+
+
+class TestCloudAgentConfigParsing:
+    """测试 cloud_agent.api_base_url/max_retries 的解析与注入
+
+    验证 CLI/env/config 的优先级:
+    1. CLI 参数（最高）
+    2. 环境变量
+    3. config.yaml
+    4. 代码默认值（最低）
+    """
+
+    def test_cloud_auth_config_default_api_base_url(self):
+        """测试 CloudAuthConfig 默认 api_base_url"""
+        config = CloudAuthConfig()
+        assert config.api_base_url == "https://api.cursor.com"
+
+    def test_cloud_auth_config_default_max_retries(self):
+        """测试 CloudAuthConfig 默认 max_retries"""
+        config = CloudAuthConfig()
+        assert config.max_retries == 3
+
+    def test_cloud_auth_config_custom_api_base_url(self):
+        """测试自定义 api_base_url"""
+        custom_url = "https://custom.api.example.com"
+        config = CloudAuthConfig(api_base_url=custom_url)
+        assert config.api_base_url == custom_url
+
+    def test_cloud_auth_config_custom_max_retries(self):
+        """测试自定义 max_retries"""
+        config = CloudAuthConfig(max_retries=5)
+        assert config.max_retries == 5
+
+    def test_cloud_task_client_inherits_api_base_url(self):
+        """测试 CloudTaskClient 继承 api_base_url"""
+        custom_url = "https://custom.cursor.com"
+        auth_config = CloudAuthConfig(api_key="test-key", api_base_url=custom_url)
+        auth_manager = CloudAuthManager(config=auth_config)
+        task_client = CloudTaskClient(
+            auth_manager=auth_manager,
+            api_base_url=custom_url,
+        )
+
+        assert task_client.api_base_url == custom_url
+
+    def test_cloud_task_client_default_api_base_url(self):
+        """测试 CloudTaskClient 默认 api_base_url"""
+        auth_manager = CloudAuthManager()
+        task_client = CloudTaskClient(auth_manager=auth_manager)
+
+        assert task_client.api_base_url == "https://api.cursor.com"
+
+
+class TestCloudConfigFromYaml:
+    """测试从 config.yaml 加载 cloud_agent 配置
+
+    验证 core.config.CloudAgentConfig 能正确加载 config.yaml 中的值
+    """
+
+    def test_config_cloud_agent_api_base_url(self):
+        """测试从 config.yaml 加载 api_base_url"""
+        from core.config import get_config
+
+        config = get_config()
+        # 验证 api_base_url 有值（不为空）
+        assert config.cloud_agent.api_base_url is not None
+        assert len(config.cloud_agent.api_base_url) > 0
+        # 验证是有效的 URL 格式
+        assert config.cloud_agent.api_base_url.startswith("http")
+
+    def test_config_cloud_agent_max_retries(self):
+        """测试从 config.yaml 加载 max_retries"""
+        from core.config import get_config
+
+        config = get_config()
+        # 验证 max_retries 是正整数
+        assert config.cloud_agent.max_retries >= 0
+        assert isinstance(config.cloud_agent.max_retries, int)
+
+    def test_config_cloud_agent_timeout(self):
+        """测试从 config.yaml 加载 timeout"""
+        from core.config import get_config
+
+        config = get_config()
+        # 验证 timeout 是正数
+        assert config.cloud_agent.timeout > 0
+
+    def test_config_cloud_agent_auth_timeout(self):
+        """测试从 config.yaml 加载 auth_timeout"""
+        from core.config import get_config
+
+        config = get_config()
+        # 验证 auth_timeout 是正数
+        assert config.cloud_agent.auth_timeout > 0
+
+
+class TestCloudConfigPriority:
+    """测试 Cloud 配置优先级
+
+    验证优先级正确：
+    1. 显式设置的 api_key（最高）
+    2. 环境变量 CURSOR_API_KEY
+    3. config.yaml
+    4. 代码默认值（最低）
+    """
+
+    def test_explicit_api_key_highest_priority(self, mock_env_api_key):
+        """测试显式设置的 API Key 优先级最高
+
+        当在 CloudAuthConfig 中显式设置 api_key 时，
+        即使环境变量存在，也使用显式设置的值。
+        """
+        auth_config = CloudAuthConfig(api_key="explicit-api-key")
+        auth_manager = CloudAuthManager(config=auth_config)
+
+        # 显式设置的 api_key 优先级最高
+        api_key = auth_manager.get_api_key()
+        assert api_key == "explicit-api-key"
+
+    def test_env_api_key_overrides_config_file_lookup(self, mock_env_api_key):
+        """测试环境变量 API Key 优先于 config.yaml 文件查找
+
+        当 CloudAuthConfig 未显式设置 api_key 时，
+        环境变量优先于从 config.yaml 文件读取。
+        """
+        # 不设置 api_key，让它从环境变量或配置文件读取
+        auth_config = CloudAuthConfig()
+        auth_manager = CloudAuthManager(config=auth_config)
+
+        # 环境变量优先于配置文件查找
+        api_key = auth_manager.get_api_key()
+        assert api_key == mock_env_api_key
+
+    def test_config_api_key_when_no_env(self):
+        """测试无环境变量时使用显式设置的 config API Key"""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("CURSOR_API_KEY", None)
+            auth_config = CloudAuthConfig(api_key="config-only-key")
+            auth_manager = CloudAuthManager(config=auth_config)
+
+            api_key = auth_manager.get_api_key()
+            assert api_key == "config-only-key"
+
+    def test_cloud_auth_config_from_core_config(self):
+        """测试从 core.config 加载 CloudAgentConfig 并注入到 CloudAuthConfig"""
+        from core.config import get_config
+
+        config = get_config()
+
+        # 使用 config.yaml 中的值构建 CloudAuthConfig
+        auth_config = CloudAuthConfig(
+            api_base_url=config.cloud_agent.api_base_url,
+            auth_timeout=config.cloud_agent.auth_timeout,
+            max_retries=config.cloud_agent.max_retries,
+        )
+
+        # 验证值正确注入
+        assert auth_config.api_base_url == config.cloud_agent.api_base_url
+        assert auth_config.auth_timeout == config.cloud_agent.auth_timeout
+        assert auth_config.max_retries == config.cloud_agent.max_retries
+
+
+class TestCloudTaskClientConfigInjection:
+    """测试 CloudTaskClient 配置注入
+
+    验证 api_base_url/max_retries 正确传递到 CloudTaskClient
+    """
+
+    def test_task_client_custom_config_injection(self):
+        """测试 CloudTaskClient 自定义配置注入"""
+        from cursor.cloud.retry import RetryConfig
+
+        custom_api_url = "https://custom.api.com"
+        custom_max_retries = 5
+
+        auth_config = CloudAuthConfig(
+            api_key="test-key",
+            api_base_url=custom_api_url,
+        )
+        auth_manager = CloudAuthManager(config=auth_config)
+        retry_config = RetryConfig(max_retries=custom_max_retries)
+
+        task_client = CloudTaskClient(
+            auth_manager=auth_manager,
+            api_base_url=custom_api_url,
+            retry_config=retry_config,
+        )
+
+        assert task_client.api_base_url == custom_api_url
+        assert task_client.retry_config.max_retries == custom_max_retries
+
+    def test_task_client_default_config(self):
+        """测试 CloudTaskClient 默认配置"""
+        auth_manager = CloudAuthManager()
+        task_client = CloudTaskClient(auth_manager=auth_manager)
+
+        # 验证默认值
+        assert task_client.api_base_url == "https://api.cursor.com"
+        assert task_client.retry_config is not None
+        assert task_client.retry_config.max_retries == 3  # RetryConfig 默认值
+
+
+class TestCloudExecutorConfigInjection:
+    """测试 CloudAgentExecutor 配置注入
+
+    验证执行器正确使用配置值
+    """
+
+    def test_cloud_executor_uses_auth_manager(self):
+        """测试 CloudAgentExecutor 使用认证管理器"""
+        executor = CloudAgentExecutor()
+        assert executor.auth_manager is not None
+        assert isinstance(executor.auth_manager, CloudAuthManager)
+
+    def test_cloud_executor_custom_auth_config(self):
+        """测试 CloudAgentExecutor 使用自定义认证配置
+
+        CloudAgentExecutor 接受 auth_config 参数（不是 auth_manager）
+        """
+        custom_config = CloudAuthConfig(
+            api_key="custom-api-key",
+            api_base_url="https://custom.api.com",
+            max_retries=5,
+        )
+        executor = CloudAgentExecutor(auth_config=custom_config)
+
+        # 验证认证配置被正确注入
+        assert executor._auth_config.api_base_url == "https://custom.api.com"
+        assert executor._auth_config.max_retries == 5
+        assert executor._auth_config.api_key == "custom-api-key"
+
+
+# ========== CURSOR_CLOUD_API_KEY 环境变量测试 ==========
+
+
+class TestCursorCloudApiKeyEnvVar:
+    """测试 CURSOR_CLOUD_API_KEY 环境变量支持
+
+    验证优先级：
+    1. 显式参数
+    2. 环境变量 CURSOR_API_KEY
+    3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+    4. config.yaml
+    """
+
+    def test_cloud_auth_manager_uses_cursor_cloud_api_key(self):
+        """测试 CloudAuthManager 支持 CURSOR_CLOUD_API_KEY 环境变量"""
+        with patch.dict(os.environ, {}, clear=True):
+            # 只设置 CURSOR_CLOUD_API_KEY
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ["CURSOR_CLOUD_API_KEY"] = "cloud-api-key-from-env"
+
+            manager = CloudAuthManager(config=CloudAuthConfig())
+            api_key = manager.get_api_key()
+
+            assert api_key == "cloud-api-key-from-env"
+
+    def test_cursor_api_key_priority_over_cursor_cloud_api_key(self):
+        """测试 CURSOR_API_KEY 优先于 CURSOR_CLOUD_API_KEY"""
+        with patch.dict(os.environ, {}, clear=True):
+            # 同时设置两个环境变量
+            os.environ["CURSOR_API_KEY"] = "cursor-api-key"
+            os.environ["CURSOR_CLOUD_API_KEY"] = "cursor-cloud-api-key"
+
+            manager = CloudAuthManager(config=CloudAuthConfig())
+            api_key = manager.get_api_key()
+
+            # CURSOR_API_KEY 应该优先
+            assert api_key == "cursor-api-key"
+
+    def test_config_api_key_priority_over_env(self):
+        """测试配置中的 api_key 优先于所有环境变量"""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ["CURSOR_API_KEY"] = "cursor-api-key"
+            os.environ["CURSOR_CLOUD_API_KEY"] = "cursor-cloud-api-key"
+
+            config = CloudAuthConfig(api_key="config-api-key")
+            manager = CloudAuthManager(config=config)
+            api_key = manager.get_api_key()
+
+            # 配置中的 api_key 应该优先
+            assert api_key == "config-api-key"
+
+    def test_cloud_client_factory_resolve_api_key_cursor_cloud_api_key(self):
+        """测试 CloudClientFactory.resolve_api_key 支持 CURSOR_CLOUD_API_KEY"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.dict(os.environ, {}, clear=True):
+            # 只设置 CURSOR_CLOUD_API_KEY
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ["CURSOR_CLOUD_API_KEY"] = "factory-cloud-api-key"
+
+            api_key = CloudClientFactory.resolve_api_key()
+
+            assert api_key == "factory-cloud-api-key"
+
+    def test_cloud_client_factory_resolve_api_key_priority(self):
+        """测试 CloudClientFactory.resolve_api_key 优先级"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ["CURSOR_API_KEY"] = "cursor-api-key"
+            os.environ["CURSOR_CLOUD_API_KEY"] = "cursor-cloud-api-key"
+
+            # 显式参数优先级最高
+            api_key = CloudClientFactory.resolve_api_key(
+                explicit_api_key="explicit-api-key"
+            )
+            assert api_key == "explicit-api-key"
+
+            # CURSOR_API_KEY 优先于 CURSOR_CLOUD_API_KEY
+            api_key = CloudClientFactory.resolve_api_key()
+            assert api_key == "cursor-api-key"
+
+            # 清除 CURSOR_API_KEY，CURSOR_CLOUD_API_KEY 应生效
+            os.environ.pop("CURSOR_API_KEY", None)
+            api_key = CloudClientFactory.resolve_api_key()
+            assert api_key == "cursor-cloud-api-key"
+
+    def test_build_cloud_client_config_cursor_cloud_api_key(self):
+        """测试 build_cloud_client_config 支持 CURSOR_CLOUD_API_KEY"""
+        from core.config import build_cloud_client_config, ConfigManager
+
+        with patch.dict(os.environ, {}, clear=True):
+            # 只设置 CURSOR_CLOUD_API_KEY
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ["CURSOR_CLOUD_API_KEY"] = "build-cloud-api-key"
+
+            # 重置 ConfigManager 以清除缓存
+            ConfigManager.reset_instance()
+
+            config = build_cloud_client_config()
+
+            assert config["api_key"] == "build-cloud-api-key"
+
+
+# ========== CloudAuthManager 从 config.yaml 读取 api_key 测试 ==========
+
+
+class TestCloudAuthManagerApiKeyFromConfigYaml:
+    """测试 CloudAuthManager 仅设置 cloud_agent.api_key 时可解析到 key
+
+    验证：
+    1. 无环境变量时，CloudAuthManager 从 config.yaml 的 cloud_agent.api_key 读取
+    2. 优先级正确：显式参数 > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
+    """
+
+    def test_cloud_auth_manager_reads_api_key_from_config_yaml(self, tmp_path):
+        """测试 CloudAuthManager 从 config.yaml 的 cloud_agent.api_key 读取 API Key"""
+        import yaml
+        from pathlib import Path
+        from core.config import ConfigManager
+
+        # 创建包含 cloud_agent.api_key 的 config.yaml
+        config_content = {
+            "cloud_agent": {
+                "api_key": "yaml-cloud-api-key-12345",
+                "timeout": 300,
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_content, f)
+
+        # 清除环境变量
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ.pop("CURSOR_CLOUD_API_KEY", None)
+
+            # 重置 ConfigManager 并设置工作目录
+            ConfigManager.reset_instance()
+
+            # 使用不设置 api_key 的 CloudAuthConfig
+            config = CloudAuthConfig(config_file=str(config_path))
+            manager = CloudAuthManager(config=config)
+
+            # 验证能从 config.yaml 读取 api_key
+            api_key = manager.get_api_key()
+
+            # 注意：get_api_key 会尝试多个路径，包括 config.yaml
+            # 由于我们明确指定了 config_file，应该能读取到
+            assert api_key == "yaml-cloud-api-key-12345", (
+                f"应从 config.yaml 读取 api_key，实际值: {api_key}"
+            )
+
+    def test_cloud_auth_manager_explicit_api_key_priority(self, tmp_path):
+        """测试显式传入的 api_key 优先于 config.yaml"""
+        import yaml
+
+        # 创建包含 cloud_agent.api_key 的 config.yaml
+        config_content = {
+            "cloud_agent": {
+                "api_key": "yaml-api-key",
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_content, f)
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ.pop("CURSOR_CLOUD_API_KEY", None)
+
+            # 显式设置 api_key
+            config = CloudAuthConfig(
+                api_key="explicit-api-key",
+                config_file=str(config_path),
+            )
+            manager = CloudAuthManager(config=config)
+
+            api_key = manager.get_api_key()
+
+            # 显式设置的 api_key 应该优先
+            assert api_key == "explicit-api-key", (
+                f"显式设置的 api_key 应优先，实际值: {api_key}"
+            )
+
+    def test_cloud_auth_manager_env_priority_over_config_yaml(self, tmp_path):
+        """测试环境变量优先于 config.yaml"""
+        import yaml
+
+        # 创建包含 cloud_agent.api_key 的 config.yaml
+        config_content = {
+            "cloud_agent": {
+                "api_key": "yaml-api-key",
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_content, f)
+
+        with patch.dict(os.environ, {}, clear=True):
+            # 设置环境变量
+            os.environ["CURSOR_API_KEY"] = "env-api-key"
+
+            config = CloudAuthConfig(config_file=str(config_path))
+            manager = CloudAuthManager(config=config)
+
+            api_key = manager.get_api_key()
+
+            # 环境变量应该优先于 config.yaml
+            assert api_key == "env-api-key", (
+                f"环境变量应优先于 config.yaml，实际值: {api_key}"
+            )
+
+    def test_cloud_auth_manager_no_api_key_returns_none(self, tmp_path):
+        """测试无任何 api_key 配置时返回 None"""
+        import yaml
+
+        # 创建不包含 api_key 的 config.yaml
+        config_content = {
+            "cloud_agent": {
+                "timeout": 300,
+                # 注意：不设置 api_key
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_content, f)
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("CURSOR_API_KEY", None)
+            os.environ.pop("CURSOR_CLOUD_API_KEY", None)
+
+            config = CloudAuthConfig(config_file=str(config_path))
+            manager = CloudAuthManager(config=config)
+
+            api_key = manager.get_api_key()
+
+            # 无任何 api_key 配置时应返回 None
+            assert api_key is None, (
+                f"无 api_key 配置时应返回 None，实际值: {api_key}"
+            )

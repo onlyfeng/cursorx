@@ -49,10 +49,20 @@ from core.config import (
     DEFAULT_CLOUD_AUTH_TIMEOUT,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_WORKER_POOL_SIZE,
+    DEFAULT_ENABLE_SUB_PLANNERS,
+    DEFAULT_STRICT_REVIEW,
     get_config,
+    resolve_stream_log_config,
+    resolve_orchestrator_settings,
+    parse_max_iterations,
+    parse_max_iterations_for_argparse,
+    build_cursor_agent_config,
+    format_debug_config,
+    print_debug_config,
 )
-from cursor.cloud_client import CloudAuthConfig
+from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
 from cursor.executor import ExecutionMode
+from core.config import build_cloud_client_config
 
 # ============================================================
 # 运行模式定义
@@ -152,22 +162,43 @@ def print_error(text: str):
 # 参数解析
 # ============================================================
 
-def parse_max_iterations(value: str) -> int:
-    """解析最大迭代次数参数"""
-    value_upper = value.upper().strip()
-    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
-        return -1
-    try:
-        num = int(value)
-        return -1 if num <= 0 else num
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
-        )
+# 使用统一的 parse_max_iterations 函数（从 core.config 导入）
+# parse_max_iterations_for_argparse 用于 argparse 类型转换
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数"""
+    """解析命令行参数
+
+    默认值优先级:
+    1. 自然语言显式指定（最高）
+    2. CLI 显式参数
+    3. config.yaml 配置文件
+    4. 代码默认值（最低）
+
+    Tri-state 参数设计:
+    - 部分参数使用 default=None 实现三态逻辑
+    - None 表示"未显式指定"，允许后续按优先级合并
+    - 在 Runner._merge_options 中实现最终值解析
+    """
+    # 加载配置，获取用于帮助信息显示的默认值
+    config = get_config()
+
+    # 从配置获取值（仅用于帮助信息显示，不作为 argparse 默认值）
+    cfg_worker_pool_size = config.system.worker_pool_size
+    cfg_max_iterations = config.system.max_iterations
+    cfg_planner_model = config.models.planner
+    cfg_worker_model = config.models.worker
+    cfg_reviewer_model = config.models.reviewer
+    cfg_planner_timeout = config.planner.timeout
+    cfg_worker_timeout = config.worker.task_timeout
+    cfg_reviewer_timeout = config.reviewer.timeout
+    cfg_cloud_timeout = config.cloud_agent.timeout
+    cfg_cloud_auth_timeout = config.cloud_agent.auth_timeout
+    cfg_agent_cli_timeout = config.agent_cli.timeout
+    cfg_execution_mode = config.cloud_agent.execution_mode
+    cfg_enable_sub_planners = config.system.enable_sub_planners
+    cfg_strict_review = config.system.strict_review
+
     parser = argparse.ArgumentParser(
         description="CursorX 统一入口 - 多 Agent 协作系统",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -219,30 +250,123 @@ def parse_args() -> argparse.Namespace:
         help="工作目录 (默认: 当前目录)",
     )
 
+    # workers 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-w", "--workers",
         type=int,
-        default=DEFAULT_WORKER_POOL_SIZE,
-        help=f"Worker 数量 (默认: {DEFAULT_WORKER_POOL_SIZE})",
+        default=None,
+        help=f"Worker 数量 (默认: {cfg_worker_pool_size}，来自 config.yaml)",
     )
 
+    # max_iterations 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-m", "--max-iterations",
         type=str,
-        default=str(DEFAULT_MAX_ITERATIONS),
-        help=f"最大迭代次数 (默认: {DEFAULT_MAX_ITERATIONS}，MAX/-1 表示无限迭代)",
+        default=None,
+        help=f"最大迭代次数 (默认: {cfg_max_iterations}，MAX/-1 表示无限迭代)",
     )
 
-    parser.add_argument(
+    # strict_review 使用互斥组实现 tri-state
+    strict_group = parser.add_mutually_exclusive_group()
+    strict_group.add_argument(
         "--strict",
         action="store_true",
-        help="启用严格评审模式",
+        dest="strict_review",
+        default=None,
+        help=f"启用严格评审模式 (config.yaml 默认: {cfg_strict_review})",
+    )
+    strict_group.add_argument(
+        "--no-strict",
+        action="store_false",
+        dest="strict_review",
+        help="禁用严格评审模式",
+    )
+
+    # enable_sub_planners 使用互斥组实现 tri-state
+    sub_planners_group = parser.add_mutually_exclusive_group()
+    sub_planners_group.add_argument(
+        "--enable-sub-planners",
+        action="store_true",
+        dest="enable_sub_planners",
+        default=None,
+        help=f"启用子规划者 (config.yaml 默认: {cfg_enable_sub_planners})",
+    )
+    sub_planners_group.add_argument(
+        "--no-sub-planners",
+        action="store_false",
+        dest="enable_sub_planners",
+        help="禁用子规划者",
     )
 
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="详细输出",
+    )
+
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="静默模式（仅 WARNING 及以上日志）",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="日志级别（优先于 --verbose/--quiet）",
+    )
+
+    parser.add_argument(
+        "--heartbeat-debug",
+        action="store_true",
+        help="启用心跳调试日志",
+    )
+
+    # 卡死诊断参数
+    stall_group = parser.add_argument_group("卡死诊断", "控制卡死检测和恢复的诊断输出")
+    stall_diag_toggle = stall_group.add_mutually_exclusive_group()
+    stall_diag_toggle.add_argument(
+        "--stall-diagnostics",
+        action="store_true",
+        dest="stall_diagnostics_enabled",
+        default=None,
+        help="启用卡死诊断日志",
+    )
+    stall_diag_toggle.add_argument(
+        "--no-stall-diagnostics",
+        action="store_false",
+        dest="stall_diagnostics_enabled",
+        help="禁用卡死诊断日志",
+    )
+    stall_group.add_argument(
+        "--stall-diagnostics-level",
+        type=str,
+        choices=["debug", "info", "warning", "error"],
+        default=None,
+        help="卡死诊断日志级别（默认: warning）",
+    )
+    stall_group.add_argument(
+        "--stall-recovery-interval",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="卡死检测/恢复间隔（秒，默认: 30.0）",
+    )
+    stall_group.add_argument(
+        "--execution-health-check-interval",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="执行阶段健康检查间隔（秒，默认: 30.0）",
+    )
+    stall_group.add_argument(
+        "--health-warning-cooldown",
+        type=float,
+        default=60.0,
+        metavar="SECONDS",
+        help="健康检查告警冷却时间（秒，默认: 60.0）",
     )
 
     # 自我迭代模式专用参数
@@ -324,42 +448,70 @@ def parse_args() -> argparse.Namespace:
         help="[mp] 知识库注入时总字符上限 (默认: 3000)",
     )
 
-    # 多进程模式专用参数 - 默认值从 config.yaml 加载
+    # 多进程模式专用参数 - 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--planner-model",
         type=str,
-        default=DEFAULT_PLANNER_MODEL,
-        help=f"[mp] 规划者模型 (默认: {DEFAULT_PLANNER_MODEL})",
+        default=None,
+        help=f"[mp] 规划者模型 (默认: {cfg_planner_model}，来自 config.yaml)",
     )
 
     parser.add_argument(
         "--worker-model",
         type=str,
-        default=DEFAULT_WORKER_MODEL,
-        help=f"[mp] 执行者模型 (默认: {DEFAULT_WORKER_MODEL})",
+        default=None,
+        help=f"[mp] 执行者模型 (默认: {cfg_worker_model}，来自 config.yaml)",
     )
 
     parser.add_argument(
         "--reviewer-model",
         type=str,
-        default=DEFAULT_REVIEWER_MODEL,
-        help=f"[mp] 评审者模型 (默认: {DEFAULT_REVIEWER_MODEL})",
+        default=None,
+        help=f"[mp] 评审者模型 (默认: {cfg_reviewer_model}，来自 config.yaml)",
     )
 
-    # 流式日志（默认开启）
+    # 流式日志配置（默认来源: logging.stream_json.*）
+    # 使用 tri-state (None=未指定, 使用 config.yaml 默认值)
     stream_log_group = parser.add_mutually_exclusive_group()
     stream_log_group.add_argument(
         "--stream-log",
         action="store_true",
-        dest="stream_log",
-        default=True,
-        help="启用流式日志（默认）",
+        dest="stream_log_enabled",
+        default=None,
+        help="启用 stream-json 流式日志",
     )
     stream_log_group.add_argument(
         "--no-stream-log",
         action="store_false",
-        dest="stream_log",
-        help="禁用流式日志",
+        dest="stream_log_enabled",
+        help="禁用 stream-json 流式日志",
+    )
+
+    parser.add_argument(
+        "--stream-log-console",
+        dest="stream_log_console",
+        action="store_true",
+        default=None,
+        help="流式日志输出到控制台",
+    )
+    parser.add_argument(
+        "--no-stream-log-console",
+        dest="stream_log_console",
+        action="store_false",
+        help="关闭流式日志控制台输出",
+    )
+
+    parser.add_argument(
+        "--stream-log-detail-dir",
+        type=str,
+        default=None,
+        help="stream-json 详细日志目录",
+    )
+    parser.add_argument(
+        "--stream-log-raw-dir",
+        type=str,
+        default=None,
+        help="stream-json 原始日志目录",
     )
 
     # 禁用自动模式分析（直接使用指定模式）
@@ -390,28 +542,30 @@ def parse_args() -> argparse.Namespace:
         help="每次迭代都提交（默认仅在全部完成时提交）",
     )
 
-    # 编排器选择参数（用于 iterate 模式）
+    # 编排器选择参数（用于 iterate 模式）- tri-state
     orchestrator_group = parser.add_mutually_exclusive_group()
     orchestrator_group.add_argument(
         "--orchestrator",
         type=str,
         choices=["mp", "basic"],
-        default="mp",
+        default=None,
         help="[iterate] 编排器类型: mp=多进程(默认), basic=协程模式",
     )
     orchestrator_group.add_argument(
         "--no-mp",
         action="store_true",
+        dest="no_mp",
+        default=None,
         help="[iterate] 禁用多进程编排器，使用基本协程编排器",
     )
 
-    # 执行模式参数（全局，尤其对 iterate 模式有效）
+    # 执行模式参数（全局）- tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--execution-mode",
         type=str,
         choices=["cli", "auto", "cloud"],
-        default="cli",
-        help="执行模式: cli=本地CLI(默认), auto=自动选择(Cloud优先), cloud=强制Cloud",
+        default=None,
+        help=f"执行模式: cli=本地CLI, auto=自动选择(Cloud优先), cloud=强制Cloud (默认: {cfg_execution_mode}，来自 config.yaml)",
     )
 
     # 角色级执行模式参数（可选，默认继承全局 execution-mode）
@@ -447,18 +601,19 @@ def parse_args() -> argparse.Namespace:
         help="Cloud API Key（可选，默认从 CURSOR_API_KEY 环境变量读取）",
     )
 
+    # Cloud 超时参数 - tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--cloud-auth-timeout",
         type=int,
-        default=DEFAULT_CLOUD_AUTH_TIMEOUT,
-        help=f"Cloud 认证超时时间（秒，默认 {DEFAULT_CLOUD_AUTH_TIMEOUT}）",
+        default=None,
+        help=f"Cloud 认证超时时间（秒，默认 {cfg_cloud_auth_timeout}，来自 config.yaml）",
     )
 
     parser.add_argument(
         "--cloud-timeout",
         type=int,
-        default=DEFAULT_CLOUD_TIMEOUT,
-        help=f"Cloud 执行超时时间（秒，默认 {DEFAULT_CLOUD_TIMEOUT}，即 10 分钟）",
+        default=None,
+        help=f"Cloud 执行超时时间（秒，默认 {cfg_cloud_timeout}，来自 config.yaml）",
     )
 
     # Cloud 后台模式参数
@@ -549,6 +704,15 @@ def parse_args() -> argparse.Namespace:
         dest="stream_show_word_diff",
         default=False,
         help="显示逐词差异（默认关闭）",
+    )
+
+    # 配置调试参数
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        dest="print_config",
+        default=False,
+        help="打印配置调试信息并退出（输出格式稳定，便于脚本化 grep/CI 断言）",
     )
 
     args = parser.parse_args()
@@ -837,7 +1001,8 @@ class Runner:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.max_iterations = parse_max_iterations(args.max_iterations)
+        # max_iterations 使用 tri-state，None 表示未显式指定
+        # 实际值将在 _merge_options 中按优先级解析
 
     async def run(self, analysis: TaskAnalysis) -> dict[str, Any]:
         """运行任务
@@ -883,20 +1048,135 @@ class Runner:
             return await self._run_basic(goal, merged_options)
 
     def _merge_options(self, analysis_options: dict) -> dict:
-        """合并命令行参数和分析结果"""
+        """合并命令行参数和分析结果
+
+        优先级（从高到低）：
+        1. 自然语言显式指定 (analysis_options)
+        2. CLI 显式参数 (self.args.xxx 且非 None)
+        3. config.yaml 配置
+        4. 代码默认值
+
+        tri-state 参数处理：
+        - CLI 参数 default=None 表示"未显式指定"
+        - 当 CLI 参数为 None 时，使用 config.yaml 值
+        - 自然语言分析结果可覆盖 CLI 参数
+
+        使用 resolve_orchestrator_settings 统一解析核心编排器配置。
+        """
+        # 构建 CLI overrides 字典，仅包含显式指定的参数
+        cli_overrides = {}
+
+        # workers: CLI 显式参数
+        if self.args.workers is not None:
+            cli_overrides["workers"] = self.args.workers
+
+        # max_iterations: CLI 显式参数
+        if self.args.max_iterations is not None:
+            cli_overrides["max_iterations"] = parse_max_iterations(self.args.max_iterations)
+
+        # strict_review: CLI 显式参数
+        cli_strict = getattr(self.args, "strict_review", None)
+        if cli_strict is not None:
+            cli_overrides["strict_review"] = cli_strict
+
+        # enable_sub_planners: CLI 显式参数
+        cli_sub_planners = getattr(self.args, "enable_sub_planners", None)
+        if cli_sub_planners is not None:
+            cli_overrides["enable_sub_planners"] = cli_sub_planners
+
+        # execution_mode: CLI 显式参数
+        cli_execution_mode = getattr(self.args, "execution_mode", None)
+        if cli_execution_mode is not None:
+            cli_overrides["execution_mode"] = cli_execution_mode
+
+        # cloud_timeout: CLI 显式参数
+        cli_cloud_timeout = getattr(self.args, "cloud_timeout", None)
+        if cli_cloud_timeout is not None:
+            cli_overrides["cloud_timeout"] = cli_cloud_timeout
+
+        # cloud_auth_timeout: CLI 显式参数
+        cli_cloud_auth_timeout = getattr(self.args, "cloud_auth_timeout", None)
+        if cli_cloud_auth_timeout is not None:
+            cli_overrides["cloud_auth_timeout"] = cli_cloud_auth_timeout
+
+        # dry_run: CLI 显式参数
+        if self.args.dry_run:
+            cli_overrides["dry_run"] = True
+
+        # auto_commit/auto_push: CLI 显式参数
+        cli_auto_commit = getattr(self.args, "auto_commit", False)
+        cli_auto_push = getattr(self.args, "auto_push", False)
+        cli_commit_per_iteration = getattr(self.args, "commit_per_iteration", False)
+        if cli_auto_commit:
+            cli_overrides["auto_commit"] = True
+        if cli_auto_push:
+            cli_overrides["auto_push"] = True
+        if cli_commit_per_iteration:
+            cli_overrides["commit_per_iteration"] = True
+
+        # 编排器配置
+        cli_orchestrator = getattr(self.args, "orchestrator", None)
+        cli_no_mp = getattr(self.args, "no_mp", None)
+        if cli_orchestrator is not None:
+            cli_overrides["orchestrator"] = cli_orchestrator
+        elif cli_no_mp is True:
+            cli_overrides["orchestrator"] = "basic"
+
+        # 模型配置: CLI 显式参数（None 表示未指定）
+        if self.args.planner_model is not None:
+            cli_overrides["planner_model"] = self.args.planner_model
+        if self.args.worker_model is not None:
+            cli_overrides["worker_model"] = self.args.worker_model
+        if self.args.reviewer_model is not None:
+            cli_overrides["reviewer_model"] = self.args.reviewer_model
+
+        # 应用自然语言覆盖（最高优先级）
+        # 但对于 orchestrator，需要检查 _orchestrator_user_set 标志
+        orchestrator_user_set = getattr(self.args, "_orchestrator_user_set", False)
+        for key in ["workers", "max_iterations", "strict", "enable_sub_planners",
+                    "execution_mode", "orchestrator", "auto_commit", "auto_push", "dry_run"]:
+            if key in analysis_options and analysis_options[key] is not None:
+                # 如果用户显式设置了 orchestrator，则不被自然语言覆盖
+                if key == "orchestrator" and orchestrator_user_set:
+                    continue
+                # strict 映射为 strict_review
+                override_key = "strict_review" if key == "strict" else key
+                cli_overrides[override_key] = analysis_options[key]
+
+        # 使用统一的 resolve_orchestrator_settings 解析核心配置
+        resolved = resolve_orchestrator_settings(overrides=cli_overrides)
+
+        # 构建 options 字典
         options = {
             "directory": self.args.directory,
-            "workers": analysis_options.get("workers", self.args.workers),
-            "max_iterations": analysis_options.get("max_iterations", self.max_iterations),
-            "strict": analysis_options.get("strict", self.args.strict),
+            "workers": resolved["workers"],
+            "max_iterations": resolved["max_iterations"],
+            "strict": resolved["strict_review"],
+            "enable_sub_planners": resolved["enable_sub_planners"],
             "verbose": self.args.verbose,
+            # 超时配置
+            "planner_timeout": resolved["planner_timeout"],
+            "worker_timeout": resolved["worker_timeout"],
+            "reviewer_timeout": resolved["reviewer_timeout"],
+            "cloud_timeout": resolved["cloud_timeout"],
+            "cloud_auth_timeout": resolved["cloud_auth_timeout"],
+            # 模型配置
+            "planner_model": resolved["planner_model"],
+            "worker_model": resolved["worker_model"],
+            "reviewer_model": resolved["reviewer_model"],
+            # 编排器配置
+            "orchestrator": resolved["orchestrator"],
+            "execution_mode": resolved["execution_mode"],
+            # 提交控制
+            "auto_commit": resolved["auto_commit"],
+            "auto_push": resolved["auto_push"] and resolved["auto_commit"],
+            "commit_per_iteration": resolved["commit_per_iteration"],
+            "dry_run": resolved["dry_run"],
         }
 
         # 自我迭代选项
         if analysis_options.get("skip_online") or self.args.skip_online:
             options["skip_online"] = True
-        if analysis_options.get("dry_run") or self.args.dry_run:
-            options["dry_run"] = True
         if analysis_options.get("force_update") or self.args.force_update:
             options["force_update"] = True
 
@@ -908,52 +1188,45 @@ class Runner:
         if self.args.search_knowledge:
             options["search_knowledge"] = self.args.search_knowledge
 
-        # 多进程选项
-        options["planner_model"] = self.args.planner_model
-        options["worker_model"] = self.args.worker_model
-        options["reviewer_model"] = getattr(self.args, "reviewer_model", "gpt-5.2-codex")
+        # 流式日志配置（使用 resolve_stream_log_config 统一解析）
+        nl_stream_enabled = analysis_options.get("stream_log")
+        cli_stream_enabled = getattr(self.args, "stream_log_enabled", None)
+        cli_stream_console = getattr(self.args, "stream_log_console", None)
+        cli_stream_detail_dir = getattr(self.args, "stream_log_detail_dir", None)
+        cli_stream_raw_dir = getattr(self.args, "stream_log_raw_dir", None)
 
-        # 流式日志（自然语言可控制开关）
-        # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）
-        if "stream_log" in analysis_options:
-            options["stream_log"] = analysis_options["stream_log"]
+        # 自然语言覆盖 CLI（仅当自然语言显式指定时）
+        if nl_stream_enabled is not None:
+            cli_stream_enabled = nl_stream_enabled
+
+        stream_config = resolve_stream_log_config(
+            cli_enabled=cli_stream_enabled,
+            cli_console=cli_stream_console,
+            cli_detail_dir=cli_stream_detail_dir,
+            cli_raw_dir=cli_stream_raw_dir,
+        )
+
+        options["stream_log"] = stream_config["enabled"]
+        options["stream_log_console"] = stream_config["console"]
+        options["stream_log_detail_dir"] = stream_config["detail_dir"]
+        options["stream_log_raw_dir"] = stream_config["raw_dir"]
+
+        # 编排器用户设置元字段（复用前面定义的变量）
+        options["_orchestrator_user_set"] = orchestrator_user_set
+
+        # no_mp 跟随 orchestrator 设置
+        # 如果用户显式设置了 orchestrator，则使用 CLI 的 no_mp 值
+        if orchestrator_user_set and cli_no_mp is not None:
+            options["no_mp"] = cli_no_mp
+        elif orchestrator_user_set:
+            # 用户显式设置 orchestrator=mp 时，no_mp 应为 False
+            options["no_mp"] = options["orchestrator"] == "basic"
+        elif "no_mp" in analysis_options:
+            options["no_mp"] = analysis_options["no_mp"]
+        elif cli_no_mp is not None:
+            options["no_mp"] = cli_no_mp
         else:
-            options["stream_log"] = self.args.stream_log
-
-        # 自动提交选项（自然语言可控制开关）
-        # 优先使用自然语言指定的值，否则使用命令行参数（默认 False）
-        # 注意：auto_commit 默认必须为 False，只有显式参数或关键词才能启用
-        if "auto_commit" in analysis_options:
-            auto_commit = analysis_options["auto_commit"]
-        else:
-            auto_commit = getattr(self.args, "auto_commit", False)
-
-        if "auto_push" in analysis_options:
-            auto_push = analysis_options["auto_push"]
-        else:
-            auto_push = getattr(self.args, "auto_push", False)
-
-        commit_per_iteration = getattr(self.args, "commit_per_iteration", False)
-
-        options["auto_commit"] = auto_commit
-        options["auto_push"] = auto_push and auto_commit  # auto_push 需要 auto_commit
-        options["commit_per_iteration"] = commit_per_iteration
-
-        # 编排器选项（用于 iterate 模式）
-        # 仅在用户未显式传入 --orchestrator/--no-mp 时，允许 analysis_options 覆盖
-        orchestrator_user_set = getattr(self.args, "_orchestrator_user_set", False)
-        if orchestrator_user_set:
-            # 用户显式设置，优先使用命令行参数
-            options["orchestrator"] = getattr(self.args, "orchestrator", "mp")
-            options["no_mp"] = getattr(self.args, "no_mp", False)
-        else:
-            # 用户未显式设置，允许自然语言分析结果覆盖
-            options["orchestrator"] = analysis_options.get(
-                "orchestrator", getattr(self.args, "orchestrator", "mp")
-            )
-            options["no_mp"] = analysis_options.get(
-                "no_mp", getattr(self.args, "no_mp", False)
-            )
+            options["no_mp"] = options["orchestrator"] == "basic"
 
         # 知识库注入选项（用于 MP 模式）
         options["enable_knowledge_injection"] = getattr(
@@ -967,43 +1240,22 @@ class Runner:
             self.args, "knowledge_max_total_chars", 3000
         )
 
-        # 执行模式（优先使用分析结果，否则使用命令行参数）
-        # 当 '&' 前缀触发 Cloud 模式时，analysis_options 中会设置 execution_mode="cloud"
-        if "execution_mode" in analysis_options:
-            options["execution_mode"] = analysis_options["execution_mode"]
-        else:
-            options["execution_mode"] = getattr(self.args, "execution_mode", "cli")
-
         # Cloud 认证配置
         options["cloud_api_key"] = getattr(self.args, "cloud_api_key", None)
-        options["cloud_auth_timeout"] = getattr(
-            self.args, "cloud_auth_timeout", DEFAULT_CLOUD_AUTH_TIMEOUT
-        )
-        # Cloud 执行超时（独立于 max_iterations）
-        options["cloud_timeout"] = getattr(
-            self.args, "cloud_timeout", DEFAULT_CLOUD_TIMEOUT
-        )
 
         # Cloud 后台模式配置
-        # 优先级：
-        # 1. 命令行参数 --cloud-background / --no-cloud-background（如果显式指定）
-        # 2. 自然语言分析结果（& 前缀触发时 cloud_background=True）
-        # 3. 默认值：& 前缀触发默认 True，--execution-mode cloud 默认 False
         cli_cloud_background = getattr(self.args, "cloud_background", None)
         if cli_cloud_background is not None:
-            # 命令行显式指定，优先使用
             options["cloud_background"] = cli_cloud_background
         elif "cloud_background" in analysis_options:
-            # 自然语言分析结果（& 前缀触发）
             options["cloud_background"] = analysis_options["cloud_background"]
         else:
-            # 默认值：非 & 前缀触发（即 --execution-mode cloud）时默认 False
             options["cloud_background"] = False
 
-        # 标记是否由 & 前缀触发（用于输出行为调整）
+        # 标记是否由 & 前缀触发
         options["triggered_by_prefix"] = analysis_options.get("triggered_by_prefix", False)
 
-        # 角色级执行模式（可选，默认继承全局 execution_mode）
+        # 角色级执行模式
         options["planner_execution_mode"] = getattr(
             self.args, "planner_execution_mode", None
         )
@@ -1014,7 +1266,7 @@ class Runner:
             self.args, "reviewer_execution_mode", None
         )
 
-        # 流式控制台渲染配置（默认关闭）
+        # 流式控制台渲染配置
         options["stream_console_renderer"] = getattr(
             self.args, "stream_console_renderer", False
         )
@@ -1037,7 +1289,59 @@ class Runner:
             self.args, "stream_show_word_diff", False
         )
 
+        # 日志控制参数
+        options["quiet"] = getattr(self.args, "quiet", False)
+        options["log_level"] = getattr(self.args, "log_level", None)
+        options["heartbeat_debug"] = getattr(self.args, "heartbeat_debug", False)
+
+        # 卡死诊断参数
+        options["stall_diagnostics_enabled"] = getattr(
+            self.args, "stall_diagnostics_enabled", None
+        )
+        options["stall_diagnostics_level"] = getattr(
+            self.args, "stall_diagnostics_level", None
+        )
+        options["stall_recovery_interval"] = getattr(
+            self.args, "stall_recovery_interval", 30.0
+        )
+        options["execution_health_check_interval"] = getattr(
+            self.args, "execution_health_check_interval", 30.0
+        )
+        options["health_warning_cooldown"] = getattr(
+            self.args, "health_warning_cooldown", 60.0
+        )
+
         return options
+
+    def _build_cursor_config(self, options: dict) -> "CursorAgentConfig":
+        """从 options 字典构建 CursorAgentConfig
+
+        使用统一的 build_cursor_agent_config 函数构建配置，
+        确保配置优先级处理一致。
+
+        Args:
+            options: _merge_options 返回的选项字典
+
+        Returns:
+            构建好的 CursorAgentConfig 实例
+        """
+        from cursor.client import CursorAgentConfig
+
+        # 将 options 转换为 build_cursor_agent_config 需要的 overrides
+        overrides = {
+            "stream_events_enabled": options.get("stream_log", False),
+            "stream_log_console": options.get("stream_log_console", True),
+            "stream_log_detail_dir": options.get("stream_log_detail_dir"),
+            "stream_log_raw_dir": options.get("stream_log_raw_dir"),
+        }
+
+        # 调用统一的构建函数
+        config_dict = build_cursor_agent_config(
+            working_directory=options["directory"],
+            overrides=overrides,
+        )
+
+        return CursorAgentConfig(**config_dict)
 
     def _get_mode_name(self, mode: RunMode) -> str:
         """获取模式显示名称"""
@@ -1094,9 +1398,16 @@ class Runner:
     def _get_cloud_auth_config(self, options: dict) -> Optional[CloudAuthConfig]:
         """获取 Cloud 认证配置
 
-        优先级：
-        1. --cloud-api-key 参数
-        2. CURSOR_API_KEY 环境变量
+        使用 CloudClientFactory.resolve_api_key 统一解析 API Key，
+        确保配置来源优先级一致。
+
+        优先级（从高到低）：
+        1. --cloud-api-key 参数（CLI 显式指定）
+        2. 环境变量 CURSOR_API_KEY
+        3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+        4. config.yaml 中的 cloud_agent.api_key
+
+        其他配置（auth_timeout, base_url 等）也遵循 CLI > config.yaml > DEFAULT_* 优先级。
 
         Args:
             options: 合并后的选项字典
@@ -1104,22 +1415,36 @@ class Runner:
         Returns:
             CloudAuthConfig 或 None（未配置 key 时）
         """
-        import os
-
-        # 优先使用 --cloud-api-key 参数
-        api_key = options.get("cloud_api_key")
-        # 回退到环境变量
-        if not api_key:
-            api_key = os.environ.get("CURSOR_API_KEY")
+        # 使用 CloudClientFactory.resolve_api_key 统一解析 API Key
+        # 优先级: CLI 显式参数 > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
+        cli_api_key = options.get("cloud_api_key")
+        api_key = CloudClientFactory.resolve_api_key(explicit_api_key=cli_api_key)
 
         if not api_key:
             return None
 
-        # 认证超时配置
-        auth_timeout = options.get("cloud_auth_timeout", 30)
+        # 从 config.yaml 获取默认配置
+        cloud_config = build_cloud_client_config()
+
+        # 解析 auth_timeout，优先级: CLI > config.yaml > DEFAULT_*
+        cli_auth_timeout = options.get("cloud_auth_timeout")
+        auth_timeout = (
+            cli_auth_timeout
+            if cli_auth_timeout is not None
+            else cloud_config.get("auth_timeout", DEFAULT_CLOUD_AUTH_TIMEOUT)
+        )
+
+        # 解析 base_url，优先级: config.yaml > DEFAULT_*（暂无 CLI 参数）
+        base_url = cloud_config.get("base_url", "https://api.cursor.com")
+
+        # 解析 max_retries，优先级: config.yaml > DEFAULT_*（暂无 CLI 参数）
+        max_retries = cloud_config.get("max_retries", 3)
+
         return CloudAuthConfig(
             api_key=api_key,
             auth_timeout=auth_timeout,
+            api_base_url=base_url,
+            max_retries=max_retries,
         )
 
     async def _search_knowledge_docs(self, query: str) -> list[dict[str, Any]]:
@@ -1181,8 +1506,13 @@ class Runner:
         from coordinator import Orchestrator, OrchestratorConfig
         from cursor.client import CursorAgentConfig
 
+        # 创建 CursorAgentConfig，注入 resolved stream 配置
         cursor_config = CursorAgentConfig(
             working_directory=options["directory"],
+            stream_events_enabled=options.get("stream_log", False),
+            stream_log_console=options.get("stream_log_console", True),
+            stream_log_detail_dir=options.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=options.get("stream_log_raw_dir", "logs/stream_json/raw/"),
         )
 
         # 获取执行模式和 Cloud 认证配置
@@ -1204,9 +1534,15 @@ class Runner:
             working_directory=options["directory"],
             max_iterations=options["max_iterations"],
             worker_pool_size=options["workers"],
-            strict_review=options.get("strict", False),
+            # 系统配置（tri-state 已在 _merge_options 中解析）
+            enable_sub_planners=options.get("enable_sub_planners", DEFAULT_ENABLE_SUB_PLANNERS),
+            strict_review=options.get("strict", DEFAULT_STRICT_REVIEW),
             cursor_config=cursor_config,
+            # 流式日志配置（使用 resolved stream config）
             stream_events_enabled=options.get("stream_log", False),
+            stream_log_console=options.get("stream_log_console", True),
+            stream_log_detail_dir=options.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=options.get("stream_log_raw_dir", "logs/stream_json/raw/"),
             enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
             commit_per_iteration=options.get("commit_per_iteration", False),
@@ -1274,11 +1610,17 @@ class Runner:
             working_directory=options["directory"],
             max_iterations=options["max_iterations"],
             worker_count=options["workers"],
-            strict_review=options.get("strict", False),
+            # 系统配置（tri-state 已在 _merge_options 中解析）
+            enable_sub_planners=options.get("enable_sub_planners", DEFAULT_ENABLE_SUB_PLANNERS),
+            strict_review=options.get("strict", DEFAULT_STRICT_REVIEW),
             planner_model=options.get("planner_model", DEFAULT_PLANNER_MODEL),
             worker_model=options.get("worker_model", DEFAULT_WORKER_MODEL),
             reviewer_model=options.get("reviewer_model", DEFAULT_REVIEWER_MODEL),
+            # 流式日志配置（使用 resolved stream config）
             stream_events_enabled=options.get("stream_log", False),
+            stream_log_console=options.get("stream_log_console", True),
+            stream_log_detail_dir=options.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=options.get("stream_log_raw_dir", "logs/stream_json/raw/"),
             # 自动提交配置透传（默认禁用）
             enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
@@ -1344,8 +1686,13 @@ class Runner:
                 context_text += f"```\n{doc['content'][:1000]}\n```\n\n"
             enhanced_goal = f"{goal}\n{context_text}"
 
+        # 创建 CursorAgentConfig，注入 resolved stream 配置
         cursor_config = CursorAgentConfig(
             working_directory=options["directory"],
+            stream_events_enabled=options.get("stream_log", False),
+            stream_log_console=options.get("stream_log_console", True),
+            stream_log_detail_dir=options.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=options.get("stream_log_raw_dir", "logs/stream_json/raw/"),
         )
 
         # 获取执行模式和 Cloud 认证配置
@@ -1367,8 +1714,15 @@ class Runner:
             working_directory=options["directory"],
             max_iterations=options["max_iterations"],
             worker_pool_size=options["workers"],
-            strict_review=options.get("strict", False),
+            # 系统配置（tri-state 已在 _merge_options 中解析）
+            enable_sub_planners=options.get("enable_sub_planners", DEFAULT_ENABLE_SUB_PLANNERS),
+            strict_review=options.get("strict", DEFAULT_STRICT_REVIEW),
             cursor_config=cursor_config,
+            # 流式日志配置（使用 resolved stream config）
+            stream_events_enabled=options.get("stream_log", False),
+            stream_log_console=options.get("stream_log_console", True),
+            stream_log_detail_dir=options.get("stream_log_detail_dir", "logs/stream_json/detail/"),
+            stream_log_raw_dir=options.get("stream_log_raw_dir", "logs/stream_json/raw/"),
             # 自动提交配置（需显式开启）
             enable_auto_commit=options.get("auto_commit", False),
             auto_push=options.get("auto_push", False),
@@ -1404,31 +1758,65 @@ class Runner:
         )
 
         # 创建模拟的 args 对象
+        # 字段命名与 scripts/run_iterate.py 的 parse_args 保持一致
         class IterateArgs:
             def __init__(self, goal: str, opts: dict):
+                # 基础参数（与 scripts/run_iterate.py argparse 参数对齐）
                 self.requirement = goal
                 self.skip_online = opts.get("skip_online", False)
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 5))
-                self.workers = opts.get("workers", 3)
+                # max_iterations: 字符串类型（与 argparse 一致）
+                self.max_iterations = str(opts.get("max_iterations", DEFAULT_MAX_ITERATIONS))
+                # workers: 整数类型
+                self.workers = opts.get("workers", DEFAULT_WORKER_POOL_SIZE)
                 self.force_update = opts.get("force_update", False)
                 self.verbose = opts.get("verbose", False)
+                # 工作目录
+                self.directory = opts.get("directory", ".")
+
+                # 系统配置（从 config.yaml 或 _merge_options 传入）
+                self.enable_sub_planners = opts.get("enable_sub_planners", DEFAULT_ENABLE_SUB_PLANNERS)
+                self.strict_review = opts.get("strict", DEFAULT_STRICT_REVIEW)
+
                 # 自动提交选项
                 self.auto_commit = opts.get("auto_commit", False)
                 self.auto_push = opts.get("auto_push", False)
                 self.commit_per_iteration = opts.get("commit_per_iteration", False)
                 self.commit_message = opts.get("commit_message", "")
-                # 编排器选项
+
+                # 编排器选项（tri-state 已在 _merge_options 中处理）
                 self.orchestrator = opts.get("orchestrator", "mp")
                 self.no_mp = opts.get("no_mp", False)
                 # 元字段：标记用户是否显式设置了编排器选项
                 # 当 True 时，SelfIterator 不会被 requirement 中的非并行关键词覆盖
                 self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+
                 # 执行模式和 Cloud 认证参数（与 scripts/run_iterate.py 对齐）
                 self.execution_mode = opts.get("execution_mode", "cli")
                 self.cloud_api_key = opts.get("cloud_api_key", None)
-                self.cloud_auth_timeout = opts.get("cloud_auth_timeout", 30)
+                # cloud_auth_timeout: 整数类型（与 argparse 一致）
+                self.cloud_auth_timeout = opts.get("cloud_auth_timeout", DEFAULT_CLOUD_AUTH_TIMEOUT)
+                # cloud_timeout: 整数类型（与 argparse 一致）
+                self.cloud_timeout = opts.get("cloud_timeout", DEFAULT_CLOUD_TIMEOUT)
+
+                # 角色级执行模式（从 _merge_options 映射）
+                self.planner_execution_mode = opts.get("planner_execution_mode", None)
+                self.worker_execution_mode = opts.get("worker_execution_mode", None)
+                self.reviewer_execution_mode = opts.get("reviewer_execution_mode", None)
+
+                # 日志控制参数
+                self.quiet = opts.get("quiet", False)
+                self.log_level = opts.get("log_level", None)
+                self.heartbeat_debug = opts.get("heartbeat_debug", False)
+
+                # 卡死诊断参数
+                self.stall_diagnostics_enabled = opts.get("stall_diagnostics_enabled", None)
+                self.stall_diagnostics_level = opts.get("stall_diagnostics_level", None)
+                self.stall_recovery_interval = opts.get("stall_recovery_interval", 30.0)
+                self.execution_health_check_interval = opts.get("execution_health_check_interval", 30.0)
+                self.health_warning_cooldown = opts.get("health_warning_cooldown", 60.0)
+
                 # 流式控制台渲染配置
                 self.stream_console_renderer = opts.get("stream_console_renderer", False)
                 self.stream_advanced_renderer = opts.get("stream_advanced_renderer", False)
@@ -1604,7 +1992,7 @@ class Runner:
         - auto_commit 独立于 force_write，需用户显式启用
 
         超时策略:
-        - 使用独立的 --cloud-timeout 参数（默认 600 秒）
+        - 使用独立的 --cloud-timeout 参数（默认 300 秒）
         - 不从 max_iterations 推导，避免 -1 等特殊值导致问题
         """
         from cursor.executor import AgentExecutorFactory, ExecutionMode
@@ -1649,8 +2037,8 @@ class Runner:
             force_write = options.get("force_write", True)
 
             # 使用独立的 Cloud 超时参数（不从 max_iterations 推导）
-            # 默认 600 秒（10 分钟），可通过 --cloud-timeout 覆盖
-            cloud_timeout = options.get("cloud_timeout", 600)
+            # 默认 300 秒（5 分钟），可通过 --cloud-timeout 覆盖
+            cloud_timeout = options.get("cloud_timeout", 300)
 
             # 创建 Cloud 执行器配置
             config = CursorAgentConfig(
@@ -1729,7 +2117,7 @@ class Runner:
                 }
 
         except asyncio.TimeoutError:
-            cloud_timeout = options.get("cloud_timeout", 600)
+            cloud_timeout = options.get("cloud_timeout", 300)
             print_error(f"Cloud 执行超时 ({cloud_timeout}s)")
             return {
                 "success": False,
@@ -1821,10 +2209,96 @@ def setup_logging(verbose: bool = False) -> None:
 # 主入口
 # ============================================================
 
+def _build_cli_overrides_from_args(args: argparse.Namespace) -> dict:
+    """从命令行参数构建 CLI overrides 字典
+
+    用于 format_debug_config 和 resolve_orchestrator_settings。
+
+    Args:
+        args: 命令行参数
+
+    Returns:
+        CLI overrides 字典
+    """
+    cli_overrides = {}
+
+    # workers: CLI 显式参数
+    if args.workers is not None:
+        cli_overrides["workers"] = args.workers
+
+    # max_iterations: CLI 显式参数
+    if args.max_iterations is not None:
+        cli_overrides["max_iterations"] = parse_max_iterations(args.max_iterations)
+
+    # strict_review: CLI 显式参数
+    cli_strict = getattr(args, "strict_review", None)
+    if cli_strict is not None:
+        cli_overrides["strict_review"] = cli_strict
+
+    # enable_sub_planners: CLI 显式参数
+    cli_sub_planners = getattr(args, "enable_sub_planners", None)
+    if cli_sub_planners is not None:
+        cli_overrides["enable_sub_planners"] = cli_sub_planners
+
+    # execution_mode: CLI 显式参数
+    cli_execution_mode = getattr(args, "execution_mode", None)
+    if cli_execution_mode is not None:
+        cli_overrides["execution_mode"] = cli_execution_mode
+
+    # cloud_timeout: CLI 显式参数
+    cli_cloud_timeout = getattr(args, "cloud_timeout", None)
+    if cli_cloud_timeout is not None:
+        cli_overrides["cloud_timeout"] = cli_cloud_timeout
+
+    # cloud_auth_timeout: CLI 显式参数
+    cli_cloud_auth_timeout = getattr(args, "cloud_auth_timeout", None)
+    if cli_cloud_auth_timeout is not None:
+        cli_overrides["cloud_auth_timeout"] = cli_cloud_auth_timeout
+
+    # dry_run: CLI 显式参数
+    if args.dry_run:
+        cli_overrides["dry_run"] = True
+
+    # auto_commit/auto_push: CLI 显式参数
+    cli_auto_commit = getattr(args, "auto_commit", False)
+    cli_auto_push = getattr(args, "auto_push", False)
+    cli_commit_per_iteration = getattr(args, "commit_per_iteration", False)
+    if cli_auto_commit:
+        cli_overrides["auto_commit"] = True
+    if cli_auto_push:
+        cli_overrides["auto_push"] = True
+    if cli_commit_per_iteration:
+        cli_overrides["commit_per_iteration"] = True
+
+    # 编排器配置
+    cli_orchestrator = getattr(args, "orchestrator", None)
+    cli_no_mp = getattr(args, "no_mp", None)
+    if cli_orchestrator is not None:
+        cli_overrides["orchestrator"] = cli_orchestrator
+    elif cli_no_mp is True:
+        cli_overrides["orchestrator"] = "basic"
+
+    # 模型配置: CLI 显式参数（None 表示未指定）
+    if args.planner_model is not None:
+        cli_overrides["planner_model"] = args.planner_model
+    if args.worker_model is not None:
+        cli_overrides["worker_model"] = args.worker_model
+    if args.reviewer_model is not None:
+        cli_overrides["reviewer_model"] = args.reviewer_model
+
+    return cli_overrides
+
+
 async def async_main() -> int:
     """异步主函数"""
     args = parse_args()
     setup_logging(args.verbose)
+
+    # 处理 --print-config 参数：打印配置调试信息并退出
+    if getattr(args, "print_config", False):
+        cli_overrides = _build_cli_overrides_from_args(args)
+        print_debug_config(cli_overrides, source_label="run.py")
+        return 0
 
     # 解析模式
     explicit_mode = MODE_ALIASES.get(args.mode, RunMode.AUTO)

@@ -14,34 +14,13 @@ sys.path.insert(0, str(project_root))
 
 from agents.committer import CommitterAgent, CommitterConfig
 from coordinator.orchestrator_mp import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
+from core.config import (
+    get_config,
+    resolve_stream_log_config,
+    resolve_orchestrator_settings,
+    parse_max_iterations,
+)
 from cursor.client import CursorAgentConfig
-
-
-def parse_max_iterations(value: str) -> int:
-    """解析最大迭代次数参数
-
-    Args:
-        value: 参数值，可以是数字、MAX、-1 或 0
-
-    Returns:
-        迭代次数，-1 表示无限迭代
-    """
-    value_upper = value.upper().strip()
-
-    # MAX 或 -1 或 0 表示无限迭代
-    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
-        return -1
-
-    try:
-        num = int(value)
-        # -1 或 0 也表示无限迭代
-        if num <= 0:
-            return -1
-        return num
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
-        )
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -65,18 +44,51 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数"""
+    """解析命令行参数
+
+    默认值来源优先级:
+    1. CLI 显式参数 (最高优先级)
+    2. config.yaml (通过 core.config.resolve_orchestrator_settings())
+    3. 代码默认值 (最低优先级)
+
+    tri-state 参数设计:
+    - 部分参数使用 default=None 实现三态逻辑
+    - None 表示"未显式指定"，允许后续按优先级合并
+    - 在 run_orchestrator 中通过 resolve_orchestrator_settings 解析最终值
+    """
+    # 在函数内部按需加载配置，仅用于帮助信息显示（不作为 argparse 默认值）
+    config = get_config()
+    logger.debug(f"加载配置: config_path={getattr(config, '_config_path', 'unknown')}")
+
+    # 从配置中获取帮助信息显示用的默认值
+    cfg_workers = config.system.worker_pool_size
+    cfg_max_iterations = config.system.max_iterations
+    cfg_planning_timeout = config.planner.timeout
+    cfg_execution_timeout = config.worker.task_timeout
+    cfg_review_timeout = config.reviewer.timeout
+    cfg_strict_review = config.system.strict_review
+    cfg_enable_sub_planners = config.system.enable_sub_planners
+    cfg_planner_model = config.models.planner
+    cfg_worker_model = config.models.worker
+    cfg_reviewer_model = config.models.reviewer
+
     parser = argparse.ArgumentParser(
         description="规划者-执行者 多Agent系统（多进程版本）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python main_mp.py "实现一个 REST API 服务"
-  python main_mp.py "重构 src 目录下的代码" --workers 5
-  python main_mp.py "添加单元测试" --strict --max-iterations 5
+  # 通过统一入口运行 iterate 模式（多进程）
+  python run.py --mode iterate "实现一个 REST API 服务"
+  python run.py --mode iterate "重构 src 目录下的代码" --workers 5
+  python run.py --mode iterate "添加单元测试" --strict --max-iterations 5
+
+  # 或直接运行本脚本
+  python scripts/run_mp.py "实现一个 REST API 服务"
+  python scripts/run_mp.py "重构 src 目录下的代码" --workers 5
 
 模型配置示例:
-  python main_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
+  python run.py --mode iterate "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
+  python scripts/run_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
         """,
     )
 
@@ -93,29 +105,51 @@ def parse_args() -> argparse.Namespace:
         help="工作目录 (默认: 当前目录)",
     )
 
+    # workers 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-w", "--workers",
         type=int,
-        default=3,
-        help="Worker 进程数量 (默认: 3)",
+        default=None,
+        help=f"Worker 进程数量 (默认: {cfg_workers}，来自 config.yaml)",
     )
 
+    # max_iterations 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-m", "--max-iterations",
         type=str,
-        default="10",
-        help="最大迭代次数 (默认: 10，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
+        default=None,
+        help=f"最大迭代次数 (默认: {cfg_max_iterations}，使用 MAX 或 -1 表示无限迭代直到完成或用户中断，来自 config.yaml)",
     )
 
-    parser.add_argument(
+    # 严格评审模式 - 互斥组支持 tri-state (None=未指定, 使用 config 默认值)
+    strict_group = parser.add_mutually_exclusive_group()
+    strict_group.add_argument(
         "--strict",
+        dest="strict_review",
         action="store_true",
-        help="启用严格评审模式",
+        default=None,
+        help=f"启用严格评审模式 (config.yaml 默认: {cfg_strict_review})",
+    )
+    strict_group.add_argument(
+        "--no-strict",
+        dest="strict_review",
+        action="store_false",
+        help="禁用严格评审模式",
     )
 
-    parser.add_argument(
-        "--no-sub-planners",
+    # 子规划者 - 互斥组支持 tri-state (None=未指定, 使用 config 默认值)
+    sub_planners_group = parser.add_mutually_exclusive_group()
+    sub_planners_group.add_argument(
+        "--sub-planners",
+        dest="enable_sub_planners",
         action="store_true",
+        default=None,
+        help=f"启用子规划者 (config.yaml 默认: {cfg_enable_sub_planners})",
+    )
+    sub_planners_group.add_argument(
+        "--no-sub-planners",
+        dest="enable_sub_planners",
+        action="store_false",
         help="禁用子规划者",
     )
 
@@ -125,40 +159,48 @@ def parse_args() -> argparse.Namespace:
         help="详细输出",
     )
 
+    # 超时参数使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--planning-timeout",
         type=float,
-        default=300.0,
-        help="规划超时时间（秒）",
+        default=None,
+        help=f"规划超时时间（秒）(默认: {cfg_planning_timeout}，来自 config.yaml)",
     )
 
     parser.add_argument(
         "--execution-timeout",
         type=float,
-        default=500.0,
-        help="任务执行超时时间（秒）",
+        default=None,
+        help=f"任务执行超时时间（秒）(默认: {cfg_execution_timeout}，来自 config.yaml)",
     )
 
     parser.add_argument(
         "--review-timeout",
         type=float,
-        default=120.0,
-        help="评审超时时间（秒）",
+        default=None,
+        help=f"评审超时时间（秒）(默认: {cfg_review_timeout}，来自 config.yaml)",
     )
 
-    # 模型配置
+    # 模型配置 - 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--planner-model",
         type=str,
-        default="gpt-5.2-high",
-        help="规划者使用的模型 (默认: gpt-5.2-high)",
+        default=None,
+        help=f"规划者使用的模型 (默认: {cfg_planner_model}，来自 config.yaml)",
     )
 
     parser.add_argument(
         "--worker-model",
         type=str,
-        default="opus-4.5-thinking",
-        help="执行者使用的模型 (默认: opus-4.5-thinking)",
+        default=None,
+        help=f"执行者使用的模型 (默认: {cfg_worker_model}，来自 config.yaml)",
+    )
+
+    parser.add_argument(
+        "--reviewer-model",
+        type=str,
+        default=None,
+        help=f"评审者使用的模型 (默认: {cfg_reviewer_model}，来自 config.yaml)",
     )
 
     stream_group = parser.add_mutually_exclusive_group()
@@ -224,49 +266,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
-
-
-def load_yaml_config(config_path: Path) -> dict[str, Any]:
-    """加载 YAML 配置"""
-    if not config_path.exists():
-        return {}
-    try:
-        import yaml
-        with config_path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        if isinstance(data, dict):
-            return data
-        return {}
-    except Exception as e:
-        logger.warning(f"加载配置失败: {e}")
-        return {}
-
-
-def resolve_stream_log_config(args: argparse.Namespace, config_data: dict[str, Any]) -> dict[str, Any]:
-    """解析流式日志配置（CLI 优先）"""
-    logging_config = config_data.get("logging", {}) if isinstance(config_data, dict) else {}
-    stream_config = logging_config.get("stream_json", {}) if isinstance(logging_config, dict) else {}
-
-    enabled = stream_config.get("enabled", False)
-    console = stream_config.get("console", True)
-    detail_dir = stream_config.get("detail_dir", "logs/stream_json/detail/")
-    raw_dir = stream_config.get("raw_dir", "logs/stream_json/raw/")
-
-    if args.stream_log_enabled is not None:
-        enabled = args.stream_log_enabled
-    if args.stream_log_console is not None:
-        console = args.stream_log_console
-    if args.stream_log_detail_dir:
-        detail_dir = args.stream_log_detail_dir
-    if args.stream_log_raw_dir:
-        raw_dir = args.stream_log_raw_dir
-
-    return {
-        "enabled": enabled,
-        "console": console,
-        "detail_dir": detail_dir,
-        "raw_dir": raw_dir,
-    }
 
 
 async def run_commit_phase(
@@ -394,27 +393,101 @@ async def run_commit_phase(
 
 async def run_orchestrator(args: argparse.Namespace) -> dict:
     """运行编排器"""
-    config_data = load_yaml_config(Path(__file__).with_name("config.yaml"))
-    stream_config = resolve_stream_log_config(args, config_data)
+    # 构建 CLI overrides 字典（仅包含显式指定的参数）
+    # tri-state: None 表示未指定，让 resolve_orchestrator_settings 从 config.yaml 读取
+    cli_overrides = {}
 
-    # 解析最大迭代次数
-    max_iterations = parse_max_iterations(args.max_iterations)
-    if max_iterations == -1:
+    # workers: CLI 显式参数（None 表示未指定）
+    if args.workers is not None:
+        cli_overrides["workers"] = args.workers
+
+    # max_iterations: CLI 显式参数（None 表示未指定）
+    if args.max_iterations is not None:
+        cli_overrides["max_iterations"] = parse_max_iterations(args.max_iterations)
+
+    # 超时参数: CLI 显式参数（None 表示未指定）
+    if args.planning_timeout is not None:
+        cli_overrides["planner_timeout"] = args.planning_timeout
+    if args.execution_timeout is not None:
+        cli_overrides["worker_timeout"] = args.execution_timeout
+    if args.review_timeout is not None:
+        cli_overrides["reviewer_timeout"] = args.review_timeout
+
+    # 模型配置: CLI 显式参数（None 表示未指定）
+    if args.planner_model is not None:
+        cli_overrides["planner_model"] = args.planner_model
+    if args.worker_model is not None:
+        cli_overrides["worker_model"] = args.worker_model
+    if args.reviewer_model is not None:
+        cli_overrides["reviewer_model"] = args.reviewer_model
+
+    # enable_sub_planners: CLI 显式参数（None 表示未指定）
+    if args.enable_sub_planners is not None:
+        cli_overrides["enable_sub_planners"] = args.enable_sub_planners
+
+    # strict_review: CLI 显式参数（None 表示未指定）
+    if args.strict_review is not None:
+        cli_overrides["strict_review"] = args.strict_review
+
+    # auto_commit/auto_push
+    if args.auto_commit:
+        cli_overrides["auto_commit"] = True
+    if args.auto_push:
+        cli_overrides["auto_push"] = True
+
+    # 使用 resolve_orchestrator_settings 统一解析
+    resolved = resolve_orchestrator_settings(overrides=cli_overrides)
+
+    # ========== execution_mode 检测与处理 ==========
+    # MP 编排器（run_mp.py）仅支持 execution_mode=cli
+    # 如果配置为 cloud/auto，打印警告并强制回退到 CLI
+    config_execution_mode = resolved.get("execution_mode", "cli")
+    final_execution_mode = config_execution_mode  # 默认使用配置值
+
+    if config_execution_mode in ("cloud", "auto"):
+        logger.warning(
+            f"⚠ MP 编排器不支持 execution_mode={config_execution_mode}，"
+            "强制回退到 CLI 模式"
+        )
+        logger.warning(
+            "提示: 若需使用 Cloud/Auto 模式，请改用:\n"
+            "  python run.py --mode iterate --orchestrator basic --execution-mode auto\n"
+            "  python scripts/run_iterate.py --execution-mode cloud \"任务描述\""
+        )
+        final_execution_mode = "cli"
+        # 更新 resolved 以反映实际使用的模式
+        resolved["execution_mode"] = "cli"
+
+    # 记录最终采用的 execution_mode
+    logger.info(f"执行模式: {final_execution_mode} (配置值: {config_execution_mode})")
+
+    # 无限迭代提示
+    if resolved["max_iterations"] == -1:
         logger.info("无限迭代模式已启用（按 Ctrl+C 中断）")
+
+    # 流式日志配置
+    stream_config = resolve_stream_log_config(
+        cli_enabled=args.stream_log_enabled,
+        cli_console=args.stream_log_console,
+        cli_detail_dir=args.stream_log_detail_dir,
+        cli_raw_dir=args.stream_log_raw_dir,
+    )
 
     config = MultiProcessOrchestratorConfig(
         working_directory=args.directory,
-        max_iterations=max_iterations,
-        worker_count=args.workers,
-        enable_sub_planners=not args.no_sub_planners,
-        strict_review=args.strict,
-        planning_timeout=args.planning_timeout,
-        execution_timeout=args.execution_timeout,
-        review_timeout=args.review_timeout,
+        max_iterations=resolved["max_iterations"],
+        worker_count=resolved["workers"],
+        enable_sub_planners=resolved["enable_sub_planners"],
+        strict_review=resolved["strict_review"],
+        planning_timeout=resolved["planner_timeout"],
+        execution_timeout=resolved["worker_timeout"],
+        review_timeout=resolved["reviewer_timeout"],
         # 模型配置
-        planner_model=args.planner_model,
-        worker_model=args.worker_model,
-        reviewer_model=args.worker_model,  # 评审者与执行者使用相同模型
+        planner_model=resolved["planner_model"],
+        worker_model=resolved["worker_model"],
+        reviewer_model=resolved["reviewer_model"],
+        # 执行模式（MP 编排器强制 CLI，此处记录配置值）
+        execution_mode=final_execution_mode,
         stream_events_enabled=stream_config["enabled"],
         stream_log_console=stream_config["console"],
         stream_log_detail_dir=stream_config["detail_dir"],
@@ -426,19 +499,23 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     logger.info(f"  - 执行者: {config.worker_model}")
     logger.info(f"  - 评审者: {config.reviewer_model}")
 
-    if args.auto_commit:
+    if resolved["auto_commit"]:
         logger.info("自动提交: 启用")
-        if args.auto_push:
+        if resolved["auto_push"]:
             logger.info("自动推送: 启用")
 
     orchestrator = MultiProcessOrchestrator(config)
     result = await orchestrator.run(args.goal)
 
+    # 将 execution_mode 信息写入结果
+    result["execution_mode"] = final_execution_mode
+    result["execution_mode_config"] = config_execution_mode  # 原始配置值
+
     # 完成后提交阶段
-    if args.auto_commit:
+    if resolved["auto_commit"]:
         commits_result = await run_commit_phase(
             working_directory=args.directory,
-            auto_push=args.auto_push,
+            auto_push=resolved["auto_push"],
             commit_message_prefix=args.commit_message,
             iterations_completed=result.get("iterations_completed", 0),
             tasks_completed=result.get("total_tasks_completed", 0),
@@ -461,6 +538,14 @@ def print_result(result: dict) -> None:
     print(f"\n状态: {'成功' if result.get('success') else '未完成'}")
     print(f"目标: {result.get('goal', 'N/A')}")
     print(f"完成迭代: {result.get('iterations_completed', 0)}")
+
+    # 显示执行模式信息
+    execution_mode = result.get("execution_mode", "cli")
+    execution_mode_config = result.get("execution_mode_config", execution_mode)
+    if execution_mode != execution_mode_config:
+        print(f"执行模式: {execution_mode} (配置值: {execution_mode_config}，已回退)")
+    else:
+        print(f"执行模式: {execution_mode}")
 
     print("\n任务统计:")
     print(f"  - 创建: {result.get('total_tasks_created', 0)}")

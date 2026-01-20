@@ -38,6 +38,14 @@ from loguru import logger
 
 from agents.committer import CommitterAgent, CommitterConfig
 from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from core.config import (
+    ResolvedSettings,
+    resolve_settings,
+    resolve_orchestrator_settings,
+    parse_max_iterations,
+    format_debug_config,
+    print_debug_config,
+)
 from coordinator import (
     MultiProcessOrchestrator,
     MultiProcessOrchestratorConfig,
@@ -45,7 +53,13 @@ from coordinator import (
     OrchestratorConfig,
 )
 from cursor.client import CursorAgentConfig
-from cursor.cloud_client import CloudAuthConfig
+from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
+from core.config import (
+    build_cloud_client_config,
+    build_cursor_agent_config,
+    build_cloud_auth_config,
+    DEFAULT_CLOUD_AUTH_TIMEOUT,
+)
 from cursor.executor import ExecutionMode
 from knowledge import (
     Document,
@@ -198,35 +212,31 @@ class IterationContext:
 # 参数解析
 # ============================================================
 
-def parse_max_iterations(value: str) -> int:
-    """解析最大迭代次数参数
-
-    Args:
-        value: 参数值，可以是数字、MAX、-1 或 0
-
-    Returns:
-        迭代次数，-1 表示无限迭代
-    """
-    value_upper = value.upper().strip()
-
-    # MAX 或 -1 或 0 表示无限迭代
-    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
-        return -1
-
-    try:
-        num = int(value)
-        # -1 或 0 也表示无限迭代
-        if num <= 0:
-            return -1
-        return num
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
-        )
+# 使用统一的 parse_max_iterations 函数（从 core.config 导入）
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数"""
+    """解析命令行参数
+
+    默认值优先级:
+    1. 命令行参数（最高）
+    2. config.yaml 中的配置
+    3. 代码硬编码的默认值（最低）
+    """
+    # 从配置管理器获取默认值
+    from core.config import get_config
+
+    config = get_config()
+
+    # 系统配置默认值
+    default_max_iterations = config.system.max_iterations
+    default_workers = config.system.worker_pool_size
+
+    # Cloud Agent 配置默认值
+    default_cloud_timeout = config.cloud_agent.timeout
+    default_cloud_auth_timeout = config.cloud_agent.auth_timeout
+    default_execution_mode = config.cloud_agent.execution_mode
+
     parser = argparse.ArgumentParser(
         description="自我迭代脚本 - 分析在线文档更新、更新知识库、启动 Agent 执行",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -279,18 +289,20 @@ def parse_args() -> argparse.Namespace:
         help="仅分析不执行，显示将要执行的迭代计划",
     )
 
+    # tri-state: default=None 表示未指定，运行时从 config.yaml 读取
     parser.add_argument(
         "--max-iterations",
         type=str,
-        default="5",
-        help="最大迭代次数 (默认: 5，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
+        default=None,
+        help=f"最大迭代次数 (默认: {default_max_iterations}，来自 config.yaml system.max_iterations；使用 MAX 或 -1 表示无限迭代)",
     )
 
+    # tri-state: default=None 表示未指定，运行时从 config.yaml 读取
     parser.add_argument(
         "--workers",
         type=int,
-        default=3,
-        help="Worker 池大小 (默认: 3)",
+        default=None,
+        help=f"Worker 池大小 (默认: {default_workers}，来自 config.yaml system.worker_pool_size)",
     )
 
     parser.add_argument(
@@ -412,13 +424,13 @@ def parse_args() -> argparse.Namespace:
         help="禁用多进程编排器，使用基本协程编排器（等同于 --orchestrator basic）",
     )
 
-    # 执行模式参数
+    # 执行模式参数 - tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--execution-mode",
         type=str,
         choices=["cli", "auto", "cloud"],
-        default="cli",
-        help="执行模式: cli=本地CLI(默认), auto=自动选择(Cloud优先), cloud=强制Cloud",
+        default=None,
+        help=f"执行模式: cli=本地CLI, auto=自动选择(Cloud优先), cloud=强制Cloud (默认: {default_execution_mode}，来自 config.yaml)",
     )
 
     # 角色级执行模式参数（可选，默认继承全局 execution-mode）
@@ -454,18 +466,19 @@ def parse_args() -> argparse.Namespace:
         help="Cloud API Key（可选，默认从 CURSOR_API_KEY 环境变量读取）",
     )
 
+    # Cloud 超时参数 - tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "--cloud-auth-timeout",
         type=int,
-        default=30,
-        help="Cloud 认证超时时间（秒，默认 30）",
+        default=None,
+        help=f"Cloud 认证超时时间（秒，默认 {default_cloud_auth_timeout}，来自 config.yaml）",
     )
 
     parser.add_argument(
         "--cloud-timeout",
         type=int,
-        default=600,
-        help="Cloud 执行超时时间（秒，默认 600，即 10 分钟）",
+        default=None,
+        help=f"Cloud 执行超时时间（秒，默认 {default_cloud_timeout}，来自 config.yaml cloud_agent.timeout）",
     )
 
     # 流式控制台渲染参数（默认关闭，避免噪声）
@@ -539,6 +552,15 @@ def parse_args() -> argparse.Namespace:
         dest="stream_show_word_diff",
         default=False,
         help="显示逐词差异（默认关闭）",
+    )
+
+    # 配置调试参数
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        dest="print_config",
+        default=False,
+        help="打印配置调试信息并退出（输出格式稳定，便于脚本化 grep/CI 断言）",
     )
 
     args = parser.parse_args()
@@ -1732,6 +1754,120 @@ class SelfIterator:
             dry_run=args.dry_run,
         )
 
+        # 统一解析配置（CLI 参数覆盖 config.yaml）
+        self._resolved_settings = self._resolve_config_settings()
+
+    def _resolve_config_settings(self) -> ResolvedSettings:
+        """统一解析配置设置
+
+        从 config.yaml 加载基础配置，CLI 参数覆盖（仅当显式指定时）。
+        确保 --workers/--max-iterations/--cloud-timeout 等 CLI 参数优先于 config.yaml。
+
+        统一使用 resolve_orchestrator_settings() 解析核心编排器配置，
+        确保 run.py 和 scripts/run_iterate.py 两个入口的配置解析逻辑一致。
+
+        tri-state 语义:
+        - CLI 参数 default=None 表示用户未指定
+        - 仅当用户显式传参时把 CLI 值传入 resolve_orchestrator_settings
+        - 未指定时传 None，让 resolve_orchestrator_settings 使用 config.yaml 的值
+
+        Returns:
+            ResolvedSettings 包含完整的解析后配置
+        """
+        # 构建 CLI overrides 字典，仅包含显式指定的参数
+        cli_overrides = {}
+
+        # workers: CLI 显式参数
+        cli_workers = getattr(self.args, "workers", None)
+        if cli_workers is not None:
+            cli_overrides["workers"] = cli_workers
+
+        # max_iterations: CLI 显式参数
+        max_iterations_raw = getattr(self.args, "max_iterations", None)
+        if max_iterations_raw is not None:
+            cli_overrides["max_iterations"] = parse_max_iterations(max_iterations_raw)
+
+        # cloud_timeout: CLI 显式参数
+        cli_cloud_timeout = getattr(self.args, "cloud_timeout", None)
+        if cli_cloud_timeout is not None:
+            cli_overrides["cloud_timeout"] = cli_cloud_timeout
+
+        # cloud_auth_timeout: CLI 显式参数
+        cli_cloud_auth_timeout = getattr(self.args, "cloud_auth_timeout", None)
+        if cli_cloud_auth_timeout is not None:
+            cli_overrides["cloud_auth_timeout"] = cli_cloud_auth_timeout
+
+        # execution_mode: CLI 显式参数
+        cli_execution_mode = getattr(self.args, "execution_mode", None)
+        if cli_execution_mode is not None:
+            cli_overrides["execution_mode"] = cli_execution_mode
+
+        # dry_run: CLI 显式参数
+        if getattr(self.args, "dry_run", False):
+            cli_overrides["dry_run"] = True
+
+        # auto_commit/auto_push/commit_per_iteration: CLI 显式参数
+        if getattr(self.args, "auto_commit", False):
+            cli_overrides["auto_commit"] = True
+        if getattr(self.args, "auto_push", False):
+            cli_overrides["auto_push"] = True
+        if getattr(self.args, "commit_per_iteration", False):
+            cli_overrides["commit_per_iteration"] = True
+
+        # 编排器配置
+        cli_orchestrator = getattr(self.args, "orchestrator", None)
+        cli_no_mp = getattr(self.args, "no_mp", False)
+        if cli_orchestrator is not None:
+            cli_overrides["orchestrator"] = cli_orchestrator
+        elif cli_no_mp:
+            cli_overrides["orchestrator"] = "basic"
+
+        # 使用统一的 resolve_orchestrator_settings 解析核心配置
+        resolved = resolve_orchestrator_settings(overrides=cli_overrides)
+
+        # 同时使用 resolve_settings 获取扩展配置（stream_json 等）
+        stream_settings = resolve_settings(
+            cli_workers=None,  # 核心配置已由 resolve_orchestrator_settings 处理
+            cli_max_iterations=None,
+            cli_cloud_timeout=None,
+            cli_cloud_auth_timeout=None,
+            cli_execution_mode=None,
+            # 流式日志配置从 CLI 透传
+            cli_stream_events_enabled=None,  # 目前无对应 CLI 参数
+            cli_stream_log_console=None,
+            cli_stream_log_detail_dir=None,
+            cli_stream_log_raw_dir=None,
+        )
+
+        # 构建 ResolvedSettings，合并核心配置和扩展配置
+        return ResolvedSettings(
+            # 模型配置（从 resolve_orchestrator_settings）
+            planner_model=resolved["planner_model"],
+            worker_model=resolved["worker_model"],
+            reviewer_model=resolved["reviewer_model"],
+            # 超时配置（从 resolve_orchestrator_settings）
+            planning_timeout=resolved["planner_timeout"],
+            execution_timeout=resolved["worker_timeout"],
+            review_timeout=resolved["reviewer_timeout"],
+            agent_cli_timeout=stream_settings.agent_cli_timeout,  # 从 resolve_settings
+            cloud_timeout=resolved["cloud_timeout"],
+            cloud_auth_timeout=resolved["cloud_auth_timeout"],
+            # 系统配置（从 resolve_orchestrator_settings）
+            max_iterations=resolved["max_iterations"],
+            worker_pool_size=resolved["workers"],
+            enable_sub_planners=resolved["enable_sub_planners"],
+            strict_review=resolved["strict_review"],
+            # Cloud Agent 配置（混合来源）
+            cloud_enabled=stream_settings.cloud_enabled,  # 从 resolve_settings
+            execution_mode=resolved["execution_mode"],
+            cloud_api_base_url=stream_settings.cloud_api_base_url,  # 从 resolve_settings
+            # 流式日志配置（从 resolve_settings）
+            stream_events_enabled=stream_settings.stream_events_enabled,
+            stream_log_console=stream_settings.stream_log_console,
+            stream_log_detail_dir=stream_settings.stream_log_detail_dir,
+            stream_log_raw_dir=stream_settings.stream_log_raw_dir,
+        )
+
     async def run(self) -> dict[str, Any]:
         """执行自我迭代流程
 
@@ -2057,8 +2193,8 @@ class SelfIterator:
 
         优先级:
         1. 检测 requirement 是否以 '&' 开头，如果是则自动切换到 CLOUD 模式
-        2. 从命令行参数 --execution-mode 读取
-        3. 默认使用 CLI 模式
+        2. 从命令行参数 --execution-mode 读取（CLI 显式指定）
+        3. 从 config.yaml 读取（通过 _resolved_settings）
 
         权限语义:
         - Cloud 模式下 force_write 默认为 True（允许修改文件）
@@ -2077,8 +2213,8 @@ class SelfIterator:
             # 实际 goal 会在 IterationGoalBuilder 中处理
             return ExecutionMode.CLOUD
 
-        # 从命令行参数读取
-        mode_str = getattr(self.args, "execution_mode", "cli")
+        # tri-state: 使用 resolved_settings 中的值（已处理 CLI > config.yaml 优先级）
+        mode_str = self._resolved_settings.execution_mode
         mode_map = {
             "cli": ExecutionMode.CLI,
             "auto": ExecutionMode.AUTO,
@@ -2110,27 +2246,50 @@ class SelfIterator:
     def _get_cloud_auth_config(self) -> Optional[CloudAuthConfig]:
         """获取 Cloud 认证配置
 
-        优先级：
-        1. 命令行参数 --cloud-api-key
+        使用 CloudClientFactory.resolve_api_key 统一解析 API Key，
+        确保配置来源优先级一致。
+
+        优先级（从高到低）：
+        1. 命令行参数 --cloud-api-key（CLI 显式指定）
         2. 环境变量 CURSOR_API_KEY
-        3. 如果都没有，返回 None
+        3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+        4. config.yaml 中的 cloud_agent.api_key
+
+        其他配置（auth_timeout, base_url 等）也遵循 CLI > config.yaml > DEFAULT_* 优先级。
 
         Returns:
-            CloudAuthConfig 或 None
+            CloudAuthConfig 或 None（未配置 key 时）
         """
-        import os
-
-        api_key = getattr(self.args, "cloud_api_key", None)
-        if not api_key:
-            api_key = os.environ.get("CURSOR_API_KEY")
+        # 使用 CloudClientFactory.resolve_api_key 统一解析 API Key
+        # 优先级: CLI 显式参数 > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
+        cli_api_key = getattr(self.args, "cloud_api_key", None)
+        api_key = CloudClientFactory.resolve_api_key(explicit_api_key=cli_api_key)
 
         if not api_key:
             return None
 
-        auth_timeout = getattr(self.args, "cloud_auth_timeout", 30)
+        # 从 config.yaml 获取默认配置
+        cloud_config = build_cloud_client_config()
+
+        # 解析 auth_timeout，优先级: CLI > config.yaml > DEFAULT_*
+        cli_auth_timeout = getattr(self.args, "cloud_auth_timeout", None)
+        auth_timeout = (
+            cli_auth_timeout
+            if cli_auth_timeout is not None
+            else cloud_config.get("auth_timeout", DEFAULT_CLOUD_AUTH_TIMEOUT)
+        )
+
+        # 解析 base_url，优先级: config.yaml > DEFAULT_*（暂无 CLI 参数）
+        base_url = cloud_config.get("base_url", "https://api.cursor.com")
+
+        # 解析 max_retries，优先级: config.yaml > DEFAULT_*（暂无 CLI 参数）
+        max_retries = cloud_config.get("max_retries", 3)
+
         return CloudAuthConfig(
             api_key=api_key,
             auth_timeout=auth_timeout,
+            api_base_url=base_url,
+            max_retries=max_retries,
         )
 
     def _get_orchestrator_type(self) -> str:
@@ -2231,8 +2390,8 @@ class SelfIterator:
         """
         print_section("Agent 系统执行")
 
-        # 解析最大迭代次数
-        max_iterations = parse_max_iterations(self.args.max_iterations)
+        # 使用 resolved settings 中的 max_iterations（已处理 tri-state 和 config.yaml）
+        max_iterations = self._resolved_settings.max_iterations
         if max_iterations == -1:
             print_info("无限迭代模式已启用（按 Ctrl+C 中断）")
 
@@ -2368,6 +2527,15 @@ class SelfIterator:
     ) -> dict[str, Any]:
         """使用多进程编排器执行
 
+        配置注入策略:
+        1. 从 _resolved_settings 获取 config.yaml 中的基础配置
+        2. CLI 参数覆盖对应配置（--workers/--max-iterations 等）
+        3. 构建 MultiProcessOrchestratorConfig 时注入:
+           - models: planner_model/worker_model/reviewer_model
+           - timeouts: planning_timeout/execution_timeout/review_timeout
+           - stream 日志与渲染选项
+        4. 确保 execution_mode!=cli 时自动使用 basic 编排器（在 _get_orchestrator_type 中处理）
+
         支持知识库增强：
         - 方案 B: 在 goal 构建阶段注入知识库上下文（通过 _build_enhanced_goal）
         - 方案 C: 启用 MP 任务级知识库注入（通过 enable_knowledge_injection 配置）
@@ -2380,7 +2548,11 @@ class SelfIterator:
             执行结果（如果失败，包含 _fallback_required=True）
         """
         logger.info("使用 MultiProcessOrchestrator (MP 多进程编排器)")
-        print_info(f"MP 编排器配置: worker_count={self.args.workers}, max_iterations={max_iterations}")
+
+        # 使用 resolved settings 获取配置（CLI 参数已覆盖）
+        settings = self._resolved_settings
+
+        print_info(f"MP 编排器配置: worker_count={settings.worker_pool_size}, max_iterations={max_iterations}")
 
         try:
             # 方案 B: 在 goal 构建阶段注入知识库上下文
@@ -2393,10 +2565,22 @@ class SelfIterator:
             stall_diagnostics_enabled = self._get_stall_diagnostics_enabled()
             stall_diagnostics_level = self._get_stall_diagnostics_level()
 
+            # 构建 MultiProcessOrchestratorConfig，注入 models/timeouts/stream 配置
             config = MultiProcessOrchestratorConfig(
                 working_directory=str(self.working_directory),
                 max_iterations=max_iterations,
-                worker_count=self.args.workers,
+                worker_count=settings.worker_pool_size,
+                # 从 resolved settings 注入系统配置
+                enable_sub_planners=settings.enable_sub_planners,
+                strict_review=settings.strict_review,
+                # 从 resolved settings 注入模型配置
+                planner_model=settings.planner_model,
+                worker_model=settings.worker_model,
+                reviewer_model=settings.reviewer_model,
+                # 从 resolved settings 注入超时配置
+                planning_timeout=settings.planning_timeout,
+                execution_timeout=settings.execution_timeout,
+                review_timeout=settings.review_timeout,
                 # 方案 C: 启用 MP 任务级知识库注入
                 enable_knowledge_search=True,
                 enable_knowledge_injection=True,
@@ -2407,10 +2591,16 @@ class SelfIterator:
                 # commit_on_complete 语义：当 commit_per_iteration=False 时仅在完成时提交
                 commit_on_complete=not getattr(self.args, "commit_per_iteration", False),
                 # 执行模式配置（MP 主要使用 CLI，但保持配置兼容性）
+                # 注意：execution_mode!=cli 时会在 _get_orchestrator_type 中自动回退到 basic
                 execution_mode=getattr(self.args, "execution_mode", "cli"),
                 planner_execution_mode=getattr(self.args, "planner_execution_mode", None),
                 worker_execution_mode=getattr(self.args, "worker_execution_mode", None),
                 reviewer_execution_mode=getattr(self.args, "reviewer_execution_mode", None),
+                # 从 resolved settings 注入流式日志配置
+                stream_events_enabled=settings.stream_events_enabled,
+                stream_log_console=settings.stream_log_console,
+                stream_log_detail_dir=settings.stream_log_detail_dir,
+                stream_log_raw_dir=settings.stream_log_raw_dir,
                 # 日志配置透传到子进程
                 verbose=getattr(self.args, "verbose", False),
                 log_level=log_level,
@@ -2421,7 +2611,7 @@ class SelfIterator:
                 stall_recovery_interval=getattr(self.args, "stall_recovery_interval", 30.0),
                 execution_health_check_interval=getattr(self.args, "execution_health_check_interval", 30.0),
                 health_warning_cooldown_seconds=getattr(self.args, "health_warning_cooldown", 60.0),
-                # 流式控制台渲染配置透传
+                # 流式控制台渲染配置透传（CLI 参数）
                 stream_console_renderer=getattr(self.args, "stream_console_renderer", False),
                 stream_advanced_renderer=getattr(self.args, "stream_advanced_renderer", False),
                 stream_typing_effect=getattr(self.args, "stream_typing_effect", False),
@@ -2433,7 +2623,11 @@ class SelfIterator:
 
             # 创建多进程编排器
             orchestrator = MultiProcessOrchestrator(config)
-            logger.info(f"MP 编排器已创建: worker_count={config.worker_count}, 知识库注入={config.enable_knowledge_injection}")
+            logger.info(
+                f"MP 编排器已创建: worker_count={config.worker_count}, "
+                f"知识库注入={config.enable_knowledge_injection}, "
+                f"models=(planner={settings.planner_model}, worker={settings.worker_model}, reviewer={settings.reviewer_model})"
+            )
 
             # 执行（使用增强后的目标）
             print_info("开始执行迭代任务...")
@@ -2477,6 +2671,12 @@ class SelfIterator:
 
         支持 KnowledgeManager 注入、auto_commit/auto_push、execution_mode 和 cloud_auth_config。
 
+        配置注入策略:
+        1. 从 _resolved_settings 获取 config.yaml 中的基础配置
+        2. CLI 参数覆盖对应配置（--workers/--max-iterations/--cloud-timeout 等）
+        3. 构建 CursorAgentConfig 时注入 agent_cli/cloud_agent/stream_json 参数
+        4. 构建 OrchestratorConfig 时注入 models/timeouts/enable_sub_planners/strict_review
+
         当 execution_mode 为 CLOUD 或 AUTO 时，使用 --cloud-timeout 参数覆盖默认 timeout，
         确保 Cloud/Auto 走相同的超时策略（默认 600 秒）。
 
@@ -2493,24 +2693,38 @@ class SelfIterator:
         execution_mode = self._get_execution_mode()
         cloud_auth_config = self._get_cloud_auth_config()
 
-        print_info(f"协程编排器配置: worker_pool_size={self.args.workers}, max_iterations={max_iterations}")
+        # 使用 resolved settings 获取配置（CLI 参数已覆盖）
+        settings = self._resolved_settings
+
+        print_info(f"协程编排器配置: worker_pool_size={settings.worker_pool_size}, max_iterations={max_iterations}")
         print_info(f"执行模式: {execution_mode.value}")
         if cloud_auth_config:
             print_info("Cloud 认证: 已配置")
 
         # 根据执行模式决定超时时间
-        # - Cloud/Auto 模式：使用 --cloud-timeout 参数（默认 600 秒）
-        # - CLI 模式：使用 CursorAgentConfig 默认值（300 秒）
+        # - Cloud/Auto 模式：使用 resolved settings 中的 cloud_timeout
+        # - CLI 模式：使用 resolved settings 中的 agent_cli_timeout
         if execution_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
-            cloud_timeout = getattr(self.args, "cloud_timeout", 600)
-            cursor_config = CursorAgentConfig(
-                working_directory=str(self.working_directory),
-                timeout=cloud_timeout,
-            )
-            print_info(f"Cloud 超时: {cloud_timeout}s")
-            logger.info(f"Cloud/Auto 执行模式，使用 cloud_timeout={cloud_timeout}s")
+            timeout = settings.cloud_timeout
+            print_info(f"Cloud 超时: {timeout}s")
+            logger.info(f"Cloud/Auto 执行模式，使用 cloud_timeout={timeout}s")
         else:
-            cursor_config = CursorAgentConfig(working_directory=str(self.working_directory))
+            timeout = settings.agent_cli_timeout
+
+        # 构建 CursorAgentConfig，注入 agent_cli/cloud_agent/stream_json 参数
+        cursor_config = CursorAgentConfig(
+            working_directory=str(self.working_directory),
+            timeout=timeout,
+            # 流式日志配置注入（从 config.yaml）
+            stream_events_enabled=settings.stream_events_enabled,
+            stream_log_console=settings.stream_log_console,
+            stream_log_detail_dir=settings.stream_log_detail_dir,
+            stream_log_raw_dir=settings.stream_log_raw_dir,
+            # Cloud Agent 配置注入
+            cloud_enabled=settings.cloud_enabled,
+            cloud_api_base=settings.cloud_api_base_url,
+            cloud_timeout=settings.cloud_timeout,
+        )
 
         # 解析角色级执行模式（可选）
         planner_exec_mode = self._parse_execution_mode(
@@ -2523,11 +2737,19 @@ class SelfIterator:
             getattr(self.args, "reviewer_execution_mode", None)
         )
 
+        # 构建 OrchestratorConfig，注入 models/timeouts/enable_sub_planners/strict_review
         config = OrchestratorConfig(
             working_directory=str(self.working_directory),
             max_iterations=max_iterations,
-            worker_pool_size=self.args.workers,
+            worker_pool_size=settings.worker_pool_size,
             cursor_config=cursor_config,
+            # 从 resolved settings 注入系统配置
+            enable_sub_planners=settings.enable_sub_planners,
+            strict_review=settings.strict_review,
+            # 从 resolved settings 注入模型配置
+            planner_model=settings.planner_model,
+            worker_model=settings.worker_model,
+            reviewer_model=settings.reviewer_model,
             # 自动提交配置透传（与 CommitPolicy 语义对齐）
             enable_auto_commit=self.args.auto_commit,
             auto_push=self.args.auto_push,
@@ -2541,7 +2763,12 @@ class SelfIterator:
             planner_execution_mode=planner_exec_mode,
             worker_execution_mode=worker_exec_mode,
             reviewer_execution_mode=reviewer_exec_mode,
-            # 流式控制台渲染配置透传
+            # 流式日志配置透传（从 config.yaml）
+            stream_events_enabled=settings.stream_events_enabled,
+            stream_log_console=settings.stream_log_console,
+            stream_log_detail_dir=settings.stream_log_detail_dir,
+            stream_log_raw_dir=settings.stream_log_raw_dir,
+            # 流式控制台渲染配置透传（CLI 参数）
             stream_console_renderer=getattr(self.args, "stream_console_renderer", False),
             stream_advanced_renderer=getattr(self.args, "stream_advanced_renderer", False),
             stream_typing_effect=getattr(self.args, "stream_typing_effect", False),
@@ -2555,7 +2782,8 @@ class SelfIterator:
         orchestrator = Orchestrator(config, knowledge_manager=manager)
         logger.info(
             f"协程编排器已创建: worker_pool_size={config.worker_pool_size}, "
-            f"execution_mode={config.execution_mode.value}"
+            f"execution_mode={config.execution_mode.value}, "
+            f"models=(planner={settings.planner_model}, worker={settings.worker_model}, reviewer={settings.reviewer_model})"
         )
 
         # 执行
@@ -2678,6 +2906,67 @@ def _detect_disable_mp_from_requirement(requirement: str) -> bool:
     return False
 
 
+def _build_cli_overrides_from_args(args: argparse.Namespace) -> dict:
+    """从命令行参数构建 CLI overrides 字典
+
+    用于 format_debug_config 和 resolve_orchestrator_settings。
+
+    Args:
+        args: 命令行参数
+
+    Returns:
+        CLI overrides 字典
+    """
+    cli_overrides = {}
+
+    # workers: CLI 显式参数
+    cli_workers = getattr(args, "workers", None)
+    if cli_workers is not None:
+        cli_overrides["workers"] = cli_workers
+
+    # max_iterations: CLI 显式参数
+    max_iterations_raw = getattr(args, "max_iterations", None)
+    if max_iterations_raw is not None:
+        cli_overrides["max_iterations"] = parse_max_iterations(max_iterations_raw)
+
+    # cloud_timeout: CLI 显式参数
+    cli_cloud_timeout = getattr(args, "cloud_timeout", None)
+    if cli_cloud_timeout is not None:
+        cli_overrides["cloud_timeout"] = cli_cloud_timeout
+
+    # cloud_auth_timeout: CLI 显式参数
+    cli_cloud_auth_timeout = getattr(args, "cloud_auth_timeout", None)
+    if cli_cloud_auth_timeout is not None:
+        cli_overrides["cloud_auth_timeout"] = cli_cloud_auth_timeout
+
+    # execution_mode: CLI 显式参数
+    cli_execution_mode = getattr(args, "execution_mode", None)
+    if cli_execution_mode is not None:
+        cli_overrides["execution_mode"] = cli_execution_mode
+
+    # dry_run: CLI 显式参数
+    if getattr(args, "dry_run", False):
+        cli_overrides["dry_run"] = True
+
+    # auto_commit/auto_push/commit_per_iteration: CLI 显式参数
+    if getattr(args, "auto_commit", False):
+        cli_overrides["auto_commit"] = True
+    if getattr(args, "auto_push", False):
+        cli_overrides["auto_push"] = True
+    if getattr(args, "commit_per_iteration", False):
+        cli_overrides["commit_per_iteration"] = True
+
+    # 编排器配置
+    cli_orchestrator = getattr(args, "orchestrator", None)
+    cli_no_mp = getattr(args, "no_mp", False)
+    if cli_orchestrator is not None:
+        cli_overrides["orchestrator"] = cli_orchestrator
+    elif cli_no_mp:
+        cli_overrides["orchestrator"] = "basic"
+
+    return cli_overrides
+
+
 def main():
     """主函数"""
     args = parse_args()
@@ -2686,6 +2975,12 @@ def main():
         quiet=getattr(args, "quiet", False),
         log_level=getattr(args, "log_level", None),
     )
+
+    # 处理 --print-config 参数：打印配置调试信息并退出
+    if getattr(args, "print_config", False):
+        cli_overrides = _build_cli_overrides_from_args(args)
+        print_debug_config(cli_overrides, source_label="scripts/run_iterate.py")
+        sys.exit(0)
 
     # 关键词检测：仅当用户未显式设置编排器时，从 requirement 检测是否需要禁用 MP
     # 条件：no_mp=False 且 orchestrator 为默认值 "mp" 且 _orchestrator_user_set=False

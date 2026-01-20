@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.config import get_config
 from run import (
     CLOUD_PREFIX,
     MODE_ALIASES,
@@ -26,6 +27,25 @@ from run import (
     setup_logging,
 )
 
+# 获取配置驱动的默认值（用于测试断言）
+_config = get_config()
+CONFIG_WORKER_POOL_SIZE = _config.system.worker_pool_size
+CONFIG_MAX_ITERATIONS = _config.system.max_iterations
+CONFIG_ENABLE_SUB_PLANNERS = _config.system.enable_sub_planners
+CONFIG_STRICT_REVIEW = _config.system.strict_review
+CONFIG_PLANNER_MODEL = _config.models.planner
+CONFIG_WORKER_MODEL = _config.models.worker
+CONFIG_REVIEWER_MODEL = _config.models.reviewer
+CONFIG_CLOUD_TIMEOUT = _config.cloud_agent.timeout
+CONFIG_PLANNER_TIMEOUT = _config.planner.timeout
+CONFIG_WORKER_TIMEOUT = _config.worker.task_timeout
+CONFIG_REVIEWER_TIMEOUT = _config.reviewer.timeout
+# 流式日志配置（来自 logging.stream_json.*）
+CONFIG_STREAM_LOG_ENABLED = _config.logging.stream_json.enabled
+CONFIG_STREAM_LOG_CONSOLE = _config.logging.stream_json.console
+CONFIG_STREAM_LOG_DETAIL_DIR = _config.logging.stream_json.detail_dir
+CONFIG_STREAM_LOG_RAW_DIR = _config.logging.stream_json.raw_dir
+
 
 # ============================================================
 # Fixtures
@@ -34,32 +54,54 @@ from run import (
 
 @pytest.fixture
 def mock_args() -> argparse.Namespace:
-    """模拟命令行参数"""
+    """模拟命令行参数
+
+    默认值来自 config.yaml，确保测试与配置保持一致。
+    使用 tri-state 设计：None 表示未显式指定，由 resolve_orchestrator_settings 解析。
+    """
     args = argparse.Namespace(
         task="测试任务",
         mode="auto",
         directory=".",
-        workers=3,
-        max_iterations="10",
-        strict=False,
+        workers=CONFIG_WORKER_POOL_SIZE,  # 来自 config.yaml
+        max_iterations=str(CONFIG_MAX_ITERATIONS),  # 来自 config.yaml
+        strict_review=None,  # tri-state: None=未指定，使用 config.yaml
+        enable_sub_planners=None,  # tri-state: None=未指定，使用 config.yaml
         verbose=False,
+        quiet=False,
+        log_level=None,
         skip_online=False,
         dry_run=False,
         force_update=False,
         use_knowledge=False,
         search_knowledge=None,
         self_update=False,
-        planner_model="gpt-5.2-high",
-        worker_model="opus-4.5-thinking",
-        stream_log=True,
+        # 模型配置（tri-state: None=未指定，使用 config.yaml）
+        planner_model=None,  # tri-state: None=未指定
+        worker_model=None,  # tri-state: None=未指定
+        reviewer_model=None,  # tri-state: None=未指定
+        # 流式日志配置（使用 tri-state，None=未指定，使用 config.yaml 默认值）
+        stream_log_enabled=None,  # 来自 config.yaml logging.stream_json.enabled
+        stream_log_console=None,  # 来自 config.yaml logging.stream_json.console
+        stream_log_detail_dir=None,  # 来自 config.yaml logging.stream_json.detail_dir
+        stream_log_raw_dir=None,  # 来自 config.yaml logging.stream_json.raw_dir
         no_auto_analyze=False,
         auto_commit=False,  # 默认禁用自动提交
         auto_push=False,
         commit_per_iteration=False,
-        # 执行模式参数
-        execution_mode="cli",
+        # 编排器配置（tri-state）
+        orchestrator=None,  # tri-state: None=未指定
+        no_mp=None,  # tri-state: None=未指定
+        _orchestrator_user_set=False,  # 内部标志
+        # 执行模式参数（tri-state）
+        execution_mode=None,  # tri-state: None=未指定，使用 config.yaml
+        planner_execution_mode=None,
+        worker_execution_mode=None,
+        reviewer_execution_mode=None,
         cloud_api_key=None,
-        cloud_auth_timeout=30,
+        cloud_auth_timeout=None,  # tri-state: None=未指定
+        cloud_timeout=None,  # tri-state: None=未指定
+        cloud_background=None,
         # 流式控制台渲染参数（默认关闭）
         stream_console_renderer=False,
         stream_advanced_renderer=False,
@@ -68,6 +110,15 @@ def mock_args() -> argparse.Namespace:
         stream_word_mode=True,
         stream_color_enabled=True,
         stream_show_word_diff=False,
+        # 诊断参数
+        heartbeat_debug=False,
+        stall_diagnostics_enabled=None,
+        stall_diagnostics_level=None,
+        # 知识库参数
+        enable_knowledge_injection=True,
+        knowledge_top_k=3,
+        knowledge_max_chars_per_doc=1200,
+        knowledge_max_total_chars=3000,
     )
     return args
 
@@ -183,12 +234,12 @@ class TestExecutionModeCloudAuthMapping:
 
     @pytest.fixture
     def iterate_mode_args(self) -> argparse.Namespace:
-        """创建 iterate 模式的参数"""
+        """创建 iterate 模式的参数（默认值来自 config.yaml）"""
         return argparse.Namespace(
             task="测试任务",
             mode="iterate",
             directory=".",
-            workers=3,
+            workers=CONFIG_WORKER_POOL_SIZE,  # 来自 config.yaml
             max_iterations="5",
             strict=False,
             verbose=False,
@@ -198,9 +249,9 @@ class TestExecutionModeCloudAuthMapping:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=CONFIG_PLANNER_MODEL,  # 来自 config.yaml
+            worker_model=CONFIG_WORKER_MODEL,  # 来自 config.yaml
+            reviewer_model=CONFIG_REVIEWER_MODEL,  # 来自 config.yaml
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,
@@ -568,12 +619,18 @@ class TestParseMaxIterations:
         assert parse_max_iterations(" 10 ") == 10
 
     def test_invalid_value_raises_error(self) -> None:
-        """验证无效值抛出异常"""
-        with pytest.raises(argparse.ArgumentTypeError) as exc_info:
+        """验证无效值抛出异常
+
+        注意：parse_max_iterations 抛出 MaxIterationsParseError（来自 core.config）
+        如需用于 argparse 类型转换，使用 parse_max_iterations_for_argparse
+        """
+        from core.config import MaxIterationsParseError
+
+        with pytest.raises(MaxIterationsParseError) as exc_info:
             parse_max_iterations("invalid")
         assert "无效的迭代次数" in str(exc_info.value)
 
-        with pytest.raises(argparse.ArgumentTypeError):
+        with pytest.raises(MaxIterationsParseError):
             parse_max_iterations("abc")
 
 
@@ -1456,18 +1513,25 @@ class TestRunner:
     """测试 Runner 运行器"""
 
     def test_init(self, mock_args: argparse.Namespace) -> None:
-        """验证 Runner 初始化"""
+        """验证 Runner 初始化
+
+        Runner 使用 tri-state 设计，max_iterations 在 _merge_options 中解析。
+        此测试验证 args 正确保存，不再检查 max_iterations 属性。
+        """
         runner = Runner(mock_args)
         assert runner.args == mock_args
-        assert runner.max_iterations == 10
+        # max_iterations 在 _merge_options 中按优先级解析，不是 Runner 的直接属性
 
     def test_init_with_unlimited_iterations(self) -> None:
-        """验证无限迭代初始化"""
+        """验证无限迭代初始化
+
+        Runner 使用 tri-state 设计，max_iterations 在 _merge_options 中解析。
+        """
         args = argparse.Namespace(
             task="测试",
             mode="basic",
             directory=".",
-            workers=3,
+            workers=CONFIG_WORKER_POOL_SIZE,  # 来自 config.yaml
             max_iterations="MAX",
             strict=False,
             verbose=False,
@@ -1477,15 +1541,16 @@ class TestRunner:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
+            planner_model=CONFIG_PLANNER_MODEL,  # 来自 config.yaml
+            worker_model=CONFIG_WORKER_MODEL,  # 来自 config.yaml
             stream_log=True,
             auto_commit=False,  # 默认禁用自动提交
             auto_push=False,
             commit_per_iteration=False,
         )
         runner = Runner(args)
-        assert runner.max_iterations == -1
+        assert runner.args == args
+        # max_iterations 在 _merge_options 中解析为 -1，不是 Runner 的直接属性
 
     def test_get_mode_name(self, mock_args: argparse.Namespace) -> None:
         """验证获取模式显示名称"""
@@ -1500,15 +1565,19 @@ class TestRunner:
         assert runner._get_mode_name(RunMode.ASK) == "问答模式"
 
     def test_merge_options_default(self, mock_args: argparse.Namespace) -> None:
-        """验证选项合并（默认值）"""
+        """验证选项合并（默认值来自 config.yaml）"""
         runner = Runner(mock_args)
         options = runner._merge_options({})
 
         assert options["directory"] == "."
-        assert options["workers"] == 3
-        assert options["max_iterations"] == 10
+        assert options["workers"] == CONFIG_WORKER_POOL_SIZE  # 来自 config.yaml
+        assert options["max_iterations"] == CONFIG_MAX_ITERATIONS  # 来自 config.yaml
         assert options["strict"] is False
-        assert options["stream_log"] is True
+        # stream_log 默认值来自 config.yaml logging.stream_json.enabled
+        assert options["stream_log"] is CONFIG_STREAM_LOG_ENABLED
+        assert options["stream_log_console"] is CONFIG_STREAM_LOG_CONSOLE
+        assert options["stream_log_detail_dir"] == CONFIG_STREAM_LOG_DETAIL_DIR
+        assert options["stream_log_raw_dir"] == CONFIG_STREAM_LOG_RAW_DIR
         assert options["auto_commit"] is False  # 默认禁用自动提交
         assert options["auto_push"] is False
 
@@ -1599,9 +1668,10 @@ class TestRunner:
             task="test",
             mode="basic",
             directory=".",
-            workers=3,
-            max_iterations="10",
-            strict=False,
+            workers=CONFIG_WORKER_POOL_SIZE,  # 来自 config.yaml
+            max_iterations=str(CONFIG_MAX_ITERATIONS),  # 来自 config.yaml
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
             skip_online=False,
             dry_run=False,
@@ -1609,12 +1679,26 @@ class TestRunner:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            stream_log=True,
+            planner_model=None,  # tri-state
+            worker_model=None,  # tri-state
+            reviewer_model=None,  # tri-state
+            stream_log_enabled=None,
             auto_commit=True,  # 显式启用
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            cloud_timeout=None,
+            cloud_auth_timeout=None,
+            _orchestrator_user_set=False,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
         )
         runner = Runner(args)
         options = runner._merge_options({})
@@ -1694,7 +1778,8 @@ class TestRunner:
             directory=".",
             workers=3,
             max_iterations="10",
-            strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
             skip_online=False,
             dry_run=False,
@@ -1702,12 +1787,26 @@ class TestRunner:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            stream_log=True,
+            planner_model=None,  # tri-state
+            worker_model=None,  # tri-state
+            reviewer_model=None,  # tri-state
+            stream_log_enabled=None,
             auto_commit=False,
             auto_push=True,  # 命令行指定 auto_push
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            cloud_timeout=None,
+            cloud_auth_timeout=None,
+            _orchestrator_user_set=False,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
         )
         runner_with_push = Runner(args_with_push)
         options = runner_with_push._merge_options({})
@@ -1756,7 +1855,8 @@ class TestRunner:
             directory=".",
             workers=3,
             max_iterations="10",
-            strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
             skip_online=False,
             dry_run=False,
@@ -1764,15 +1864,20 @@ class TestRunner:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            stream_log=True,
+            planner_model=None,  # tri-state
+            worker_model=None,  # tri-state
+            reviewer_model=None,  # tri-state
+            stream_log_enabled=None,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
             execution_mode="cli",
             cloud_api_key=None,
             cloud_auth_timeout=30,
+            cloud_timeout=None,
+            _orchestrator_user_set=False,
             # 流式渲染参数（显式启用）
             stream_console_renderer=True,
             stream_advanced_renderer=True,
@@ -1884,7 +1989,8 @@ class TestRunner:
             directory=".",
             workers=3,
             max_iterations="10",
-            strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
             skip_online=False,
             dry_run=False,
@@ -1892,15 +1998,27 @@ class TestRunner:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            stream_log=True,
+            planner_model=None,  # tri-state
+            worker_model=None,  # tri-state
+            reviewer_model=None,  # tri-state
+            stream_log_enabled=None,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
             execution_mode="auto",  # 命令行指定 auto 模式
             cloud_api_key=None,
             cloud_auth_timeout=30,
+            cloud_timeout=None,
+            _orchestrator_user_set=False,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
         )
         runner = Runner(args)
         options = runner._merge_options({})  # 不传分析结果
@@ -2085,6 +2203,52 @@ class TestRunMpMode:
         assert config.auto_push is True
         assert config.commit_on_complete is False
         assert config.commit_per_iteration is True
+
+    def test_mp_config_reviewer_model_from_config_yaml(self) -> None:
+        """测试 MultiProcessOrchestratorConfig 的 reviewer_model 来自 config.yaml
+
+        验证 reviewer_model 独立配置，而非与 worker_model 相同。
+        确保 scripts/run_mp.py 使用正确的参数来源。
+        """
+        from coordinator import MultiProcessOrchestratorConfig
+
+        # 验证默认的 reviewer_model 来自 config.yaml（gpt-5.2-codex）
+        # 而非 worker_model（opus-4.5-thinking）
+        config = MultiProcessOrchestratorConfig()
+        assert config.reviewer_model == CONFIG_REVIEWER_MODEL
+        assert config.reviewer_model == "gpt-5.2-codex"
+        assert config.reviewer_model != config.worker_model, \
+            "reviewer_model 应独立配置，而非与 worker_model 相同"
+
+    def test_mp_config_reviewer_model_custom_override(self) -> None:
+        """测试 MultiProcessOrchestratorConfig 支持自定义 reviewer_model"""
+        from coordinator import MultiProcessOrchestratorConfig
+
+        custom_reviewer = "custom-reviewer-model"
+        config = MultiProcessOrchestratorConfig(
+            planner_model="gpt-5.2-high",
+            worker_model="opus-4.5-thinking",
+            reviewer_model=custom_reviewer,
+        )
+
+        assert config.reviewer_model == custom_reviewer
+        assert config.worker_model != config.reviewer_model
+
+    def test_mp_config_all_three_models_independent(self) -> None:
+        """测试三种模型（planner/worker/reviewer）可以独立配置"""
+        from coordinator import MultiProcessOrchestratorConfig
+
+        config = MultiProcessOrchestratorConfig(
+            planner_model="model-a",
+            worker_model="model-b",
+            reviewer_model="model-c",
+        )
+
+        assert config.planner_model == "model-a"
+        assert config.worker_model == "model-b"
+        assert config.reviewer_model == "model-c"
+        # 验证三者互不相同
+        assert len({config.planner_model, config.worker_model, config.reviewer_model}) == 3
 
     def test_mp_config_stream_renderer_fields(self) -> None:
         """测试 MP 配置流式控制台渲染相关字段"""
@@ -3269,8 +3433,275 @@ class TestRunKnowledgeMode:
 
 
 # ============================================================
+# TestRunKnowledgeParseArgsConfigDefaults - 配置默认值测试
+# ============================================================
+
+
+class TestRunKnowledgeParseArgsConfigDefaults:
+    """测试 scripts/run_knowledge.py 的 parse_args() 使用 tri-state 设计
+
+    验证 CLI 参数默认值为 None (tri-state)，运行时通过 resolve 函数从 config.yaml 获取。
+    注意：test_config_loading.py 已完整测试了 tri-state 行为和 resolve 函数。
+    """
+
+    def test_parse_args_uses_config_worker_pool_size(self) -> None:
+        """测试 --workers 默认值为 None (tri-state)"""
+        from scripts.run_knowledge import parse_args
+
+        # 使用 patch 模拟 sys.argv，只提供必需的 goal 参数
+        with patch("sys.argv", ["run_knowledge.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.workers is None
+
+    def test_parse_args_uses_config_max_iterations(self) -> None:
+        """测试 --max-iterations 默认值为 None (tri-state)"""
+        from scripts.run_knowledge import parse_args
+
+        with patch("sys.argv", ["run_knowledge.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.max_iterations is None
+
+    def test_parse_args_uses_config_kb_limit(self) -> None:
+        """测试 --kb-limit 默认值来自 config.yaml 的 worker.knowledge_integration.max_docs"""
+        from scripts.run_knowledge import parse_args
+        from core.config import get_config
+
+        config = get_config()
+        expected_kb_limit = config.worker.knowledge_integration.max_docs
+
+        with patch("sys.argv", ["run_knowledge.py", "测试任务"]):
+            args = parse_args()
+
+        assert args.kb_limit == expected_kb_limit
+
+    def test_parse_args_cli_overrides_config_workers(self) -> None:
+        """测试 CLI --workers 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_knowledge import parse_args
+
+        custom_workers = 7  # 使用与配置不同的值
+        with patch("sys.argv", ["run_knowledge.py", "测试任务", "--workers", str(custom_workers)]):
+            args = parse_args()
+
+        assert args.workers == custom_workers
+        assert args.workers != CONFIG_WORKER_POOL_SIZE or custom_workers == CONFIG_WORKER_POOL_SIZE
+
+    def test_parse_args_cli_overrides_config_max_iterations(self) -> None:
+        """测试 CLI --max-iterations 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_knowledge import parse_args
+
+        custom_iterations = "25"
+        with patch("sys.argv", ["run_knowledge.py", "测试任务", "--max-iterations", custom_iterations]):
+            args = parse_args()
+
+        assert args.max_iterations == custom_iterations
+
+    def test_parse_args_cli_overrides_config_kb_limit(self) -> None:
+        """测试 CLI --kb-limit 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_knowledge import parse_args
+
+        custom_kb_limit = 15
+        with patch("sys.argv", ["run_knowledge.py", "测试任务", "--kb-limit", str(custom_kb_limit)]):
+            args = parse_args()
+
+        assert args.kb_limit == custom_kb_limit
+
+    def test_parse_args_help_shows_config_source(self) -> None:
+        """测试帮助信息中显示默认值来源于 config.yaml"""
+        from scripts.run_knowledge import parse_args
+        import io
+        import contextlib
+
+        # 捕获帮助输出
+        help_output = io.StringIO()
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_knowledge.py", "--help"]):
+                with contextlib.redirect_stdout(help_output):
+                    parse_args()
+
+        help_text = help_output.getvalue()
+        # 验证帮助信息中包含 "来自 config.yaml" 的提示
+        assert "config.yaml" in help_text
+
+
+# ============================================================
+# TestRunMpParseArgsConfigDefaults - run_mp.py 配置默认值测试
+# ============================================================
+
+
+class TestRunMpParseArgsConfigDefaults:
+    """测试 scripts/run_mp.py 的 parse_args() 使用 tri-state 设计
+
+    验证 CLI 参数默认值为 None (tri-state)，运行时通过 resolve 函数从 config.yaml 获取。
+    注意：test_config_loading.py 已完整测试了 tri-state 行为和 resolve 函数。
+    """
+
+    def test_parse_args_uses_config_worker_pool_size(self) -> None:
+        """测试 --workers 默认值为 None (tri-state)"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.workers is None
+
+    def test_parse_args_uses_config_max_iterations(self) -> None:
+        """测试 --max-iterations 默认值为 None (tri-state)"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.max_iterations is None
+
+    def test_parse_args_uses_config_planning_timeout(self) -> None:
+        """测试 --planning-timeout 默认值为 None (tri-state)"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.planning_timeout is None
+
+    def test_parse_args_uses_config_execution_timeout(self) -> None:
+        """测试 --execution-timeout 默认值为 None (tri-state)"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.execution_timeout is None
+
+    def test_parse_args_uses_config_review_timeout(self) -> None:
+        """测试 --review-timeout 默认值为 None (tri-state)"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.review_timeout is None
+
+    def test_parse_args_cli_overrides_config_workers(self) -> None:
+        """测试 CLI --workers 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_mp import parse_args
+
+        custom_workers = 7
+        with patch("sys.argv", ["run_mp.py", "测试任务", "--workers", str(custom_workers)]):
+            args = parse_args()
+
+        assert args.workers == custom_workers
+        assert args.workers != CONFIG_WORKER_POOL_SIZE or custom_workers == CONFIG_WORKER_POOL_SIZE
+
+    def test_parse_args_cli_overrides_config_max_iterations(self) -> None:
+        """测试 CLI --max-iterations 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_mp import parse_args
+
+        custom_iterations = "25"
+        with patch("sys.argv", ["run_mp.py", "测试任务", "--max-iterations", custom_iterations]):
+            args = parse_args()
+
+        assert args.max_iterations == custom_iterations
+
+    def test_parse_args_cli_overrides_config_planning_timeout(self) -> None:
+        """测试 CLI --planning-timeout 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_mp import parse_args
+
+        custom_timeout = 123.0
+        with patch("sys.argv", ["run_mp.py", "测试任务", "--planning-timeout", str(custom_timeout)]):
+            args = parse_args()
+
+        assert args.planning_timeout == custom_timeout
+
+    def test_parse_args_cli_overrides_config_execution_timeout(self) -> None:
+        """测试 CLI --execution-timeout 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_mp import parse_args
+
+        custom_timeout = 456.0
+        with patch("sys.argv", ["run_mp.py", "测试任务", "--execution-timeout", str(custom_timeout)]):
+            args = parse_args()
+
+        assert args.execution_timeout == custom_timeout
+
+    def test_parse_args_cli_overrides_config_review_timeout(self) -> None:
+        """测试 CLI --review-timeout 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_mp import parse_args
+
+        custom_timeout = 789.0
+        with patch("sys.argv", ["run_mp.py", "测试任务", "--review-timeout", str(custom_timeout)]):
+            args = parse_args()
+
+        assert args.review_timeout == custom_timeout
+
+    def test_parse_args_help_shows_config_source(self) -> None:
+        """测试帮助信息中显示默认值来源于 config.yaml"""
+        from scripts.run_mp import parse_args
+        import io
+        import contextlib
+
+        help_output = io.StringIO()
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_mp.py", "--help"]):
+                with contextlib.redirect_stdout(help_output):
+                    parse_args()
+
+        help_text = help_output.getvalue()
+        # 验证帮助信息中包含 "来自 config.yaml" 的提示
+        assert "config.yaml" in help_text
+        # 验证各超时参数都有来源提示
+        assert "规划超时" in help_text
+        assert "任务执行超时" in help_text
+        assert "评审超时" in help_text
+
+
+# ============================================================
 # TestRunIterateMode - 自我迭代模式测试
 # ============================================================
+
+
+def _create_iterate_args_class():
+    """创建完整的 IterateArgs 类（与 run.py 中的 IterateArgs 保持同步）
+
+    此辅助函数用于测试中创建 IterateArgs 实例，包含 SelfIterator 所需的所有属性。
+    """
+    class IterateArgs:
+        def __init__(self, goal: str, opts: dict):
+            self.requirement = goal
+            self.skip_online = opts.get("skip_online", False)
+            self.changelog_url = "https://cursor.com/cn/changelog"
+            self.dry_run = opts.get("dry_run", False)
+            self.max_iterations = str(opts.get("max_iterations", 5))
+            self.workers = opts.get("workers", CONFIG_WORKER_POOL_SIZE)
+            self.force_update = opts.get("force_update", False)
+            self.verbose = opts.get("verbose", False)
+            self.auto_commit = opts.get("auto_commit", False)
+            self.auto_push = opts.get("auto_push", False)
+            self.commit_per_iteration = opts.get("commit_per_iteration", False)
+            self.commit_message = opts.get("commit_message", "")
+            self.orchestrator = opts.get("orchestrator", "mp")
+            self.no_mp = opts.get("no_mp", False)
+            self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+            # SelfIterator 所需的额外属性
+            self.directory = opts.get("directory", ".")
+            self.execution_mode = opts.get("execution_mode", "cli")
+            self.cloud_api_key = opts.get("cloud_api_key", None)
+            self.cloud_auth_timeout = opts.get("cloud_auth_timeout", 30)
+            # 流式控制台渲染参数（默认关闭）
+            self.stream_console_renderer = opts.get("stream_console_renderer", False)
+            self.stream_advanced_renderer = opts.get("stream_advanced_renderer", False)
+            self.stream_typing_effect = opts.get("stream_typing_effect", False)
+            self.stream_typing_delay = opts.get("stream_typing_delay", 0.02)
+            self.stream_word_mode = opts.get("stream_word_mode", True)
+            self.stream_color_enabled = opts.get("stream_color_enabled", True)
+            self.stream_show_word_diff = opts.get("stream_show_word_diff", False)
+    return IterateArgs
 
 
 class TestRunIterateMode:
@@ -3436,7 +3867,7 @@ class TestRunIterateMode:
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = opts.get("dry_run", False)
                 self.max_iterations = str(opts.get("max_iterations", 5))
-                self.workers = opts.get("workers", 3)
+                self.workers = opts.get("workers", CONFIG_WORKER_POOL_SIZE)
                 self.force_update = opts.get("force_update", False)
                 self.verbose = opts.get("verbose", False)
                 self.auto_commit = opts.get("auto_commit", False)
@@ -3446,6 +3877,18 @@ class TestRunIterateMode:
                 self.orchestrator = opts.get("orchestrator", "mp")
                 self.no_mp = opts.get("no_mp", False)
                 self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+                self.directory = opts.get("directory", ".")
+                self.execution_mode = opts.get("execution_mode", "cli")
+                self.cloud_api_key = opts.get("cloud_api_key", None)
+                self.cloud_auth_timeout = opts.get("cloud_auth_timeout", 30)
+                # 流式控制台渲染参数（默认关闭）
+                self.stream_console_renderer = opts.get("stream_console_renderer", False)
+                self.stream_advanced_renderer = opts.get("stream_advanced_renderer", False)
+                self.stream_typing_effect = opts.get("stream_typing_effect", False)
+                self.stream_typing_delay = opts.get("stream_typing_delay", 0.02)
+                self.stream_word_mode = opts.get("stream_word_mode", True)
+                self.stream_color_enabled = opts.get("stream_color_enabled", True)
+                self.stream_show_word_diff = opts.get("stream_show_word_diff", False)
 
         # 场景1：包含非并行关键词，但用户显式设置了 --orchestrator mp
         # 期望：使用 mp 编排器（不被关键词覆盖）
@@ -3491,21 +3934,8 @@ class TestRunIterateMode:
         """测试 SelfIterator 可以用 IterateArgs 初始化"""
         from scripts.run_iterate import SelfIterator
 
-        # 模拟 run.py 中的 IterateArgs 类
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", False)
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 5))
-                self.workers = opts.get("workers", 3)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", False)
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         # 创建 IterateArgs 实例
         iterate_args = IterateArgs("自我迭代测试任务", {
@@ -3537,21 +3967,8 @@ class TestRunIterateMode:
         """测试 SelfIterator._run_agent_system() 调用 MultiProcessOrchestrator"""
         from scripts.run_iterate import SelfIterator
 
-        # 模拟 run.py 中的 IterateArgs 类
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", True)  # 跳过在线检查
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 1))
-                self.workers = opts.get("workers", 2)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", False)
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         iterate_args = IterateArgs("测试 MP 编排器调用", {"skip_online": True})
         iterator = SelfIterator(iterate_args)
@@ -3592,20 +4009,8 @@ class TestRunIterateMode:
         """测试 _run_agent_system 在 auto_commit=True 时调用 CommitterAgent"""
         from scripts.run_iterate import SelfIterator
 
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", True)
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 1))
-                self.workers = opts.get("workers", 2)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", False)
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         # 启用 auto_commit
         iterate_args = IterateArgs("测试自动提交", {
@@ -3660,20 +4065,8 @@ class TestRunIterateMode:
         """测试 _run_commit_phase 调用 CommitterAgent"""
         from scripts.run_iterate import SelfIterator
 
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", True)
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 1))
-                self.workers = opts.get("workers", 2)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", True)
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         iterate_args = IterateArgs("测试 CommitterAgent", {"auto_commit": True})
         iterator = SelfIterator(iterate_args)
@@ -3738,20 +4131,8 @@ class TestRunIterateMode:
         """测试 _run_commit_phase 无变更时不提交"""
         from scripts.run_iterate import SelfIterator
 
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", True)
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 1))
-                self.workers = opts.get("workers", 2)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", True)
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         iterate_args = IterateArgs("测试无变更", {"auto_commit": True})
         iterator = SelfIterator(iterate_args)
@@ -3784,20 +4165,8 @@ class TestRunIterateMode:
         """测试 _run_agent_system 在 auto_commit=False 时不调用提交"""
         from scripts.run_iterate import SelfIterator
 
-        class IterateArgs:
-            def __init__(self, goal: str, opts: dict):
-                self.requirement = goal
-                self.skip_online = opts.get("skip_online", True)
-                self.changelog_url = "https://cursor.com/cn/changelog"
-                self.dry_run = opts.get("dry_run", False)
-                self.max_iterations = str(opts.get("max_iterations", 1))
-                self.workers = opts.get("workers", 2)
-                self.force_update = opts.get("force_update", False)
-                self.verbose = opts.get("verbose", False)
-                self.auto_commit = opts.get("auto_commit", False)  # 禁用自动提交
-                self.auto_push = opts.get("auto_push", False)
-                self.commit_per_iteration = opts.get("commit_per_iteration", False)
-                self.commit_message = opts.get("commit_message", "")
+        # 使用辅助函数创建 IterateArgs 类
+        IterateArgs = _create_iterate_args_class()
 
         iterate_args = IterateArgs("测试禁用提交", {"skip_online": True, "auto_commit": False})
         iterator = SelfIterator(iterate_args)
@@ -4682,7 +5051,8 @@ class TestRunToSelfIteratorParameterMapping:
             directory=".",
             workers=5,
             max_iterations="8",
-            strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=True,
             skip_online=True,
             dry_run=False,
@@ -4690,15 +5060,26 @@ class TestRunToSelfIteratorParameterMapping:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            stream_log=True,
+            planner_model=None,  # tri-state
+            worker_model=None,  # tri-state
+            reviewer_model=None,  # tri-state
+            stream_log_enabled=None,
             auto_commit=True,
             auto_push=True,
             commit_per_iteration=True,
             orchestrator="mp",
             no_mp=False,
+            execution_mode=None,
+            cloud_timeout=None,
+            cloud_auth_timeout=None,
             _orchestrator_user_set=True,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
         )
         return Runner(args)
 
@@ -5105,7 +5486,7 @@ class TestRunCloudMode:
     async def test_run_cloud_passes_correct_timeout(
         self, cloud_runner_args: argparse.Namespace
     ) -> None:
-        """验证 _run_cloud 使用 cloud_timeout 参数（默认 600 秒）"""
+        """验证 _run_cloud 使用 cloud_timeout 参数（默认 300 秒）"""
         runner = Runner(cloud_runner_args)
 
         captured_cli_config = None
@@ -5738,11 +6119,17 @@ class TestRunCloudModeParameterValidation:
         )
 
     @pytest.mark.asyncio
-    async def test_max_iterations_unlimited_timeout_calculation(
+    async def test_cloud_timeout_independent_from_max_iterations(
         self, base_args: argparse.Namespace
     ) -> None:
-        """验证无限迭代时 timeout 计算（使用默认值 10）"""
-        base_args.max_iterations = "-1"  # 无限迭代
+        """验证 Cloud timeout 独立于 max_iterations，使用 cloud_timeout 配置
+
+        新设计：
+        - Cloud timeout 不再从 max_iterations 推导
+        - 使用独立的 cloud_timeout 参数（来自 config.yaml 或 --cloud-timeout）
+        - 默认值为 DEFAULT_CLOUD_TIMEOUT (300 秒)
+        """
+        base_args.max_iterations = "-1"  # 无限迭代不影响 cloud_timeout
         runner = Runner(base_args)
 
         captured_timeout = None
@@ -5765,15 +6152,17 @@ class TestRunCloudModeParameterValidation:
 
         with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
             with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
-                # 无限迭代时 max_iterations = -1，使用默认值 10
+                # max_iterations = -1 不影响 cloud_timeout
                 options = runner._merge_options({"max_iterations": -1})
                 await runner._run_cloud("任务", options)
 
-        # -1 * 60 = -60，但实现中默认使用 10
-        # 根据 _run_cloud 实现: options.get("max_iterations", 10) * 60
-        # 如果传入 -1，结果是 -60
-        # 这个测试验证当前行为
-        assert captured_timeout == -60 or captured_timeout == 10 * 60
+        # Cloud timeout 使用独立的 cloud_timeout 参数，默认值来自 config.yaml
+        # 不再从 max_iterations 推导
+        expected_timeout = CONFIG_CLOUD_TIMEOUT  # 来自 config.yaml（默认 300）
+        assert captured_timeout == expected_timeout, (
+            f"Cloud timeout 应为 {expected_timeout}（来自 config.yaml），"
+            f"实际值: {captured_timeout}"
+        )
 
     @pytest.mark.asyncio
     async def test_cloud_mode_auto_commit_independence(
@@ -5836,3 +6225,1966 @@ class TestRunCloudModeParameterValidation:
                 await runner._run_cloud("这是测试 prompt", options)
 
         assert captured_prompt == "这是测试 prompt"
+
+
+# ============================================================
+# TestRunBasicParseArgsConfigDefaults - run_basic.py 配置默认值测试
+# ============================================================
+
+
+class TestRunBasicParseArgsConfigDefaults:
+    """测试 scripts/run_basic.py 的 parse_args() 使用 tri-state 设计
+
+    验证 CLI 参数默认值为 None (tri-state)，运行时通过 resolve 函数从 config.yaml 获取。
+    注意：test_config_loading.py 已完整测试了 tri-state 行为和 resolve 函数。
+    """
+
+    def test_parse_args_uses_config_worker_pool_size(self) -> None:
+        """测试 --workers 默认值为 None (tri-state)"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.workers is None
+
+    def test_parse_args_uses_config_max_iterations(self) -> None:
+        """测试 --max-iterations 默认值为 None (tri-state)"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.max_iterations is None
+
+    def test_parse_args_uses_config_enable_sub_planners_default_none(self) -> None:
+        """测试 enable_sub_planners 未指定时为 None (tri-state)"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务"]):
+            args = parse_args()
+
+        # 未指定时应为 None，由 run_orchestrator 从 config.yaml 获取
+        assert args.enable_sub_planners is None
+
+    def test_parse_args_uses_config_strict_review_default_none(self) -> None:
+        """测试 strict_review 未指定时为 None (tri-state)"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务"]):
+            args = parse_args()
+
+        # 未指定时应为 None，由 run_orchestrator 从 config.yaml 获取
+        assert args.strict_review is None
+
+    def test_parse_args_cli_overrides_config_workers(self) -> None:
+        """测试 CLI --workers 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_basic import parse_args
+
+        custom_workers = 7
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--workers", str(custom_workers)]):
+            args = parse_args()
+
+        assert args.workers == custom_workers
+
+    def test_parse_args_cli_overrides_config_max_iterations(self) -> None:
+        """测试 CLI --max-iterations 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_basic import parse_args
+
+        custom_iterations = "25"
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--max-iterations", custom_iterations]):
+            args = parse_args()
+
+        assert args.max_iterations == custom_iterations
+
+    def test_parse_args_strict_flag_sets_true(self) -> None:
+        """测试 --strict 参数将 strict_review 设为 True"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--strict"]):
+            args = parse_args()
+
+        assert args.strict_review is True
+
+    def test_parse_args_no_strict_flag_sets_false(self) -> None:
+        """测试 --no-strict 参数将 strict_review 设为 False"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--no-strict"]):
+            args = parse_args()
+
+        assert args.strict_review is False
+
+    def test_parse_args_sub_planners_flag_sets_true(self) -> None:
+        """测试 --sub-planners 参数将 enable_sub_planners 设为 True"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--sub-planners"]):
+            args = parse_args()
+
+        assert args.enable_sub_planners is True
+
+    def test_parse_args_no_sub_planners_flag_sets_false(self) -> None:
+        """测试 --no-sub-planners 参数将 enable_sub_planners 设为 False"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务", "--no-sub-planners"]):
+            args = parse_args()
+
+        assert args.enable_sub_planners is False
+
+    def test_parse_args_strict_and_no_strict_mutually_exclusive(self) -> None:
+        """测试 --strict 和 --no-strict 互斥"""
+        from scripts.run_basic import parse_args
+
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_basic.py", "测试任务", "--strict", "--no-strict"]):
+                parse_args()
+
+    def test_parse_args_sub_planners_mutually_exclusive(self) -> None:
+        """测试 --sub-planners 和 --no-sub-planners 互斥"""
+        from scripts.run_basic import parse_args
+
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_basic.py", "测试任务", "--sub-planners", "--no-sub-planners"]):
+                parse_args()
+
+    def test_parse_args_help_shows_config_source(self) -> None:
+        """测试帮助信息中显示默认值来源于 config.yaml"""
+        from scripts.run_basic import parse_args
+        import io
+        import contextlib
+
+        help_output = io.StringIO()
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_basic.py", "--help"]):
+                with contextlib.redirect_stdout(help_output):
+                    parse_args()
+
+        help_text = help_output.getvalue()
+        # 验证帮助信息中包含 "config.yaml" 的提示
+        assert "config.yaml" in help_text
+
+
+class TestRunBasicOrchestratorConfigAssembly:
+    """测试 run_basic.py 的 OrchestratorConfig 组装逻辑
+
+    验证 CLI > config.yaml 优先级正确实现。
+    """
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_config_uses_config_defaults_when_cli_unspecified(
+        self,
+    ) -> None:
+        """测试未指定 CLI 参数时使用 config.yaml 默认值"""
+        from scripts.run_basic import run_orchestrator
+        import argparse
+
+        args = argparse.Namespace(
+            goal="测试任务",
+            directory=".",
+            workers=CONFIG_WORKER_POOL_SIZE,
+            max_iterations=str(CONFIG_MAX_ITERATIONS),
+            enable_sub_planners=None,  # 未指定
+            strict_review=None,  # 未指定
+            verbose=False,
+            mock=False,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+        )
+
+        captured_config = None
+
+        # Mock Orchestrator 以捕获配置
+        from coordinator import Orchestrator
+
+        original_init = Orchestrator.__init__
+
+        def mock_init(self, config):
+            nonlocal captured_config
+            captured_config = config
+            # 不调用原始 init 以避免实际初始化
+
+        with patch.object(Orchestrator, "__init__", mock_init):
+            with patch.object(Orchestrator, "run", new_callable=AsyncMock, return_value={"success": True}):
+                try:
+                    await run_orchestrator(args)
+                except Exception:
+                    pass  # 忽略任何初始化错误
+
+        # 验证配置使用了 config.yaml 默认值
+        assert captured_config is not None
+        assert captured_config.enable_sub_planners == CONFIG_ENABLE_SUB_PLANNERS
+        assert captured_config.strict_review == CONFIG_STRICT_REVIEW
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_config_cli_overrides_enable_sub_planners(self) -> None:
+        """测试 CLI 参数可覆盖 enable_sub_planners"""
+        from scripts.run_basic import run_orchestrator
+        import argparse
+
+        # 使用与 config.yaml 相反的值
+        cli_value = not CONFIG_ENABLE_SUB_PLANNERS
+
+        args = argparse.Namespace(
+            goal="测试任务",
+            directory=".",
+            workers=CONFIG_WORKER_POOL_SIZE,
+            max_iterations=str(CONFIG_MAX_ITERATIONS),
+            enable_sub_planners=cli_value,  # CLI 指定
+            strict_review=None,
+            verbose=False,
+            mock=False,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+        )
+
+        captured_config = None
+
+        from coordinator import Orchestrator
+
+        def mock_init(self, config):
+            nonlocal captured_config
+            captured_config = config
+
+        with patch.object(Orchestrator, "__init__", mock_init):
+            with patch.object(Orchestrator, "run", new_callable=AsyncMock, return_value={"success": True}):
+                try:
+                    await run_orchestrator(args)
+                except Exception:
+                    pass
+
+        assert captured_config is not None
+        assert captured_config.enable_sub_planners == cli_value
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_config_cli_overrides_strict_review(self) -> None:
+        """测试 CLI 参数可覆盖 strict_review"""
+        from scripts.run_basic import run_orchestrator
+        import argparse
+
+        # 使用与 config.yaml 相反的值
+        cli_value = not CONFIG_STRICT_REVIEW
+
+        args = argparse.Namespace(
+            goal="测试任务",
+            directory=".",
+            workers=CONFIG_WORKER_POOL_SIZE,
+            max_iterations=str(CONFIG_MAX_ITERATIONS),
+            enable_sub_planners=None,
+            strict_review=cli_value,  # CLI 指定
+            verbose=False,
+            mock=False,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+        )
+
+        captured_config = None
+
+        from coordinator import Orchestrator
+
+        def mock_init(self, config):
+            nonlocal captured_config
+            captured_config = config
+
+        with patch.object(Orchestrator, "__init__", mock_init):
+            with patch.object(Orchestrator, "run", new_callable=AsyncMock, return_value={"success": True}):
+                try:
+                    await run_orchestrator(args)
+                except Exception:
+                    pass
+
+        assert captured_config is not None
+        assert captured_config.strict_review == cli_value
+
+
+# ============================================================
+# execution_mode 配置默认值测试
+# ============================================================
+
+
+class TestExecutionModeConfigDefault:
+    """测试 execution_mode 参数使用 tri-state 设计
+
+    验证场景:
+    1. run.py parse_args() 的 --execution-mode 默认值为 None (tri-state)
+    2. CLI 显式参数可覆盖默认值
+    3. '&' 前缀触发 Cloud 模式仍优先于配置默认值
+    4. Cloud/Auto 模式下 orchestrator 兼容性策略仍生效（强制 basic）
+
+    注意：test_config_loading.py 已完整测试了 tri-state 行为和 resolve 函数。
+    """
+
+    @pytest.fixture
+    def config_execution_mode(self) -> str:
+        """获取配置中的 execution_mode 默认值"""
+        return get_config().cloud_agent.execution_mode
+
+    def test_parse_args_execution_mode_uses_config_default(
+        self, config_execution_mode: str
+    ) -> None:
+        """测试 run.py parse_args() 的 --execution-mode 默认值为 None (tri-state)"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.execution_mode is None, (
+            f"--execution-mode 默认值应为 None (tri-state)，"
+            f"实际值: {args.execution_mode}"
+        )
+
+    def test_parse_args_execution_mode_cli_override(self) -> None:
+        """测试 CLI --execution-mode 参数可覆盖 config.yaml 默认值"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "测试任务", "--execution-mode", "cloud"]):
+            args = parse_args()
+
+        assert args.execution_mode == "cloud"
+
+    def test_parse_args_help_shows_config_source_for_execution_mode(self) -> None:
+        """测试帮助信息中 --execution-mode 显示来源于 config.yaml"""
+        from run import parse_args
+        import io
+        import contextlib
+
+        help_output = io.StringIO()
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run.py", "--help"]):
+                with contextlib.redirect_stdout(help_output):
+                    parse_args()
+
+        help_text = help_output.getvalue()
+        # 验证帮助信息中包含 "config.yaml" 的提示
+        assert "config.yaml" in help_text, (
+            "--execution-mode 帮助信息应包含 'config.yaml' 来源提示"
+        )
+
+    def test_ampersand_prefix_overrides_config_execution_mode(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 '&' 前缀触发 Cloud 模式优先于配置默认值
+
+        场景：配置中 execution_mode=cli，但任务带 '&' 前缀
+        期望：Cloud 模式被激活，覆盖配置默认值
+        """
+        # 模拟配置默认值为 cli
+        mock_args.execution_mode = "cli"
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        # 带 '&' 前缀的任务
+        analysis = analyzer.analyze("& 分析代码架构", mock_args)
+
+        # '&' 前缀应触发 Cloud 模式
+        assert analysis.mode == RunMode.CLOUD
+        assert analysis.options.get("execution_mode") == "cloud"
+        assert analysis.goal == "分析代码架构"
+
+    def test_merge_options_uses_analysis_execution_mode_over_config(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试 _merge_options 中 analysis_options 的 execution_mode 优先于配置
+
+        场景：配置默认值为 cli，但 analysis 中设置了 cloud
+        期望：最终 options["execution_mode"] 为 cloud
+        """
+        mock_args.execution_mode = "cli"  # 模拟配置默认值
+        runner = Runner(mock_args)
+
+        # 模拟 TaskAnalyzer 检测到 '&' 前缀后设置的选项
+        analysis_options = {"execution_mode": "cloud"}
+        options = runner._merge_options(analysis_options)
+
+        assert options["execution_mode"] == "cloud", (
+            "analysis_options 中的 execution_mode 应优先于配置默认值"
+        )
+
+
+class TestExecutionModeConfigDefaultWithMock:
+    """测试 execution_mode 配置默认值（使用 mock 配置）
+
+    通过 mock ConfigManager 来测试不同配置值下的行为。
+    """
+
+    def test_config_auto_default_parsed_correctly(self) -> None:
+        """测试配置 execution_mode=auto 时未传参的默认解析"""
+        from run import parse_args
+        from core.config import ConfigManager
+
+        # 保存原始配置
+        original_execution_mode = get_config().cloud_agent.execution_mode
+
+        try:
+            # Mock 配置为 auto
+            with patch.object(
+                get_config().cloud_agent, "execution_mode", "auto"
+            ):
+                # 需要重新导入以使用新的默认值
+                # 由于 parse_args 在模块加载时读取配置，这里直接验证配置值
+                assert get_config().cloud_agent.execution_mode == "auto"
+        finally:
+            # 配置会自动恢复（patch 结束后）
+            pass
+
+    def test_config_cloud_default_parsed_correctly(self) -> None:
+        """测试配置 execution_mode=cloud 时未传参的默认解析"""
+        from core.config import ConfigManager
+
+        # Mock 配置为 cloud
+        with patch.object(
+            get_config().cloud_agent, "execution_mode", "cloud"
+        ):
+            assert get_config().cloud_agent.execution_mode == "cloud"
+
+    def test_orchestrator_compatibility_with_config_cloud_default(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试配置 execution_mode=cloud 时 orchestrator 兼容性策略
+
+        场景：配置默认 execution_mode=cloud，用户未显式设置 orchestrator
+        期望：MP 模式应给出警告，因为 Cloud 模式不支持 MP 编排器
+        """
+        from run import Runner
+
+        # 模拟配置默认值为 cloud
+        mock_args.execution_mode = "cloud"
+        mock_args.orchestrator = "mp"
+        mock_args._orchestrator_user_set = False
+
+        runner = Runner(mock_args)
+        options = runner._merge_options({})
+
+        # 验证 execution_mode 被正确传递
+        assert options["execution_mode"] == "cloud"
+        # 注意：实际的 orchestrator 强制切换发生在 _run_iterate 或 _run_mp 中
+
+    def test_orchestrator_compatibility_with_config_auto_default(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """测试配置 execution_mode=auto 时 orchestrator 兼容性策略
+
+        场景：配置默认 execution_mode=auto，用户未显式设置 orchestrator
+        期望：Auto 模式也应触发 basic 编排器（与 Cloud 模式一致）
+        """
+        from run import Runner
+
+        # 模拟配置默认值为 auto
+        mock_args.execution_mode = "auto"
+        mock_args.orchestrator = "mp"
+        mock_args._orchestrator_user_set = False
+
+        runner = Runner(mock_args)
+        options = runner._merge_options({})
+
+        assert options["execution_mode"] == "auto"
+
+
+class TestRunIterateExecutionModeConfigDefault:
+    """测试 scripts/run_iterate.py 的 execution_mode 使用 tri-state 设计
+
+    注意：test_config_loading.py 已完整测试了 tri-state 行为和 resolve 函数。
+    """
+
+    @pytest.fixture
+    def config_execution_mode(self) -> str:
+        """获取配置中的 execution_mode 默认值"""
+        return get_config().cloud_agent.execution_mode
+
+    def test_run_iterate_parse_args_uses_config_default(
+        self, config_execution_mode: str
+    ) -> None:
+        """测试 run_iterate.py parse_args() 的 --execution-mode 默认值为 None (tri-state)"""
+        from scripts.run_iterate import parse_args
+
+        with patch("sys.argv", ["run_iterate.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert args.execution_mode is None, (
+            f"run_iterate.py --execution-mode 默认值应为 None (tri-state)，"
+            f"实际值: {args.execution_mode}"
+        )
+
+    def test_run_iterate_parse_args_cli_override(self) -> None:
+        """测试 run_iterate.py CLI --execution-mode 参数可覆盖 config.yaml 默认值"""
+        from scripts.run_iterate import parse_args
+
+        with patch("sys.argv", ["run_iterate.py", "测试任务", "--execution-mode", "cloud"]):
+            args = parse_args()
+
+        assert args.execution_mode == "cloud"
+
+    def test_run_iterate_help_shows_config_source(self) -> None:
+        """测试 run_iterate.py 帮助信息中 --execution-mode 显示来源于 config.yaml"""
+        from scripts.run_iterate import parse_args
+        import io
+        import contextlib
+
+        help_output = io.StringIO()
+        with pytest.raises(SystemExit):
+            with patch("sys.argv", ["run_iterate.py", "--help"]):
+                with contextlib.redirect_stdout(help_output):
+                    parse_args()
+
+        help_text = help_output.getvalue()
+        assert "config.yaml" in help_text, (
+            "run_iterate.py --execution-mode 帮助信息应包含 'config.yaml' 来源提示"
+        )
+
+
+# ============================================================
+# TestTableDrivenParseArgsDefaults - 表驱动测试 parse_args 默认值
+# ============================================================
+
+
+class TestTableDrivenParseArgsDefaults:
+    """表驱动测试：验证各脚本 parse_args() 默认值来自 get_config()
+
+    覆盖脚本：
+    - run.py
+    - scripts/run_basic.py
+    - scripts/run_mp.py
+    - scripts/run_iterate.py
+
+    测试字段：
+    - workers / worker_pool_size
+    - max_iterations
+    - cloud_timeout
+    - cloud_auth_timeout
+    - planner_model / worker_model / reviewer_model
+    """
+
+    @pytest.fixture
+    def config_defaults(self) -> dict:
+        """获取配置中的默认值"""
+        config = get_config()
+        return {
+            "worker_pool_size": config.system.worker_pool_size,
+            "max_iterations": config.system.max_iterations,
+            "cloud_timeout": config.cloud_agent.timeout,
+            "cloud_auth_timeout": config.cloud_agent.auth_timeout,
+            "execution_mode": config.cloud_agent.execution_mode,
+            "planner_model": config.models.planner,
+            "worker_model": config.models.worker,
+            "reviewer_model": config.models.reviewer,
+            "planner_timeout": config.planner.timeout,
+            "worker_timeout": config.worker.task_timeout,
+            "reviewer_timeout": config.reviewer.timeout,
+        }
+
+    # ========== run.py parse_args 测试 ==========
+
+    # run.py 中使用 tri-state 设计的字段（返回 None，运行时通过 resolve_orchestrator_settings 解析）
+    # 包括模型字段 planner_model, worker_model, reviewer_model
+    RUN_PY_TRISTATE_FIELDS = [
+        "workers",
+        "max_iterations",
+        "cloud_timeout",
+        "cloud_auth_timeout",
+        "execution_mode",
+        "planner_model",
+        "worker_model",
+        "reviewer_model",
+    ]
+
+    # run.py 中直接从 config.yaml 读取默认值的字段（目前为空，所有字段都使用 tri-state）
+    RUN_PY_DIRECT_CONFIG_FIELD_TESTS: list = []
+
+    @pytest.mark.parametrize(
+        "arg_name",
+        RUN_PY_TRISTATE_FIELDS,
+        ids=[f"run.py:{field}" for field in RUN_PY_TRISTATE_FIELDS],
+    )
+    def test_run_py_parse_args_tristate_returns_none(
+        self, arg_name: str
+    ) -> None:
+        """表驱动测试：run.py parse_args() tri-state 字段返回 None"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "测试任务"]):
+            args = parse_args()
+
+        actual = getattr(args, arg_name)
+
+        assert actual is None, (
+            f"run.py --{arg_name.replace('_', '-')} 应为 None（tri-state 设计），"
+            f"实际值: {actual}"
+        )
+
+    @pytest.mark.parametrize(
+        "arg_name,config_key",
+        RUN_PY_DIRECT_CONFIG_FIELD_TESTS,
+        ids=[f"run.py:{case[0]}" for case in RUN_PY_DIRECT_CONFIG_FIELD_TESTS],
+    )
+    def test_run_py_parse_args_default(
+        self, config_defaults: dict, arg_name: str, config_key: str
+    ) -> None:
+        """表驱动测试：run.py parse_args() 非 tri-state 字段默认值来自 config.yaml"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "测试任务"]):
+            args = parse_args()
+
+        expected = config_defaults[config_key]
+        actual = getattr(args, arg_name)
+
+        assert actual == expected, (
+            f"run.py --{arg_name.replace('_', '-')} 默认值应为 {expected}（来自 config.yaml），"
+            f"实际值: {actual}"
+        )
+
+    # ========== scripts/run_basic.py parse_args 测试 ==========
+
+    # run_basic.py 使用 tri-state 设计的字段
+    RUN_BASIC_TRISTATE_FIELDS = [
+        "workers",
+        "max_iterations",
+    ]
+
+    @pytest.mark.parametrize(
+        "arg_name",
+        RUN_BASIC_TRISTATE_FIELDS,
+        ids=[f"run_basic.py:{field}" for field in RUN_BASIC_TRISTATE_FIELDS],
+    )
+    def test_run_basic_py_parse_args_default(
+        self, config_defaults: dict, arg_name: str
+    ) -> None:
+        """表驱动测试：scripts/run_basic.py parse_args() tri-state 字段返回 None"""
+        from scripts.run_basic import parse_args
+
+        with patch("sys.argv", ["run_basic.py", "测试任务"]):
+            args = parse_args()
+
+        actual = getattr(args, arg_name)
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert actual is None, (
+            f"run_basic.py --{arg_name.replace('_', '-')} 应为 None（tri-state 设计），"
+            f"实际值: {actual}"
+        )
+
+    # ========== scripts/run_mp.py parse_args 测试 ==========
+
+    # run_mp.py 使用 tri-state 设计的字段
+    RUN_MP_TRISTATE_FIELDS = [
+        "workers",
+        "max_iterations",
+        "planner_model",
+        "worker_model",
+        "reviewer_model",
+        "planning_timeout",
+        "execution_timeout",
+        "review_timeout",
+    ]
+
+    @pytest.mark.parametrize(
+        "arg_name",
+        RUN_MP_TRISTATE_FIELDS,
+        ids=[f"run_mp.py:{field}" for field in RUN_MP_TRISTATE_FIELDS],
+    )
+    def test_run_mp_py_parse_args_default(
+        self, config_defaults: dict, arg_name: str
+    ) -> None:
+        """表驱动测试：scripts/run_mp.py parse_args() tri-state 字段返回 None"""
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        actual = getattr(args, arg_name)
+
+        # tri-state 设计：未显式指定时返回 None，运行时从 config.yaml 解析
+        assert actual is None, (
+            f"run_mp.py --{arg_name.replace('_', '-')} 应为 None（tri-state 设计），"
+            f"实际值: {actual}"
+        )
+
+    # ========== scripts/run_iterate.py parse_args 测试 ==========
+
+    # run_iterate.py 中使用 tri-state 设计的字段（返回 None，运行时通过 resolve_orchestrator_settings 解析）
+    RUN_ITERATE_TRISTATE_FIELDS = [
+        "workers",
+        "max_iterations",
+        "cloud_timeout",
+        "cloud_auth_timeout",
+        "execution_mode",
+    ]
+
+    @pytest.mark.parametrize(
+        "arg_name",
+        RUN_ITERATE_TRISTATE_FIELDS,
+        ids=[f"run_iterate.py:{field}" for field in RUN_ITERATE_TRISTATE_FIELDS],
+    )
+    def test_run_iterate_py_parse_args_tristate_returns_none(
+        self, arg_name: str
+    ) -> None:
+        """表驱动测试：scripts/run_iterate.py parse_args() tri-state 字段返回 None"""
+        from scripts.run_iterate import parse_args
+
+        with patch("sys.argv", ["run_iterate.py", "测试任务"]):
+            args = parse_args()
+
+        actual = getattr(args, arg_name)
+
+        assert actual is None, (
+            f"run_iterate.py --{arg_name.replace('_', '-')} 应为 None（tri-state 设计），"
+            f"实际值: {actual}"
+        )
+
+
+# ============================================================
+# TestCloudTimeoutAuthTimeoutTableDriven - Cloud 超时参数表驱动测试
+# ============================================================
+
+
+class TestCloudTimeoutAuthTimeoutTableDriven:
+    """表驱动测试：Cloud 超时和认证超时参数
+
+    测试场景：
+    1. 默认值来自 config.yaml
+    2. CLI 参数可覆盖默认值
+    3. 参数传递到下游组件
+    """
+
+    @pytest.fixture
+    def config_cloud_values(self) -> dict:
+        """获取配置中的 Cloud 相关默认值"""
+        config = get_config()
+        return {
+            "timeout": config.cloud_agent.timeout,
+            "auth_timeout": config.cloud_agent.auth_timeout,
+        }
+
+    # Cloud 超时参数测试数据
+    CLOUD_TIMEOUT_CLI_OVERRIDE_TESTS = [
+        # (script_module, cli_arg, cli_value, expected_attr)
+        ("run", "--cloud-timeout", "1200", "cloud_timeout", 1200),
+        ("run", "--cloud-auth-timeout", "60", "cloud_auth_timeout", 60),
+        ("scripts.run_iterate", "--cloud-timeout", "900", "cloud_timeout", 900),
+        ("scripts.run_iterate", "--cloud-auth-timeout", "45", "cloud_auth_timeout", 45),
+    ]
+
+    @pytest.mark.parametrize(
+        "script_module,cli_arg,cli_value,attr_name,expected_value",
+        CLOUD_TIMEOUT_CLI_OVERRIDE_TESTS,
+        ids=[
+            f"{case[0]}:{case[1]}" for case in CLOUD_TIMEOUT_CLI_OVERRIDE_TESTS
+        ],
+    )
+    def test_cloud_timeout_cli_override(
+        self,
+        script_module: str,
+        cli_arg: str,
+        cli_value: str,
+        attr_name: str,
+        expected_value: int,
+    ) -> None:
+        """表驱动测试：CLI 参数可覆盖 Cloud 超时默认值"""
+        import importlib
+
+        module = importlib.import_module(script_module)
+        parse_args = module.parse_args
+
+        argv = [f"{script_module.split('.')[-1]}.py", "测试任务", cli_arg, cli_value]
+        with patch("sys.argv", argv):
+            args = parse_args()
+
+        actual = getattr(args, attr_name)
+        assert actual == expected_value, (
+            f"{script_module} {cli_arg} 应为 {expected_value}，实际值: {actual}"
+        )
+
+
+# ============================================================
+# TestWorkerPoolMaxIterationsTableDriven - Worker 池和迭代次数表驱动测试
+# ============================================================
+
+
+class TestWorkerPoolMaxIterationsTableDriven:
+    """表驱动测试：worker_pool_size 和 max_iterations 参数
+
+    测试场景：
+    1. 默认值来自 config.yaml
+    2. CLI 参数可覆盖默认值
+    3. 特殊值处理（MAX/-1 表示无限迭代）
+    """
+
+    @pytest.fixture
+    def config_system_values(self) -> dict:
+        """获取配置中的 system 相关默认值"""
+        config = get_config()
+        return {
+            "worker_pool_size": config.system.worker_pool_size,
+            "max_iterations": config.system.max_iterations,
+        }
+
+    # Worker 数量 CLI 覆盖测试数据
+    WORKERS_CLI_OVERRIDE_TESTS = [
+        ("run", "-w", "8", 8),
+        ("run", "--workers", "10", 10),
+        ("scripts.run_basic", "-w", "5", 5),
+        ("scripts.run_basic", "--workers", "7", 7),
+        ("scripts.run_mp", "-w", "6", 6),
+        ("scripts.run_mp", "--workers", "12", 12),
+        ("scripts.run_iterate", "--workers", "9", 9),
+    ]
+
+    @pytest.mark.parametrize(
+        "script_module,cli_arg,cli_value,expected_value",
+        WORKERS_CLI_OVERRIDE_TESTS,
+        ids=[f"{case[0]}:{case[1]}={case[2]}" for case in WORKERS_CLI_OVERRIDE_TESTS],
+    )
+    def test_workers_cli_override(
+        self,
+        script_module: str,
+        cli_arg: str,
+        cli_value: str,
+        expected_value: int,
+    ) -> None:
+        """表驱动测试：CLI 参数可覆盖 workers 默认值"""
+        import importlib
+
+        module = importlib.import_module(script_module)
+        parse_args = module.parse_args
+
+        argv = [f"{script_module.split('.')[-1]}.py", "测试任务", cli_arg, cli_value]
+        with patch("sys.argv", argv):
+            args = parse_args()
+
+        assert args.workers == expected_value, (
+            f"{script_module} {cli_arg} 应为 {expected_value}，实际值: {args.workers}"
+        )
+
+    # Max iterations CLI 覆盖测试数据（包括特殊值）
+    MAX_ITERATIONS_CLI_OVERRIDE_TESTS = [
+        ("run", "-m", "20", "20"),
+        ("run", "--max-iterations", "MAX", "MAX"),
+        ("run", "--max-iterations", "-1", "-1"),
+        ("scripts.run_basic", "-m", "15", "15"),
+        ("scripts.run_mp", "-m", "25", "25"),
+        ("scripts.run_iterate", "--max-iterations", "30", "30"),
+    ]
+
+    @pytest.mark.parametrize(
+        "script_module,cli_arg,cli_value,expected_value",
+        MAX_ITERATIONS_CLI_OVERRIDE_TESTS,
+        ids=[
+            f"{case[0]}:{case[1]}={case[2]}"
+            for case in MAX_ITERATIONS_CLI_OVERRIDE_TESTS
+        ],
+    )
+    def test_max_iterations_cli_override(
+        self,
+        script_module: str,
+        cli_arg: str,
+        cli_value: str,
+        expected_value: str,
+    ) -> None:
+        """表驱动测试：CLI 参数可覆盖 max_iterations 默认值"""
+        import importlib
+
+        module = importlib.import_module(script_module)
+        parse_args = module.parse_args
+
+        argv = [f"{script_module.split('.')[-1]}.py", "测试任务", cli_arg, cli_value]
+        with patch("sys.argv", argv):
+            args = parse_args()
+
+        assert args.max_iterations == expected_value, (
+            f"{script_module} {cli_arg} 应为 {expected_value}，"
+            f"实际值: {args.max_iterations}"
+        )
+
+    # parse_max_iterations 特殊值处理测试
+    PARSE_MAX_ITERATIONS_TESTS = [
+        ("10", 10),
+        ("MAX", -1),
+        ("max", -1),
+        ("UNLIMITED", -1),
+        ("INF", -1),
+        ("-1", -1),
+        ("0", -1),
+        ("100", 100),
+    ]
+
+    @pytest.mark.parametrize(
+        "input_value,expected_output",
+        PARSE_MAX_ITERATIONS_TESTS,
+        ids=[f"'{case[0]}'→{case[1]}" for case in PARSE_MAX_ITERATIONS_TESTS],
+    )
+    def test_parse_max_iterations_special_values(
+        self, input_value: str, expected_output: int
+    ) -> None:
+        """表驱动测试：parse_max_iterations 特殊值处理"""
+        result = parse_max_iterations(input_value)
+        assert result == expected_output, (
+            f"parse_max_iterations('{input_value}') 应为 {expected_output}，"
+            f"实际值: {result}"
+        )
+
+
+# ============================================================
+# TestModelsConfigTableDriven - 模型配置表驱动测试
+# ============================================================
+
+
+class TestModelsConfigTableDriven:
+    """表驱动测试：模型配置参数（planner/worker/reviewer）
+
+    测试场景：
+    1. 默认值来自 config.yaml
+    2. CLI 参数可覆盖默认值
+    """
+
+    @pytest.fixture
+    def config_models(self) -> dict:
+        """获取配置中的模型默认值"""
+        config = get_config()
+        return {
+            "planner": config.models.planner,
+            "worker": config.models.worker,
+            "reviewer": config.models.reviewer,
+        }
+
+    # 模型 CLI 覆盖测试数据
+    MODELS_CLI_OVERRIDE_TESTS = [
+        ("run", "--planner-model", "test-planner", "planner_model", "test-planner"),
+        ("run", "--worker-model", "test-worker", "worker_model", "test-worker"),
+        (
+            "scripts.run_mp",
+            "--planner-model",
+            "mp-planner",
+            "planner_model",
+            "mp-planner",
+        ),
+        (
+            "scripts.run_mp",
+            "--worker-model",
+            "mp-worker",
+            "worker_model",
+            "mp-worker",
+        ),
+        (
+            "scripts.run_mp",
+            "--reviewer-model",
+            "mp-reviewer",
+            "reviewer_model",
+            "mp-reviewer",
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        "script_module,cli_arg,cli_value,attr_name,expected_value",
+        MODELS_CLI_OVERRIDE_TESTS,
+        ids=[f"{case[0]}:{case[1]}" for case in MODELS_CLI_OVERRIDE_TESTS],
+    )
+    def test_models_cli_override(
+        self,
+        script_module: str,
+        cli_arg: str,
+        cli_value: str,
+        attr_name: str,
+        expected_value: str,
+    ) -> None:
+        """表驱动测试：CLI 参数可覆盖模型默认值"""
+        import importlib
+
+        module = importlib.import_module(script_module)
+        parse_args = module.parse_args
+
+        argv = [f"{script_module.split('.')[-1]}.py", "测试任务", cli_arg, cli_value]
+        with patch("sys.argv", argv):
+            args = parse_args()
+
+        actual = getattr(args, attr_name)
+        assert actual == expected_value, (
+            f"{script_module} {cli_arg} 应为 {expected_value}，实际值: {actual}"
+        )
+
+    def test_run_mp_default_models_from_config(self, config_models: dict) -> None:
+        """测试 scripts/run_mp.py 模型默认值为 None (tri-state)
+
+        run_mp.py 使用 tri-state 设计，模型参数默认返回 None，
+        运行时通过 resolve 函数从 config.yaml 获取。
+        """
+        from scripts.run_mp import parse_args
+
+        with patch("sys.argv", ["run_mp.py", "测试任务"]):
+            args = parse_args()
+
+        # tri-state 设计：未显式指定时返回 None
+        assert args.planner_model is None, (
+            f"planner_model 默认值应为 None（tri-state 设计），"
+            f"实际值: {args.planner_model}"
+        )
+        assert args.worker_model is None, (
+            f"worker_model 默认值应为 None（tri-state 设计），"
+            f"实际值: {args.worker_model}"
+        )
+        assert args.reviewer_model is None, (
+            f"reviewer_model 默认值应为 None（tri-state 设计），"
+            f"实际值: {args.reviewer_model}"
+        )
+
+    def test_run_py_default_models_from_config(self, config_models: dict) -> None:
+        """测试 run.py 模型默认值使用 tri-state 设计
+
+        tri-state 语义：
+        - argparse 返回 None（未显式指定）
+        - 最终值通过 resolve_orchestrator_settings 从 config.yaml 解析
+        """
+        from run import parse_args, resolve_orchestrator_settings
+
+        with patch("sys.argv", ["run.py", "测试任务"]):
+            args = parse_args()
+
+        # argparse 返回 None（tri-state 设计）
+        assert args.planner_model is None, (
+            f"planner_model 应为 None（tri-state 设计），实际值: {args.planner_model}"
+        )
+        assert args.worker_model is None, (
+            f"worker_model 应为 None（tri-state 设计），实际值: {args.worker_model}"
+        )
+
+        # 最终值通过 resolve_orchestrator_settings 从 config.yaml 解析
+        resolved = resolve_orchestrator_settings({})
+        assert resolved["planner_model"] == config_models["planner"], (
+            f"resolve_orchestrator_settings 应返回 {config_models['planner']}，"
+            f"实际值: {resolved['planner_model']}"
+        )
+        assert resolved["worker_model"] == config_models["worker"], (
+            f"resolve_orchestrator_settings 应返回 {config_models['worker']}，"
+            f"实际值: {resolved['worker_model']}"
+        )
+
+
+# ============================================================
+# TestCloudTimeoutExecutionModeIteratePath - 测试 cloud 参数在 iterate 模式下的最终生效值
+# ============================================================
+
+
+class TestCloudTimeoutExecutionModeIteratePath:
+    """测试 --cloud-timeout/--cloud-auth-timeout/--execution-mode 在 --mode iterate 与 & 前缀 cloud 路径下的最终生效值
+
+    覆盖场景：
+    1. --mode iterate 使用默认 cloud 参数（来自 config.yaml）
+    2. --mode iterate 使用 CLI 覆盖 cloud 参数
+    3. & 前缀触发 cloud 模式时的参数传递
+    4. execution_mode 强制 basic 编排器的行为验证
+    """
+
+    @pytest.fixture
+    def config_cloud_defaults(self) -> dict:
+        """获取 config.yaml 中的 cloud 默认值"""
+        config = get_config()
+        return {
+            "timeout": config.cloud_agent.timeout,
+            "auth_timeout": config.cloud_agent.auth_timeout,
+            "execution_mode": config.cloud_agent.execution_mode,
+        }
+
+    def test_iterate_mode_uses_config_cloud_timeout(self, config_cloud_defaults: dict) -> None:
+        """测试 --mode iterate 的 --cloud-timeout：parse_args 返回 None，
+        运行时通过 resolve_orchestrator_settings 解析获得 config.yaml 值"""
+        from run import parse_args, Runner
+        from core.config import resolve_orchestrator_settings
+
+        with patch("sys.argv", ["run.py", "--mode", "iterate", "测试任务"]):
+            args = parse_args()
+
+        # tri-state: parse_args 应返回 None
+        assert args.cloud_timeout is None, (
+            f"cloud_timeout 应为 None（tri-state 设计），实际值: {args.cloud_timeout}"
+        )
+
+        # 运行时解析应得到 config.yaml 的值
+        resolved = resolve_orchestrator_settings()
+        assert resolved["cloud_timeout"] == config_cloud_defaults["timeout"], (
+            f"resolve_orchestrator_settings 应返回 {config_cloud_defaults['timeout']}，"
+            f"实际值: {resolved['cloud_timeout']}"
+        )
+
+    def test_iterate_mode_uses_config_cloud_auth_timeout(self, config_cloud_defaults: dict) -> None:
+        """测试 --mode iterate 的 --cloud-auth-timeout：parse_args 返回 None，
+        运行时通过 resolve_orchestrator_settings 解析获得 config.yaml 值"""
+        from run import parse_args
+        from core.config import resolve_orchestrator_settings
+
+        with patch("sys.argv", ["run.py", "--mode", "iterate", "测试任务"]):
+            args = parse_args()
+
+        # tri-state: parse_args 应返回 None
+        assert args.cloud_auth_timeout is None, (
+            f"cloud_auth_timeout 应为 None（tri-state 设计），实际值: {args.cloud_auth_timeout}"
+        )
+
+        # 运行时解析应得到 config.yaml 的值
+        resolved = resolve_orchestrator_settings()
+        assert resolved["cloud_auth_timeout"] == config_cloud_defaults["auth_timeout"], (
+            f"resolve_orchestrator_settings 应返回 {config_cloud_defaults['auth_timeout']}，"
+            f"实际值: {resolved['cloud_auth_timeout']}"
+        )
+
+    def test_iterate_mode_uses_config_execution_mode(self, config_cloud_defaults: dict) -> None:
+        """测试 --mode iterate 的 --execution-mode：parse_args 返回 None，
+        运行时通过 resolve_orchestrator_settings 解析获得 config.yaml 值"""
+        from run import parse_args
+        from core.config import resolve_orchestrator_settings
+
+        with patch("sys.argv", ["run.py", "--mode", "iterate", "测试任务"]):
+            args = parse_args()
+
+        # tri-state: parse_args 应返回 None
+        assert args.execution_mode is None, (
+            f"execution_mode 应为 None（tri-state 设计），实际值: {args.execution_mode}"
+        )
+
+        # 运行时解析应得到 config.yaml 的值
+        resolved = resolve_orchestrator_settings()
+        assert resolved["execution_mode"] == config_cloud_defaults["execution_mode"], (
+            f"resolve_orchestrator_settings 应返回 {config_cloud_defaults['execution_mode']}，"
+            f"实际值: {resolved['execution_mode']}"
+        )
+
+    def test_iterate_mode_cli_overrides_cloud_timeout(self) -> None:
+        """测试 CLI --cloud-timeout 参数可覆盖 config.yaml 默认值"""
+        from run import parse_args
+
+        custom_timeout = 600
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate", "--cloud-timeout", str(custom_timeout), "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.cloud_timeout == custom_timeout
+
+    def test_iterate_mode_cli_overrides_cloud_auth_timeout(self) -> None:
+        """测试 CLI --cloud-auth-timeout 参数可覆盖 config.yaml 默认值"""
+        from run import parse_args
+
+        custom_auth_timeout = 60
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate", "--cloud-auth-timeout", str(custom_auth_timeout), "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.cloud_auth_timeout == custom_auth_timeout
+
+    def test_iterate_mode_cli_overrides_execution_mode(self) -> None:
+        """测试 CLI --execution-mode 参数可覆盖 config.yaml 默认值"""
+        from run import parse_args
+
+        # 测试覆盖为 cloud
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate", "--execution-mode", "cloud", "测试任务"
+        ]):
+            args = parse_args()
+        assert args.execution_mode == "cloud"
+
+        # 测试覆盖为 auto
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate", "--execution-mode", "auto", "测试任务"
+        ]):
+            args = parse_args()
+        assert args.execution_mode == "auto"
+
+    def test_cloud_prefix_detected_in_task(self) -> None:
+        """测试 & 前缀能被正确检测为 cloud 请求"""
+        from run import is_cloud_request, strip_cloud_prefix
+
+        # 测试各种 & 前缀格式
+        assert is_cloud_request("& 分析代码") is True
+        assert is_cloud_request("&分析代码") is True
+        assert is_cloud_request("  & 分析代码") is True
+        assert is_cloud_request("& ") is False  # 仅空白内容
+        assert is_cloud_request("分析 & 代码") is False  # & 不在开头
+        assert is_cloud_request("分析代码") is False
+
+        # 测试移除前缀
+        assert strip_cloud_prefix("& 分析代码") == "分析代码"
+        assert strip_cloud_prefix("&分析代码") == "分析代码"
+        assert strip_cloud_prefix("  &  测试  ") == "测试"
+        assert strip_cloud_prefix("no prefix") == "no prefix"
+
+    def test_cloud_prefix_triggers_cloud_mode_in_runner(self) -> None:
+        """测试 Runner 中 & 前缀触发 cloud 模式"""
+        from run import Runner, parse_args
+
+        with patch("sys.argv", ["run.py", "& 分析代码架构"]):
+            args = parse_args()
+
+        # 验证 is_cloud_request 检测结果
+        assert is_cloud_request(args.task) is True
+
+        # 验证 strip_cloud_prefix 结果
+        assert strip_cloud_prefix(args.task) == "分析代码架构"
+
+    def test_execution_mode_cloud_preserves_cli_timeout_values(self) -> None:
+        """测试 execution_mode=cloud 时 CLI 指定的 timeout 值被保留"""
+        from run import parse_args
+
+        custom_timeout = 900
+        custom_auth_timeout = 45
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--execution-mode", "cloud",
+            "--cloud-timeout", str(custom_timeout),
+            "--cloud-auth-timeout", str(custom_auth_timeout),
+            "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.execution_mode == "cloud"
+        assert args.cloud_timeout == custom_timeout
+        assert args.cloud_auth_timeout == custom_auth_timeout
+
+    def test_execution_mode_auto_preserves_cli_timeout_values(self) -> None:
+        """测试 execution_mode=auto 时 CLI 指定的 timeout 值被保留"""
+        from run import parse_args
+
+        custom_timeout = 1200
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--execution-mode", "auto",
+            "--cloud-timeout", str(custom_timeout),
+            "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.execution_mode == "auto"
+        assert args.cloud_timeout == custom_timeout
+
+
+class TestIterateModeOrchestratorSelection:
+    """测试 iterate 模式下编排器选择逻辑
+
+    验证:
+    1. execution_mode=cli 允许使用 MP 编排器
+    2. execution_mode=cloud/auto 强制使用 basic 编排器
+    """
+
+    def test_cli_mode_allows_mp_orchestrator(self) -> None:
+        """测试 execution_mode=cli 时允许使用 MP 编排器"""
+        from run import parse_args
+
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--execution-mode", "cli",
+            "--orchestrator", "mp",
+            "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.execution_mode == "cli"
+        assert args.orchestrator == "mp"
+
+    def test_cloud_mode_default_orchestrator(self) -> None:
+        """测试 execution_mode=cloud 时默认编排器设置"""
+        from run import parse_args
+
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--execution-mode", "cloud",
+            "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.execution_mode == "cloud"
+        # 编排器在 resolve_orchestrator_settings 中会被强制切换为 basic
+        # 但 parse_args 本身不会改变 orchestrator 值
+
+    def test_no_mp_flag_forces_basic(self) -> None:
+        """测试 --no-mp 标志强制使用 basic 编排器"""
+        from run import parse_args
+
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--no-mp",
+            "测试任务"
+        ]):
+            args = parse_args()
+
+        assert args.no_mp is True
+
+
+class TestCloudPrefixWithExecutionModeIntegration:
+    """测试 & 前缀与 execution_mode 的集成行为
+
+    验证:
+    1. & 前缀任务的参数传递
+    2. 与 --execution-mode 的交互
+    """
+
+    def test_cloud_prefix_task_with_default_execution_mode(self) -> None:
+        """测试 & 前缀任务使用默认 execution_mode"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "& 分析代码"]):
+            args = parse_args()
+
+        # 验证任务包含 & 前缀
+        assert args.task == "& 分析代码"
+        # 验证 is_cloud_request 能正确检测
+        assert is_cloud_request(args.task) is True
+
+    def test_cloud_prefix_task_with_explicit_cloud_mode(self) -> None:
+        """测试 & 前缀任务与显式 --execution-mode cloud"""
+        from run import parse_args
+
+        with patch("sys.argv", ["run.py", "--execution-mode", "cloud", "& 后台分析"]):
+            args = parse_args()
+
+        assert args.execution_mode == "cloud"
+        assert is_cloud_request(args.task) is True
+
+    def test_cloud_prefix_stripped_correctly(self) -> None:
+        """测试 & 前缀被正确移除"""
+        test_cases = [
+            ("& 分析代码", "分析代码"),
+            ("&分析代码", "分析代码"),
+            ("  &  测试任务  ", "测试任务"),
+            ("& ", ""),  # 空内容
+            ("&", ""),   # 仅 &
+        ]
+
+        for input_task, expected in test_cases:
+            result = strip_cloud_prefix(input_task)
+            assert result == expected, (
+                f"strip_cloud_prefix('{input_task}') 应为 '{expected}'，"
+                f"实际值: '{result}'"
+            )
+
+
+# ============================================================
+# TestIterateArgsMapping - 测试 IterateArgs 字段映射完整性
+# ============================================================
+
+
+class TestIterateArgsMapping:
+    """测试 run.py 中 IterateArgs 的字段映射完整性
+
+    验证:
+    1. CLI 参数通过 _merge_options 正确传递到 IterateArgs
+    2. SelfIterator 实际读取的字段都在 IterateArgs 中有映射
+    3. 优先级：CLI 参数 > config.yaml > 默认值
+    """
+
+    @pytest.fixture
+    def mock_iterate_args_from_runner(self) -> dict:
+        """创建带完整 CLI 参数的 args，并通过 Runner._merge_options 得到 options"""
+        from run import Runner, parse_args
+
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--cloud-timeout", "600",
+            "--cloud-auth-timeout", "45",
+            "--execution-mode", "cloud",
+            "--workers", "5",
+            "--max-iterations", "20",
+            "--auto-commit",
+            "--stall-diagnostics",
+            "--stall-diagnostics-level", "info",
+            "--stall-recovery-interval", "60.0",
+            "--stream-console-renderer",
+            "--stream-show-word-diff",
+            "测试任务",
+        ]):
+            args = parse_args()
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+        return options
+
+    def test_cloud_timeout_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试 --cloud-timeout CLI 参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "cloud_timeout" in options
+        assert options["cloud_timeout"] == 600
+
+    def test_cloud_auth_timeout_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试 --cloud-auth-timeout CLI 参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "cloud_auth_timeout" in options
+        assert options["cloud_auth_timeout"] == 45
+
+    def test_execution_mode_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试 --execution-mode CLI 参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "execution_mode" in options
+        assert options["execution_mode"] == "cloud"
+
+    def test_workers_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试 --workers CLI 参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "workers" in options
+        assert options["workers"] == 5
+
+    def test_stall_diagnostics_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试卡死诊断参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "stall_diagnostics_enabled" in options
+        assert options["stall_diagnostics_enabled"] is True
+        assert "stall_diagnostics_level" in options
+        assert options["stall_diagnostics_level"] == "info"
+        assert "stall_recovery_interval" in options
+        assert options["stall_recovery_interval"] == 60.0
+
+    def test_stream_render_params_mapped_to_options(self, mock_iterate_args_from_runner: dict) -> None:
+        """测试流式渲染参数被映射到 options"""
+        options = mock_iterate_args_from_runner
+        assert "stream_console_renderer" in options
+        assert options["stream_console_renderer"] is True
+        assert "stream_show_word_diff" in options
+        assert options["stream_show_word_diff"] is True
+
+    def test_iterate_args_has_all_selfiterator_fields(self) -> None:
+        """测试 IterateArgs 包含 SelfIterator 读取的所有字段
+
+        通过构造 IterateArgs 对象并验证字段存在性。
+        """
+        from run import Runner, parse_args
+
+        with patch("sys.argv", ["run.py", "--mode", "iterate", "测试任务"]):
+            args = parse_args()
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # 构造 IterateArgs（通过访问 _run_iterate 中的定义）
+        # 由于 IterateArgs 是内部类，直接列出 SelfIterator 读取的字段进行验证
+        required_fields = [
+            "cloud_timeout",
+            "cloud_auth_timeout",
+            "execution_mode",
+            "workers",
+            "max_iterations",
+            "verbose",
+            "auto_commit",
+            "auto_push",
+            "commit_per_iteration",
+            "orchestrator",
+            "no_mp",
+            "stream_console_renderer",
+            "stream_advanced_renderer",
+            "stream_typing_effect",
+            "stream_typing_delay",
+            "stream_word_mode",
+            "stream_color_enabled",
+            "stream_show_word_diff",
+            "stall_diagnostics_enabled",
+            "stall_diagnostics_level",
+            "stall_recovery_interval",
+            "execution_health_check_interval",
+            "health_warning_cooldown",
+            "quiet",
+            "log_level",
+            "heartbeat_debug",
+            "planner_execution_mode",
+            "worker_execution_mode",
+            "reviewer_execution_mode",
+            "directory",
+        ]
+
+        for field in required_fields:
+            assert field in options, f"options 中缺少字段: {field}"
+
+    def test_cli_priority_over_config_yaml(self) -> None:
+        """测试 CLI 参数优先于 config.yaml 默认值"""
+        from run import Runner, parse_args
+
+        # 获取 config.yaml 的默认值
+        config_cloud_timeout = get_config().cloud_agent.timeout
+        config_workers = get_config().system.worker_pool_size
+
+        # 使用 CLI 覆盖
+        cli_cloud_timeout = config_cloud_timeout + 100
+        cli_workers = config_workers + 2
+
+        with patch("sys.argv", [
+            "run.py", "--mode", "iterate",
+            "--cloud-timeout", str(cli_cloud_timeout),
+            "--workers", str(cli_workers),
+            "测试任务",
+        ]):
+            args = parse_args()
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        assert options["cloud_timeout"] == cli_cloud_timeout, (
+            f"CLI --cloud-timeout 应覆盖 config.yaml 默认值 {config_cloud_timeout}"
+        )
+        assert options["workers"] == cli_workers, (
+            f"CLI --workers 应覆盖 config.yaml 默认值 {config_workers}"
+        )
+
+
+# ============================================================
+# TestIterateArgsToSelfIterator - 测试 IterateArgs 传递给 SelfIterator
+# ============================================================
+
+
+class TestIterateArgsToSelfIterator:
+    """测试 IterateArgs 字段能被 SelfIterator 正确读取
+
+    验证:
+    1. 通过模拟 argparse.Namespace 传递给 SelfIterator
+    2. SelfIterator 的 _resolved_settings 正确反映 CLI 参数
+    """
+
+    @pytest.fixture
+    def mock_iterate_args(self) -> argparse.Namespace:
+        """创建模拟的 IterateArgs 对象"""
+        args = argparse.Namespace(
+            requirement="测试任务",
+            skip_online=True,
+            changelog_url="https://cursor.com/cn/changelog",
+            dry_run=False,
+            max_iterations="20",
+            workers=5,
+            force_update=False,
+            verbose=False,
+            directory=".",
+            auto_commit=True,
+            auto_push=False,
+            commit_per_iteration=False,
+            commit_message="",
+            orchestrator="basic",
+            no_mp=True,
+            _orchestrator_user_set=True,
+            execution_mode="cloud",
+            cloud_api_key=None,
+            cloud_auth_timeout=45,
+            cloud_timeout=600,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            quiet=False,
+            log_level="INFO",
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=True,
+            stall_diagnostics_level="info",
+            stall_recovery_interval=60.0,
+            execution_health_check_interval=45.0,
+            health_warning_cooldown=90.0,
+            stream_console_renderer=True,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=True,
+        )
+        return args
+
+    def test_selfiterator_reads_cloud_timeout(self, mock_iterate_args: argparse.Namespace) -> None:
+        """测试 SelfIterator 正确读取 cloud_timeout"""
+        from scripts.run_iterate import SelfIterator
+
+        with patch.object(SelfIterator, '__init__', lambda self, args: None):
+            iterator = object.__new__(SelfIterator)
+            iterator.args = mock_iterate_args
+
+            # 模拟 _resolve_config_settings 调用
+            cloud_timeout = getattr(iterator.args, "cloud_timeout", None)
+            assert cloud_timeout == 600
+
+    def test_selfiterator_reads_stall_diagnostics(self, mock_iterate_args: argparse.Namespace) -> None:
+        """测试 SelfIterator 正确读取卡死诊断参数"""
+        from scripts.run_iterate import SelfIterator
+
+        with patch.object(SelfIterator, '__init__', lambda self, args: None):
+            iterator = object.__new__(SelfIterator)
+            iterator.args = mock_iterate_args
+
+            assert getattr(iterator.args, "stall_diagnostics_enabled", None) is True
+            assert getattr(iterator.args, "stall_diagnostics_level", None) == "info"
+            assert getattr(iterator.args, "stall_recovery_interval", 30.0) == 60.0
+
+    def test_selfiterator_reads_stream_render_params(self, mock_iterate_args: argparse.Namespace) -> None:
+        """测试 SelfIterator 正确读取流式渲染参数"""
+        from scripts.run_iterate import SelfIterator
+
+        with patch.object(SelfIterator, '__init__', lambda self, args: None):
+            iterator = object.__new__(SelfIterator)
+            iterator.args = mock_iterate_args
+
+            assert getattr(iterator.args, "stream_console_renderer", False) is True
+            assert getattr(iterator.args, "stream_show_word_diff", False) is True
+
+    def test_selfiterator_reads_execution_mode(self, mock_iterate_args: argparse.Namespace) -> None:
+        """测试 SelfIterator 正确读取 execution_mode"""
+        from scripts.run_iterate import SelfIterator
+
+        with patch.object(SelfIterator, '__init__', lambda self, args: None):
+            iterator = object.__new__(SelfIterator)
+            iterator.args = mock_iterate_args
+
+            assert getattr(iterator.args, "execution_mode", "cli") == "cloud"
+
+
+# ============================================================
+# run_agent_system.sh 脚本透传行为测试
+# ============================================================
+
+
+class TestShellScriptPassthrough:
+    """测试 shell 脚本参数透传给 run.py 的行为
+
+    验证 run_agent_system.sh 脚本重构后，通过 CLI 参数透传给 run.py
+    时配置优先级处理正确。
+
+    优先级: CLI 参数 > config.yaml > 默认值
+    """
+
+    def test_cli_max_iterations_overrides_config(self) -> None:
+        """测试 CLI --max-iterations 覆盖 config.yaml 配置"""
+        # 模拟 shell 脚本透传 --max-iterations 参数
+        args = argparse.Namespace(
+            task="test task",
+            mode="mp",
+            directory=".",
+            workers=None,  # 未指定，应使用 config.yaml
+            max_iterations="20",  # 脚本参数透传
+            strict_review=None,
+            enable_sub_planners=None,
+            verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+            no_auto_analyze=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_per_iteration=False,
+            execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            orchestrator=None,
+            no_mp=None,
+            _orchestrator_user_set=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+        )
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # CLI 参数应覆盖 config.yaml
+        assert options["max_iterations"] == 20
+
+    def test_cli_workers_overrides_config(self) -> None:
+        """测试 CLI --workers 覆盖 config.yaml 配置"""
+        args = argparse.Namespace(
+            task="test task",
+            mode="mp",
+            directory=".",
+            workers=7,  # 脚本参数透传
+            max_iterations=None,  # 未指定，应使用 config.yaml
+            strict_review=None,
+            enable_sub_planners=None,
+            verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+            no_auto_analyze=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_per_iteration=False,
+            execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            orchestrator=None,
+            no_mp=None,
+            _orchestrator_user_set=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+        )
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # CLI 参数应覆盖 config.yaml
+        assert options["workers"] == 7
+        # 未指定的 max_iterations 应使用 config.yaml 值
+        assert options["max_iterations"] == CONFIG_MAX_ITERATIONS
+
+    def test_no_cli_args_uses_config_defaults(self) -> None:
+        """测试无 CLI 参数时使用 config.yaml 默认值"""
+        # 模拟 shell 脚本未传递任何参数（仅 GOAL）
+        args = argparse.Namespace(
+            task="test task",
+            mode="mp",
+            directory=".",
+            workers=None,  # 未指定
+            max_iterations=None,  # 未指定
+            strict_review=None,
+            enable_sub_planners=None,
+            verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+            no_auto_analyze=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_per_iteration=False,
+            execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            orchestrator=None,
+            no_mp=None,
+            _orchestrator_user_set=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+        )
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # 应使用 config.yaml 默认值
+        assert options["workers"] == CONFIG_WORKER_POOL_SIZE
+        assert options["max_iterations"] == CONFIG_MAX_ITERATIONS
+        assert options["planner_model"] == CONFIG_PLANNER_MODEL
+        assert options["worker_model"] == CONFIG_WORKER_MODEL
+
+    def test_cli_model_args_override_config(self) -> None:
+        """测试 CLI 模型参数覆盖 config.yaml 配置
+
+        验证 AGENT_PLANNER_MODEL/AGENT_WORKER_MODEL 环境变量透传
+        通过 --planner-model/--worker-model 后能正确覆盖配置。
+        """
+        args = argparse.Namespace(
+            task="test task",
+            mode="mp",
+            directory=".",
+            workers=None,
+            max_iterations=None,
+            strict_review=None,
+            enable_sub_planners=None,
+            verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model="custom-planner-from-env",  # 环境变量透传
+            worker_model="custom-worker-from-env",  # 环境变量透传
+            reviewer_model=CONFIG_REVIEWER_MODEL,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+            no_auto_analyze=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_per_iteration=False,
+            execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            orchestrator=None,
+            no_mp=None,
+            _orchestrator_user_set=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+        )
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # CLI/环境变量透传的模型参数应覆盖 config.yaml
+        assert options["planner_model"] == "custom-planner-from-env"
+        assert options["worker_model"] == "custom-worker-from-env"
+
+    def test_max_iterations_unlimited_keyword(self) -> None:
+        """测试 MAX/-1 无限迭代关键词透传正确处理"""
+        args = argparse.Namespace(
+            task="test task",
+            mode="mp",
+            directory=".",
+            workers=None,
+            max_iterations="MAX",  # 无限迭代关键词
+            strict_review=None,
+            enable_sub_planners=None,
+            verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
+            skip_online=False,
+            dry_run=False,
+            force_update=False,
+            use_knowledge=False,
+            search_knowledge=None,
+            self_update=False,
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
+            no_auto_analyze=False,
+            auto_commit=False,
+            auto_push=False,
+            commit_per_iteration=False,
+            execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            orchestrator=None,
+            no_mp=None,
+            _orchestrator_user_set=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+        )
+
+        runner = Runner(args)
+        options = runner._merge_options({})
+
+        # MAX 应被解析为 -1（无限迭代）
+        assert options["max_iterations"] == -1

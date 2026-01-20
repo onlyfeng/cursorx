@@ -457,7 +457,7 @@ agent --resume abc123-session-id
 # 使用 run.py 的 Cloud 模式提交后台任务
 python run.py --mode iterate --execution-mode cloud "长时间代码分析任务"
 
-# 指定 Cloud 执行超时时间（默认 600 秒）
+# 指定 Cloud 执行超时时间（默认 300 秒）
 python run.py --mode iterate --execution-mode cloud --cloud-timeout 1200 "复杂重构任务"
 
 # scripts/run_iterate.py 也支持 --cloud-timeout
@@ -690,6 +690,80 @@ python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff 
 
 ### 参数参考
 
+#### 配置优先级
+
+配置值按以下优先级确定（高到低）：
+
+| 优先级 | 来源 | 示例 |
+|--------|------|------|
+| 1 (最高) | CLI 参数 | `--workers 5`, `--execution-mode cloud`, `--cloud-api-key` |
+| 2 | 环境变量 `CURSOR_API_KEY` | 主要 API Key 环境变量 |
+| 3 | 环境变量 `CURSOR_CLOUD_API_KEY` | 备选 API Key 环境变量（仅当 `CURSOR_API_KEY` 未设置时使用） |
+| 4 | config.yaml | `worker_pool_size: 3`, `cloud_agent.api_key` |
+| 5 (最低) | DEFAULT_* 常量 | 代码中的 `DEFAULT_CLOUD_TIMEOUT = 300` |
+
+**注意**: 优先级 2-3（环境变量细分）仅适用于 API Key 配置。其他配置项使用 4 级优先级: CLI 参数 > 环境变量 > config.yaml > DEFAULT_* 常量。
+
+**示例**: `--workers 5` 会覆盖 config.yaml 中的 `worker_pool_size: 3`
+
+**API Key 优先级说明**: `CURSOR_API_KEY` 优先于 `CURSOR_CLOUD_API_KEY`。后者作为备选，仅在前者未设置时生效。
+
+#### config.yaml 权威配置来源
+
+`config.yaml` 是项目的**权威配置来源**，集中定义所有默认配置。CLI 参数可覆盖其中的值，但 `config.yaml` 始终作为基础配置被加载。
+
+**关键配置项映射**（CLI 参数 → config.yaml 字段）:
+
+| CLI 参数 | config.yaml 路径 | 说明 |
+|----------|------------------|------|
+| `--workers` | `system.worker_pool_size` | Worker 池大小 |
+| `--max-iterations` | `system.max_iterations` | 最大迭代次数 |
+| `--execution-mode` | `cloud_agent.execution_mode` | 执行模式: cli/cloud/auto |
+| `--cloud-timeout` | `cloud_agent.timeout` | Cloud 执行超时（秒） |
+| `--output-format stream-json` | `agent_cli.output_format` + `logging.stream_json.enabled` | 流式 JSON 输出 |
+
+#### 验证配置是否被正确读取（--print-config）
+
+使用 `--print-config` 参数可快速验证入口脚本是否正确加载了 `config.yaml` 中的配置：
+
+```bash
+# 验证 run.py 读取的配置
+python run.py --print-config
+
+# 验证 scripts/run_iterate.py 读取的配置
+python scripts/run_iterate.py --print-config
+
+# 结合 CLI 参数验证覆盖是否生效
+python run.py --workers 5 --execution-mode cloud --print-config
+```
+
+**输出示例**:
+
+```
+[CONFIG] config_path: /path/to/config.yaml
+[CONFIG] source: run.py
+[CONFIG] max_iterations: 10
+[CONFIG] workers: 3
+[CONFIG] execution_mode: cli
+[CONFIG] orchestrator: mp
+[CONFIG] orchestrator_fallback: none
+[CONFIG] planner_model: gpt-5.2-high
+[CONFIG] worker_model: opus-4.5-thinking
+[CONFIG] reviewer_model: gpt-5.2-codex
+[CONFIG] cloud_timeout: 300
+[CONFIG] cloud_auth_timeout: 30
+[CONFIG] auto_commit: false
+[CONFIG] auto_push: false
+[CONFIG] dry_run: false
+[CONFIG] strict_review: false
+[CONFIG] enable_sub_planners: true
+```
+
+**典型用途**:
+- CI/CD 中断言配置正确: `python run.py --print-config | grep "workers: 5"`
+- 排查配置不生效问题: 确认 `config_path` 指向正确的配置文件
+- 验证编排器回退: 当 `execution_mode` 为 `cloud`/`auto` 时，`orchestrator_fallback` 会显示回退信息
+
 #### 核心执行参数
 
 | 参数 | 说明 | 默认值 |
@@ -739,9 +813,11 @@ python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff 
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--cloud-api-key` | Cloud API Key（可选） | 环境变量 `CURSOR_API_KEY` |
+| `--cloud-api-key` | Cloud API Key（优先级: CLI > `CURSOR_API_KEY` > `CURSOR_CLOUD_API_KEY` > config.yaml） | 环境变量 `CURSOR_API_KEY` |
 | `--cloud-auth-timeout` | Cloud 认证超时时间（秒） | 30 |
-| `--cloud-timeout` | Cloud 执行超时时间（秒，`run.py` 和 `scripts/run_iterate.py` 均支持） | 600 |
+| `--cloud-timeout` | Cloud 执行超时时间（秒），优先级: CLI > config.yaml > DEFAULT_CLOUD_TIMEOUT | 300 |
+
+**注意**: `CURSOR_CLOUD_API_KEY` 仅作为备选环境变量，当 `CURSOR_API_KEY` 未设置时才会使用。
 
 ### 自动提交配置
 

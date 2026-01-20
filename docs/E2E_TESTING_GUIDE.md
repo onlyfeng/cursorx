@@ -78,12 +78,14 @@ E2E 测试在 CI 流水线中自动运行。配置位于 `.github/workflows/ci.y
 
 ### 2.3 环境变量配置
 
-| 环境变量 | 描述 | 默认值 |
-|---------|------|--------|
-| `CURSOR_API_KEY` | API 密钥（测试中通常使用 mock） | - |
-| `CURSOR_CLOUD_API_KEY` | Cloud API 密钥 | - |
-| `E2E_TEST_TIMEOUT` | 测试超时时间（秒） | 300 |
-| `E2E_VERBOSE` | 详细日志输出 | false |
+| 环境变量 | 描述 | 优先级 | 默认值 |
+|---------|------|--------|--------|
+| `CURSOR_API_KEY` | 主要 API 密钥（测试中通常使用 mock） | 高 | - |
+| `CURSOR_CLOUD_API_KEY` | 备选 API 密钥（仅当 `CURSOR_API_KEY` 未设置时使用） | 低 | - |
+| `E2E_TEST_TIMEOUT` | 测试超时时间（秒） | - | 300 |
+| `E2E_VERBOSE` | 详细日志输出 | - | false |
+
+**API Key 优先级**: `CURSOR_API_KEY` 优先于 `CURSOR_CLOUD_API_KEY`。后者仅作为备选，当前者未设置时才会使用。
 
 测试中使用 `env_with_api_key` fixture 设置测试用 API Key：
 

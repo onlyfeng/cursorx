@@ -23,6 +23,10 @@ from core.config import (
     DEFAULT_REVIEW_TIMEOUT,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_WORKER_POOL_SIZE,
+    DEFAULT_STREAM_EVENTS_ENABLED,
+    DEFAULT_STREAM_LOG_CONSOLE,
+    DEFAULT_STREAM_LOG_DETAIL_DIR,
+    DEFAULT_STREAM_LOG_RAW_DIR,
     get_config,
 )
 from core.knowledge import (
@@ -73,10 +77,15 @@ class MultiProcessOrchestratorConfig(BaseModel):
     planner_execution_mode: Optional[str] = None  # 规划者执行模式
     worker_execution_mode: Optional[str] = None   # 执行者执行模式
     reviewer_execution_mode: Optional[str] = None # 评审者执行模式
-    stream_events_enabled: bool = True   # 默认启用流式日志
-    stream_log_console: bool = True
-    stream_log_detail_dir: str = "logs/stream_json/detail/"
-    stream_log_raw_dir: str = "logs/stream_json/raw/"
+
+    # 流式日志配置 - tri-state 设计
+    # None 表示使用 config.yaml 中的值（通过 get_config().logging.stream_json 获取）
+    # 显式传入的值优先（最高优先级）
+    # 解析在 MultiProcessOrchestrator._resolve_stream_config() 中进行
+    stream_events_enabled: Optional[bool] = None   # 是否启用流式日志
+    stream_log_console: Optional[bool] = None      # 是否输出到控制台
+    stream_log_detail_dir: Optional[str] = None    # 详细日志目录
+    stream_log_raw_dir: Optional[str] = None       # 原始日志目录
     # 流式控制台渲染配置（默认关闭，避免噪声）
     stream_console_renderer: bool = False      # 启用流式控制台渲染器
     stream_advanced_renderer: bool = False     # 使用高级终端渲染器
@@ -165,6 +174,9 @@ class MultiProcessOrchestrator:
     def __init__(self, config: MultiProcessOrchestratorConfig):
         self.config = config
 
+        # 解析流式日志配置（优先级: 显式传入 > config.yaml > DEFAULT_STREAM_* 常量）
+        self._resolved_stream_config = self._resolve_stream_config(config)
+
         # 系统状态
         self.state = SystemState(
             working_directory=config.working_directory,
@@ -188,11 +200,12 @@ class MultiProcessOrchestrator:
         # 初始化 CommitterAgent（运行在 orchestrator 主进程中，避免新增子进程复杂度）
         self.committer: Optional[CommitterAgent] = None
         if config.enable_auto_commit:
+            # 使用解析后的流式日志配置
             committer_cursor_config = CursorAgentConfig(
-                stream_events_enabled=config.stream_events_enabled,
-                stream_log_console=config.stream_log_console,
-                stream_log_detail_dir=config.stream_log_detail_dir,
-                stream_log_raw_dir=config.stream_log_raw_dir,
+                stream_events_enabled=self._resolved_stream_config["stream_events_enabled"],
+                stream_log_console=self._resolved_stream_config["stream_log_console"],
+                stream_log_detail_dir=self._resolved_stream_config["stream_log_detail_dir"],
+                stream_log_raw_dir=self._resolved_stream_config["stream_log_raw_dir"],
             )
             self.committer = CommitterAgent(CommitterConfig(
                 working_directory=config.working_directory,
@@ -254,6 +267,53 @@ class MultiProcessOrchestrator:
         self._last_recovery_time: float = 0.0         # 最后恢复尝试的时间戳
         self._last_stall_diagnostic_time: float = 0.0 # 最后输出卡死诊断的时间戳
         self._last_stall_check_time: float = 0.0      # 最后卡死检测的时间戳（用于检测间隔冷却）
+
+    @staticmethod
+    def _resolve_stream_config(config: "MultiProcessOrchestratorConfig") -> dict[str, Any]:
+        """解析流式日志配置（优先级: 显式传入 > config.yaml > DEFAULT_STREAM_* 常量）
+
+        tri-state 设计: None 表示使用 config.yaml 值，显式传入优先。
+
+        Args:
+            config: MultiProcessOrchestratorConfig 实例
+
+        Returns:
+            解析后的流式日志配置字典，包含:
+            - stream_events_enabled: 是否启用流式日志
+            - stream_log_console: 是否输出到控制台
+            - stream_log_detail_dir: 详细日志目录
+            - stream_log_raw_dir: 原始日志目录
+        """
+        yaml_config = get_config()
+        stream_json = yaml_config.logging.stream_json
+
+        stream_events_enabled = (
+            config.stream_events_enabled
+            if config.stream_events_enabled is not None
+            else stream_json.enabled
+        )
+        stream_log_console = (
+            config.stream_log_console
+            if config.stream_log_console is not None
+            else stream_json.console
+        )
+        stream_log_detail_dir = (
+            config.stream_log_detail_dir
+            if config.stream_log_detail_dir is not None
+            else stream_json.detail_dir
+        )
+        stream_log_raw_dir = (
+            config.stream_log_raw_dir
+            if config.stream_log_raw_dir is not None
+            else stream_json.raw_dir
+        )
+
+        return {
+            "stream_events_enabled": stream_events_enabled,
+            "stream_log_console": stream_log_console,
+            "stream_log_detail_dir": stream_log_detail_dir,
+            "stream_log_raw_dir": stream_log_raw_dir,
+        }
 
     def _should_continue_iteration(self) -> bool:
         """判断是否应该继续迭代
@@ -1005,12 +1065,36 @@ class MultiProcessOrchestrator:
             return [], metrics
 
     def _spawn_agents(self) -> None:
-        """创建并启动所有 Agent 进程"""
+        """创建并启动所有 Agent 进程
+
+        配置注入策略：
+        - 从 config.yaml 读取 agent_cli/cloud_agent 配置
+        - 注入 agent_path/timeout/max_retries 等字段
+        - 确保子进程使用统一的配置来源
+        """
+        # 从 config.yaml 获取配置
+        yaml_config = get_config()
+        agent_cli = yaml_config.agent_cli
+        cloud_agent = yaml_config.cloud_agent
+
         # 构建通用日志配置（透传到所有子进程）
         log_config = {
             "verbose": self.config.verbose,
             "log_level": self.config.log_level if not self.config.verbose else "DEBUG",
             "heartbeat_debug": self.config.heartbeat_debug,
+        }
+
+        # 构建通用 agent_cli 配置（从 config.yaml 注入）
+        agent_cli_config = {
+            "agent_path": agent_cli.path,
+            "max_retries": agent_cli.max_retries,
+        }
+
+        # 构建通用 cloud_agent 配置（从 config.yaml 注入）
+        cloud_config = {
+            "cloud_api_base": cloud_agent.api_base_url,
+            "cloud_timeout": cloud_agent.timeout,
+            "cloud_enabled": cloud_agent.enabled,
         }
 
         # 解析角色级执行模式（默认继承全局 execution_mode）
@@ -1036,12 +1120,14 @@ class MultiProcessOrchestrator:
             "mode": "plan",           # 规划模式（只读）
             "force_write": False,     # 确保不会修改文件
             "execution_mode": planner_exec_mode,  # 角色执行模式
-            "stream_events_enabled": self.config.stream_events_enabled,
-            "stream_log_console": self.config.stream_log_console,
-            "stream_log_detail_dir": self.config.stream_log_detail_dir,
-            "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
+            "stream_log_console": self._resolved_stream_config["stream_log_console"],
+            "stream_log_detail_dir": self._resolved_stream_config["stream_log_detail_dir"],
+            "stream_log_raw_dir": self._resolved_stream_config["stream_log_raw_dir"],
             "agent_name": "planner",
             **log_config,  # 日志配置透传
+            **agent_cli_config,  # agent_cli 配置透传
+            **cloud_config,  # cloud_agent 配置透传
         }
         self.planner_id = f"planner-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(
@@ -1063,11 +1149,13 @@ class MultiProcessOrchestrator:
             "mode": "agent",          # 完整代理模式
             "force_write": True,      # 允许修改文件
             "execution_mode": worker_exec_mode,  # 角色执行模式
-            "stream_events_enabled": self.config.stream_events_enabled,
-            "stream_log_console": self.config.stream_log_console,
-            "stream_log_detail_dir": self.config.stream_log_detail_dir,
-            "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
+            "stream_log_console": self._resolved_stream_config["stream_log_console"],
+            "stream_log_detail_dir": self._resolved_stream_config["stream_log_detail_dir"],
+            "stream_log_raw_dir": self._resolved_stream_config["stream_log_raw_dir"],
             **log_config,  # 日志配置透传
+            **agent_cli_config,  # agent_cli 配置透传
+            **cloud_config,  # cloud_agent 配置透传
         }
         for i in range(self.config.worker_count):
             worker_id = f"worker-{i}-{uuid.uuid4().hex[:8]}"
@@ -1092,12 +1180,14 @@ class MultiProcessOrchestrator:
             "force_write": False,     # 确保不会修改文件
             "execution_mode": reviewer_exec_mode,  # 角色执行模式
             "strict_mode": self.config.strict_review,
-            "stream_events_enabled": self.config.stream_events_enabled,
-            "stream_log_console": self.config.stream_log_console,
-            "stream_log_detail_dir": self.config.stream_log_detail_dir,
-            "stream_log_raw_dir": self.config.stream_log_raw_dir,
+            "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
+            "stream_log_console": self._resolved_stream_config["stream_log_console"],
+            "stream_log_detail_dir": self._resolved_stream_config["stream_log_detail_dir"],
+            "stream_log_raw_dir": self._resolved_stream_config["stream_log_raw_dir"],
             "agent_name": "reviewer",
             **log_config,  # 日志配置透传
+            **agent_cli_config,  # agent_cli 配置透传
+            **cloud_config,  # cloud_agent 配置透传
         }
         self.reviewer_id = f"reviewer-{uuid.uuid4().hex[:8]}"
         self.process_manager.spawn_agent(

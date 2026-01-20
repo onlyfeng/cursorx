@@ -2187,6 +2187,7 @@ class TestSelfIteratorExecutionModeIntegration:
         import argparse
         return argparse.Namespace(
             requirement="测试 Cloud 模式",
+            directory=".",
             skip_online=True,
             changelog_url="https://cursor.com/cn/changelog",
             dry_run=False,
@@ -2213,6 +2214,7 @@ class TestSelfIteratorExecutionModeIntegration:
         import argparse
         return argparse.Namespace(
             requirement="测试 Auto 模式",
+            directory=".",
             skip_online=True,
             changelog_url="https://cursor.com/cn/changelog",
             dry_run=False,
@@ -2783,6 +2785,7 @@ class TestSelfIteratorResultStructure:
         """创建基础迭代参数"""
         return argparse.Namespace(
             requirement="测试任务",
+            directory=".",
             skip_online=True,
             changelog_url="https://cursor.com/cn/changelog",
             dry_run=False,

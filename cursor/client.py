@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any, Optional
@@ -117,7 +118,12 @@ class CursorAgentConfig(BaseModel):
     stream_partial_output: bool = False
 
     # 流式事件日志配置（仅在 output_format=stream-json 时生效）
-    stream_events_enabled: bool = True   # 默认启用流式日志
+    # 默认值与 config.yaml logging.stream_json 保持同步（使用 core/config.py 中的 DEFAULT_STREAM_* 常量）
+    # 注意：调用方应通过 build_cursor_agent_config() 构建配置以正确应用 config.yaml 值
+    #
+    # 默认关闭策略：stream_events_enabled 默认为 False，与 core.config.DEFAULT_STREAM_EVENTS_ENABLED 同步
+    # 这确保了"未注入即关闭"的安全行为，避免在未显式配置时意外开启流式日志
+    stream_events_enabled: bool = False  # 与 DEFAULT_STREAM_EVENTS_ENABLED 同步
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
@@ -216,7 +222,7 @@ class CursorAgentConfig(BaseModel):
     cloud_agents_endpoint: str = "/v1/agents"
 
     # Cloud Agent 超时（云端任务通常需要更长时间）
-    cloud_timeout: int = 600  # 10 分钟
+    cloud_timeout: int = 300  # 5 分钟
 
     # 轮询间隔（秒）- 用于检查云端任务状态
     cloud_poll_interval: float = 2.0
@@ -289,6 +295,18 @@ class CursorAgentClient:
         if self.config.agent_path != "agent":
             if os.path.isfile(self.config.agent_path):
                 return self.config.agent_path
+
+        # 测试/调试场景：允许通过环境变量覆盖 agent CLI 路径
+        # 仅当 agent_path 为默认值 "agent" 时生效，避免覆盖用户显式指定的路径。
+        # 说明：这里仅接收“单个可执行文件路径”，不支持带参数的复合命令。
+        env_agent_path = os.environ.get("AGENT_CLI_PATH")
+        if env_agent_path:
+            if os.path.isfile(env_agent_path):
+                logger.debug(f"使用环境变量 AGENT_CLI_PATH 指定 agent CLI: {env_agent_path}")
+                return env_agent_path
+            logger.warning(
+                f"环境变量 AGENT_CLI_PATH 指向的文件不存在: {env_agent_path}，将回退到默认查找逻辑"
+            )
 
         # 尝试常见路径
         possible_paths = [
@@ -611,7 +629,12 @@ class CursorAgentClient:
             session_id: 可选的会话 ID，优先于 config.resume_thread_id
         """
         # 构建命令参数
-        cmd = [self._agent_path]
+        # 兼容测试场景：当 _agent_path 为 .py 脚本时，用当前 Python 解释器启动，
+        # 避免依赖脚本的可执行权限位。
+        if self._agent_path.endswith(".py"):
+            cmd = [sys.executable, self._agent_path]
+        else:
+            cmd = [self._agent_path]
 
         # 恢复会话（session_id 参数优先于配置项）
         resume_id = session_id or self.config.resume_thread_id
@@ -1227,8 +1250,13 @@ class CursorAgentClient:
     def check_agent_available(self) -> bool:
         """检查 agent CLI 是否可用"""
         try:
+            # 兼容测试场景：当 _agent_path 为 .py 脚本时，使用 Python 解释器启动
+            if self._agent_path.endswith(".py"):
+                cmd = [sys.executable, self._agent_path, "--help"]
+            else:
+                cmd = [self._agent_path, "--help"]
             result = subprocess.run(
-                [self._agent_path, "--help"],
+                cmd,
                 capture_output=True,
                 timeout=5,
             )

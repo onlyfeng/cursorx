@@ -10,10 +10,11 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
-import yaml
+
+from core.config import CloudAgentConfig, get_config
 
 
 class FirewallFormat(Enum):
@@ -249,6 +250,20 @@ class EgressIPManager:
     出口 IP 管理器
 
     负责获取、缓存和验证 Cursor Cloud Agent 的出口 IP 范围。
+
+    配置来源说明:
+        TTL 配置统一从 core.config.get_config().cloud_agent.egress_ip_cache_ttl 获取，
+        避免模块内自行读取 YAML 配置文件，确保配置来源一致性。
+
+    初始化方式:
+        1. 默认: 自动从 core.config 获取 TTL
+           manager = EgressIPManager()
+
+        2. 传入配置对象: 使用指定的 CloudAgentConfig
+           manager = EgressIPManager(cloud_config=config.cloud_agent)
+
+        3. 传入数值: 显式指定 TTL（用于测试）
+           manager = EgressIPManager(cache_ttl=7200)
     """
 
     # Cursor API 端点（假设的 API URL）
@@ -267,18 +282,32 @@ class EgressIPManager:
     def __init__(
         self,
         cache_dir: Optional[Path] = None,
-        cache_ttl: int = 3600,
-        config_path: Optional[Path] = None,
+        cache_ttl: Optional[int] = None,
+        cloud_config: Optional[CloudAgentConfig] = None,
     ):
         """
         初始化管理器
 
         Args:
             cache_dir: 缓存目录路径
-            cache_ttl: 缓存有效期（秒）
-            config_path: 配置文件路径
+            cache_ttl: 缓存有效期（秒），显式指定时覆盖配置值（主要用于测试）
+            cloud_config: CloudAgentConfig 配置对象，如不提供则从 get_config() 获取
+
+        配置优先级:
+            1. cache_ttl 参数（最高，显式指定）
+            2. cloud_config.egress_ip_cache_ttl
+            3. get_config().cloud_agent.egress_ip_cache_ttl（默认）
         """
-        self.cache_ttl = cache_ttl
+        # 获取 TTL 配置（统一来源）
+        if cache_ttl is not None:
+            # 显式指定 TTL（主要用于测试场景）
+            self.cache_ttl = cache_ttl
+        elif cloud_config is not None:
+            # 使用传入的配置对象
+            self.cache_ttl = cloud_config.egress_ip_cache_ttl
+        else:
+            # 从 core.config 单例获取（默认行为）
+            self.cache_ttl = get_config().cloud_agent.egress_ip_cache_ttl
 
         # 设置缓存目录
         if cache_dir:
@@ -288,25 +317,7 @@ class EgressIPManager:
 
         self.cache_file = self.cache_dir / "egress_ips.json"
 
-        # 从配置文件加载设置
-        if config_path:
-            self._load_config(config_path)
-
         self._config: Optional[EgressIPConfig] = None
-
-    def _load_config(self, config_path: Path) -> None:
-        """从 YAML 配置文件加载设置"""
-        if not config_path.exists():
-            return
-
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-
-            cloud_config = config.get("cloud_agent", {})
-            self.cache_ttl = cloud_config.get("egress_ip_cache_ttl", self.cache_ttl)
-        except Exception as e:
-            print(f"警告: 无法加载配置文件: {e}")
 
     async def fetch_egress_ip_ranges(self, force_refresh: bool = False) -> EgressIPConfig:
         """
@@ -418,26 +429,30 @@ _manager: Optional[EgressIPManager] = None
 
 def get_manager(
     cache_dir: Optional[Path] = None,
-    cache_ttl: int = 3600,
-    config_path: Optional[Path] = None,
+    cache_ttl: Optional[int] = None,
+    cloud_config: Optional[CloudAgentConfig] = None,
 ) -> EgressIPManager:
     """
     获取全局 IP 管理器实例
 
     Args:
         cache_dir: 缓存目录
-        cache_ttl: 缓存有效期
-        config_path: 配置文件路径
+        cache_ttl: 缓存有效期（秒），显式指定时覆盖配置值
+        cloud_config: CloudAgentConfig 配置对象
 
     Returns:
         EgressIPManager: 管理器实例
+
+    Note:
+        TTL 配置默认从 core.config.get_config().cloud_agent.egress_ip_cache_ttl 获取，
+        确保与项目配置系统保持一致。
     """
     global _manager
     if _manager is None:
         _manager = EgressIPManager(
             cache_dir=cache_dir,
             cache_ttl=cache_ttl,
-            config_path=config_path,
+            cloud_config=cloud_config,
         )
     return _manager
 

@@ -39,6 +39,7 @@ from typing import Any, Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from core.config import get_config  # noqa: E402
 from knowledge import Document, KnowledgeManager, KnowledgeStorage  # noqa: E402
 
 
@@ -703,6 +704,10 @@ class KnowledgeCLI:
 
 def create_parser() -> argparse.ArgumentParser:
     """创建命令行参数解析器"""
+    # 从配置获取默认搜索参数
+    config = get_config()
+    default_top_k = config.indexing.search.top_k
+
     parser = argparse.ArgumentParser(
         prog="knowledge_cli",
         description="知识库管理 CLI",
@@ -764,9 +769,9 @@ def create_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "-n", "--limit", "--top-k",
         type=int,
-        default=10,
+        default=default_top_k,
         dest="limit",
-        help="返回结果数量 (默认: 10)"
+        help=f"返回结果数量 (默认: {default_top_k}，来自 config.yaml indexing.search.top_k)"
     )
     search_parser.add_argument(
         "--mode",

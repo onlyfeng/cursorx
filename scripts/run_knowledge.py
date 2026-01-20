@@ -14,10 +14,23 @@ from pathlib import Path
 from loguru import logger
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from coordinator import Orchestrator, OrchestratorConfig
+from core.config import (
+    get_config,
+    resolve_stream_log_config,
+    resolve_orchestrator_settings,
+    parse_max_iterations,
+    build_cloud_client_config,
+    build_cursor_agent_config,
+    build_cloud_auth_config,
+    DEFAULT_CLOUD_AUTH_TIMEOUT,
+    DEFAULT_CLOUD_TIMEOUT,
+)
 from cursor.client import CursorAgentConfig
+from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
+from cursor.executor import ExecutionMode
 from knowledge import KnowledgeManager, KnowledgeStorage
 
 # 默认 Cursor 文档知识库名称
@@ -29,33 +42,6 @@ CURSOR_KEYWORDS = [
     "stream-json", "output-format", "cursor-agent", "--force", "--print",
     "cursor.com", "cursor api", "cursor 命令", "cursor 工具",
 ]
-
-
-def parse_max_iterations(value: str) -> int:
-    """解析最大迭代次数参数
-
-    Args:
-        value: 参数值，可以是数字、MAX、-1 或 0
-
-    Returns:
-        迭代次数，-1 表示无限迭代
-    """
-    value_upper = value.upper().strip()
-
-    # MAX 或 -1 或 0 表示无限迭代
-    if value_upper in ("MAX", "UNLIMITED", "INF", "INFINITE"):
-        return -1
-
-    try:
-        num = int(value)
-        # -1 或 0 也表示无限迭代
-        if num <= 0:
-            return -1
-        return num
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"无效的迭代次数: {value}。使用正整数或 MAX/-1 表示无限迭代"
-        )
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -76,20 +62,50 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数"""
+    """解析命令行参数
+
+    默认值来源优先级:
+    1. CLI 显式参数 (最高优先级)
+    2. config.yaml (通过 core.config.resolve_orchestrator_settings())
+    3. 代码默认值 (最低优先级)
+
+    tri-state 参数设计:
+    - 部分参数使用 default=None 实现三态逻辑
+    - None 表示"未显式指定"，允许后续按优先级合并
+    - 在 run_orchestrator 中通过 resolve_orchestrator_settings 解析最终值
+    """
+    # 加载配置，仅用于帮助信息显示（不作为 argparse 默认值）
+    config = get_config()
+    cfg_workers = config.system.worker_pool_size
+    cfg_max_iterations = config.system.max_iterations
+    cfg_kb_limit = config.worker.knowledge_integration.max_docs
+    cfg_enable_sub_planners = config.system.enable_sub_planners
+    cfg_strict_review = config.system.strict_review
+    cfg_planner_model = config.models.planner
+    cfg_worker_model = config.models.worker
+    cfg_reviewer_model = config.models.reviewer
+    cfg_planner_timeout = config.planner.timeout
+    cfg_worker_timeout = config.worker.task_timeout
+    cfg_reviewer_timeout = config.reviewer.timeout
+    # Cloud Agent 配置默认值
+    cfg_execution_mode = config.cloud_agent.execution_mode
+    cfg_cloud_timeout = config.cloud_agent.timeout
+    cfg_cloud_auth_timeout = config.cloud_agent.auth_timeout
+
     parser = argparse.ArgumentParser(
         description="规划者-执行者 多Agent系统 (知识库增强版)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 使用知识库上下文执行任务
-  python main_with_knowledge.py "优化 CLI 参数处理" --use-knowledge
+  # 通过统一入口运行 knowledge 模式
+  python run.py --mode knowledge "优化 CLI 参数处理" --use-knowledge
+  python run.py --mode knowledge "实现 stream-json 解析" --search-knowledge "stream-json output format"
+  python run.py --mode knowledge "根据最新 Cursor CLI 文档更新代码" --self-update
 
-  # 搜索知识库获取相关信息
-  python main_with_knowledge.py "实现 stream-json 解析" --search-knowledge "stream-json output format"
-
-  # 自我更新模式：根据知识库更新自身代码
-  python main_with_knowledge.py "根据最新 Cursor CLI 文档更新代码" --self-update
+  # 或直接运行本脚本
+  python scripts/run_knowledge.py "优化 CLI 参数处理" --use-knowledge
+  python scripts/run_knowledge.py "实现 stream-json 解析" --search-knowledge "stream-json output format"
+  python scripts/run_knowledge.py "根据最新 Cursor CLI 文档更新代码" --self-update
         """,
     )
 
@@ -106,24 +122,52 @@ def parse_args() -> argparse.Namespace:
         help="工作目录 (默认: 当前目录)",
     )
 
+    # workers 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-w", "--workers",
         type=int,
-        default=3,
-        help="Worker 池大小 (默认: 3)",
+        default=None,
+        help=f"Worker 池大小 (默认: {cfg_workers}，来自 config.yaml)",
     )
 
+    # max_iterations 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
         "-m", "--max-iterations",
         type=str,
-        default="10",
-        help="最大迭代次数 (默认: 10，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
+        default=None,
+        help=f"最大迭代次数 (默认: {cfg_max_iterations}，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
     )
 
-    parser.add_argument(
+    # 严格评审模式 - 互斥组支持 tri-state (None=未指定, 使用 config 默认值)
+    strict_group = parser.add_mutually_exclusive_group()
+    strict_group.add_argument(
         "--strict",
+        dest="strict_review",
         action="store_true",
-        help="启用严格评审模式",
+        default=None,
+        help=f"启用严格评审模式 (config.yaml 默认: {cfg_strict_review})",
+    )
+    strict_group.add_argument(
+        "--no-strict",
+        dest="strict_review",
+        action="store_false",
+        help="禁用严格评审模式",
+    )
+
+    # 子规划者 - 互斥组支持 tri-state (None=未指定, 使用 config 默认值)
+    sub_planners_group = parser.add_mutually_exclusive_group()
+    sub_planners_group.add_argument(
+        "--sub-planners",
+        dest="enable_sub_planners",
+        action="store_true",
+        default=None,
+        help=f"启用子规划者 (config.yaml 默认: {cfg_enable_sub_planners})",
+    )
+    sub_planners_group.add_argument(
+        "--no-sub-planners",
+        dest="enable_sub_planners",
+        action="store_false",
+        help="禁用子规划者",
     )
 
     parser.add_argument(
@@ -156,8 +200,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--kb-limit",
         type=int,
-        default=5,
-        help="知识库搜索结果数量限制 (默认: 5)",
+        default=cfg_kb_limit,
+        help=f"知识库搜索结果数量限制 (默认: {cfg_kb_limit}，来自 config.yaml)",
     )
 
     # 自我更新模式
@@ -172,6 +216,127 @@ def parse_args() -> argparse.Namespace:
         "--use-semantic-search",
         action="store_true",
         help="启用语义搜索增强",
+    )
+
+    # ============================================================
+    # 模型配置参数 - tri-state (None=未指定，使用 config.yaml)
+    # ============================================================
+    parser.add_argument(
+        "--planner-model",
+        type=str,
+        default=None,
+        help=f"Planner 模型 (默认: {cfg_planner_model}，来自 config.yaml)",
+    )
+    parser.add_argument(
+        "--worker-model",
+        type=str,
+        default=None,
+        help=f"Worker 模型 (默认: {cfg_worker_model}，来自 config.yaml)",
+    )
+    parser.add_argument(
+        "--reviewer-model",
+        type=str,
+        default=None,
+        help=f"Reviewer 模型 (默认: {cfg_reviewer_model}，来自 config.yaml)",
+    )
+
+    # ============================================================
+    # 超时配置参数 - tri-state (None=未指定，使用 config.yaml)
+    # ============================================================
+    parser.add_argument(
+        "--planner-timeout",
+        type=float,
+        default=None,
+        help=f"Planner 超时（秒）(默认: {cfg_planner_timeout}，来自 config.yaml)",
+    )
+    parser.add_argument(
+        "--worker-timeout",
+        type=float,
+        default=None,
+        help=f"Worker 超时（秒）(默认: {cfg_worker_timeout}，来自 config.yaml)",
+    )
+    parser.add_argument(
+        "--reviewer-timeout",
+        type=float,
+        default=None,
+        help=f"Reviewer 超时（秒）(默认: {cfg_reviewer_timeout}，来自 config.yaml)",
+    )
+
+    # ============================================================
+    # stream-json 流式日志配置参数
+    # ============================================================
+    stream_group = parser.add_mutually_exclusive_group()
+    stream_group.add_argument(
+        "--stream-log",
+        dest="stream_log_enabled",
+        action="store_true",
+        help="启用 stream-json 流式日志",
+    )
+    stream_group.add_argument(
+        "--no-stream-log",
+        dest="stream_log_enabled",
+        action="store_false",
+        help="禁用 stream-json 流式日志",
+    )
+    parser.set_defaults(stream_log_enabled=None)
+
+    parser.add_argument(
+        "--stream-log-console",
+        dest="stream_log_console",
+        action="store_true",
+        help="流式日志输出到控制台",
+    )
+    parser.add_argument(
+        "--no-stream-log-console",
+        dest="stream_log_console",
+        action="store_false",
+        help="关闭流式日志控制台输出",
+    )
+    parser.set_defaults(stream_log_console=None)
+
+    parser.add_argument(
+        "--stream-log-detail-dir",
+        type=str,
+        default=None,
+        help="stream-json 详细日志目录",
+    )
+    parser.add_argument(
+        "--stream-log-raw-dir",
+        type=str,
+        default=None,
+        help="stream-json 原始日志目录",
+    )
+
+    # ============================================================
+    # 执行模式和 Cloud 配置参数 - tri-state (None=未指定，使用 config.yaml)
+    # ============================================================
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        choices=["cli", "auto", "cloud"],
+        default=None,
+        help=f"执行模式: cli=本地CLI, auto=自动选择(Cloud优先), cloud=强制Cloud (默认: {cfg_execution_mode}，来自 config.yaml)",
+    )
+
+    parser.add_argument(
+        "--cloud-api-key",
+        type=str,
+        default=None,
+        help="Cloud API Key（可选，默认从 CURSOR_API_KEY 环境变量读取）",
+    )
+
+    parser.add_argument(
+        "--cloud-timeout",
+        type=int,
+        default=None,
+        help=f"Cloud 执行超时时间（秒，默认 {cfg_cloud_timeout}，来自 config.yaml cloud_agent.timeout）",
+    )
+
+    parser.add_argument(
+        "--cloud-auth-timeout",
+        type=int,
+        default=None,
+        help=f"Cloud 认证超时时间（秒，默认 {cfg_cloud_auth_timeout}，来自 config.yaml）",
     )
 
     return parser.parse_args()
@@ -309,6 +474,44 @@ async def search_cursor_docs(
     return knowledge_context
 
 
+def _build_cloud_auth_config(
+    args: argparse.Namespace,
+    resolved: dict,
+) -> CloudAuthConfig | None:
+    """构建 Cloud 认证配置
+
+    使用统一的 build_cloud_auth_config 函数构建配置，
+    确保配置来源优先级一致。
+
+    优先级（从高到低）：
+    1. 命令行参数 --cloud-api-key（CLI 显式指定）
+    2. 环境变量 CURSOR_API_KEY
+    3. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+    4. config.yaml 中的 cloud_agent.api_key
+
+    其他配置（auth_timeout, base_url 等）也遵循 CLI > config.yaml > DEFAULT_* 优先级。
+
+    Args:
+        args: 命令行参数
+        resolved: resolve_orchestrator_settings 返回的配置字典
+
+    Returns:
+        CloudAuthConfig 或 None（未配置 key 时）
+    """
+    # 使用统一的 build_cloud_auth_config 函数
+    cli_api_key = getattr(args, "cloud_api_key", None)
+    cloud_auth_overrides = {
+        "api_key": cli_api_key,
+        "auth_timeout": resolved.get("cloud_auth_timeout"),
+    }
+    cloud_auth_dict = build_cloud_auth_config(overrides=cloud_auth_overrides)
+
+    if not cloud_auth_dict:
+        return None
+
+    return CloudAuthConfig(**cloud_auth_dict)
+
+
 async def run_orchestrator(args: argparse.Namespace) -> dict:
     """运行编排器"""
     # 初始化 Cursor 文档知识库（始终加载，用于自动检测）
@@ -362,22 +565,120 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
                 limit=10,
             )
 
-    # 解析最大迭代次数
-    max_iterations = parse_max_iterations(args.max_iterations)
-    if max_iterations == -1:
+    # 构建 CLI overrides 字典（仅包含显式指定的参数）
+    # tri-state: None 表示未指定，让 resolve_orchestrator_settings 从 config.yaml 读取
+    cli_overrides = {}
+
+    # workers: CLI 显式参数（None 表示未指定）
+    if args.workers is not None:
+        cli_overrides["workers"] = args.workers
+
+    # max_iterations: CLI 显式参数（None 表示未指定）
+    if args.max_iterations is not None:
+        cli_overrides["max_iterations"] = parse_max_iterations(args.max_iterations)
+
+    # enable_sub_planners: CLI 显式参数（None 表示未指定）
+    if args.enable_sub_planners is not None:
+        cli_overrides["enable_sub_planners"] = args.enable_sub_planners
+
+    # strict_review: CLI 显式参数（None 表示未指定）
+    if args.strict_review is not None:
+        cli_overrides["strict_review"] = args.strict_review
+
+    # 模型配置: CLI 显式参数（None 表示未指定）
+    if args.planner_model is not None:
+        cli_overrides["planner_model"] = args.planner_model
+    if args.worker_model is not None:
+        cli_overrides["worker_model"] = args.worker_model
+    if args.reviewer_model is not None:
+        cli_overrides["reviewer_model"] = args.reviewer_model
+
+    # 超时配置: CLI 显式参数（None 表示未指定）
+    if args.planner_timeout is not None:
+        cli_overrides["planner_timeout"] = args.planner_timeout
+    if args.worker_timeout is not None:
+        cli_overrides["worker_timeout"] = args.worker_timeout
+    if args.reviewer_timeout is not None:
+        cli_overrides["reviewer_timeout"] = args.reviewer_timeout
+
+    # 执行模式和 Cloud 配置: CLI 显式参数（None 表示未指定）
+    if args.execution_mode is not None:
+        cli_overrides["execution_mode"] = args.execution_mode
+    if args.cloud_timeout is not None:
+        cli_overrides["cloud_timeout"] = args.cloud_timeout
+    if args.cloud_auth_timeout is not None:
+        cli_overrides["cloud_auth_timeout"] = args.cloud_auth_timeout
+
+    # 使用 resolve_orchestrator_settings 统一解析
+    resolved = resolve_orchestrator_settings(overrides=cli_overrides)
+
+    # 无限迭代提示
+    if resolved["max_iterations"] == -1:
         logger.info("无限迭代模式已启用（按 Ctrl+C 中断）")
+
+    # 流式日志配置
+    stream_config = resolve_stream_log_config(
+        cli_enabled=args.stream_log_enabled,
+        cli_console=args.stream_log_console,
+        cli_detail_dir=args.stream_log_detail_dir,
+        cli_raw_dir=args.stream_log_raw_dir,
+    )
+
+    # 解析执行模式
+    execution_mode_str = resolved["execution_mode"]
+    execution_mode_map = {
+        "cli": ExecutionMode.CLI,
+        "auto": ExecutionMode.AUTO,
+        "cloud": ExecutionMode.CLOUD,
+    }
+    execution_mode = execution_mode_map.get(execution_mode_str, ExecutionMode.CLI)
+
+    # 构建 Cloud 认证配置（按统一优先级规则）
+    # 优先级: CLI --cloud-api-key > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
+    cloud_auth_config = _build_cloud_auth_config(args, resolved)
+
+    # 根据执行模式决定超时时间
+    # - Cloud/Auto 模式：使用 resolved settings 中的 cloud_timeout
+    # - CLI 模式：使用标准 timeout
+    if execution_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
+        timeout = resolved["cloud_timeout"]
+        logger.info(f"Cloud/Auto 执行模式，使用 cloud_timeout={timeout}s")
+    else:
+        timeout = None  # 使用默认超时
 
     # 创建配置
     cursor_config = CursorAgentConfig(
         working_directory=args.directory,
+        stream_events_enabled=stream_config["enabled"],
+        stream_log_console=stream_config["console"],
+        stream_log_detail_dir=stream_config["detail_dir"],
+        stream_log_raw_dir=stream_config["raw_dir"],
+        timeout=timeout if timeout else 300,  # 默认 300 秒
     )
 
     config = OrchestratorConfig(
         working_directory=args.directory,
-        max_iterations=max_iterations,
-        worker_pool_size=args.workers,
-        strict_review=args.strict,
+        max_iterations=resolved["max_iterations"],
+        worker_pool_size=resolved["workers"],
+        enable_sub_planners=resolved["enable_sub_planners"],
+        strict_review=resolved["strict_review"],
         cursor_config=cursor_config,
+        # 流式日志配置
+        stream_events_enabled=stream_config["enabled"],
+        stream_log_console=stream_config["console"],
+        stream_log_detail_dir=stream_config["detail_dir"],
+        stream_log_raw_dir=stream_config["raw_dir"],
+        # 模型配置
+        planner_model=resolved["planner_model"],
+        worker_model=resolved["worker_model"],
+        reviewer_model=resolved["reviewer_model"],
+        # 超时配置
+        planner_timeout=resolved["planner_timeout"],
+        worker_task_timeout=resolved["worker_timeout"],
+        reviewer_timeout=resolved["reviewer_timeout"],
+        # 执行模式和 Cloud 认证配置
+        execution_mode=execution_mode,
+        cloud_auth_config=cloud_auth_config,
     )
 
     # 构建增强的目标（包含知识库上下文）

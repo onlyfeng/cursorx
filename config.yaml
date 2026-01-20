@@ -1,9 +1,18 @@
 # 规划者-执行者 多Agent系统 配置文件
+#
+# 配置优先级（高到低）:
+#   1. CLI 参数        (--workers, --execution-mode 等)
+#   2. 环境变量        (CURSOR_API_KEY, CURSOR_CLOUD_API_KEY 等)
+#   3. config.yaml    (本文件)
+#   4. DEFAULT_* 常量  (代码中的默认值)
+#
+# 例如: --workers 5 会覆盖本文件中的 worker_pool_size: 3
 
 # 系统配置
+# 以下配置可被 CLI 参数覆盖
 system:
-  max_iterations: 10        # 最大迭代次数
-  worker_pool_size: 3       # Worker 池大小
+  max_iterations: 10        # 最大迭代次数，CLI: --max-iterations
+  worker_pool_size: 3       # Worker 池大小，CLI: --workers
   enable_sub_planners: true # 是否启用子规划者
   strict_review: false      # 严格评审模式
 
@@ -35,27 +44,32 @@ models:
 # agent CLI 配置
 # 安装: curl https://cursor.com/install -fsS | bash
 # 身份验证: export CURSOR_API_KEY=your_api_key_here
+# API Key 优先级: CLI(-a/--api-key) > 环境变量(CURSOR_API_KEY) > config.yaml
 agent_cli:
-  path: agent               # agent CLI 路径
-  timeout: 300              # 超时时间（秒）
+  path: agent               # agent CLI 路径（可被 CLI 参数覆盖）
+  timeout: 300              # 本地 CLI 超时时间（秒），用于本地执行模式
   max_retries: 3            # 最大重试次数
-  output_format: text       # 输出格式: text, json, stream-json
-  # api_key: ""             # API 密钥（可选，推荐使用环境变量）
+  output_format: text       # 输出格式: text, json, stream-json（CLI: --output-format）
+  # api_key: ""             # API 密钥（优先级最低，推荐使用环境变量）
 
 # Cloud Agent 配置
 # 提供云端 API 访问能力，支持程序化调用 Cursor Agent
-# 执行模式:
+# 执行模式（CLI: --execution-mode）:
 #   - cli:   使用本地 agent CLI 执行（需要安装 cursor CLI）
 #   - cloud: 使用 Cloud API 执行（需要 API 密钥）
 #   - auto:  自动选择（优先使用 cloud，失败时降级到 cli）
+# 优先级: CLI(--execution-mode) > 环境变量 > config.yaml > DEFAULT_EXECUTION_MODE
 cloud_agent:
   enabled: false                              # 是否启用 Cloud Agent
-  execution_mode: cli                         # 执行模式: cli | cloud | auto
+  execution_mode: cli                         # 执行模式: cli | cloud | auto（CLI: --execution-mode）
 
   # Cloud API 配置
+  # API Key 优先级: CLI(--cloud-api-key) > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
+  # 注意: CURSOR_API_KEY 优先于 CURSOR_CLOUD_API_KEY（后者为备选）
   api_base_url: "https://api.cursor.com"      # API 基础 URL
-  # api_key: ""                               # API 密钥（推荐使用环境变量 CURSOR_API_KEY 或 CURSOR_CLOUD_API_KEY）
-  timeout: 300                                # 请求超时时间（秒）
+  # api_key: ""                               # API 密钥（优先级最低，推荐使用环境变量）
+  timeout: 300                                # Cloud 请求超时（秒），CLI: --cloud-timeout
+  auth_timeout: 30                            # Cloud 认证超时（秒），CLI: --cloud-auth-timeout
   max_retries: 3                              # 最大重试次数
 
   # 出口 IP 验证配置（用于验证请求来源）

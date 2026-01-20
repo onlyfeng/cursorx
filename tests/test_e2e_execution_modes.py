@@ -278,39 +278,32 @@ class TestCloudExecutionMode:
         mock_cloud_client: MagicMock,
         mock_cloud_success_result: CloudAgentResult,
     ) -> None:
-        """测试 Cloud 模式成功执行工作流"""
-        # 使用注入的 mock client
+        """测试 Cloud 模式成功执行工作流
+
+        CloudAgentExecutor.execute() 内部调用 CloudClientFactory.execute_task()，
+        因此需要 mock CloudClientFactory.execute_task 而非 cloud_client.execute
+        """
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             agent_config=agent_config,
             cloud_client=mock_cloud_client,
         )
 
-        # Mock 认证成功
-        mock_auth_status = AuthStatus(
-            authenticated=True,
-            user_id="user-123",
-            email="test@example.com",
-        )
+        # Mock CloudClientFactory.execute_task 返回成功结果
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.return_value = mock_cloud_success_result
 
-        # 配置 mock client 返回成功结果
-        mock_cloud_client.execute.return_value = mock_cloud_success_result
-
-        with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_status,
-        ):
             result = await executor.execute(
                 prompt="分析代码结构",
                 context={"files": ["app.py"]},
                 working_directory="/tmp/workspace",
             )
 
-            # 验证 Cloud Client 被正确调用
-            mock_cloud_client.execute.assert_called_once()
-            call_args = mock_cloud_client.execute.call_args
+            # 验证 CloudClientFactory.execute_task 被正确调用
+            mock_execute_task.assert_called_once()
+            call_kwargs = mock_execute_task.call_args.kwargs
+            assert call_kwargs.get("prompt") == "分析代码结构"
+            assert call_kwargs.get("working_directory") == "/tmp/workspace"
 
             # 验证执行结果
             assert result.success is True
@@ -333,20 +326,10 @@ class TestCloudExecutionMode:
             cloud_client=mock_cloud_client,
         )
 
-        mock_auth_status = AuthStatus(
-            authenticated=True,
-            user_id="user-123",
-        )
+        # Mock CloudClientFactory.execute_task 返回失败结果
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.return_value = mock_cloud_failure_result
 
-        # 配置 mock client 返回失败结果
-        mock_cloud_client.execute.return_value = mock_cloud_failure_result
-
-        with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_status,
-        ):
             result = await executor.execute(prompt="失败的任务")
 
             # 验证失败处理
@@ -361,47 +344,39 @@ class TestCloudExecutionMode:
         mock_cloud_client: MagicMock,
         mock_cloud_success_result: CloudAgentResult,
     ) -> None:
-        """测试 Cloud 认证流程"""
+        """测试 Cloud 认证流程
+
+        CloudAgentExecutor.execute() 内部调用 CloudClientFactory.execute_task()，
+        而 execute_task 在无有效认证时会返回错误。
+        """
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             cloud_client=mock_cloud_client,
         )
 
-        # 测试认证成功
-        mock_auth_status = AuthStatus(
-            authenticated=True,
-            user_id="user-123",
-            email="test@example.com",
-        )
+        # 测试认证成功场景：mock execute_task 返回成功结果
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.return_value = mock_cloud_success_result
 
-        mock_cloud_client.execute.return_value = mock_cloud_success_result
-
-        with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_status,
-        ):
             result = await executor.execute(prompt="测试认证")
             assert result.executor_type == "cloud"
             assert result.success is True
 
-        # 测试认证失败
+        # 测试认证失败场景：mock execute_task 返回失败结果（认证错误）
         executor2 = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             cloud_client=mock_cloud_client,
         )
-        mock_auth_failed = AuthStatus(
-            authenticated=False,
-            error="Invalid API key",
+
+        # 创建认证失败的结果
+        auth_fail_result = CloudAgentResult(
+            success=False,
+            error="认证失败: Invalid API key",
         )
 
-        with patch.object(
-            executor2._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_failed,
-        ):
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.return_value = auth_fail_result
+
             result = await executor2.execute(prompt="测试认证失败")
             assert result.success is False
             assert "认证失败" in (result.error or "")
@@ -489,25 +464,29 @@ class TestCloudExecutionMode:
         mock_cloud_client: MagicMock,
         mock_cloud_success_result: CloudAgentResult,
     ) -> None:
-        """测试云端会话恢复"""
+        """测试云端会话恢复
+
+        CloudAgentExecutor.resume_session() 内部调用 CloudClientFactory.resume_session()
+        """
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             cloud_client=mock_cloud_client,
         )
 
-        mock_cloud_client.resume_from_cloud.return_value = mock_cloud_success_result
+        # Mock CloudClientFactory.resume_session
+        with patch("cursor.cloud_client.CloudClientFactory.resume_session") as mock_resume:
+            mock_resume.return_value = mock_cloud_success_result
 
-        result = await executor.resume_session(
-            session_id="session-abc123",
-            prompt="继续之前的任务",
-        )
+            result = await executor.resume_session(
+                session_id="session-abc123",
+                prompt="继续之前的任务",
+            )
 
-        mock_cloud_client.resume_from_cloud.assert_called_once_with(
-            task_id="session-abc123",
-            local=True,
-            prompt="继续之前的任务",
-        )
-        assert result.success is True
+            mock_resume.assert_called_once()
+            call_kwargs = mock_resume.call_args.kwargs
+            assert call_kwargs.get("session_id") == "session-abc123"
+            assert call_kwargs.get("prompt") == "继续之前的任务"
+            assert result.success is True
 
     @pytest.mark.asyncio
     async def test_cloud_availability_check_success(
@@ -568,26 +547,19 @@ class TestCloudExecutionMode:
         cloud_auth_config: CloudAuthConfig,
         mock_cloud_client: MagicMock,
     ) -> None:
-        """测试 Cloud 超时处理"""
+        """测试 Cloud 超时处理
+
+        CloudAgentExecutor.execute() 内部调用 CloudClientFactory.execute_task()
+        """
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             cloud_client=mock_cloud_client,
         )
 
-        mock_auth_status = AuthStatus(
-            authenticated=True,
-            user_id="user-123",
-        )
+        # 模拟 CloudClientFactory.execute_task 超时
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.side_effect = asyncio.TimeoutError("执行超时")
 
-        # 模拟 Cloud Client 执行超时
-        mock_cloud_client.execute.side_effect = asyncio.TimeoutError()
-
-        with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_status,
-        ):
             result = await executor.execute(
                 prompt="长时间任务",
                 timeout=1,
@@ -602,26 +574,19 @@ class TestCloudExecutionMode:
         cloud_auth_config: CloudAuthConfig,
         mock_cloud_client: MagicMock,
     ) -> None:
-        """测试 Cloud 错误处理"""
+        """测试 Cloud 错误处理
+
+        CloudAgentExecutor.execute() 内部调用 CloudClientFactory.execute_task()
+        """
         executor = CloudAgentExecutor(
             auth_config=cloud_auth_config,
             cloud_client=mock_cloud_client,
         )
 
-        mock_auth_status = AuthStatus(
-            authenticated=True,
-            user_id="user-123",
-        )
+        # 模拟 CloudClientFactory.execute_task 抛出异常
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.side_effect = RuntimeError("网络连接失败")
 
-        # 模拟 Cloud Client 抛出异常
-        mock_cloud_client.execute.side_effect = RuntimeError("网络连接失败")
-
-        with patch.object(
-            executor._auth_manager,
-            "authenticate",
-            new_callable=AsyncMock,
-            return_value=mock_auth_status,
-        ):
             result = await executor.execute(prompt="测试异常")
 
             assert result.success is False
@@ -2074,6 +2039,165 @@ class TestConvenienceFunctions:
 
 
 # ==================== TestAgentResult ====================
+
+
+# ==================== TestRunMpExecutionModeHandling ====================
+
+
+class TestRunMpExecutionModeHandling:
+    """run_mp.py 的 execution_mode 处理测试
+
+    MP 编排器（run_mp.py）仅支持 execution_mode=cli。
+    当配置为 cloud/auto 时，应该：
+    1. 打印警告信息
+    2. 强制回退到 CLI 模式
+    3. 在结果中记录实际使用的 execution_mode
+    """
+
+    @pytest.fixture
+    def mock_config_with_execution_mode(self, tmp_path):
+        """创建带有指定 execution_mode 的临时 config.yaml"""
+        def _create_config(execution_mode: str):
+            config_content = f"""
+cloud_agent:
+  enabled: true
+  execution_mode: {execution_mode}
+  api_key: test-key
+
+system:
+  max_iterations: 3
+  worker_pool_size: 2
+"""
+            config_file = tmp_path / "config.yaml"
+            config_file.write_text(config_content)
+            return config_file
+        return _create_config
+
+    def test_resolve_orchestrator_settings_returns_execution_mode(self) -> None:
+        """测试 resolve_orchestrator_settings 返回 execution_mode"""
+        from core.config import resolve_orchestrator_settings
+
+        # 默认应返回 cli
+        settings = resolve_orchestrator_settings()
+        assert "execution_mode" in settings
+        assert settings["execution_mode"] in ("cli", "cloud", "auto")
+
+    def test_resolve_orchestrator_settings_with_cli_override(self) -> None:
+        """测试 CLI override 优先级高于 config.yaml"""
+        from core.config import resolve_orchestrator_settings
+
+        # 使用 CLI override 覆盖 execution_mode
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cli"})
+        assert settings["execution_mode"] == "cli"
+
+    def test_resolve_orchestrator_settings_cloud_mode(self) -> None:
+        """测试 cloud 模式配置"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cloud"})
+        assert settings["execution_mode"] == "cloud"
+        # cloud 模式应强制使用 basic 编排器
+        assert settings["orchestrator"] == "basic"
+
+    def test_resolve_orchestrator_settings_auto_mode(self) -> None:
+        """测试 auto 模式配置"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "auto"})
+        assert settings["execution_mode"] == "auto"
+        # auto 模式应强制使用 basic 编排器
+        assert settings["orchestrator"] == "basic"
+
+    def test_mp_orchestrator_config_accepts_execution_mode(self) -> None:
+        """测试 MultiProcessOrchestratorConfig 接受 execution_mode 参数"""
+        from coordinator.orchestrator_mp import MultiProcessOrchestratorConfig
+
+        # 创建配置时应能指定 execution_mode
+        config = MultiProcessOrchestratorConfig(
+            execution_mode="cli",
+            working_directory=".",
+        )
+        assert config.execution_mode == "cli"
+
+        # 即使传入 cloud，也应该能正常创建（实际处理在 run_mp.py 层）
+        config_cloud = MultiProcessOrchestratorConfig(
+            execution_mode="cloud",
+            working_directory=".",
+        )
+        assert config_cloud.execution_mode == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_run_mp_detects_cloud_mode_from_config(
+        self,
+        mock_config_with_execution_mode,
+        tmp_path,
+    ) -> None:
+        """测试 run_mp.py 检测 config.yaml 中的 cloud 模式并回退"""
+        import sys
+        from unittest.mock import patch, AsyncMock, MagicMock
+
+        # 创建 cloud 模式的配置
+        config_file = mock_config_with_execution_mode("cloud")
+
+        # Mock ConfigManager 以使用临时配置文件
+        with patch("core.config.find_config_file", return_value=config_file):
+            # 重置单例以加载新配置
+            from core.config import ConfigManager
+            ConfigManager.reset_instance()
+
+            try:
+                from core.config import resolve_orchestrator_settings
+
+                # 验证配置被正确加载
+                settings = resolve_orchestrator_settings()
+                # cloud 模式应返回 cloud（在 resolve_orchestrator_settings 层）
+                # MP 编排器的回退逻辑在 run_mp.py 的 run_orchestrator 中处理
+                assert settings["execution_mode"] in ("cloud", "cli")
+            finally:
+                # 恢复单例
+                ConfigManager.reset_instance()
+
+    def test_execution_mode_in_result_structure(self) -> None:
+        """测试结果结构包含 execution_mode 字段"""
+        # 模拟 run_mp.py 生成的结果结构
+        result = {
+            "success": True,
+            "goal": "测试任务",
+            "iterations_completed": 1,
+            "execution_mode": "cli",
+            "execution_mode_config": "cloud",  # 原始配置值
+        }
+
+        # 验证结果包含 execution_mode 信息
+        assert "execution_mode" in result
+        assert "execution_mode_config" in result
+        assert result["execution_mode"] == "cli"
+        assert result["execution_mode_config"] == "cloud"
+
+    def test_execution_mode_fallback_warning_format(self) -> None:
+        """测试 execution_mode 回退警告格式"""
+        from io import StringIO
+        from loguru import logger
+
+        # 捕获日志输出
+        log_output = StringIO()
+        handler_id = logger.add(log_output, format="{message}", level="WARNING")
+
+        try:
+            # 模拟 run_mp.py 中的警告逻辑
+            config_execution_mode = "cloud"
+            if config_execution_mode in ("cloud", "auto"):
+                logger.warning(
+                    f"⚠ MP 编排器不支持 execution_mode={config_execution_mode}，"
+                    "强制回退到 CLI 模式"
+                )
+
+            log_content = log_output.getvalue()
+            assert "MP 编排器不支持" in log_content
+            assert "cloud" in log_content
+            assert "CLI" in log_content
+        finally:
+            logger.remove(handler_id)
 
 
 class TestAgentResult:

@@ -12,6 +12,10 @@
 """
 import argparse
 import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -43,7 +47,17 @@ class TestBasicMode:
             workers=2,
             max_iterations="3",
             strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
             skip_online=False,
             dry_run=False,
             force_update=False,
@@ -52,11 +66,37 @@ class TestBasicMode:
             self_update=False,
             planner_model="gpt-5.2-high",
             worker_model="opus-4.5-thinking",
-            stream_log=True,
+            reviewer_model="gpt-5.2-codex",
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
             no_auto_analyze=True,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            _orchestrator_user_set=False,
         )
 
     @pytest.mark.asyncio
@@ -159,7 +199,17 @@ class TestMPMode:
             workers=4,
             max_iterations="5",
             strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
             skip_online=False,
             dry_run=False,
             force_update=False,
@@ -168,11 +218,37 @@ class TestMPMode:
             self_update=False,
             planner_model="gpt-5.2-high",
             worker_model="opus-4.5-thinking",
-            stream_log=True,
+            reviewer_model="gpt-5.2-codex",
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
             no_auto_analyze=True,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            _orchestrator_user_set=False,
         )
 
     @pytest.mark.asyncio
@@ -379,7 +455,17 @@ class TestKnowledgeMode:
             workers=3,
             max_iterations="5",
             strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
             skip_online=False,
             dry_run=False,
             force_update=False,
@@ -388,11 +474,37 @@ class TestKnowledgeMode:
             self_update=False,
             planner_model="gpt-5.2-high",
             worker_model="opus-4.5-thinking",
-            stream_log=True,
+            reviewer_model="gpt-5.2-codex",
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
             no_auto_analyze=True,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            _orchestrator_user_set=False,
         )
 
     @pytest.mark.asyncio
@@ -522,7 +634,17 @@ class TestIterateMode:
             workers=3,
             max_iterations="5",
             strict=False,
+            strict_review=None,
+            enable_sub_planners=None,
             verbose=False,
+            quiet=False,
+            log_level=None,
+            heartbeat_debug=False,
+            stall_diagnostics_enabled=None,
+            stall_diagnostics_level=None,
+            stall_recovery_interval=30.0,
+            execution_health_check_interval=30.0,
+            health_warning_cooldown=60.0,
             skip_online=True,
             dry_run=False,
             force_update=False,
@@ -531,11 +653,37 @@ class TestIterateMode:
             self_update=False,
             planner_model="gpt-5.2-high",
             worker_model="opus-4.5-thinking",
-            stream_log=True,
+            reviewer_model="gpt-5.2-codex",
+            stream_log_enabled=None,
+            stream_log_console=None,
+            stream_log_detail_dir=None,
+            stream_log_raw_dir=None,
             no_auto_analyze=True,
             auto_commit=False,
             auto_push=False,
             commit_per_iteration=False,
+            orchestrator=None,
+            no_mp=None,
+            execution_mode=None,
+            planner_execution_mode=None,
+            worker_execution_mode=None,
+            reviewer_execution_mode=None,
+            cloud_api_key=None,
+            cloud_auth_timeout=None,
+            cloud_timeout=None,
+            cloud_background=None,
+            stream_console_renderer=False,
+            stream_advanced_renderer=False,
+            stream_typing_effect=False,
+            stream_typing_delay=0.02,
+            stream_word_mode=True,
+            stream_color_enabled=True,
+            stream_show_word_diff=False,
+            enable_knowledge_injection=True,
+            knowledge_top_k=3,
+            knowledge_max_chars_per_doc=1200,
+            knowledge_max_total_chars=3000,
+            _orchestrator_user_set=False,
         )
 
     @pytest.mark.asyncio
@@ -666,6 +814,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试 MP 编排器"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -722,6 +871,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试提交结果"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -792,6 +942,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试 CommitterAgent"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -869,6 +1020,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试提交去重"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -946,6 +1098,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试后备提交"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -1031,6 +1184,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = ""
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -1102,6 +1256,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试默认不提交"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -1170,6 +1325,7 @@ class TestIterateMode:
         class IterateArgs:
             def __init__(self):
                 self.requirement = "测试显式提交"
+                self.directory = "."
                 self.skip_online = True
                 self.changelog_url = "https://cursor.com/cn/changelog"
                 self.dry_run = False
@@ -1462,11 +1618,17 @@ class TestParseMaxIterations:
         assert parse_max_iterations("0") == -1
 
     def test_invalid_values(self) -> None:
-        """测试无效值"""
-        with pytest.raises(argparse.ArgumentTypeError):
+        """测试无效值
+
+        注意：parse_max_iterations 抛出 MaxIterationsParseError（来自 core.config）
+        如需用于 argparse 类型转换，使用 parse_max_iterations_for_argparse
+        """
+        from core.config import MaxIterationsParseError
+
+        with pytest.raises(MaxIterationsParseError):
             parse_max_iterations("invalid")
 
-        with pytest.raises(argparse.ArgumentTypeError):
+        with pytest.raises(MaxIterationsParseError):
             parse_max_iterations("abc")
 
 
@@ -1510,3 +1672,58 @@ class TestRunModeAliases:
         assert MODE_ALIASES["chat"] == RunMode.ASK
         assert MODE_ALIASES["question"] == RunMode.ASK
         assert MODE_ALIASES["q"] == RunMode.ASK
+
+
+# ==================== TestRunPlanAskCliIntegration ====================
+
+
+class TestRunPlanAskCliIntegration:
+    """真正的端到端：子进程运行 run.py，注入 mock agent CLI。
+
+    目标：固化“run.py --mode plan/ask”会向 agent CLI 传递正确的 --mode 参数，
+    且 plan/ask 下不会携带 --force（只读语义）。
+    """
+
+    def _repo_root(self) -> Path:
+        # tests/.. -> 仓库根目录
+        return Path(__file__).resolve().parents[1]
+
+    def _mock_agent_cli_path(self) -> Path:
+        return self._repo_root() / "tests" / "mock_agent_cli.py"
+
+    def _run_py_path(self) -> Path:
+        return self._repo_root() / "run.py"
+
+    def test_run_py_plan_mode_invokes_agent_cli_with_plan(self) -> None:
+        env = os.environ.copy()
+        env["AGENT_CLI_PATH"] = str(self._mock_agent_cli_path())
+
+        proc = subprocess.run(
+            [sys.executable, str(self._run_py_path()), "--mode", "plan", "测试规划任务"],
+            cwd=str(self._repo_root()),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        assert "执行计划" in proc.stdout
+        assert "MOCK_PLAN_OUTPUT: ok" in proc.stdout
+
+    def test_run_py_ask_mode_invokes_agent_cli_with_ask(self) -> None:
+        env = os.environ.copy()
+        env["AGENT_CLI_PATH"] = str(self._mock_agent_cli_path())
+
+        proc = subprocess.run(
+            [sys.executable, str(self._run_py_path()), "--mode", "ask", "测试问答问题"],
+            cwd=str(self._repo_root()),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        assert "回答" in proc.stdout
+        assert "MOCK_ASK_OUTPUT: ok" in proc.stdout

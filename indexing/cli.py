@@ -33,6 +33,8 @@ from indexing.config import (
     IndexConfig,
     VectorStoreConfig,
     VectorStoreType,
+    extract_search_options,
+    normalize_indexing_config,
 )
 from indexing.embedding import (
     DEFAULT_MODEL,
@@ -99,63 +101,121 @@ class ProgressBar:
 def load_config(config_file: Optional[str] = None) -> IndexConfig:
     """加载配置文件
 
+    配置查找策略:
+        1. 显式传入的 config_file 路径（最高优先级）
+        2. 当 config_file 为 None 时，使用与 ConfigManager 相同的查找策略：
+           - 当前目录的 config.yaml
+           - 项目根目录的 config.yaml（通过 .git 目录识别）
+           - 模块所在目录的 config.yaml
+        3. 未找到配置文件时使用默认配置
+
+    支持新旧键名兼容:
+        - indexing.model (新) → indexing.embedding_model (旧)
+        - indexing.persist_path (新) → indexing.persist_dir (旧)
+
+    回退默认值说明:
+        当某些 indexing 子键未配置时，优先从 core.config.get_config().indexing
+        读取作为回退默认值，确保与 config.yaml 中定义的默认值一致。
+        只有当 core.config 也未提供值时，才使用 indexing 模块自身的硬编码默认值。
+
     Args:
-        config_file: 配置文件路径
+        config_file: 配置文件路径，为 None 时自动查找
 
     Returns:
         IndexConfig 实例
     """
-    if config_file and Path(config_file).exists():
+    # 确定要使用的配置文件路径
+    resolved_config_path: Optional[Path] = None
+
+    if config_file:
+        # 显式指定的路径优先
+        resolved_config_path = Path(config_file)
+    else:
+        # 未指定时使用与 ConfigManager 相同的查找策略
+        from core.config import find_config_file
+        resolved_config_path = find_config_file()
+        if resolved_config_path:
+            logger.debug(f"自动发现配置文件: {resolved_config_path}")
+
+    # 获取 core.config 中的 indexing 默认值作为回退
+    # 这确保与 config.yaml 中定义的默认值一致
+    from core.config import get_config
+    core_indexing = get_config().indexing
+
+    # 从 core.config.IndexingConfig 获取回退默认值
+    fallback_model = core_indexing.model
+    fallback_persist_dir = core_indexing.persist_path
+    fallback_chunk_size = core_indexing.chunk_size
+    fallback_chunk_overlap = core_indexing.chunk_overlap
+    fallback_include_patterns = core_indexing.include_patterns
+    fallback_exclude_patterns = core_indexing.exclude_patterns
+
+    if resolved_config_path and resolved_config_path.exists():
         try:
             import yaml
-            with open(config_file, encoding="utf-8") as f:
+            with open(resolved_config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
 
             # 从配置文件提取索引相关配置
-            index_config = data.get("indexing", {})
+            raw_index_config = data.get("indexing", {}) if data else {}
 
+            # 标准化键名映射（model → embedding_model, persist_path → persist_dir）
+            index_config = normalize_indexing_config(raw_index_config)
+
+            # 提取搜索选项（search.top_k, search.min_score 等）
+            # search_options 可以在需要时使用，目前记录到日志供调试
+            search_options = extract_search_options(raw_index_config)
+            if search_options:
+                logger.debug(f"搜索选项: {search_options}")
+
+            # 优先使用配置文件中的值，回退到 core.config 的默认值
+            # 只有当 core.config 也未提供时才使用 indexing 模块的硬编码默认值
             embedding_config = EmbeddingConfig(
                 provider=EmbeddingProvider.SENTENCE_TRANSFORMERS,
-                model_name=index_config.get("embedding_model", DEFAULT_MODEL),
+                model_name=index_config.get("embedding_model", fallback_model),
                 device=index_config.get("device", "cpu"),
             )
 
             vector_config = VectorStoreConfig(
                 store_type=VectorStoreType.CHROMADB,
-                persist_directory=index_config.get("persist_dir", DEFAULT_PERSIST_DIR),
+                persist_directory=index_config.get("persist_dir", fallback_persist_dir),
                 collection_name=index_config.get("collection_name", "code_index"),
             )
 
             chunk_config = ChunkConfig(
                 strategy=ChunkStrategy.AST_BASED,
-                chunk_size=index_config.get("chunk_size", 1500),
-                chunk_overlap=index_config.get("chunk_overlap", 200),
+                chunk_size=index_config.get("chunk_size", fallback_chunk_size),
+                chunk_overlap=index_config.get("chunk_overlap", fallback_chunk_overlap),
             )
 
             return IndexConfig(
                 embedding=embedding_config,
                 vector_store=vector_config,
                 chunking=chunk_config,
-                include_patterns=index_config.get("include_patterns", ["**/*.py", "**/*.js", "**/*.ts"]),
-                exclude_patterns=index_config.get("exclude_patterns", [
-                    "**/node_modules/**", "**/.git/**", "**/venv/**", "**/__pycache__/**"
-                ]),
+                include_patterns=index_config.get("include_patterns", fallback_include_patterns),
+                exclude_patterns=index_config.get("exclude_patterns", fallback_exclude_patterns),
                 max_workers=index_config.get("max_workers", 4),
             )
         except Exception as e:
             logger.warning(f"加载配置文件失败: {e}，使用默认配置")
 
-    # 返回默认配置
+    # 返回默认配置 - 使用 core.config 的默认值确保一致性
     return IndexConfig(
         embedding=EmbeddingConfig(
             provider=EmbeddingProvider.SENTENCE_TRANSFORMERS,
-            model_name=DEFAULT_MODEL,
+            model_name=fallback_model,
         ),
         vector_store=VectorStoreConfig(
             store_type=VectorStoreType.CHROMADB,
-            persist_directory=DEFAULT_PERSIST_DIR,
+            persist_directory=fallback_persist_dir,
         ),
-        chunking=ChunkConfig(strategy=ChunkStrategy.AST_BASED),
+        chunking=ChunkConfig(
+            strategy=ChunkStrategy.AST_BASED,
+            chunk_size=fallback_chunk_size,
+            chunk_overlap=fallback_chunk_overlap,
+        ),
+        include_patterns=fallback_include_patterns,
+        exclude_patterns=fallback_exclude_patterns,
     )
 
 

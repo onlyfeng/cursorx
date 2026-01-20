@@ -16,6 +16,14 @@
         prompt="分析代码结构",
         context={"files": ["main.py"]},
     )
+
+配置来源优先级（从高到低）：
+1. 显式参数（api_key, timeout 等）
+2. agent_config.api_key
+3. auth_config.api_key
+4. 环境变量 CURSOR_API_KEY
+5. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+6. config.yaml 中的 cloud_agent 配置
 """
 import asyncio
 from abc import abstractmethod
@@ -26,6 +34,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from core.config import build_cloud_client_config
 from cursor.client import CursorAgentClient, CursorAgentConfig, CursorAgentResult
 from cursor.cloud_client import (
     AuthStatus,
@@ -409,11 +418,14 @@ class CloudAgentExecutor:
     - 支持任务状态轮询和结果获取
     - 支持会话恢复功能
     - 使用 CloudClientFactory 统一认证配置优先级
+    - 从 config.yaml 获取默认的 base_url/auth_timeout/max_retries 配置
 
     配置来源优先级（从高到低）：
     1. agent_config.api_key
     2. auth_config.api_key
     3. 环境变量 CURSOR_API_KEY
+    4. 环境变量 CURSOR_CLOUD_API_KEY（备选）
+    5. config.yaml 中的 cloud_agent.api_key
     """
 
     def __init__(
@@ -425,20 +437,40 @@ class CloudAgentExecutor:
         """初始化 Cloud 执行器
 
         使用 CloudClientFactory 统一创建认证管理器和客户端，
-        确保配置来源优先级一致。
+        确保配置来源优先级一致。从 config.yaml 获取默认配置。
+
+        配置来源优先级（从高到低）：
+        1. agent_config 中的对应值
+        2. auth_config 中的对应值
+        3. 环境变量 CURSOR_API_KEY / CURSOR_CLOUD_API_KEY
+        4. config.yaml 中的 cloud_agent 配置
+        5. 代码默认值
 
         Args:
             auth_config: Cloud 认证配置
             agent_config: Agent 配置（用于模型、超时等设置）
             cloud_client: 可选的 CursorCloudClient 实例（用于测试注入）
         """
-        self._auth_config = auth_config or CloudAuthConfig()
+        # 从 config.yaml 获取默认配置
+        cloud_config = build_cloud_client_config()
+
+        # 如果未提供 auth_config，则使用 config.yaml 中的配置创建
+        if auth_config is None:
+            self._auth_config = CloudAuthConfig(
+                api_key=cloud_config.get("api_key"),
+                api_base_url=cloud_config.get("base_url", "https://api.cursor.com"),
+                auth_timeout=cloud_config.get("auth_timeout", 30),
+                max_retries=cloud_config.get("max_retries", 3),
+            )
+        else:
+            self._auth_config = auth_config
+
         self._agent_config = agent_config or CursorAgentConfig()
         self._available: Optional[bool] = None
         self._auth_status: Optional[AuthStatus] = None
 
         # 使用 CloudClientFactory 统一创建认证管理器和客户端
-        # 配置来源优先级: agent_config.api_key > auth_config.api_key > 环境变量
+        # 配置来源优先级: agent_config.api_key > auth_config.api_key > 环境变量 > config.yaml
         if cloud_client is not None:
             self._cloud_client = cloud_client
             # 使用工厂创建认证管理器以保持一致性

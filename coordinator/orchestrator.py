@@ -4,7 +4,7 @@
 支持知识库集成
 """
 import asyncio
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,12 +14,18 @@ from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
 from core.base import AgentRole
 from core.config import (
-    DEFAULT_PLANNER_MODEL,
-    DEFAULT_WORKER_MODEL,
-    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_PLANNING_TIMEOUT,
+    DEFAULT_WORKER_TIMEOUT,
     DEFAULT_REVIEW_TIMEOUT,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_WORKER_POOL_SIZE,
+    DEFAULT_ENABLE_SUB_PLANNERS,
+    DEFAULT_STRICT_REVIEW,
+    DEFAULT_STREAM_EVENTS_ENABLED,
+    DEFAULT_STREAM_LOG_CONSOLE,
+    DEFAULT_STREAM_LOG_DETAIL_DIR,
+    DEFAULT_STREAM_LOG_RAW_DIR,
+    get_config,
 )
 from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState
 from cursor.client import CursorAgentConfig
@@ -37,15 +43,32 @@ class OrchestratorConfig(BaseModel):
     """编排器配置
 
     默认值从 config.yaml 加载，通过 core.config 模块统一管理。
+
+    配置优先级:
+    1. 调用方显式传入的值（最高）
+    2. config.yaml 配置值（通过 get_config() 获取）
+    3. 代码默认值（最低）
+
+    超时配置说明:
+    - planner_timeout: 规划者超时（秒），默认从 config.yaml planner.timeout 获取
+    - worker_task_timeout: Worker 任务超时（秒），默认从 config.yaml worker.task_timeout 获取
+    - reviewer_timeout: 评审者超时（秒），默认从 config.yaml reviewer.timeout 获取
+    - 若值为 None，则使用 cursor_config.timeout 作为回退
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     working_directory: str = "."
     max_iterations: int = DEFAULT_MAX_ITERATIONS    # 最大迭代次数
     worker_pool_size: int = DEFAULT_WORKER_POOL_SIZE  # Worker 池大小
-    enable_sub_planners: bool = True   # 是否启用子规划者
-    strict_review: bool = False        # 严格评审模式
+    enable_sub_planners: bool = DEFAULT_ENABLE_SUB_PLANNERS   # 是否启用子规划者
+    strict_review: bool = DEFAULT_STRICT_REVIEW        # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+
+    # 各角色超时配置（秒）
+    # 若为 None，则使用 config.yaml 中的配置值；若 config.yaml 也未配置，则使用默认常量
+    planner_timeout: Optional[float] = None     # 规划者超时
+    worker_task_timeout: Optional[float] = None # Worker 任务超时
+    reviewer_timeout: Optional[float] = None    # 评审者超时
 
     @field_validator('cursor_config', mode='before')
     @classmethod
@@ -61,10 +84,15 @@ class OrchestratorConfig(BaseModel):
         if hasattr(v, '__dict__'):
             return CursorAgentConfig(**v.__dict__)
         return v
-    stream_events_enabled: bool = True   # 默认启用流式日志
-    stream_log_console: bool = True
-    stream_log_detail_dir: str = "logs/stream_json/detail/"
-    stream_log_raw_dir: str = "logs/stream_json/raw/"
+
+    # 流式日志配置 - tri-state 设计
+    # None 表示使用 config.yaml 中的值（通过 get_config().logging.stream_json 获取）
+    # 显式传入的值优先（最高优先级）
+    # 解析在 Orchestrator._resolve_config_values() 中进行
+    stream_events_enabled: Optional[bool] = None   # 是否启用流式日志
+    stream_log_console: Optional[bool] = None      # 是否输出到控制台
+    stream_log_detail_dir: Optional[str] = None    # 详细日志目录
+    stream_log_raw_dir: Optional[str] = None       # 原始日志目录
     # 流式控制台渲染配置（默认关闭，避免噪声）
     stream_console_renderer: bool = False      # 启用流式控制台渲染器
     stream_advanced_renderer: bool = False     # 使用高级终端渲染器
@@ -81,10 +109,13 @@ class OrchestratorConfig(BaseModel):
     # Cloud Agent 配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
     cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
-    # 各角色模型配置 - 默认值从 core.config 获取
-    planner_model: str = DEFAULT_PLANNER_MODEL    # 规划者模型
-    worker_model: str = DEFAULT_WORKER_MODEL      # 执行者模型
-    reviewer_model: str = DEFAULT_REVIEWER_MODEL  # 评审者模型
+    # 各角色模型配置 - tri-state 设计
+    # - None: 使用 config.yaml 中的配置值（通过 get_config().models.* 获取）
+    # - 显式传入: 使用调用方传入的值（最高优先级）
+    # 解析在 Orchestrator._resolve_config_values() 中进行
+    planner_model: Optional[str] = None    # 规划者模型
+    worker_model: Optional[str] = None     # 执行者模型
+    reviewer_model: Optional[str] = None   # 评审者模型
     # 角色级执行模式配置（默认继承全局 execution_mode）
     # 若为 None，则使用全局 execution_mode
     planner_execution_mode: Optional[ExecutionMode] = None  # 规划者执行模式
@@ -108,6 +139,9 @@ class Orchestrator:
         knowledge_manager: Optional["KnowledgeManager"] = None,
     ):
         self.config = config
+
+        # 解析配置值（优先级: 调用方显式传入 > config.yaml > 代码默认值）
+        self._resolved_config = self._resolve_config_values(config)
         self._apply_stream_config()
 
         # 系统状态
@@ -127,17 +161,20 @@ class Orchestrator:
         reviewer_cursor_config = config.cursor_config.model_copy(deep=True)
         worker_cursor_config = config.cursor_config.model_copy(deep=True)
 
-        # 设置各角色的模型
-        planner_cursor_config.model = config.planner_model
-        reviewer_cursor_config.model = config.reviewer_model
-        worker_cursor_config.model = config.worker_model
+        # 将 agent_cli 配置注入到各角色的 CursorAgentConfig
+        # 传入 _resolved_config 以使用统一解析后的配置值
+        self._inject_agent_cli_config(planner_cursor_config, self._resolved_config)
+        self._inject_agent_cli_config(reviewer_cursor_config, self._resolved_config)
+        self._inject_agent_cli_config(worker_cursor_config, self._resolved_config)
 
-        # 超时设置：
-        # - 规划默认使用 CursorAgentConfig 的默认超时
-        # - 评审默认使用 config.yaml 中的 reviewer.timeout（默认 300s）
-        # - 若用户显式修改了 cursor_config.timeout，则尊重用户配置
-        if config.cursor_config.timeout == 300:
-            reviewer_cursor_config.timeout = int(DEFAULT_REVIEW_TIMEOUT)
+        # 设置各角色的模型（使用解析后的配置值）
+        planner_cursor_config.model = self._resolved_config["planner_model"]
+        reviewer_cursor_config.model = self._resolved_config["reviewer_model"]
+        worker_cursor_config.model = self._resolved_config["worker_model"]
+
+        # 超时设置：使用解析后的配置值（而非仅检查 timeout==300）
+        planner_cursor_config.timeout = int(self._resolved_config["planner_timeout"])
+        reviewer_cursor_config.timeout = int(self._resolved_config["reviewer_timeout"])
 
         # 设置各角色的工作模式和写入权限
         # - Planner: mode='plan', force_write=False（只读，仅分析规划）
@@ -164,8 +201,9 @@ class Orchestrator:
                 f"角色级执行模式 - Planner: {planner_exec_mode.value}, "
                 f"Worker: {worker_exec_mode.value}, Reviewer: {reviewer_exec_mode.value}"
             )
-        logger.info(f"各角色模型配置 - Planner: {config.planner_model}, "
-                    f"Worker: {config.worker_model}, Reviewer: {config.reviewer_model}")
+        logger.info(f"各角色模型配置 - Planner: {self._resolved_config['planner_model']}, "
+                    f"Worker: {self._resolved_config['worker_model']}, "
+                    f"Reviewer: {self._resolved_config['reviewer_model']}")
 
         self.planner = PlannerAgent(PlannerConfig(
             working_directory=config.working_directory,
@@ -183,6 +221,7 @@ class Orchestrator:
         ))
 
         # Worker 池（传递知识库管理器和执行模式配置）
+        # 使用解析后的 worker_task_timeout
         from agents.worker import WorkerConfig
         self.worker_pool = WorkerPool(
             size=config.worker_pool_size,
@@ -191,6 +230,7 @@ class Orchestrator:
                 cursor_config=worker_cursor_config,
                 execution_mode=worker_exec_mode,
                 cloud_auth_config=config.cloud_auth_config,
+                task_timeout=int(self._resolved_config["worker_task_timeout"]),
             ),
             knowledge_manager=knowledge_manager,
         )
@@ -214,8 +254,251 @@ class Orchestrator:
         if self.committer:
             self.state.register_agent(self.committer.id, AgentRole.COMMITTER)
 
+    def _resolve_config_values(self, config: OrchestratorConfig) -> Dict[str, Any]:
+        """解析配置值，应用优先级规则
+
+        配置优先级:
+        1. 调用方显式传入的值（最高）
+        2. 环境变量（仅 api_key）
+        3. config.yaml 配置值（通过 get_config() 获取）
+        4. 代码默认值（最低）
+
+        Args:
+            config: OrchestratorConfig 实例
+
+        Returns:
+            解析后的配置值字典，包含:
+            - planner_timeout: 规划者超时（秒）
+            - worker_task_timeout: Worker 任务超时（秒）
+            - reviewer_timeout: 评审者超时（秒）
+            - enable_sub_planners: 是否启用子规划者
+            - strict_review: 严格评审模式
+            - planner_model: 规划者模型
+            - worker_model: 执行者模型
+            - reviewer_model: 评审者模型
+            - stream_events_enabled: 是否启用流式日志
+            - stream_log_console: 是否输出到控制台
+            - stream_log_detail_dir: 详细日志目录
+            - stream_log_raw_dir: 原始日志目录
+            - agent_path: agent CLI 路径
+            - max_retries: 最大重试次数
+            - api_key: API 密钥（优先级: 显式传入 > 环境变量 > config.yaml）
+            - cloud_api_base: Cloud API 端点
+            - cloud_timeout: Cloud 超时时间
+            - cloud_enabled: 是否启用 Cloud
+        """
+        # 获取 config.yaml 配置
+        yaml_config = get_config()
+
+        # 解析超时配置（优先级: 显式传入 > config.yaml > 默认值）
+        planner_timeout = (
+            config.planner_timeout
+            if config.planner_timeout is not None
+            else yaml_config.planner.timeout
+        )
+        worker_task_timeout = (
+            config.worker_task_timeout
+            if config.worker_task_timeout is not None
+            else yaml_config.worker.task_timeout
+        )
+        reviewer_timeout = (
+            config.reviewer_timeout
+            if config.reviewer_timeout is not None
+            else yaml_config.reviewer.timeout
+        )
+
+        # 解析模型配置（优先级: 显式传入 > config.yaml > DEFAULT_* 常量）
+        # tri-state 设计: None 表示使用 config.yaml 值，显式传入优先
+        planner_model = (
+            config.planner_model
+            if config.planner_model is not None
+            else yaml_config.models.planner
+        )
+        worker_model = (
+            config.worker_model
+            if config.worker_model is not None
+            else yaml_config.models.worker
+        )
+        reviewer_model = (
+            config.reviewer_model
+            if config.reviewer_model is not None
+            else yaml_config.models.reviewer
+        )
+
+        # 解析流式日志配置（优先级: 显式传入 > config.yaml > DEFAULT_STREAM_* 常量）
+        # tri-state 设计: None 表示使用 config.yaml 值，显式传入优先
+        stream_json = yaml_config.logging.stream_json
+        stream_events_enabled = (
+            config.stream_events_enabled
+            if config.stream_events_enabled is not None
+            else stream_json.enabled
+        )
+        stream_log_console = (
+            config.stream_log_console
+            if config.stream_log_console is not None
+            else stream_json.console
+        )
+        stream_log_detail_dir = (
+            config.stream_log_detail_dir
+            if config.stream_log_detail_dir is not None
+            else stream_json.detail_dir
+        )
+        stream_log_raw_dir = (
+            config.stream_log_raw_dir
+            if config.stream_log_raw_dir is not None
+            else stream_json.raw_dir
+        )
+
+        # 解析 agent_cli 配置（用于 _inject_agent_cli_config）
+        # 优先级: OrchestratorConfig.cursor_config > config.yaml > 默认值
+        agent_cli = yaml_config.agent_cli
+        cloud_agent = yaml_config.cloud_agent
+        cursor_cfg = config.cursor_config
+
+        # agent_path: cursor_config 非默认值 > config.yaml
+        agent_path = agent_cli.path
+        if cursor_cfg.agent_path != "agent":
+            agent_path = cursor_cfg.agent_path
+
+        # max_retries: cursor_config 非默认值 > config.yaml
+        max_retries = agent_cli.max_retries
+        if cursor_cfg.max_retries != 3:
+            max_retries = cursor_cfg.max_retries
+
+        # api_key: cursor_config > 环境变量 > config.yaml
+        import os
+        api_key = (
+            cursor_cfg.api_key
+            or os.environ.get("CURSOR_API_KEY")
+            or os.environ.get("CURSOR_CLOUD_API_KEY")
+            or agent_cli.api_key
+        )
+
+        # cloud_api_base: cursor_config 非默认值 > config.yaml
+        cloud_api_base = cloud_agent.api_base_url
+        if cursor_cfg.cloud_api_base != "https://api.cursor.com":
+            cloud_api_base = cursor_cfg.cloud_api_base
+
+        # cloud_timeout: cursor_config 非默认值 > config.yaml
+        cloud_timeout = cloud_agent.timeout
+        if cursor_cfg.cloud_timeout != 300:
+            cloud_timeout = cursor_cfg.cloud_timeout
+
+        # cloud_enabled: cursor_config 或 config.yaml 为 True
+        cloud_enabled = cursor_cfg.cloud_enabled or cloud_agent.enabled
+
+        return {
+            # 超时配置
+            "planner_timeout": planner_timeout,
+            "worker_task_timeout": worker_task_timeout,
+            "reviewer_timeout": reviewer_timeout,
+            # 系统配置
+            "enable_sub_planners": config.enable_sub_planners,
+            "strict_review": config.strict_review,
+            # 模型配置
+            "planner_model": planner_model,
+            "worker_model": worker_model,
+            "reviewer_model": reviewer_model,
+            # 流式日志配置
+            "stream_events_enabled": stream_events_enabled,
+            "stream_log_console": stream_log_console,
+            "stream_log_detail_dir": stream_log_detail_dir,
+            "stream_log_raw_dir": stream_log_raw_dir,
+            # Agent CLI 配置（用于 _inject_agent_cli_config）
+            "agent_path": agent_path,
+            "max_retries": max_retries,
+            "api_key": api_key,
+            # Cloud 配置
+            "cloud_api_base": cloud_api_base,
+            "cloud_timeout": cloud_timeout,
+            "cloud_enabled": cloud_enabled,
+        }
+
+    def _inject_agent_cli_config(
+        self,
+        cursor_config: CursorAgentConfig,
+        resolved_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """将 agent_cli/cloud_agent 配置注入到 CursorAgentConfig
+
+        使用 tri-state 逻辑注入配置，避免脆弱的 `== 默认值` 判断。
+
+        tri-state 策略:
+        - 优先使用 resolved_config 中的值（已按优先级解析）
+        - 若 resolved_config 未提供，回退到 config.yaml 值
+        - 仅当 cursor_config 中的值是 pydantic 默认值时才注入
+
+        注入的配置项:
+        - agent_cli.path → agent_path: agent CLI 路径
+        - agent_cli.max_retries → max_retries: 最大重试次数
+        - agent_cli.api_key → api_key: API 密钥
+        - cloud_agent.api_base_url → cloud_api_base: Cloud API 端点
+        - cloud_agent.timeout → cloud_timeout: Cloud 超时时间
+        - cloud_agent.enabled → cloud_enabled: 是否启用 Cloud
+
+        注意: timeout 由 _resolve_config_values 显式注入，不在此处处理
+
+        Args:
+            cursor_config: 要注入配置的 CursorAgentConfig 实例
+            resolved_config: 可选的已解析配置字典（来自 build_orchestrator_config）
+        """
+        yaml_config = get_config()
+        agent_cli = yaml_config.agent_cli
+        cloud_agent = yaml_config.cloud_agent
+
+        # 使用 resolved_config 或回退到 config.yaml
+        rc = resolved_config or {}
+
+        # ========== agent_cli 配置注入 ==========
+        # 使用 resolved_config 中的值，确保优先级正确
+
+        # agent_path: 优先使用 resolved_config
+        agent_path = rc.get("agent_path") or agent_cli.path
+        if agent_path and agent_path != "agent":
+            cursor_config.agent_path = agent_path
+
+        # max_retries: 优先使用 resolved_config
+        max_retries = rc.get("max_retries")
+        if max_retries is not None:
+            cursor_config.max_retries = max_retries
+        elif agent_cli.max_retries != 3:  # config.yaml 非默认值才注入
+            cursor_config.max_retries = agent_cli.max_retries
+
+        # api_key: 优先使用 resolved_config（已处理环境变量优先级）
+        api_key = rc.get("api_key")
+        if api_key:
+            cursor_config.api_key = api_key
+        elif cursor_config.api_key is None and agent_cli.api_key:
+            cursor_config.api_key = agent_cli.api_key
+
+        # ========== cloud_agent 配置注入 ==========
+
+        # cloud_api_base: 优先使用 resolved_config
+        cloud_api_base = rc.get("cloud_api_base") or cloud_agent.api_base_url
+        if cloud_api_base and cloud_api_base != "https://api.cursor.com":
+            cursor_config.cloud_api_base = cloud_api_base
+
+        # cloud_timeout: 优先使用 resolved_config
+        cloud_timeout = rc.get("cloud_timeout")
+        if cloud_timeout is not None:
+            cursor_config.cloud_timeout = cloud_timeout
+        elif cloud_agent.timeout != 300:  # config.yaml 非默认值才注入
+            cursor_config.cloud_timeout = cloud_agent.timeout
+
+        # cloud_enabled: 优先使用 resolved_config
+        cloud_enabled = rc.get("cloud_enabled")
+        if cloud_enabled is not None:
+            cursor_config.cloud_enabled = cloud_enabled
+        elif cloud_agent.enabled:  # config.yaml 为 True 时注入
+            cursor_config.cloud_enabled = cloud_agent.enabled
+
     def _apply_stream_config(self) -> None:
         """将流式日志和渲染配置注入 CursorAgentConfig
+
+        使用 _resolved_config 中的解析后值，确保遵循优先级规则:
+        1. 调用方显式传入的值（最高）
+        2. config.yaml 配置值
+        3. 代码默认值（最低）
 
         注入的配置项:
         - 流式日志配置: stream_events_enabled, stream_log_console, stream_log_detail_dir, stream_log_raw_dir
@@ -223,11 +506,11 @@ class Orchestrator:
                        stream_typing_delay, stream_word_mode, stream_color_enabled, stream_show_word_diff
         """
         cursor_config = self.config.cursor_config
-        # 流式日志配置
-        cursor_config.stream_events_enabled = self.config.stream_events_enabled
-        cursor_config.stream_log_console = self.config.stream_log_console
-        cursor_config.stream_log_detail_dir = self.config.stream_log_detail_dir
-        cursor_config.stream_log_raw_dir = self.config.stream_log_raw_dir
+        # 流式日志配置 - 使用解析后的值
+        cursor_config.stream_events_enabled = self._resolved_config["stream_events_enabled"]
+        cursor_config.stream_log_console = self._resolved_config["stream_log_console"]
+        cursor_config.stream_log_detail_dir = self._resolved_config["stream_log_detail_dir"]
+        cursor_config.stream_log_raw_dir = self._resolved_config["stream_log_raw_dir"]
         # 流式控制台渲染配置
         cursor_config.stream_console_renderer = self.config.stream_console_renderer
         cursor_config.stream_advanced_renderer = self.config.stream_advanced_renderer

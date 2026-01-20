@@ -777,7 +777,14 @@ check_directories() {
 check_main_entries() {
     print_section "入口文件检查"
 
-    MAIN_FILES=("main.py" "main_mp.py" "main_with_knowledge.py")
+    # 实际使用的入口文件列表（run.py 及 scripts 下的模式脚本）
+    MAIN_FILES=(
+        "run.py"
+        "scripts/run_basic.py"
+        "scripts/run_mp.py"
+        "scripts/run_knowledge.py"
+        "scripts/run_iterate.py"
+    )
 
     for file in "${MAIN_FILES[@]}"; do
         if [ -f "$file" ]; then
@@ -787,9 +794,56 @@ check_main_entries() {
                 check_fail "入口文件语法错误: $file"
             fi
         else
-            check_warn "入口文件不存在: $file"
+            check_fail "入口文件不存在: $file"
         fi
     done
+}
+
+check_deprecated_patterns() {
+    print_section "过时模式检测"
+
+    # 检测过时的入口调用模式（避免回归）
+    # 注意：这里检测的是代码/文档中的过时引用，不包括注释中的合法引用
+    DEPRECATED_PATTERNS=(
+        "python main\.py"
+        "python main_mp\.py"
+        "python main_with_knowledge\.py"
+    )
+
+    # 要检查的文件类型（排除 check_all.sh 本身）
+    SEARCH_DIRS=("scripts" "docs" "." )
+    SEARCH_EXTENSIONS=("*.py" "*.md" "*.sh" "*.txt")
+    DEPRECATED_FOUND=0
+
+    for pattern in "${DEPRECATED_PATTERNS[@]}"; do
+        # 搜索文件中的过时模式（排除 check_all.sh 自身、.git、venv 等）
+        MATCHES=$(grep -rn --include="*.py" --include="*.md" --include="*.sh" --include="*.txt" \
+            -E "$pattern" . \
+            --exclude-dir=.git --exclude-dir=venv --exclude-dir=__pycache__ \
+            --exclude="check_all.sh" \
+            2>/dev/null | head -10)
+
+        if [ -n "$MATCHES" ]; then
+            check_warn "发现过时模式: $pattern"
+            ((DEPRECATED_FOUND++))
+            # 非 JSON 模式下显示具体位置
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo "$MATCHES" | while read -r line; do
+                    echo -e "    ${YELLOW}→${NC} $line"
+                done | head -5
+                MATCH_COUNT=$(echo "$MATCHES" | wc -l)
+                if [ "$MATCH_COUNT" -gt 5 ]; then
+                    echo -e "    ${YELLOW}... 还有更多匹配 (共 $MATCH_COUNT 处)${NC}"
+                fi
+            fi
+        fi
+    done
+
+    if [ $DEPRECATED_FOUND -eq 0 ]; then
+        check_pass "未发现过时的入口调用模式"
+    else
+        check_info "建议: 使用 'python run.py --mode <mode>' 或 'python scripts/run_<mode>.py' 替代"
+    fi
 }
 
 check_run_modes() {
@@ -857,6 +911,7 @@ main() {
     check_directories
     check_main_entries
     check_run_modes
+    check_deprecated_patterns
     check_config
     check_git
     check_agent_cli
