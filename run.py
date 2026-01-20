@@ -1199,7 +1199,7 @@ class Runner:
             # 模型配置
             planner_model=options.get("planner_model", "gpt-5.2-high"),
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
-            reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
+            reviewer_model=options.get("reviewer_model", "gpt-5.2-codex"),
             # 执行模式和 Cloud 认证配置
             execution_mode=execution_mode,
             cloud_auth_config=cloud_auth_config,
@@ -1263,7 +1263,7 @@ class Runner:
             strict_review=options.get("strict", False),
             planner_model=options.get("planner_model", "gpt-5.2-high"),
             worker_model=options.get("worker_model", "opus-4.5-thinking"),
-            reviewer_model=options.get("reviewer_model", "opus-4.5-thinking"),
+            reviewer_model=options.get("reviewer_model", "gpt-5.2-codex"),
             stream_events_enabled=options.get("stream_log", False),
             # 自动提交配置透传（默认禁用）
             enable_auto_commit=options.get("auto_commit", False),

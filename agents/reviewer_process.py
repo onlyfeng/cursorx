@@ -83,13 +83,13 @@ class ReviewerAgentProcess(AgentWorkerProcess):
 
     def on_start(self) -> None:
         """进程启动初始化"""
-        # 创建 agent CLI 客户端 - 使用 opus-4.5-thinking 进行评审
+        # 创建 agent CLI 客户端 - 使用 gpt-5.2-codex 进行评审
         # 不使用 --force，只评审而不修改
         stream_enabled = self.config.get("stream_events_enabled", False)
         cursor_config = CursorAgentConfig(
             working_directory=self.config.get("working_directory", "."),
             timeout=self.config.get("timeout", 120),
-            model=self.config.get("model", "opus-4.5-thinking"),
+            model=self.config.get("model", "gpt-5.2-codex"),
             output_format="stream-json" if stream_enabled else "json",
             non_interactive=True,
             force_write=False,     # 不修改文件，只评审

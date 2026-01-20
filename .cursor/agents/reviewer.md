@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: 代码审查专家。用于审查代码质量、检查潜在问题、验证实现正确性时调用。
-model: opus-4.5-thinking
+model: gpt-5.2-codex
 readonly: true
 ---
 

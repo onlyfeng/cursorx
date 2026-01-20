@@ -17,8 +17,8 @@ models:
   # 执行者模型 - Claude 4.5 Opus (Thinking) 擅长代码生成
   worker: opus-4.5-thinking
 
-  # 评审者模型 - Claude 4.5 Opus (Thinking) 擅长代码审查
-  reviewer: opus-4.5-thinking
+  # 评审者模型 - GPT 5.2 Codex 擅长代码审查
+  reviewer: gpt-5.2-codex
 
 # 可用模型列表 (2026-01):
 # - gpt-5.2-high      : GPT-5.2 High

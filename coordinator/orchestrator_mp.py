@@ -1068,7 +1068,7 @@ class MultiProcessOrchestrator:
             self.state.register_agent(worker_id, AgentRole.WORKER)
             logger.info(f"Worker 进程已创建: {worker_id} (模型: {self.config.worker_model})")
 
-        # 创建 Reviewer - 使用 opus-4.5-thinking
+        # 创建 Reviewer - 使用 gpt-5.2-codex
         # 注意：Reviewer 强制使用 mode='ask' 和 force_write=False（只读语义）
         reviewer_config = {
             "working_directory": self.config.working_directory,

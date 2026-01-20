@@ -210,7 +210,7 @@ class TestModelConfigPerRole:
             # 验证日志包含模型配置信息
             expected_log = (
                 "各角色模型配置 - Planner: gpt-5.2-high, "
-                "Worker: opus-4.5-thinking, Reviewer: opus-4.5-thinking"
+                "Worker: opus-4.5-thinking, Reviewer: gpt-5.2-codex"
             )
             assert expected_log in log_content, (
                 f"未找到预期日志: {expected_log}\n实际日志: {log_content}"
@@ -219,7 +219,7 @@ class TestModelConfigPerRole:
             logger.remove(handler_id)
 
     def test_orchestrator_uses_different_models_per_role(self) -> None:
-        """验证 Planner 使用 gpt-5.2-high，Worker 和 Reviewer 使用 opus-4.5-thinking"""
+        """验证 Planner 使用 gpt-5.2-high，Worker 使用 opus-4.5-thinking，Reviewer 使用 gpt-5.2-codex"""
         config = OrchestratorConfig()
         orchestrator = Orchestrator(config)
 
