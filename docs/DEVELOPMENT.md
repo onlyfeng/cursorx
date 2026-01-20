@@ -433,19 +433,68 @@ python scripts/run_iterate.py --auto-commit --commit-per-iteration "分步完成
 
 **执行模式与编排器**（iterate 模式）:
 
-`--execution-mode` 控制任务的执行方式，影响编排器选择：
+`--execution-mode` 控制任务的执行方式，影响编排器选择。
+
+**Cloud 执行模式语义对比**:
+
+| 方式 | 语义 | 说明 |
+|------|------|------|
+| `&` 前缀 | **Cloud Relay**：把这条消息/会话推到云端继续跑 | 交互式提交单条任务 |
+| `--execution-mode cloud` | **强制云端**：本系统强制使用云端执行器（无需 `&`） | 脚本/自动化确保使用云端 |
+| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | 推荐默认选择 |
 
 ```bash
 # 默认：本地 CLI 执行，支持多进程编排器（推荐）
 python scripts/run_iterate.py "任务描述"
 python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
 
-# Cloud/Auto 执行模式：强制使用 basic 编排器
-python scripts/run_iterate.py --execution-mode auto "任务描述"
+# ===== Cloud 执行模式 =====
+
+# 方式 1: & 前缀 - Cloud Relay（把消息推到云端继续跑）
+python scripts/run_iterate.py "& 后台分析代码架构"
+
+# 方式 2: --execution-mode cloud - 强制使用云端执行器
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 
-# 使用 & 前缀触发 Cloud 模式（等效于 --execution-mode cloud）
-python scripts/run_iterate.py "& 后台分析代码架构"
+# 方式 3: --execution-mode auto - 云端优先，失败回退本地
+python scripts/run_iterate.py --execution-mode auto "任务描述"
+
+# ===== 恢复云端会话 =====
+# 查看历史会话
+agent ls
+
+# 恢复指定会话
+agent --resume <session_id>
+
+# 恢复最新会话
+agent resume
+
+# ===== Cloud 超时参数 =====
+# run.py 和 scripts/run_iterate.py 均支持 --cloud-timeout
+python run.py --mode iterate --execution-mode cloud --cloud-timeout 1200 "长时间任务"
+python scripts/run_iterate.py --execution-mode cloud --cloud-timeout 900 "分析任务"
+
+# ===== 验证 Cloud 模式返回 session_id =====
+# 方式 1：使用 JSON 输出格式验证
+python scripts/run_iterate.py --execution-mode cloud "测试任务" 2>&1 | grep -E "session_id|Session"
+
+# 方式 2：编程方式验证（Python）
+python -c "
+from cursor.executor import AgentExecutorFactory, ExecutionMode
+import asyncio
+
+async def test_cloud_session():
+    executor = AgentExecutorFactory.create(mode=ExecutionMode.CLOUD)
+    result = await executor.execute(prompt='测试任务')
+    print(f'Session ID: {result.session_id}')
+    assert result.session_id is not None, '应返回 session_id'
+    print('✓ session_id 验证通过')
+
+asyncio.run(test_cloud_session())
+"
+
+# 方式 3：检查 agent ls 输出（提交后验证）
+agent ls | head -5  # 查看最近会话列表
 
 # 显式禁用多进程（使用协程编排器）
 python scripts/run_iterate.py --no-mp "任务描述"

@@ -5371,6 +5371,187 @@ class TestRunCloudMode:
         assert captured_cli_config.working_directory == "/custom/work/dir"
         assert captured_working_dir == "/custom/work/dir"
 
+    @pytest.mark.asyncio
+    async def test_run_cloud_ampersand_prefix_triggers_background_mode(
+        self, cloud_runner_args: argparse.Namespace
+    ) -> None:
+        """验证 '&' 前缀触发 Cloud 后台模式，传递 background=True
+
+        当用户输入以 '&' 开头时：
+        1. TaskAnalyzer 识别为 Cloud 模式
+        2. analysis.options['cloud_background'] = True
+        3. _run_cloud 传递 background=True 给执行器
+        """
+        cloud_runner_args.task = "& 后台分析代码"
+        runner = Runner(cloud_runner_args)
+
+        captured_background = None
+
+        def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
+            mock_executor = MagicMock()
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.output = "后台任务已提交"
+            mock_result.session_id = "bg-session-123"
+            mock_result.files_modified = []
+
+            async def capture_execute(*args, **kwargs):
+                nonlocal captured_background
+                captured_background = kwargs.get("background")
+                return mock_result
+
+            mock_executor.execute = capture_execute
+            return mock_executor
+
+        with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
+            with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
+                # 模拟 '&' 前缀触发的选项（由 TaskAnalyzer 设置）
+                options = runner._merge_options({
+                    "cloud_background": True,  # '&' 前缀触发
+                    "triggered_by_prefix": True,
+                })
+                await runner._run_cloud("后台分析代码", options)
+
+        # 验证 background=True 被传递给执行器
+        assert captured_background is True, (
+            "'&' 前缀触发时应传递 background=True"
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_returns_resume_command_on_success(
+        self, cloud_runner_args: argparse.Namespace
+    ) -> None:
+        """验证成功执行后返回 resume_command（包含 session_id）
+
+        返回结果应包含:
+        - session_id: 会话 ID
+        - resume_command: 'agent --resume <session_id>' 格式的恢复命令
+        """
+        runner = Runner(cloud_runner_args)
+
+        def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
+            mock_executor = MagicMock()
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.output = "任务完成"
+            mock_result.session_id = "cloud-session-xyz789"
+            mock_result.files_modified = []
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            return mock_executor
+
+        with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
+            with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
+                options = runner._merge_options({})
+                result = await runner._run_cloud("任务", options)
+
+        # 验证返回结果包含 resume_command
+        assert result["success"] is True
+        assert result["session_id"] == "cloud-session-xyz789"
+        assert result["resume_command"] == "agent --resume cloud-session-xyz789", (
+            "resume_command 格式应为 'agent --resume <session_id>'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_background_mode_returns_resume_command(
+        self, cloud_runner_args: argparse.Namespace
+    ) -> None:
+        """验证后台模式返回 resume_command 供用户恢复会话"""
+        runner = Runner(cloud_runner_args)
+
+        def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
+            mock_executor = MagicMock()
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.output = ""  # 后台模式可能无输出
+            mock_result.session_id = "bg-session-abc"
+            mock_result.files_modified = []
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            return mock_executor
+
+        with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
+            with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
+                # 模拟后台模式选项
+                options = runner._merge_options({
+                    "cloud_background": True,
+                    "triggered_by_prefix": True,
+                })
+                result = await runner._run_cloud("后台任务", options)
+
+        # 验证后台模式返回正确的元数据
+        assert result["success"] is True
+        assert result["background"] is True
+        assert result["session_id"] == "bg-session-abc"
+        assert result["resume_command"] == "agent --resume bg-session-abc"
+        assert result["triggered_by_prefix"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_no_session_id_returns_none_resume_command(
+        self, cloud_runner_args: argparse.Namespace
+    ) -> None:
+        """验证无 session_id 时 resume_command 为 None"""
+        runner = Runner(cloud_runner_args)
+
+        def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
+            mock_executor = MagicMock()
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.output = "执行完成"
+            mock_result.session_id = None  # 无 session_id
+            mock_result.files_modified = []
+            mock_executor.execute = AsyncMock(return_value=mock_result)
+            return mock_executor
+
+        with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
+            with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
+                options = runner._merge_options({})
+                result = await runner._run_cloud("任务", options)
+
+        # 验证无 session_id 时 resume_command 为 None
+        assert result["session_id"] is None
+        assert result["resume_command"] is None
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_execution_mode_cloud_default_foreground(
+        self, cloud_runner_args: argparse.Namespace
+    ) -> None:
+        """验证 --execution-mode cloud 显式指定时默认前台模式（background=False）
+
+        区别于 '&' 前缀触发（默认后台），--execution-mode cloud 应默认前台执行。
+        """
+        runner = Runner(cloud_runner_args)
+
+        captured_background = None
+
+        def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
+            mock_executor = MagicMock()
+            mock_result = MagicMock()
+            mock_result.success = True
+            mock_result.output = "前台执行完成"
+            mock_result.session_id = "fg-session"
+            mock_result.files_modified = ["main.py"]
+
+            async def capture_execute(*args, **kwargs):
+                nonlocal captured_background
+                captured_background = kwargs.get("background")
+                return mock_result
+
+            mock_executor.execute = capture_execute
+            return mock_executor
+
+        with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
+            with patch.dict("os.environ", {"CURSOR_API_KEY": "key"}):
+                # 不设置 cloud_background，默认应为 False
+                options = runner._merge_options({
+                    "execution_mode": "cloud",
+                    # 不设置 cloud_background
+                })
+                await runner._run_cloud("任务", options)
+
+        # 验证默认前台模式
+        assert captured_background is False, (
+            "--execution-mode cloud 默认应为前台模式（background=False）"
+        )
+
 
 class TestRunCloudModeNoApiKeyError:
     """测试 Cloud 模式下无 API key 的边界用例

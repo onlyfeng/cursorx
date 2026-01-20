@@ -421,6 +421,58 @@ agent -p "prompt" --output-format stream-json --stream-partial-output
 
 Cloud Agent 提供云端 API 访问能力，支持程序化调用 Cursor Agent。
 
+### Cloud 执行模式对比
+
+本系统提供三种触发 Cloud 执行的方式，语义各有不同：
+
+| 方式 | 语义 | 使用场景 | 恢复方式 |
+|------|------|----------|----------|
+| `&` 前缀 | **Cloud Relay**：把这条消息/会话推到云端继续跑 | 交互式提交单条任务到云端 | `agent --resume <session_id>` |
+| `--execution-mode cloud` | **强制云端**：本系统强制使用云端执行器（无需依赖 `&`） | 脚本/自动化场景，确保使用云端 | `agent --resume <session_id>` |
+| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | 推荐默认选择，兼顾可用性和云端优势 | `agent --resume <session_id>` |
+
+#### 最小示例
+
+```bash
+# ===== 方式 1: & 前缀（Cloud Relay）=====
+# 语义：把这条消息推到云端继续跑
+agent -p "& 分析整个代码库的架构"
+# 返回 session_id 后可恢复：
+agent --resume abc123-session-id
+
+# ===== 方式 2: --execution-mode cloud =====
+# 语义：强制使用云端执行器，不依赖 & 前缀
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
+# 恢复方式同上（脚本会输出 session_id）
+agent --resume abc123-session-id
+
+# ===== 方式 3: --execution-mode auto =====
+# 语义：云端优先，云端不可用时自动回退到本地 CLI
+python scripts/run_iterate.py --execution-mode auto "任务描述"
+# 如果使用了云端，可用 session_id 恢复
+agent --resume abc123-session-id
+# 如果回退到本地 CLI，则无 session_id
+
+# ===== run.py Cloud 模式后台提交 =====
+# 使用 run.py 的 Cloud 模式提交后台任务
+python run.py --mode iterate --execution-mode cloud "长时间代码分析任务"
+
+# 指定 Cloud 执行超时时间（默认 600 秒）
+python run.py --mode iterate --execution-mode cloud --cloud-timeout 1200 "复杂重构任务"
+
+# scripts/run_iterate.py 也支持 --cloud-timeout
+python scripts/run_iterate.py --execution-mode cloud --cloud-timeout 900 "分析任务"
+
+# ===== 查看历史会话 =====
+agent ls
+
+# ===== 恢复指定会话 =====
+agent --resume <session_id>
+
+# ===== 恢复最新会话 =====
+agent resume
+```
+
 ### Cloud Relay（& 前缀）
 
 使用 `&` 前缀可以将任务提交到云端后台执行，无需等待完成即可继续其他工作。
@@ -436,7 +488,7 @@ agent -b -p "分析整个代码库的架构"
 agent ls
 
 # 恢复/查看后台任务结果
-agent resume <session_id>
+agent --resume <session_id>
 ```
 
 **Cloud Relay 特点**:
@@ -689,7 +741,7 @@ python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff 
 |------|------|--------|
 | `--cloud-api-key` | Cloud API Key（可选） | 环境变量 `CURSOR_API_KEY` |
 | `--cloud-auth-timeout` | Cloud 认证超时时间（秒） | 30 |
-| `--cloud-timeout` | Cloud 执行超时时间（秒，仅 `run.py` 支持） | 600 |
+| `--cloud-timeout` | Cloud 执行超时时间（秒，`run.py` 和 `scripts/run_iterate.py` 均支持） | 600 |
 
 ### 自动提交配置
 

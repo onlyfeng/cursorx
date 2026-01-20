@@ -454,6 +454,13 @@ def parse_args() -> argparse.Namespace:
         help="Cloud 认证超时时间（秒，默认 30）",
     )
 
+    parser.add_argument(
+        "--cloud-timeout",
+        type=int,
+        default=600,
+        help="Cloud 执行超时时间（秒，默认 600，即 10 分钟）",
+    )
+
     # 流式控制台渲染参数（默认关闭，避免噪声）
     stream_render_group = parser.add_argument_group("流式控制台渲染")
 
@@ -2458,6 +2465,9 @@ class SelfIterator:
 
         支持 KnowledgeManager 注入、auto_commit/auto_push、execution_mode 和 cloud_auth_config。
 
+        当 execution_mode 为 CLOUD 或 AUTO 时，使用 --cloud-timeout 参数覆盖默认 timeout，
+        确保 Cloud/Auto 走相同的超时策略（默认 600 秒）。
+
         Args:
             max_iterations: 最大迭代次数
             manager: 知识库管理器
@@ -2476,7 +2486,19 @@ class SelfIterator:
         if cloud_auth_config:
             print_info("Cloud 认证: 已配置")
 
-        cursor_config = CursorAgentConfig(working_directory=str(project_root))
+        # 根据执行模式决定超时时间
+        # - Cloud/Auto 模式：使用 --cloud-timeout 参数（默认 600 秒）
+        # - CLI 模式：使用 CursorAgentConfig 默认值（300 秒）
+        if execution_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
+            cloud_timeout = getattr(self.args, "cloud_timeout", 600)
+            cursor_config = CursorAgentConfig(
+                working_directory=str(project_root),
+                timeout=cloud_timeout,
+            )
+            print_info(f"Cloud 超时: {cloud_timeout}s")
+            logger.info(f"Cloud/Auto 执行模式，使用 cloud_timeout={cloud_timeout}s")
+        else:
+            cursor_config = CursorAgentConfig(working_directory=str(project_root))
 
         # 解析角色级执行模式（可选）
         planner_exec_mode = self._parse_execution_mode(

@@ -54,6 +54,7 @@ def base_iterate_args() -> argparse.Namespace:
         execution_mode="cli",
         cloud_api_key=None,
         cloud_auth_timeout=30,
+        cloud_timeout=600,  # Cloud 执行超时时间（默认 600 秒）
     )
 
 
@@ -928,6 +929,148 @@ class TestExecutionModeSelection:
                         assert cloud_auth is not None
                         assert cloud_auth.api_key == "test-cloud-key"
                         assert cloud_auth.auth_timeout == 45
+
+    @pytest.mark.asyncio
+    async def test_cloud_timeout_passed_to_cursor_config_for_cloud_mode(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 --cloud-timeout 参数在 cloud 模式下传递到 CursorAgentConfig.timeout
+
+        验证:
+        1. 当 execution_mode=cloud 且设置 --cloud-timeout 时
+        2. CursorAgentConfig 的 timeout 应使用 cloud_timeout 值
+        3. 确保 Cloud 模式使用独立的超时配置
+        """
+        base_iterate_args.execution_mode = "cloud"
+        base_iterate_args.cloud_timeout = 1200  # 设置 20 分钟超时
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        captured_cursor_config_timeout = None
+
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig") as MockCursorConfig:
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        # 捕获 CursorAgentConfig 的参数
+                        def capture_cursor_config(*args, **kwargs):
+                            nonlocal captured_cursor_config_timeout
+                            captured_cursor_config_timeout = kwargs.get("timeout")
+                            return MagicMock()
+
+                        MockCursorConfig.side_effect = capture_cursor_config
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证 CursorAgentConfig.timeout 使用 cloud_timeout 值
+                        assert captured_cursor_config_timeout == 1200, (
+                            "Cloud 模式下 CursorAgentConfig.timeout 应使用 --cloud-timeout 值"
+                        )
+
+    @pytest.mark.asyncio
+    async def test_cloud_timeout_passed_to_cursor_config_for_auto_mode(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 --cloud-timeout 参数在 auto 模式下也传递到 CursorAgentConfig.timeout
+
+        Auto 模式优先使用 Cloud，因此也应使用 cloud_timeout。
+        """
+        base_iterate_args.execution_mode = "auto"
+        base_iterate_args.cloud_timeout = 900  # 设置 15 分钟超时
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        captured_cursor_config_timeout = None
+
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig") as MockCursorConfig:
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        def capture_cursor_config(*args, **kwargs):
+                            nonlocal captured_cursor_config_timeout
+                            captured_cursor_config_timeout = kwargs.get("timeout")
+                            return MagicMock()
+
+                        MockCursorConfig.side_effect = capture_cursor_config
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # 验证 Auto 模式也使用 cloud_timeout
+                        assert captured_cursor_config_timeout == 900, (
+                            "Auto 模式下 CursorAgentConfig.timeout 也应使用 --cloud-timeout 值"
+                        )
+
+    @pytest.mark.asyncio
+    async def test_cli_mode_does_not_override_default_timeout(
+        self, base_iterate_args: argparse.Namespace
+    ) -> None:
+        """测试 CLI 模式下不使用 cloud_timeout（使用默认超时）
+
+        CLI 模式应使用 CursorAgentConfig 的默认 timeout，
+        不受 --cloud-timeout 参数影响。
+        """
+        base_iterate_args.execution_mode = "cli"  # CLI 模式
+        base_iterate_args.cloud_timeout = 1800  # 设置 cloud_timeout（不应生效）
+        base_iterate_args.skip_online = True
+        iterator = SelfIterator(base_iterate_args)
+        iterator.context.iteration_goal = "测试目标"
+
+        cursor_config_call_kwargs = None
+
+        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                    with patch("scripts.run_iterate.CursorAgentConfig") as MockCursorConfig:
+                        mock_km = MagicMock()
+                        mock_km.initialize = AsyncMock()
+                        MockKM.return_value = mock_km
+
+                        def capture_cursor_config(*args, **kwargs):
+                            nonlocal cursor_config_call_kwargs
+                            cursor_config_call_kwargs = kwargs
+                            return MagicMock()
+
+                        MockCursorConfig.side_effect = capture_cursor_config
+
+                        mock_config_instance = MagicMock()
+                        MockConfig.return_value = mock_config_instance
+
+                        mock_orch = MagicMock()
+                        mock_orch.run = AsyncMock(return_value={"success": True})
+                        MockOrch.return_value = mock_orch
+
+                        await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                        # CLI 模式下不应设置 timeout（使用默认值）
+                        # 或者 timeout 不应为 cloud_timeout 值
+                        timeout_value = cursor_config_call_kwargs.get("timeout")
+                        assert timeout_value != 1800 or timeout_value is None, (
+                            "CLI 模式下不应使用 --cloud-timeout 值"
+                        )
 
     @pytest.mark.asyncio
     async def test_execution_mode_cloud_uses_basic_orchestrator_path(
@@ -4317,3 +4460,209 @@ class TestFallbackVsDegraded:
                     assert result["success"] is False
                     assert result["degraded"] is True
                     assert result["degradation_reason"] == reason
+
+
+# ============================================================
+# TestMinimalCLIJan16Changelog - 最小 CLI Jan 16, 2026 变更日志测试
+# ============================================================
+
+# 最小化 HTML/文本片段，包含 'CLI Jan 16, 2026' 标题行和相关关键字
+MINIMAL_CLI_JAN_16_2026_SNIPPET = """
+CLI Jan 16, 2026
+
+### New Features
+- **Plan Mode**: Added `/plan` command for read-only planning mode.
+- **Ask Mode**: Added `/ask` command for Q&A mode.
+- **Cloud Relay**: MCP servers now support cloud relay for remote access.
+- **Diff View**: Enhanced diff view with `Ctrl+R` shortcut for reviewing changes.
+
+### Improvements
+- Better streaming output support.
+"""
+
+
+class TestMinimalCLIJan16Changelog:
+    """测试最小化 'CLI Jan 16, 2026' 变更日志片段的解析能力
+
+    这个测试类验证 ChangelogAnalyzer 能够正确解析包含
+    CLI Jan 16, 2026 格式标题和 plan/ask/cloud relay/diff 关键字的最小片段。
+
+    覆盖场景：
+    1. parse_changelog 能产生至少 1 条 entry
+    2. entry.date、entry.category、entry.content 非空或符合预期
+    3. extract_update_points 能把条目归入 feature/fix/improvement 类别
+    4. extract_update_points 能命中相关文档 URL
+    """
+
+    def test_parse_changelog_produces_at_least_one_entry(self) -> None:
+        """测试 parse_changelog 能从最小片段解析出至少 1 条 entry"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        # 断言至少产生 1 条 entry
+        assert len(entries) >= 1, (
+            f"期望 parse_changelog 产生至少 1 条 entry，实际得到 {len(entries)} 条"
+        )
+
+    def test_entry_date_is_not_empty(self) -> None:
+        """测试 entry.date 非空或包含预期日期信息"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        # 验证第一条 entry 的日期
+        first_entry = entries[0]
+        assert first_entry.date, (
+            f"期望 entry.date 非空，实际为 '{first_entry.date}'"
+        )
+        # 验证日期包含 Jan 16, 2026 相关信息
+        date_lower = first_entry.date.lower()
+        assert 'jan' in date_lower or '16' in date_lower or '2026' in date_lower, (
+            f"期望 date 包含 'Jan'、'16' 或 '2026'，实际为 '{first_entry.date}'"
+        )
+
+    def test_entry_category_is_valid(self) -> None:
+        """测试 entry.category 非空且属于有效类别"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        first_entry = entries[0]
+        valid_categories = {'feature', 'fix', 'improvement', 'other'}
+
+        assert first_entry.category, (
+            f"期望 entry.category 非空，实际为 '{first_entry.category}'"
+        )
+        assert first_entry.category in valid_categories, (
+            f"期望 category 在 {valid_categories} 中，实际为 '{first_entry.category}'"
+        )
+
+    def test_entry_content_is_not_empty(self) -> None:
+        """测试 entry.content 非空"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        first_entry = entries[0]
+        assert first_entry.content, (
+            f"期望 entry.content 非空，实际为空"
+        )
+
+    def test_entry_content_contains_expected_keywords(self) -> None:
+        """测试 entry.content 包含预期关键字（plan/ask/cloud relay/diff）"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        # 合并所有 entry 的内容进行检查
+        all_content = ' '.join(e.content.lower() for e in entries)
+
+        # 验证包含 plan/ask/cloud relay/diff 关键字
+        assert 'plan' in all_content, (
+            f"期望内容包含 'plan' 关键字，实际内容: {all_content[:200]}..."
+        )
+        assert 'ask' in all_content, (
+            f"期望内容包含 'ask' 关键字，实际内容: {all_content[:200]}..."
+        )
+        assert 'cloud relay' in all_content or 'relay' in all_content, (
+            f"期望内容包含 'cloud relay' 或 'relay' 关键字，实际内容: {all_content[:200]}..."
+        )
+        assert 'diff' in all_content, (
+            f"期望内容包含 'diff' 关键字，实际内容: {all_content[:200]}..."
+        )
+
+    def test_extract_update_points_categorizes_entry(self) -> None:
+        """测试 extract_update_points 能把条目归入 feature/fix/improvement 类别"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        analysis = analyzer.extract_update_points(entries)
+
+        # 验证 has_updates 为 True
+        assert analysis.has_updates, (
+            "期望 has_updates 为 True，实际为 False"
+        )
+
+        # 验证至少归入一个类别
+        has_categorization = (
+            len(analysis.new_features) > 0 or
+            len(analysis.improvements) > 0 or
+            len(analysis.fixes) > 0
+        )
+        assert has_categorization, (
+            f"期望条目被归入 feature/fix/improvement 的某一类，"
+            f"实际: new_features={len(analysis.new_features)}, "
+            f"improvements={len(analysis.improvements)}, "
+            f"fixes={len(analysis.fixes)}"
+        )
+
+    def test_extract_update_points_hits_related_doc_urls(self) -> None:
+        """测试 extract_update_points 能命中相关文档 URL"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        analysis = analyzer.extract_update_points(entries)
+
+        # 验证命中了相关文档 URL
+        assert len(analysis.related_doc_urls) > 0, (
+            f"期望 related_doc_urls 非空，实际为空列表"
+        )
+
+        # 验证命中的 URL 包含预期的文档路径
+        url_str = ' '.join(analysis.related_doc_urls).lower()
+
+        # 至少应命中以下之一：modes/plan, modes/ask, mcp, parameters, overview
+        expected_url_patterns = [
+            'modes/plan', 'modes/ask', 'mcp', 'parameters', 'overview',
+            'slash-commands', 'using'
+        ]
+        hit_any = any(pattern in url_str for pattern in expected_url_patterns)
+        assert hit_any, (
+            f"期望命中至少一个预期文档 URL pattern {expected_url_patterns}，"
+            f"实际 URLs: {analysis.related_doc_urls}"
+        )
+
+    def test_extract_update_points_generates_summary(self) -> None:
+        """测试 extract_update_points 能生成非空摘要"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry 进行验证"
+
+        analysis = analyzer.extract_update_points(entries)
+
+        # 验证摘要非空
+        assert analysis.summary, (
+            f"期望 summary 非空，实际为 '{analysis.summary}'"
+        )
+
+    def test_cli_category_date_format_parsed_correctly(self) -> None:
+        """测试 'CLI Jan 16, 2026' 格式（类别+日期）被正确解析
+
+        验证 _parse_by_category_date_headers 策略能识别
+        '<Category> <Month Day, Year>' 格式的标题行。
+        """
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(MINIMAL_CLI_JAN_16_2026_SNIPPET)
+
+        assert len(entries) >= 1, "需要至少 1 条 entry"
+
+        first_entry = entries[0]
+
+        # 验证解析出了日期
+        assert first_entry.date, f"期望 date 非空，实际为 '{first_entry.date}'"
+
+        # 验证标题或内容包含 CLI 相关信息（可能被解析为类别或保留在标题中）
+        title_and_content = (first_entry.title + ' ' + first_entry.content).lower()
+        # CLI 可能被解析为类别或出现在内容中
+        assert 'jan' in first_entry.date.lower() or 'jan' in first_entry.title.lower(), (
+            f"期望日期或标题包含 'Jan'，date='{first_entry.date}', title='{first_entry.title}'"
+        )

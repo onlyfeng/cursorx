@@ -302,6 +302,7 @@ class CloudClientFactory:
         allow_write: Optional[bool] = None,
         session_id: Optional[str] = None,
         wait: bool = True,
+        force_cloud: bool = False,
     ) -> CloudAgentResult:
         """统一的 Cloud 任务执行入口
 
@@ -325,6 +326,7 @@ class CloudClientFactory:
             allow_write: 是否允许写入（对应 --force 参数）
             session_id: 可选的会话 ID（用于恢复会话）
             wait: 是否等待任务完成（默认 True）
+            force_cloud: 强制云端执行（自动为非云端请求添加 & 前缀，默认 False）
 
         Returns:
             CloudAgentResult 执行结果，包含 success/output/error/files_modified/session_id
@@ -354,13 +356,14 @@ class CloudClientFactory:
             allow_write=allow_write,
         )
 
-        # 执行任务
+        # 执行任务（透传 force_cloud 参数）
         return await cloud_client.execute(
             prompt=prompt,
             options=task_options,
             wait=wait,
             timeout=timeout or task_options.timeout,
             session_id=session_id,
+            force_cloud=force_cloud,
         )
 
     @staticmethod

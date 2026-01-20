@@ -19,7 +19,7 @@
 """
 import asyncio
 from abc import abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -475,8 +475,9 @@ class CloudAgentExecutor:
         context: Optional[dict[str, Any]] = None,
         working_directory: Optional[str] = None,
         timeout: Optional[int] = None,
-        background: bool = True,
+        background: bool = False,
         session_id: Optional[str] = None,
+        force_cloud: bool = True,
     ) -> AgentResult:
         """通过 Cloud API 执行任务
 
@@ -490,23 +491,46 @@ class CloudAgentExecutor:
         3. auth_config 中的对应值
         4. 环境变量 CURSOR_API_KEY
 
+        强制云端逻辑:
+        - CloudAgentExecutor 默认 force_cloud=True（因为这是 Cloud 执行器）
+        - 若 prompt 不以 & 开头，会自动按云端模式执行（不修改 prompt 本身）
+        - 确保不重复添加 & 前缀
+
+        执行模式行为:
+        - background=False（默认）: 前台模式，等待任务完成，返回完整结果
+        - background=True: 后台模式，立即返回 session_id，不等待完成（Cloud Relay 语义）
+
+        默认行为约定（由 run.py 控制传递）:
+        - 当用户任务以 '&' 前缀触发 Cloud 模式时，run.py 传递 background=True
+        - 当显式 --execution-mode cloud 且未指定 --cloud-background 时，run.py 传递 background=False
+
         Args:
             prompt: 任务提示（可带 & 前缀）
             context: 上下文信息（暂不使用，保持接口兼容）
             working_directory: 工作目录
             timeout: 超时时间（秒）
-            background: 是否使用后台模式（默认 True，暂不使用）
+            background: 是否使用后台模式（默认 False，等待任务完成）
             session_id: 可选的会话 ID（用于恢复会话）
+            force_cloud: 强制云端执行（默认 True，自动为非 & 开头的 prompt 启用云端模式）
 
         Returns:
-            执行结果
+            执行结果:
+            - background=False: 完整的执行结果，包含 output/files_modified 等
+            - background=True: success 表示提交是否成功，session_id 用于后续查询/恢复
         """
         started_at = datetime.now()
         timeout_sec = timeout or self._agent_config.timeout
 
+        # 根据 background 参数决定 wait 行为
+        # background=True 时不等待（wait=False），立即返回 task 元信息
+        # background=False 时等待完成（wait=True），返回完整结果
+        wait_for_completion = not background
+
         try:
             # 使用 CloudClientFactory.execute_task() 统一执行入口
             # 配置来源优先级与 CursorAgentClient._execute_via_cloud() 一致
+            # force_cloud=True 时，即使 prompt 不以 & 开头也会使用云端执行
+            # allow_write 由 agent_config.force_write 控制，保持只读/可写语义
             cloud_result = await CloudClientFactory.execute_task(
                 prompt=prompt,
                 agent_config=self._agent_config,
@@ -515,22 +539,40 @@ class CloudAgentExecutor:
                 timeout=timeout_sec,
                 allow_write=self._agent_config.force_write,
                 session_id=session_id,
-                wait=True,
+                wait=wait_for_completion,
+                force_cloud=force_cloud,
             )
 
             completed_at = datetime.now()
             duration = (completed_at - started_at).total_seconds()
 
-            # 转换为 AgentResult，包含 files_modified 以与 CursorAgentClient 行为一致
-            return AgentResult.from_cloud_result(
-                success=cloud_result.success,
-                output=cloud_result.output,
-                error=cloud_result.error,
-                duration=duration,
-                session_id=cloud_result.task.task_id if cloud_result.task else None,
-                raw_result=cloud_result.to_dict(),
-                files_modified=cloud_result.files_modified,
-            )
+            # 根据 wait 模式构造返回结果
+            if wait_for_completion:
+                # 前台模式：返回完整结果，包含 output/files_modified
+                return AgentResult.from_cloud_result(
+                    success=cloud_result.success,
+                    output=cloud_result.output,
+                    error=cloud_result.error,
+                    duration=duration,
+                    session_id=cloud_result.task.task_id if cloud_result.task else None,
+                    raw_result=cloud_result.to_dict(),
+                    files_modified=cloud_result.files_modified,
+                )
+            else:
+                # 后台模式：仅返回任务元信息
+                # success 表示任务提交是否成功，而非任务本身是否完成
+                # output/files_modified 为空（任务尚未完成）
+                # raw_result 包含 task 元信息，供调用方获取更多细节
+                task_id = cloud_result.task.task_id if cloud_result.task else None
+                return AgentResult.from_cloud_result(
+                    success=cloud_result.success,
+                    output=cloud_result.output or "",  # 后台模式可能只有初始响应
+                    error=cloud_result.error,
+                    duration=duration,
+                    session_id=task_id,
+                    raw_result=cloud_result.to_dict(),
+                    files_modified=[],  # 后台模式任务尚未完成，无文件修改信息
+                )
 
         except asyncio.TimeoutError:
             return AgentResult(
@@ -752,19 +794,27 @@ class CloudAgentExecutor:
 class AutoAgentExecutor:
     """自动选择执行器
 
-    优先使用 Cloud API，不可用时自动回退到 CLI
+    优先使用 Cloud API，不可用时自动回退到 CLI。
+    支持 Cloud 失败后的冷却策略，避免频繁重试导致的抖动。
     """
+
+    # 默认冷却时间（秒）
+    DEFAULT_COOLDOWN_SECONDS: int = 300  # 5 分钟
 
     def __init__(
         self,
         cli_config: Optional[CursorAgentConfig] = None,
         cloud_auth_config: Optional[CloudAuthConfig] = None,
+        cloud_cooldown_seconds: Optional[int] = None,
+        enable_cooldown: bool = True,
     ):
         """初始化自动执行器
 
         Args:
             cli_config: CLI 执行器配置
             cloud_auth_config: Cloud 认证配置
+            cloud_cooldown_seconds: Cloud 失败后的冷却时间（秒），默认 300 秒
+            enable_cooldown: 是否启用冷却策略，默认启用
         """
         self._cli_executor = CLIAgentExecutor(cli_config)
         self._cloud_executor = CloudAgentExecutor(
@@ -772,6 +822,15 @@ class AutoAgentExecutor:
             agent_config=cli_config,
         )
         self._preferred_executor: Optional[AgentExecutor] = None
+        # Cloud 冷却策略
+        self._enable_cooldown = enable_cooldown
+        self._cloud_cooldown_seconds = (
+            cloud_cooldown_seconds
+            if cloud_cooldown_seconds is not None
+            else self.DEFAULT_COOLDOWN_SECONDS
+        )
+        self._cloud_cooldown_until: Optional[datetime] = None
+        self._cloud_failure_count: int = 0
 
     @property
     def executor_type(self) -> str:
@@ -785,21 +844,90 @@ class AutoAgentExecutor:
     def cloud_executor(self) -> CloudAgentExecutor:
         return self._cloud_executor
 
+    @property
+    def cloud_cooldown_seconds(self) -> int:
+        """获取 Cloud 冷却时间（秒）"""
+        return self._cloud_cooldown_seconds
+
+    @property
+    def is_cloud_in_cooldown(self) -> bool:
+        """检查 Cloud 是否处于冷却期"""
+        if not self._enable_cooldown:
+            return False
+        if self._cloud_cooldown_until is None:
+            return False
+        return datetime.now() < self._cloud_cooldown_until
+
+    @property
+    def cloud_cooldown_remaining(self) -> Optional[float]:
+        """获取 Cloud 冷却剩余时间（秒），未在冷却期返回 None"""
+        if not self.is_cloud_in_cooldown:
+            return None
+        remaining = (self._cloud_cooldown_until - datetime.now()).total_seconds()
+        return max(0.0, remaining)
+
+    def _start_cloud_cooldown(self) -> None:
+        """开始 Cloud 冷却期"""
+        if not self._enable_cooldown:
+            return
+        self._cloud_failure_count += 1
+        self._cloud_cooldown_until = datetime.now() + timedelta(
+            seconds=self._cloud_cooldown_seconds
+        )
+        logger.info(
+            f"Cloud 执行失败（第 {self._cloud_failure_count} 次），"
+            f"进入冷却期 {self._cloud_cooldown_seconds} 秒"
+        )
+
+    def _reset_cloud_cooldown(self) -> None:
+        """重置 Cloud 冷却状态（Cloud 成功时调用）"""
+        if self._cloud_cooldown_until is not None or self._cloud_failure_count > 0:
+            logger.debug("Cloud 执行成功，重置冷却状态")
+        self._cloud_cooldown_until = None
+        self._cloud_failure_count = 0
+
+    def _check_cooldown_expired(self) -> bool:
+        """检查冷却期是否已过期，如果过期则重置并返回 True"""
+        if not self._enable_cooldown:
+            return True
+        if self._cloud_cooldown_until is None:
+            return True
+        if datetime.now() >= self._cloud_cooldown_until:
+            logger.info("Cloud 冷却期已结束，重新尝试 Cloud")
+            self._cloud_cooldown_until = None
+            # 重置 Cloud 执行器的可用性缓存，以便重新检查
+            self._cloud_executor.reset_availability_cache()
+            return True
+        return False
+
     async def _select_executor(self) -> AgentExecutor:
         """选择可用的执行器
 
         优先级:
-        1. Cloud API（如果可用）
+        1. Cloud API（如果可用且不在冷却期）
         2. CLI（回退选项）
+
+        冷却策略:
+        - Cloud 失败后进入冷却期，冷却期内不尝试 Cloud
+        - 冷却期结束后重新检查 Cloud 可用性
         """
-        # 尝试 Cloud
-        if await self._cloud_executor.check_available():
-            logger.debug("使用 Cloud API 执行器")
-            return self._cloud_executor
+        # 检查冷却期是否已过期
+        cooldown_expired = self._check_cooldown_expired()
+
+        # 如果不在冷却期，尝试 Cloud
+        if cooldown_expired and not self.is_cloud_in_cooldown:
+            if await self._cloud_executor.check_available():
+                logger.debug("使用 Cloud API 执行器")
+                return self._cloud_executor
+        elif self.is_cloud_in_cooldown:
+            remaining = self.cloud_cooldown_remaining
+            logger.debug(
+                f"Cloud 处于冷却期，剩余 {remaining:.1f} 秒，使用 CLI 执行器"
+            )
 
         # 回退到 CLI
         if await self._cli_executor.check_available():
-            logger.debug("Cloud 不可用，回退到 CLI 执行器")
+            logger.debug("回退到 CLI 执行器")
             return self._cli_executor
 
         # 两者都不可用，仍然返回 CLI（可能会失败）
@@ -813,9 +941,29 @@ class AutoAgentExecutor:
         working_directory: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> AgentResult:
-        """自动选择执行器并执行任务"""
-        # 选择执行器
-        if self._preferred_executor is None:
+        """自动选择执行器并执行任务
+
+        冷却策略:
+        - Cloud 失败后进入冷却期，冷却期内优先使用 CLI
+        - 冷却期结束后重新尝试 Cloud
+        - Cloud 成功时重置冷却状态
+        """
+        # 检查是否需要重新选择执行器
+        # 情况1: 首次执行，没有偏好执行器
+        # 情况2: 当前偏好是 CLI，但冷却期已结束，需要重新尝试 Cloud
+        should_reselect = self._preferred_executor is None
+        if (
+            not should_reselect
+            and self._preferred_executor is not None
+            and self._preferred_executor.executor_type == "cli"
+            and self._check_cooldown_expired()
+            and self._cloud_cooldown_until is None  # 冷却已重置
+        ):
+            # 冷却期结束，重新选择（可能切换回 Cloud）
+            should_reselect = True
+            logger.debug("冷却期已结束，重新选择执行器")
+
+        if should_reselect:
             self._preferred_executor = await self._select_executor()
 
         executor = self._preferred_executor
@@ -828,16 +976,22 @@ class AutoAgentExecutor:
             timeout=timeout,
         )
 
-        # 如果 Cloud 失败，尝试回退到 CLI
-        if not result.success and executor.executor_type == "cloud":
-            logger.info("Cloud 执行失败，尝试回退到 CLI")
-            self._preferred_executor = self._cli_executor
-            result = await self._cli_executor.execute(
-                prompt=prompt,
-                context=context,
-                working_directory=working_directory,
-                timeout=timeout,
-            )
+        # 处理 Cloud 执行结果
+        if executor.executor_type == "cloud":
+            if result.success:
+                # Cloud 成功，重置冷却状态
+                self._reset_cloud_cooldown()
+            else:
+                # Cloud 失败，启动冷却并回退到 CLI
+                logger.info("Cloud 执行失败，尝试回退到 CLI")
+                self._start_cloud_cooldown()
+                self._preferred_executor = self._cli_executor
+                result = await self._cli_executor.execute(
+                    prompt=prompt,
+                    context=context,
+                    working_directory=working_directory,
+                    timeout=timeout,
+                )
 
         return result
 
@@ -850,6 +1004,18 @@ class AutoAgentExecutor:
     def reset_preference(self) -> None:
         """重置执行器偏好，下次执行时重新选择"""
         self._preferred_executor = None
+
+    def reset_cooldown(self) -> None:
+        """手动重置 Cloud 冷却状态
+
+        调用此方法后，下次执行将重新尝试 Cloud（如果可用）
+        """
+        self._cloud_cooldown_until = None
+        self._cloud_failure_count = 0
+        self._cloud_executor.reset_availability_cache()
+        # 重置偏好，以便重新选择
+        self._preferred_executor = None
+        logger.debug("手动重置 Cloud 冷却状态")
 
 
 class AgentExecutorFactory:

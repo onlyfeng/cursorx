@@ -4,12 +4,13 @@
 - CLI 模式执行工作流
 - Cloud 模式执行工作流（使用 CursorCloudClient）
 - Auto 模式自动选择和回退
+- Auto 模式 Cloud 冷却策略
 - ExecutorFactory 工厂创建
 
 使用 Mock 替代真实 Cursor CLI/Cloud 调用
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -648,6 +649,99 @@ class TestCloudExecutionMode:
         assert executor._available is None
         assert executor._auth_status is None
 
+    @pytest.mark.asyncio
+    async def test_cloud_executor_normal_prompt_uses_cloud_path(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        agent_config: CursorAgentConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
+    ) -> None:
+        """测试 CloudAgentExecutor.execute(prompt='普通任务') 必须走云端提交路径
+
+        验证普通任务（不带 & 前缀）也会通过 CloudClientFactory.execute_task 提交到云端。
+        这是 Cloud 执行模式的核心保证。
+        """
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            agent_config=agent_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_auth_status = AuthStatus(
+            authenticated=True,
+            user_id="user-123",
+            email="test@example.com",
+        )
+
+        # 使用 patch 验证 CloudClientFactory.execute_task 被调用
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+            mock_execute_task.return_value = mock_cloud_success_result
+
+            with patch.object(
+                executor._auth_manager,
+                "authenticate",
+                new_callable=AsyncMock,
+                return_value=mock_auth_status,
+            ):
+                # 执行普通任务（无 & 前缀）
+                result = await executor.execute(
+                    prompt="普通任务",
+                    working_directory="/tmp/workspace",
+                )
+
+                # 验证 CloudClientFactory.execute_task 被调用
+                mock_execute_task.assert_called_once()
+                call_kwargs = mock_execute_task.call_args.kwargs
+
+                # 验证任务被提交到云端
+                assert call_kwargs.get("prompt") == "普通任务"
+                assert call_kwargs.get("wait") is True
+
+                # 验证结果
+                assert result.success is True
+                assert result.executor_type == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_cloud_executor_verifies_cloud_client_submit_or_execute(
+        self,
+        cloud_auth_config: CloudAuthConfig,
+        mock_cloud_client: MagicMock,
+        mock_cloud_success_result: CloudAgentResult,
+    ) -> None:
+        """验证 CloudAgentExecutor 通过 CursorCloudClient 提交任务
+
+        此测试通过 mock CursorCloudClient.execute 或 submit_task 验证调用链。
+        """
+        executor = CloudAgentExecutor(
+            auth_config=cloud_auth_config,
+            cloud_client=mock_cloud_client,
+        )
+
+        mock_auth_status = AuthStatus(
+            authenticated=True,
+            user_id="user-123",
+        )
+
+        # 使用 CloudClientFactory.execute_task 作为入口点
+        with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_factory_execute:
+            mock_factory_execute.return_value = mock_cloud_success_result
+
+            with patch.object(
+                executor._auth_manager,
+                "authenticate",
+                new_callable=AsyncMock,
+                return_value=mock_auth_status,
+            ):
+                result = await executor.execute(prompt="测试云端路径")
+
+                # 验证工厂方法被调用
+                mock_factory_execute.assert_called_once()
+
+                # 验证 prompt 被正确包装并提交
+                call_kwargs = mock_factory_execute.call_args.kwargs
+                assert "测试云端路径" in call_kwargs.get("prompt", "")
+
 
 # ==================== TestAutoExecutionMode ====================
 
@@ -996,6 +1090,709 @@ class TestAutoExecutionMode:
             ):
                 result = await executor3.check_available()
                 assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auto_executor_cloud_available_uses_cloud_path(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 AutoAgentExecutor 在 Cloud 可用时优先使用云端路径
+
+        验证当 Cloud 可用时，AutoAgentExecutor 会将任务路由到 CloudAgentExecutor。
+        """
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        cloud_success_result = AgentResult(
+            success=True,
+            output="Cloud 执行成功",
+            executor_type="cloud",
+            session_id="cloud-session-123",
+        )
+
+        # Mock Cloud 可用
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            # Mock Cloud 执行成功
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_success_result,
+            ) as mock_cloud_execute:
+                result = await executor.execute(prompt="测试任务")
+
+                # 验证 Cloud 执行器被调用
+                mock_cloud_execute.assert_called_once()
+                call_kwargs = mock_cloud_execute.call_args.kwargs
+                assert call_kwargs.get("prompt") == "测试任务"
+
+                # 验证结果来自 Cloud
+                assert result.success is True
+                assert result.executor_type == "cloud"
+
+    @pytest.mark.asyncio
+    async def test_auto_executor_cloud_unavailable_falls_back_to_cli(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 AutoAgentExecutor 在 Cloud 不可用时回退到 CLI
+
+        验证 Cloud 不可用时，任务会被路由到 CLIAgentExecutor。
+        """
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 执行成功",
+            executor_type="cli",
+        )
+
+        # Mock Cloud 不可用
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            # Mock CLI 可用并执行成功
+            with patch.object(
+                executor._cli_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                with patch.object(
+                    executor._cli_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cli_success_result,
+                ) as mock_cli_execute:
+                    result = await executor.execute(prompt="测试回退任务")
+
+                    # 验证 CLI 执行器被调用
+                    mock_cli_execute.assert_called_once()
+
+                    # 验证结果来自 CLI
+                    assert result.success is True
+                    assert result.executor_type == "cli"
+
+    @pytest.mark.asyncio
+    async def test_auto_executor_verifies_cloud_submission_path(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 AutoAgentExecutor 通过 Cloud 执行器提交到云端
+
+        验证 AutoAgentExecutor 使用的 CloudAgentExecutor 最终会调用
+        CloudClientFactory.execute_task 提交任务到云端。
+        """
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # Mock Cloud 可用
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            # Mock CloudClientFactory.execute_task
+            with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
+                mock_result = MagicMock()
+                mock_result.success = True
+                mock_result.output = "任务执行完成"
+                mock_result.error = None
+                mock_result.files_modified = ["test.py"]
+                mock_result.task = MagicMock()
+                mock_result.task.task_id = "auto-cloud-session"
+                mock_result.to_dict = MagicMock(return_value={})
+                mock_execute_task.return_value = mock_result
+
+                result = await executor.execute(prompt="验证云端提交路径")
+
+                # 验证 CloudClientFactory.execute_task 被调用
+                mock_execute_task.assert_called_once()
+                call_kwargs = mock_execute_task.call_args.kwargs
+                assert "验证云端提交路径" in call_kwargs.get("prompt", "")
+
+                # 验证结果
+                assert result.success is True
+                assert result.executor_type == "cloud"
+
+
+# ==================== TestAutoExecutorCooldown ====================
+
+
+class TestAutoExecutorCooldown:
+    """Auto 执行器 Cloud 冷却策略测试
+
+    测试 Cloud 失败后的冷却策略：
+    - 冷却期内不尝试 Cloud
+    - 冷却期结束后重新尝试 Cloud
+    - 默认行为不变（不引入频繁切换导致的抖动）
+    """
+
+    @pytest.fixture
+    def cli_config(self) -> CursorAgentConfig:
+        """创建 CLI 配置"""
+        return CursorAgentConfig(
+            model="opus-4.5-thinking",
+            timeout=300,
+        )
+
+    @pytest.fixture
+    def cloud_auth_config(self) -> CloudAuthConfig:
+        """创建 Cloud 认证配置"""
+        return CloudAuthConfig(
+            api_key="test-api-key",
+        )
+
+    def test_cooldown_default_values(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试冷却策略默认值"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 默认启用冷却
+        assert executor._enable_cooldown is True
+        # 默认冷却时间 300 秒
+        assert executor.cloud_cooldown_seconds == 300
+        # 初始状态不在冷却期
+        assert executor.is_cloud_in_cooldown is False
+        assert executor.cloud_cooldown_remaining is None
+        # 初始失败计数为 0
+        assert executor._cloud_failure_count == 0
+
+    def test_cooldown_custom_values(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试自定义冷却配置"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=60,  # 自定义 60 秒
+            enable_cooldown=True,
+        )
+
+        assert executor.cloud_cooldown_seconds == 60
+        assert executor._enable_cooldown is True
+
+    def test_cooldown_disabled(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试禁用冷却策略"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            enable_cooldown=False,
+        )
+
+        assert executor._enable_cooldown is False
+        # 禁用冷却时，is_cloud_in_cooldown 始终为 False
+        assert executor.is_cloud_in_cooldown is False
+
+        # 即使手动设置冷却时间，禁用冷却时也不生效
+        executor._cloud_cooldown_until = datetime.now() + timedelta(hours=1)
+        assert executor.is_cloud_in_cooldown is False
+
+    def test_start_cooldown(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试启动冷却"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=60,
+        )
+
+        # 启动冷却
+        executor._start_cloud_cooldown()
+
+        # 验证冷却状态
+        assert executor.is_cloud_in_cooldown is True
+        assert executor._cloud_failure_count == 1
+        assert executor._cloud_cooldown_until is not None
+        assert executor.cloud_cooldown_remaining is not None
+        assert 0 < executor.cloud_cooldown_remaining <= 60
+
+    def test_reset_cooldown(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试重置冷却"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 先启动冷却
+        executor._start_cloud_cooldown()
+        assert executor.is_cloud_in_cooldown is True
+
+        # 重置冷却
+        executor._reset_cloud_cooldown()
+
+        # 验证冷却已重置
+        assert executor.is_cloud_in_cooldown is False
+        assert executor._cloud_failure_count == 0
+        assert executor._cloud_cooldown_until is None
+
+    def test_cooldown_expiry(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试冷却过期检测"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=60,
+        )
+
+        # 设置已过期的冷却时间
+        executor._cloud_cooldown_until = datetime.now() - timedelta(seconds=1)
+
+        # 检查过期应返回 True 并重置冷却
+        with patch.object(
+            executor._cloud_executor,
+            "reset_availability_cache",
+        ) as mock_reset:
+            expired = executor._check_cooldown_expired()
+            assert expired is True
+            assert executor._cloud_cooldown_until is None
+            mock_reset.assert_called_once()
+
+    def test_manual_reset_cooldown(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试手动重置冷却"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 设置冷却和偏好
+        executor._start_cloud_cooldown()
+        executor._preferred_executor = executor._cli_executor
+
+        # 手动重置
+        with patch.object(
+            executor._cloud_executor,
+            "reset_availability_cache",
+        ) as mock_reset:
+            executor.reset_cooldown()
+
+            # 验证所有状态已重置
+            assert executor._cloud_cooldown_until is None
+            assert executor._cloud_failure_count == 0
+            assert executor._preferred_executor is None
+            mock_reset.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cloud_failure_triggers_cooldown(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 Cloud 失败后触发冷却"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=60,
+        )
+
+        cloud_fail_result = AgentResult(
+            success=False,
+            error="Cloud 执行失败",
+            executor_type="cloud",
+        )
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 执行成功",
+            executor_type="cli",
+        )
+
+        # Mock Cloud 可用但执行失败
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_fail_result,
+            ):
+                with patch.object(
+                    executor._cli_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cli_success_result,
+                ):
+                    result = await executor.execute(prompt="测试冷却触发")
+
+                    # 验证回退到 CLI
+                    assert result.success is True
+                    assert result.executor_type == "cli"
+
+                    # 验证冷却已启动
+                    assert executor.is_cloud_in_cooldown is True
+                    assert executor._cloud_failure_count == 1
+                    assert executor._preferred_executor == executor._cli_executor
+
+    @pytest.mark.asyncio
+    async def test_cooldown_prevents_cloud_retry(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试冷却期内不重试 Cloud"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=300,
+        )
+
+        # 手动设置冷却状态
+        executor._cloud_cooldown_until = datetime.now() + timedelta(seconds=300)
+        executor._preferred_executor = executor._cli_executor
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 执行成功",
+            executor_type="cli",
+        )
+
+        # Mock Cloud check_available（不应被调用）
+        cloud_check_mock = AsyncMock(return_value=True)
+        cli_execute_mock = AsyncMock(return_value=cli_success_result)
+
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            cloud_check_mock,
+        ):
+            with patch.object(
+                executor._cli_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                with patch.object(
+                    executor._cli_executor,
+                    "execute",
+                    cli_execute_mock,
+                ):
+                    result = await executor.execute(prompt="冷却期内执行")
+
+                    # 验证使用 CLI（不应尝试 Cloud）
+                    assert result.success is True
+                    assert result.executor_type == "cli"
+
+                    # Cloud check_available 不应被调用（因为在冷却期）
+                    cloud_check_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_expiry_retries_cloud(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试冷却过期后重新尝试 Cloud"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=60,
+        )
+
+        # 设置已过期的冷却
+        executor._cloud_cooldown_until = datetime.now() - timedelta(seconds=1)
+        executor._preferred_executor = executor._cli_executor
+
+        cloud_success_result = AgentResult(
+            success=True,
+            output="Cloud 执行成功",
+            executor_type="cloud",
+        )
+
+        # Mock Cloud 可用并执行成功
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "reset_availability_cache",
+            ):
+                with patch.object(
+                    executor._cloud_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cloud_success_result,
+                ):
+                    result = await executor.execute(prompt="冷却过期后执行")
+
+                    # 验证切换回 Cloud
+                    assert result.success is True
+                    assert result.executor_type == "cloud"
+                    assert executor._preferred_executor == executor._cloud_executor
+
+    @pytest.mark.asyncio
+    async def test_cloud_success_resets_cooldown(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试 Cloud 成功后重置冷却状态"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 设置一些冷却状态（模拟之前的失败）
+        executor._cloud_failure_count = 2
+
+        cloud_success_result = AgentResult(
+            success=True,
+            output="Cloud 执行成功",
+            executor_type="cloud",
+        )
+
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_success_result,
+            ):
+                result = await executor.execute(prompt="测试成功重置")
+
+                # 验证 Cloud 成功
+                assert result.success is True
+                assert result.executor_type == "cloud"
+
+                # 验证冷却状态已重置
+                assert executor._cloud_failure_count == 0
+                assert executor._cloud_cooldown_until is None
+
+    @pytest.mark.asyncio
+    async def test_multiple_failures_accumulate_count(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试多次失败累计失败计数"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            cloud_cooldown_seconds=1,  # 短冷却便于测试
+        )
+
+        cloud_fail_result = AgentResult(
+            success=False,
+            error="Cloud 执行失败",
+            executor_type="cloud",
+        )
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 执行成功",
+            executor_type="cli",
+        )
+
+        # 第一次失败
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_fail_result,
+            ):
+                with patch.object(
+                    executor._cli_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cli_success_result,
+                ):
+                    await executor.execute(prompt="第一次失败")
+                    assert executor._cloud_failure_count == 1
+
+        # 等待冷却过期
+        executor._cloud_cooldown_until = datetime.now() - timedelta(seconds=1)
+
+        # 第二次失败
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "reset_availability_cache",
+            ):
+                with patch.object(
+                    executor._cloud_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cloud_fail_result,
+                ):
+                    with patch.object(
+                        executor._cli_executor,
+                        "execute",
+                        new_callable=AsyncMock,
+                        return_value=cli_success_result,
+                    ):
+                        await executor.execute(prompt="第二次失败")
+                        assert executor._cloud_failure_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cooldown_disabled_no_delay(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试禁用冷却时 Cloud 失败后立即重试"""
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+            enable_cooldown=False,  # 禁用冷却
+        )
+
+        cloud_fail_result = AgentResult(
+            success=False,
+            error="Cloud 执行失败",
+            executor_type="cloud",
+        )
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 执行成功",
+            executor_type="cli",
+        )
+
+        cloud_success_result = AgentResult(
+            success=True,
+            output="Cloud 执行成功",
+            executor_type="cloud",
+        )
+
+        # 第一次执行：Cloud 失败，回退到 CLI
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_fail_result,
+            ):
+                with patch.object(
+                    executor._cli_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cli_success_result,
+                ):
+                    result = await executor.execute(prompt="禁用冷却-失败")
+                    assert result.executor_type == "cli"
+
+        # 重置偏好以便第二次重新选择
+        executor.reset_preference()
+
+        # 第二次执行：应该立即尝试 Cloud（因为冷却被禁用）
+        with patch.object(
+            executor._cloud_executor,
+            "check_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_cloud_check:
+            with patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_success_result,
+            ):
+                result = await executor.execute(prompt="禁用冷却-重试")
+
+                # 验证 Cloud 被检查和使用
+                mock_cloud_check.assert_called()
+                assert result.executor_type == "cloud"
+
+    def test_default_behavior_unchanged(
+        self,
+        cli_config: CursorAgentConfig,
+        cloud_auth_config: CloudAuthConfig,
+    ) -> None:
+        """测试默认行为不变（向后兼容性）
+
+        验证启用冷却策略后，对于正常使用场景，行为与之前一致：
+        - 首次执行优先 Cloud
+        - Cloud 成功继续使用 Cloud
+        - Cloud 不可用时回退到 CLI
+        """
+        # 默认参数创建执行器
+        executor = AutoAgentExecutor(
+            cli_config=cli_config,
+            cloud_auth_config=cloud_auth_config,
+        )
+
+        # 验证默认配置
+        assert executor._enable_cooldown is True
+        assert executor.cloud_cooldown_seconds == 300
+        assert executor._preferred_executor is None
+        assert executor.is_cloud_in_cooldown is False
+
+        # 验证属性访问器
+        assert executor.executor_type == "auto"
+        assert executor.cli_executor is not None
+        assert executor.cloud_executor is not None
 
 
 # ==================== TestExecutorFactory ====================

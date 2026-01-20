@@ -451,6 +451,23 @@ def parse_args() -> argparse.Namespace:
         help="Cloud 执行超时时间（秒，默认 600，即 10 分钟）",
     )
 
+    # Cloud 后台模式参数
+    # 三态逻辑：--cloud-background 启用后台，--no-cloud-background 禁用后台，不指定则使用默认行为
+    cloud_background_group = parser.add_mutually_exclusive_group()
+    cloud_background_group.add_argument(
+        "--cloud-background",
+        action="store_true",
+        dest="cloud_background",
+        default=None,
+        help="Cloud 模式使用后台执行（提交后立即返回，不等待完成）",
+    )
+    cloud_background_group.add_argument(
+        "--no-cloud-background",
+        action="store_false",
+        dest="cloud_background",
+        help="Cloud 模式使用前台执行（等待任务完成）",
+    )
+
     # 流式控制台渲染参数（默认关闭，避免噪声）
     stream_render_group = parser.add_argument_group("流式控制台渲染")
 
@@ -661,9 +678,12 @@ class TaskAnalyzer:
             analysis.mode = RunMode.CLOUD
             # 设置 Cloud 模式相关选项
             analysis.options["execution_mode"] = "cloud"
+            # '&' 前缀触发时，默认使用后台模式（Cloud Relay 语义）
+            analysis.options["cloud_background"] = True
+            analysis.options["triggered_by_prefix"] = True
             # 去除 '&' 前缀，保留实际任务内容
             analysis.goal = strip_cloud_prefix(task)
-            reasoning_parts.append("检测到 '&' 前缀，使用 Cloud 模式")
+            reasoning_parts.append("检测到 '&' 前缀，使用 Cloud 后台模式")
             # Cloud 模式默认不开启 auto_commit（安全策略）
             # allow_write/force_write 由用户显式控制
         else:
@@ -949,6 +969,25 @@ class Runner:
         options["cloud_auth_timeout"] = getattr(self.args, "cloud_auth_timeout", 30)
         # Cloud 执行超时（独立于 max_iterations）
         options["cloud_timeout"] = getattr(self.args, "cloud_timeout", 600)
+
+        # Cloud 后台模式配置
+        # 优先级：
+        # 1. 命令行参数 --cloud-background / --no-cloud-background（如果显式指定）
+        # 2. 自然语言分析结果（& 前缀触发时 cloud_background=True）
+        # 3. 默认值：& 前缀触发默认 True，--execution-mode cloud 默认 False
+        cli_cloud_background = getattr(self.args, "cloud_background", None)
+        if cli_cloud_background is not None:
+            # 命令行显式指定，优先使用
+            options["cloud_background"] = cli_cloud_background
+        elif "cloud_background" in analysis_options:
+            # 自然语言分析结果（& 前缀触发）
+            options["cloud_background"] = analysis_options["cloud_background"]
+        else:
+            # 默认值：非 & 前缀触发（即 --execution-mode cloud）时默认 False
+            options["cloud_background"] = False
+
+        # 标记是否由 & 前缀触发（用于输出行为调整）
+        options["triggered_by_prefix"] = analysis_options.get("triggered_by_prefix", False)
 
         # 角色级执行模式（可选，默认继承全局 execution_mode）
         options["planner_execution_mode"] = getattr(
@@ -1530,14 +1569,25 @@ class Runner:
         """运行 Cloud 模式（云端执行）
 
         使用 CloudAgentExecutor 执行任务，特点:
-        - 任务在云端后台执行
-        - 支持自动轮询任务状态
+        - 支持前台/后台两种执行模式
+        - 前台模式（background=False）：等待任务完成，返回完整结果
+        - 后台模式（background=True）：提交任务后立即返回，不等待完成
         - 权限语义：force_write 由用户显式控制，不受 auto_commit 影响
+
+        后台模式行为（cloud_background=True）：
+        - & 前缀触发时默认使用后台模式（Cloud Relay 语义）
+        - 提交任务后立即返回 session_id
+        - 不等待任务完成，不打印大段输出
+        - 用户可通过 agent --resume <session_id> 恢复会话查看结果
+
+        前台模式行为（cloud_background=False）：
+        - --execution-mode cloud 显式指定时默认使用前台模式
+        - 等待任务完成并返回完整结果
+        - 适合脚本/自动化场景，需要立即获取执行结果
 
         权限策略:
         - Cloud 模式默认 force_write=True（允许修改文件）
         - auto_commit 独立于 force_write，需用户显式启用
-        - 确保权限语义与 auto_commit 策略不冲突
 
         超时策略:
         - 使用独立的 --cloud-timeout 参数（默认 600 秒）
@@ -1546,7 +1596,15 @@ class Runner:
         from cursor.executor import AgentExecutorFactory, ExecutionMode
         from cursor.client import CursorAgentConfig
 
-        print_info("Cloud 模式：任务将在云端执行...")
+        # 获取后台模式配置
+        # 默认行为：& 前缀触发默认 True，--execution-mode cloud 默认 False
+        cloud_background = options.get("cloud_background", False)
+        triggered_by_prefix = options.get("triggered_by_prefix", False)
+
+        if cloud_background:
+            print_info("Cloud 后台模式：任务将提交到云端后台执行...")
+        else:
+            print_info("Cloud 前台模式：任务将在云端执行并等待完成...")
 
         # 复用已有的 Cloud 认证配置获取逻辑
         # 优先级：--cloud-api-key > CURSOR_API_KEY 环境变量
@@ -1565,8 +1623,10 @@ class Runner:
                 "success": False,
                 "goal": goal,
                 "mode": "cloud",
+                "background": cloud_background,
                 "error": "未配置 API Key",
                 "session_id": None,
+                "resume_command": None,
             }
 
         try:
@@ -1590,39 +1650,56 @@ class Runner:
                 cloud_auth_config=cloud_auth_config,
             )
 
-            # 执行任务
+            # 执行任务，传递 background 参数
             result = await executor.execute(
                 prompt=goal,
                 working_directory=options.get("directory", str(project_root)),
                 timeout=cloud_timeout,
+                background=cloud_background,
             )
+
+            session_id = result.session_id
+            resume_command = f"agent --resume {session_id}" if session_id else None
 
             if result.success:
                 output = result.output.strip()
-                session_id = result.session_id
 
-                print("\n" + "=" * 60)
-                print("Cloud 执行结果")
-                print("=" * 60)
-                print(output[:2000] if len(output) > 2000 else output)
-                if len(output) > 2000:
-                    print("\n... (输出已截断)")
-                print("=" * 60)
+                # 后台模式：简化输出，不打印大段内容（任务还未完成）
+                if cloud_background:
+                    print("\n" + "=" * 60)
+                    print("Cloud 后台任务已提交")
+                    print("=" * 60)
+                    if session_id:
+                        print(f"\n{Colors.CYAN}会话 ID: {session_id}{Colors.NC}")
+                        print(f"{Colors.CYAN}恢复会话: {resume_command}{Colors.NC}")
+                        print(f"{Colors.CYAN}查看历史: agent ls{Colors.NC}\n")
+                    print("=" * 60 + "\n")
+                else:
+                    # 前台模式：打印完整结果
+                    print("\n" + "=" * 60)
+                    print("Cloud 执行结果")
+                    print("=" * 60)
+                    print(output[:2000] if len(output) > 2000 else output)
+                    if len(output) > 2000:
+                        print("\n... (输出已截断)")
+                    print("=" * 60)
 
-                # 输出 session_id 使用说明
-                if session_id:
-                    print(f"\n{Colors.CYAN}会话 ID: {session_id}{Colors.NC}")
-                    print(f"{Colors.CYAN}恢复会话: agent --resume {session_id}{Colors.NC}\n")
+                    # 输出 session_id 使用说明
+                    if session_id:
+                        print(f"\n{Colors.CYAN}会话 ID: {session_id}{Colors.NC}")
+                        print(f"{Colors.CYAN}恢复会话: {resume_command}{Colors.NC}\n")
 
                 return {
                     "success": True,
                     "goal": goal,
                     "mode": "cloud",
-                    "output": output,
+                    "background": cloud_background,
+                    "output": output if not cloud_background else "",
                     "session_id": session_id,
+                    "resume_command": resume_command,
                     "files_modified": result.files_modified,
-                    # 标准化输出字段，方便脚本解析
-                    "resume_command": f"agent --resume {session_id}" if session_id else None,
+                    # 额外元数据
+                    "triggered_by_prefix": triggered_by_prefix,
                 }
             else:
                 error_msg = result.error or "未知错误"
@@ -1631,8 +1708,10 @@ class Runner:
                     "success": False,
                     "goal": goal,
                     "mode": "cloud",
+                    "background": cloud_background,
                     "error": error_msg,
-                    "session_id": result.session_id,
+                    "session_id": session_id,
+                    "resume_command": resume_command,
                 }
 
         except asyncio.TimeoutError:
@@ -1642,8 +1721,10 @@ class Runner:
                 "success": False,
                 "goal": goal,
                 "mode": "cloud",
+                "background": cloud_background,
                 "error": f"执行超时 ({cloud_timeout}s)",
                 "session_id": None,
+                "resume_command": None,
             }
         except Exception as e:
             print_error(f"Cloud 执行异常: {e}")
@@ -1651,8 +1732,10 @@ class Runner:
                 "success": False,
                 "goal": goal,
                 "mode": "cloud",
+                "background": cloud_background,
                 "error": str(e),
                 "session_id": None,
+                "resume_command": None,
             }
 
 

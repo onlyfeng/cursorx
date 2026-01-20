@@ -9,6 +9,7 @@
 6. AgentExecutorFactory 创建正确的 Executor
 """
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -701,6 +702,120 @@ class TestCursorCloudClient:
         completed = await cursor_cloud_client.list_tasks(status=TaskStatus.COMPLETED)
         assert len(completed) == 2
 
+    def test_parse_task_from_json_output_array(self, cursor_cloud_client):
+        """从 JSON 数组格式解析任务"""
+        output = json.dumps([
+            {"session_id": "task-123", "status": "completed", "prompt": "test prompt"},
+            {"session_id": "task-456", "status": "running", "prompt": "other prompt"},
+        ])
+        task = cursor_cloud_client._parse_task_from_json_output("task-123", output)
+        assert task is not None
+        assert task.task_id == "task-123"
+        assert task.status == TaskStatus.COMPLETED
+        assert task.prompt == "test prompt"
+
+    def test_parse_task_from_json_output_object(self, cursor_cloud_client):
+        """从 JSON 对象格式解析任务"""
+        output = json.dumps({
+            "sessions": [
+                {"task_id": "task-789", "status": "running", "message": "doing work"},
+            ]
+        })
+        task = cursor_cloud_client._parse_task_from_json_output("task-789", output)
+        assert task is not None
+        assert task.task_id == "task-789"
+        assert task.status == TaskStatus.RUNNING
+
+    def test_parse_task_from_json_output_ndjson(self, cursor_cloud_client):
+        """从 NDJSON 格式解析任务"""
+        output = '{"id": "task-111", "status": "failed", "error": "something wrong"}\n{"id": "task-222", "status": "completed"}'
+        task = cursor_cloud_client._parse_task_from_json_output("task-111", output)
+        assert task is not None
+        assert task.task_id == "task-111"
+        assert task.status == TaskStatus.FAILED
+
+    def test_parse_task_from_json_output_not_found(self, cursor_cloud_client):
+        """JSON 输出中未找到任务"""
+        output = json.dumps([{"session_id": "other-task", "status": "running"}])
+        task = cursor_cloud_client._parse_task_from_json_output("task-xxx", output)
+        assert task is None
+
+    def test_parse_task_from_text_output_table(self, cursor_cloud_client):
+        """从表格格式文本解析任务"""
+        output = """ID | STATUS | PROMPT
+task-abc | running | implement feature
+task-def | completed | fix bug"""
+        task = cursor_cloud_client._parse_task_from_text_output("task-abc", output)
+        assert task is not None
+        assert task.task_id == "task-abc"
+        assert task.status == TaskStatus.RUNNING
+
+    def test_parse_task_from_text_output_status_keywords(self, cursor_cloud_client):
+        """从文本解析各种状态关键词"""
+        # Completed
+        output = "task-a: completed successfully"
+        task = cursor_cloud_client._parse_task_from_text_output("task-a", output)
+        assert task.status == TaskStatus.COMPLETED
+
+        # Failed
+        output = "task-b: failed with error"
+        task = cursor_cloud_client._parse_task_from_text_output("task-b", output)
+        assert task.status == TaskStatus.FAILED
+
+        # Cancelled
+        output = "task-c: cancelled by user"
+        task = cursor_cloud_client._parse_task_from_text_output("task-c", output)
+        assert task.status == TaskStatus.CANCELLED
+
+    def test_parse_task_from_text_output_not_found(self, cursor_cloud_client):
+        """文本输出中未找到任务"""
+        output = "task-other: running - some work"
+        task = cursor_cloud_client._parse_task_from_text_output("task-missing", output)
+        assert task is None
+
+    def test_create_task_from_dict(self, cursor_cloud_client):
+        """从字典创建任务"""
+        data = {
+            "status": "completed",
+            "prompt": "test task",
+            "output": "task output",
+            "files_modified": ["file1.py", "file2.py"],
+            "progress": 100,
+        }
+        task = cursor_cloud_client._create_task_from_dict("task-dict", data)
+        assert task.task_id == "task-dict"
+        assert task.status == TaskStatus.COMPLETED
+        assert task.prompt == "test task"
+        assert task.output == "task output"
+        assert task.files_modified == ["file1.py", "file2.py"]
+        assert task.progress == 100
+
+    def test_create_task_from_dict_status_mapping(self, cursor_cloud_client):
+        """从字典创建任务 - 状态映射"""
+        # success -> COMPLETED
+        data = {"status": "success"}
+        task = cursor_cloud_client._create_task_from_dict("t1", data)
+        assert task.status == TaskStatus.COMPLETED
+
+        # error -> FAILED
+        data = {"status": "error"}
+        task = cursor_cloud_client._create_task_from_dict("t2", data)
+        assert task.status == TaskStatus.FAILED
+
+        # unknown -> RUNNING (default)
+        data = {"status": "unknown_status"}
+        task = cursor_cloud_client._create_task_from_dict("t3", data)
+        assert task.status == TaskStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_fetch_task_from_cloud_empty_id(self, cursor_cloud_client):
+        """空任务 ID 应返回 None"""
+        task = await cursor_cloud_client._fetch_task_from_cloud("")
+        assert task is None
+
+        task = await cursor_cloud_client._fetch_task_from_cloud(None)
+        assert task is None
+
 
 # ========== ExecutionMode 测试 ==========
 
@@ -898,6 +1013,149 @@ class TestCloudAgentExecutor:
             available2 = await executor2.check_available()
             assert available2 is False
 
+    @pytest.mark.asyncio
+    async def test_execute_background_true_passes_wait_false(self):
+        """测试 background=True 时，调用链传递 wait=False 并返回 session_id
+
+        验证:
+        1. CloudClientFactory.execute_task 被调用时 wait=False
+        2. 返回结果包含 session_id
+        3. 返回结果 files_modified 为空（后台任务尚未完成）
+        """
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.cloud.client import CloudAgentResult
+        from cursor.cloud.task import CloudTask, TaskStatus
+
+        executor = CloudAgentExecutor()
+
+        # 创建 mock 的 CloudAgentResult（后台模式返回）
+        mock_task = CloudTask(
+            task_id="session-background-123",
+            status=TaskStatus.QUEUED,
+            prompt="后台任务",
+        )
+        mock_cloud_result = CloudAgentResult(
+            success=True,
+            output="任务已提交",
+            task=mock_task,
+        )
+
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            new_callable=AsyncMock,
+            return_value=mock_cloud_result,
+        ) as mock_execute:
+            result = await executor.execute(
+                prompt="后台执行任务",
+                background=True,  # 关键：后台模式
+            )
+
+            # 验证 CloudClientFactory.execute_task 被调用时 wait=False
+            mock_execute.assert_called_once()
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("wait") is False, (
+                "background=True 时应传递 wait=False"
+            )
+
+            # 验证返回结果包含 session_id
+            assert result.session_id == "session-background-123", (
+                "返回结果应包含 session_id"
+            )
+
+            # 验证后台模式下 files_modified 为空（任务尚未完成）
+            assert result.files_modified == [], (
+                "后台模式下 files_modified 应为空"
+            )
+
+            # 验证 success 表示提交是否成功
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_execute_background_false_passes_wait_true(self):
+        """测试 background=False（默认）时，调用链传递 wait=True
+
+        验证:
+        1. CloudClientFactory.execute_task 被调用时 wait=True
+        2. 返回完整的执行结果，包含 output 和 files_modified
+        """
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.cloud.client import CloudAgentResult
+        from cursor.cloud.task import CloudTask, TaskStatus
+
+        executor = CloudAgentExecutor()
+
+        # 创建 mock 的 CloudAgentResult（前台模式返回完整结果）
+        mock_task = CloudTask(
+            task_id="session-foreground-456",
+            status=TaskStatus.COMPLETED,
+            prompt="前台任务",
+        )
+        mock_cloud_result = CloudAgentResult(
+            success=True,
+            output="执行完成，修改了 main.py",
+            task=mock_task,
+            files_modified=["main.py", "test.py"],
+        )
+
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            new_callable=AsyncMock,
+            return_value=mock_cloud_result,
+        ) as mock_execute:
+            result = await executor.execute(
+                prompt="前台执行任务",
+                background=False,  # 默认前台模式
+            )
+
+            # 验证 CloudClientFactory.execute_task 被调用时 wait=True
+            mock_execute.assert_called_once()
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("wait") is True, (
+                "background=False 时应传递 wait=True"
+            )
+
+            # 验证返回完整结果
+            assert result.session_id == "session-foreground-456"
+            assert result.output == "执行完成，修改了 main.py"
+            assert result.files_modified == ["main.py", "test.py"]
+
+    @pytest.mark.asyncio
+    async def test_execute_default_background_is_false(self):
+        """测试 execute 默认 background=False（前台模式）"""
+        from cursor.cloud_client import CloudClientFactory
+        from cursor.cloud.client import CloudAgentResult
+        from cursor.cloud.task import CloudTask, TaskStatus
+
+        executor = CloudAgentExecutor()
+
+        mock_task = CloudTask(
+            task_id="session-default-789",
+            status=TaskStatus.COMPLETED,
+            prompt="默认模式任务",
+        )
+        mock_cloud_result = CloudAgentResult(
+            success=True,
+            output="默认模式执行完成",
+            task=mock_task,
+        )
+
+        with patch.object(
+            CloudClientFactory,
+            "execute_task",
+            new_callable=AsyncMock,
+            return_value=mock_cloud_result,
+        ) as mock_execute:
+            # 不传递 background 参数，应默认为 False
+            result = await executor.execute(prompt="默认模式任务")
+
+            # 验证默认使用前台模式（wait=True）
+            call_kwargs = mock_execute.call_args.kwargs
+            assert call_kwargs.get("wait") is True, (
+                "默认应为前台模式（wait=True）"
+            )
+
 
 # ========== PlanAgentExecutor 测试 ==========
 
@@ -1032,6 +1290,25 @@ class TestAutoAgentExecutor:
         assert executor.cli_executor is not None
         assert executor.cloud_executor is not None
 
+    def test_init_with_cooldown_config(self):
+        """使用冷却配置初始化"""
+        executor = AutoAgentExecutor(
+            cloud_cooldown_seconds=120,
+            enable_cooldown=True,
+        )
+        assert executor.cloud_cooldown_seconds == 120
+        assert executor._enable_cooldown is True
+        assert executor.is_cloud_in_cooldown is False
+
+    def test_init_cooldown_disabled(self):
+        """禁用冷却策略"""
+        executor = AutoAgentExecutor(enable_cooldown=False)
+        assert executor._enable_cooldown is False
+        # 即使设置冷却时间也不生效
+        from datetime import datetime, timedelta
+        executor._cloud_cooldown_until = datetime.now() + timedelta(hours=1)
+        assert executor.is_cloud_in_cooldown is False
+
     @pytest.mark.asyncio
     async def test_fallback_to_cli(self):
         """Cloud 不可用时回退到 CLI"""
@@ -1061,6 +1338,104 @@ class TestAutoAgentExecutor:
         executor._preferred_executor = executor._cli_executor
         executor.reset_preference()
         assert executor._preferred_executor is None
+
+    def test_reset_cooldown(self):
+        """重置冷却状态"""
+        from datetime import datetime, timedelta
+        executor = AutoAgentExecutor()
+
+        # 设置冷却状态
+        executor._cloud_cooldown_until = datetime.now() + timedelta(hours=1)
+        executor._cloud_failure_count = 3
+        executor._preferred_executor = executor._cli_executor
+
+        # 重置冷却
+        with patch.object(executor._cloud_executor, "reset_availability_cache"):
+            executor.reset_cooldown()
+
+        # 验证所有状态已重置
+        assert executor._cloud_cooldown_until is None
+        assert executor._cloud_failure_count == 0
+        assert executor._preferred_executor is None
+
+    def test_cooldown_properties(self):
+        """测试冷却相关属性"""
+        from datetime import datetime, timedelta
+        executor = AutoAgentExecutor(cloud_cooldown_seconds=60)
+
+        # 初始状态
+        assert executor.is_cloud_in_cooldown is False
+        assert executor.cloud_cooldown_remaining is None
+
+        # 设置冷却
+        executor._cloud_cooldown_until = datetime.now() + timedelta(seconds=30)
+        assert executor.is_cloud_in_cooldown is True
+        remaining = executor.cloud_cooldown_remaining
+        assert remaining is not None
+        assert 0 < remaining <= 30
+
+    @pytest.mark.asyncio
+    async def test_cloud_failure_triggers_cooldown(self):
+        """Cloud 失败触发冷却"""
+        executor = AutoAgentExecutor(cloud_cooldown_seconds=60)
+
+        cloud_fail_result = AgentResult(
+            success=False,
+            error="Cloud 失败",
+            executor_type="cloud",
+        )
+
+        cli_success_result = AgentResult(
+            success=True,
+            output="CLI 成功",
+            executor_type="cli",
+        )
+
+        with patch.object(
+            executor._cloud_executor, "check_available",
+            new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                executor._cloud_executor, "execute",
+                new_callable=AsyncMock, return_value=cloud_fail_result
+            ):
+                with patch.object(
+                    executor._cli_executor, "execute",
+                    new_callable=AsyncMock, return_value=cli_success_result
+                ):
+                    result = await executor.execute(prompt="测试")
+
+                    # 验证回退到 CLI
+                    assert result.executor_type == "cli"
+                    # 验证冷却已启动
+                    assert executor.is_cloud_in_cooldown is True
+                    assert executor._cloud_failure_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cloud_success_resets_cooldown(self):
+        """Cloud 成功重置冷却"""
+        executor = AutoAgentExecutor()
+        executor._cloud_failure_count = 2
+
+        cloud_success_result = AgentResult(
+            success=True,
+            output="Cloud 成功",
+            executor_type="cloud",
+        )
+
+        with patch.object(
+            executor._cloud_executor, "check_available",
+            new_callable=AsyncMock, return_value=True
+        ):
+            with patch.object(
+                executor._cloud_executor, "execute",
+                new_callable=AsyncMock, return_value=cloud_success_result
+            ):
+                await executor.execute(prompt="测试")
+
+                # 验证冷却已重置
+                assert executor._cloud_failure_count == 0
+                assert executor._cloud_cooldown_until is None
 
 
 # ========== 便捷函数测试 ==========

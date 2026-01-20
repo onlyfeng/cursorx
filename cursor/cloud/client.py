@@ -18,6 +18,13 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
+# 从 core.cloud_utils 导入统一的 cloud request 检测函数
+from core.cloud_utils import (
+    CLOUD_PREFIX,
+    is_cloud_request as _is_cloud_request_util,
+    strip_cloud_prefix as _strip_cloud_prefix_util,
+)
+
 # 从本地模块导入
 from .auth import CloudAuthManager
 from .exceptions import (
@@ -85,8 +92,8 @@ class CursorCloudClient:
         result = await client.wait_for_completion(task_id)
     """
 
-    # Cloud Agent 前缀
-    CLOUD_PREFIX = "&"
+    # Cloud Agent 前缀（复用 core.cloud_utils.CLOUD_PREFIX）
+    CLOUD_PREFIX = CLOUD_PREFIX
 
     def __init__(
         self,
@@ -122,6 +129,9 @@ class CursorCloudClient:
     def is_cloud_request(prompt: str) -> bool:
         """检测是否是云端请求（以 & 开头）
 
+        **代理方法**: 委托给 core.cloud_utils.is_cloud_request 实现。
+        核心逻辑在 core.cloud_utils 模块中，本方法仅用于保持 API 兼容性。
+
         边界情况处理:
         - None 或空字符串返回 False
         - 只有 & 的字符串返回 False（无实际内容）
@@ -134,31 +144,22 @@ class CursorCloudClient:
         Returns:
             是否为云端请求
         """
-        # 处理 None 和非字符串类型
-        if not prompt or not isinstance(prompt, str):
-            return False
-
-        stripped = prompt.strip()
-
-        # 空字符串
-        if not stripped:
-            return False
-
-        # 检查是否以 & 开头
-        if not stripped.startswith(CursorCloudClient.CLOUD_PREFIX):
-            return False
-
-        # 确保 & 后面有实际内容（不只是空白）
-        content_after_prefix = stripped[len(CursorCloudClient.CLOUD_PREFIX):].strip()
-        return len(content_after_prefix) > 0
+        return _is_cloud_request_util(prompt)
 
     @staticmethod
     def strip_cloud_prefix(prompt: str) -> str:
-        """移除云端前缀"""
-        stripped = prompt.strip()
-        if stripped.startswith(CursorCloudClient.CLOUD_PREFIX):
-            return stripped[len(CursorCloudClient.CLOUD_PREFIX):].strip()
-        return stripped
+        """移除云端前缀 &
+
+        **代理方法**: 委托给 core.cloud_utils.strip_cloud_prefix 实现。
+        核心逻辑在 core.cloud_utils 模块中，本方法仅用于保持 API 兼容性。
+
+        Args:
+            prompt: 可能带 & 前缀的 prompt
+
+        Returns:
+            去除前缀后的 prompt
+        """
+        return _strip_cloud_prefix_util(prompt)
 
     async def execute(
         self,
@@ -168,15 +169,17 @@ class CursorCloudClient:
         timeout: Optional[int] = None,
         session_id: Optional[str] = None,
         switch_to_cloud: bool = False,
+        force_cloud: bool = False,
     ) -> CloudAgentResult:
         """执行任务（自动检测是否推送到云端）
 
         如果 prompt 以 & 开头，将任务推送到云端执行。
-        否则使用本地 Agent 执行。
+        否则使用本地 Agent 执行（除非 force_cloud=True）。
 
         支持会话切换:
         - 提供 session_id 可恢复已有会话
         - switch_to_cloud=True 可将本地会话推送到云端
+        - force_cloud=True 强制云端执行（自动添加 & 前缀）
 
         Args:
             prompt: 任务 prompt（可以带 & 前缀）
@@ -185,6 +188,7 @@ class CursorCloudClient:
             timeout: 超时时间（秒）
             session_id: 可选的会话 ID（用于恢复会话）
             switch_to_cloud: 是否将会话切换到云端执行
+            force_cloud: 强制云端执行（自动为非云端请求添加 & 前缀，默认 False）
 
         Returns:
             执行结果
@@ -205,9 +209,18 @@ class CursorCloudClient:
                     options=options,
                 )
 
-        if self.is_cloud_request(prompt):
-            # 移除 & 前缀，提交到云端
-            clean_prompt = self.strip_cloud_prefix(prompt)
+        # 判断是否使用云端执行：
+        # 1. prompt 以 & 开头（显式云端请求）
+        # 2. force_cloud=True（强制云端执行）
+        is_cloud = self.is_cloud_request(prompt)
+        should_use_cloud = is_cloud or force_cloud
+
+        if should_use_cloud:
+            # 获取干净的 prompt（移除 & 前缀，如果存在）
+            clean_prompt = self.strip_cloud_prefix(prompt) if is_cloud else prompt
+
+            if force_cloud and not is_cloud:
+                logger.debug(f"强制云端执行: 自动为 prompt 启用云端模式")
 
             # 如果有 session_id，使用恢复模式并推送到云端
             if session_id:
@@ -494,10 +507,461 @@ class CursorCloudClient:
             logger.debug(f"刷新任务状态失败: {e}")
 
     async def _fetch_task_from_cloud(self, task_id: str) -> Optional[CloudTask]:
-        """从云端获取任务信息"""
-        # 预留：实际 API 调用
-        # 当前实现依赖 agent CLI
+        """从云端获取任务信息
+
+        通过 `agent ls` 命令获取任务列表与状态，优先使用 JSON 输出格式。
+        如果 JSON 不可用则回退到文本解析。
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            CloudTask: 匹配的任务对象，如果不存在或已过期返回 None
+
+        Raises:
+            不直接抛出异常，而是返回 None 并记录日志
+        """
+        if not task_id:
+            logger.warning("_fetch_task_from_cloud: task_id 为空")
+            return None
+
+        env = os.environ.copy()
+        api_key = self.auth_manager.get_api_key()
+        if api_key:
+            env["CURSOR_API_KEY"] = api_key
+
+        # 尝试 JSON 格式输出（优先）
+        task = await self._fetch_task_via_ls_json(task_id, env)
+        if task:
+            self._tasks[task_id] = task
+            return task
+
+        # 回退到文本格式解析
+        task = await self._fetch_task_via_ls_text(task_id, env)
+        if task:
+            self._tasks[task_id] = task
+            return task
+
+        logger.debug(f"任务未在 agent ls 中找到: {task_id}")
         return None
+
+    async def _fetch_task_via_ls_json(
+        self,
+        task_id: str,
+        env: dict[str, str],
+    ) -> Optional[CloudTask]:
+        """通过 agent ls --output-format json 获取任务
+
+        Args:
+            task_id: 任务 ID
+            env: 环境变量
+
+        Returns:
+            CloudTask: 匹配的任务，未找到返回 None
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._agent_path, "ls", "--output-format", "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=30,
+            )
+
+            if process.returncode != 0:
+                error_output = stderr.decode("utf-8", errors="replace")
+                error_lower = error_output.lower()
+
+                # 认证错误检测
+                if "unauthorized" in error_lower or "401" in error_lower:
+                    auth_error = AuthError(
+                        message="获取任务列表失败: 认证无效",
+                        code=AuthErrorCode.INVALID_API_KEY,
+                    )
+                    logger.warning(auth_error.user_friendly_message)
+                    return None
+
+                # JSON 格式可能不支持，回退到文本
+                logger.debug(f"agent ls --output-format json 失败: {error_output[:100]}")
+                return None
+
+            output = stdout.decode("utf-8", errors="replace").strip()
+            if not output:
+                return None
+
+            return self._parse_task_from_json_output(task_id, output)
+
+        except asyncio.TimeoutError:
+            timeout_error = NetworkError(
+                message="获取任务列表超时 (30s)",
+                error_type="timeout",
+                retry_after=5.0,
+            )
+            logger.warning(timeout_error.user_friendly_message)
+            return None
+
+        except FileNotFoundError:
+            not_found_error = NetworkError(
+                message=f"找不到 agent CLI: {self._agent_path}",
+                error_type="not_found",
+            )
+            logger.error(not_found_error.message)
+            return None
+
+        except OSError as e:
+            os_error = NetworkError.from_exception(e, context="获取任务列表")
+            logger.error(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
+            return None
+
+        except Exception as e:
+            logger.debug(f"JSON 格式获取任务失败: {e}")
+            return None
+
+    async def _fetch_task_via_ls_text(
+        self,
+        task_id: str,
+        env: dict[str, str],
+    ) -> Optional[CloudTask]:
+        """通过 agent ls 文本输出获取任务
+
+        Args:
+            task_id: 任务 ID
+            env: 环境变量
+
+        Returns:
+            CloudTask: 匹配的任务，未找到返回 None
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._agent_path, "ls",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=30,
+            )
+
+            if process.returncode != 0:
+                error_output = stderr.decode("utf-8", errors="replace")
+                error_lower = error_output.lower()
+
+                # 认证错误检测
+                if "unauthorized" in error_lower or "401" in error_lower:
+                    auth_error = AuthError(
+                        message="获取任务列表失败: 认证无效",
+                        code=AuthErrorCode.INVALID_API_KEY,
+                    )
+                    logger.warning(auth_error.user_friendly_message)
+                    return None
+
+                logger.debug(f"agent ls 失败: {error_output[:100]}")
+                return None
+
+            output = stdout.decode("utf-8", errors="replace")
+            if not output.strip():
+                return None
+
+            return self._parse_task_from_text_output(task_id, output)
+
+        except asyncio.TimeoutError:
+            timeout_error = NetworkError(
+                message="获取任务列表超时 (30s)",
+                error_type="timeout",
+                retry_after=5.0,
+            )
+            logger.warning(timeout_error.user_friendly_message)
+            return None
+
+        except FileNotFoundError:
+            not_found_error = NetworkError(
+                message=f"找不到 agent CLI: {self._agent_path}",
+                error_type="not_found",
+            )
+            logger.error(not_found_error.message)
+            return None
+
+        except OSError as e:
+            os_error = NetworkError.from_exception(e, context="获取任务列表")
+            logger.error(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
+            return None
+
+        except Exception as e:
+            logger.debug(f"文本格式获取任务失败: {e}")
+            return None
+
+    def _parse_task_from_json_output(
+        self,
+        task_id: str,
+        output: str,
+    ) -> Optional[CloudTask]:
+        """从 JSON 格式输出解析任务
+
+        支持多种 JSON 格式:
+        - 数组格式: [{"session_id": "...", "status": "..."}]
+        - 对象格式: {"sessions": [...]}
+        - NDJSON 格式: 每行一个 JSON 对象
+
+        Args:
+            task_id: 要查找的任务 ID
+            output: agent ls 的 JSON 输出
+
+        Returns:
+            CloudTask: 匹配的任务，未找到返回 None
+        """
+        import re
+
+        tasks_data: list[dict] = []
+
+        # 尝试解析为标准 JSON
+        try:
+            data = json.loads(output)
+
+            # 数组格式
+            if isinstance(data, list):
+                tasks_data = data
+            # 对象格式（包含 sessions 字段）
+            elif isinstance(data, dict):
+                if "sessions" in data:
+                    tasks_data = data["sessions"]
+                elif "tasks" in data:
+                    tasks_data = data["tasks"]
+                elif "items" in data:
+                    tasks_data = data["items"]
+                else:
+                    # 单个任务对象
+                    tasks_data = [data]
+
+        except json.JSONDecodeError:
+            # 尝试 NDJSON 格式（每行一个 JSON）
+            for line in output.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                    if isinstance(item, dict):
+                        tasks_data.append(item)
+                except json.JSONDecodeError:
+                    continue
+
+        # 在解析的数据中查找匹配的任务
+        for item in tasks_data:
+            if not isinstance(item, dict):
+                continue
+
+            # 支持多种 ID 字段名
+            item_id = (
+                item.get("session_id") or
+                item.get("task_id") or
+                item.get("id") or
+                item.get("chat_id")
+            )
+
+            if item_id == task_id:
+                return self._create_task_from_dict(task_id, item)
+
+        return None
+
+    def _parse_task_from_text_output(
+        self,
+        task_id: str,
+        output: str,
+    ) -> Optional[CloudTask]:
+        """从文本格式输出解析任务
+
+        支持多种文本格式:
+        - 表格格式: ID | STATUS | PROMPT
+        - 列表格式: - session_id: xxx, status: running
+        - 简单行格式: xxx (running) - some prompt
+
+        Args:
+            task_id: 要查找的任务 ID
+            output: agent ls 的文本输出
+
+        Returns:
+            CloudTask: 匹配的任务，未找到返回 None
+        """
+        import re
+
+        # 检查 task_id 是否在输出中
+        if task_id not in output:
+            return None
+
+        output_lower = output.lower()
+
+        # 找到包含 task_id 的行
+        task_line = None
+        for line in output.split("\n"):
+            if task_id in line:
+                task_line = line
+                break
+
+        if not task_line:
+            return None
+
+        line_lower = task_line.lower()
+
+        # 解析状态
+        status = TaskStatus.RUNNING  # 默认状态
+
+        # 状态关键词映射
+        status_keywords = {
+            TaskStatus.COMPLETED: ["completed", "done", "finished", "success", "succeeded"],
+            TaskStatus.FAILED: ["failed", "error", "errored"],
+            TaskStatus.CANCELLED: ["cancelled", "canceled", "aborted"],
+            TaskStatus.RUNNING: ["running", "in_progress", "processing", "active"],
+            TaskStatus.QUEUED: ["queued", "pending", "waiting"],
+            TaskStatus.TIMEOUT: ["timeout", "timed_out"],
+        }
+
+        for task_status, keywords in status_keywords.items():
+            if any(kw in line_lower for kw in keywords):
+                status = task_status
+                break
+
+        # 尝试提取 prompt（多种格式）
+        prompt = ""
+
+        # 格式1: 表格分隔符 |
+        if "|" in task_line:
+            parts = [p.strip() for p in task_line.split("|")]
+            # 通常 prompt 在最后一列
+            if len(parts) >= 3:
+                prompt = parts[-1]
+
+        # 格式2: 括号后的内容
+        elif ")" in task_line:
+            match = re.search(r'\)\s*[-:]\s*(.+)$', task_line)
+            if match:
+                prompt = match.group(1).strip()
+
+        # 格式3: prompt: 或 description: 字段
+        if not prompt:
+            match = re.search(r'(?:prompt|description|message)[:\s]+["\']?([^"\']+)["\']?', task_line, re.IGNORECASE)
+            if match:
+                prompt = match.group(1).strip()
+
+        # 尝试提取创建时间
+        created_at = datetime.now()
+        time_patterns = [
+            r'(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})',  # ISO 格式
+            r'(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2})',  # 常见日期格式
+        ]
+        for pattern in time_patterns:
+            match = re.search(pattern, task_line)
+            if match:
+                try:
+                    time_str = match.group(1).replace("T", " ")
+                    if "/" in time_str:
+                        created_at = datetime.strptime(time_str, "%Y/%m/%d %H:%M")
+                    else:
+                        created_at = datetime.fromisoformat(time_str)
+                except (ValueError, TypeError):
+                    pass
+                break
+
+        return CloudTask(
+            task_id=task_id,
+            status=status,
+            prompt=prompt or f"[任务 {task_id[:8]}...]",
+            created_at=created_at,
+        )
+
+    def _create_task_from_dict(
+        self,
+        task_id: str,
+        data: dict,
+    ) -> CloudTask:
+        """从字典数据创建 CloudTask
+
+        Args:
+            task_id: 任务 ID
+            data: 任务数据字典
+
+        Returns:
+            CloudTask: 创建的任务对象
+        """
+        # 解析状态
+        status_str = data.get("status", "running")
+        try:
+            status = TaskStatus(status_str.lower())
+        except ValueError:
+            # 尝试映射常见状态值
+            status_map = {
+                "success": TaskStatus.COMPLETED,
+                "done": TaskStatus.COMPLETED,
+                "finished": TaskStatus.COMPLETED,
+                "error": TaskStatus.FAILED,
+                "errored": TaskStatus.FAILED,
+                "canceled": TaskStatus.CANCELLED,
+                "active": TaskStatus.RUNNING,
+                "in_progress": TaskStatus.RUNNING,
+                "waiting": TaskStatus.QUEUED,
+            }
+            status = status_map.get(status_str.lower(), TaskStatus.RUNNING)
+
+        # 解析时间
+        created_at = datetime.now()
+        if data.get("created_at"):
+            try:
+                created_at = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+        elif data.get("timestamp"):
+            try:
+                # Unix 时间戳
+                ts = data["timestamp"]
+                if isinstance(ts, (int, float)):
+                    created_at = datetime.fromtimestamp(ts)
+                else:
+                    created_at = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        # 提取 prompt
+        prompt = (
+            data.get("prompt") or
+            data.get("message") or
+            data.get("description") or
+            data.get("title") or
+            f"[任务 {task_id[:8]}...]"
+        )
+
+        # 提取输出和错误
+        output = data.get("output") or data.get("result")
+        error = data.get("error") or data.get("error_message")
+
+        # 提取修改的文件
+        files_modified = data.get("files_modified", [])
+        if not files_modified and data.get("files"):
+            files_modified = data["files"]
+
+        # 提取进度
+        progress = data.get("progress", 0)
+        if isinstance(progress, str):
+            try:
+                progress = int(progress.replace("%", ""))
+            except ValueError:
+                progress = 0
+
+        return CloudTask(
+            task_id=task_id,
+            status=status,
+            prompt=prompt,
+            created_at=created_at,
+            output=output,
+            error=error,
+            files_modified=files_modified,
+            progress=progress,
+            current_step=data.get("current_step"),
+        )
 
     async def wait_for_completion(
         self,

@@ -2996,3 +2996,319 @@ class TestSelfIteratorResultStructure:
 
                             # 验证 _run_commit_phase 未被调用（因为 orchestrator 已提交）
                             mock_commit.assert_not_called()
+
+
+# ============================================================
+# 测试类: Cloud Request 边界输入一致性
+# ============================================================
+
+
+class TestCloudRequestConsistency:
+    """测试 is_cloud_request/strip_cloud_prefix 在所有调用点的一致性
+
+    验证 core.cloud_utils、CursorCloudClient、CursorAgentClient 使用同一套判定逻辑。
+    """
+
+    # 边界测试用例：(输入, 预期 is_cloud_request 返回值)
+    EDGE_CASES = [
+        # None 和空值
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("\t\n", False),
+        # 只有 & 符号（无实际内容）
+        ("&", False),
+        ("&  ", False),
+        ("  &  ", False),
+        ("& \t\n", False),
+        # 有效的云端请求
+        ("& 任务", True),
+        ("&任务", True),
+        ("  & 任务", True),
+        ("& a", True),
+        ("&a", True),
+        # & 不在开头
+        ("任务 & 描述", False),
+        ("任务&", False),
+        ("任务 &", False),
+        (" 任务 & 描述", False),
+        # 多个 & 符号
+        ("& & 任务", True),  # 第一个 & 后有内容
+        ("&& 任务", True),
+        # Unicode 和特殊字符
+        ("& 中文任务", True),
+        ("& 🚀", True),
+        ("& タスク", True),
+        # 非字符串类型
+        (123, False),
+        ([], False),
+        ({}, False),
+        (0, False),
+        (False, False),
+    ]
+
+    # strip_cloud_prefix 测试用例：(输入, 预期输出)
+    # 注意：strip_cloud_prefix 对于不带 & 前缀的输入返回原始值（不 strip 空白）
+    STRIP_CASES = [
+        # None 和空值
+        (None, ""),
+        ("", ""),
+        ("   ", "   "),  # 无 & 前缀，返回原始值
+        # 带前缀的情况
+        ("& 任务", "任务"),
+        ("&任务", "任务"),
+        ("  & 任务  ", "任务"),  # strip 后以 & 开头
+        ("& ", ""),
+        ("&", ""),
+        # 无前缀的情况（返回原始值）
+        ("任务", "任务"),
+        ("普通任务", "普通任务"),
+        ("任务 & 描述", "任务 & 描述"),
+        # 多个空格
+        ("&   任务", "任务"),
+        ("&\t任务", "任务"),
+    ]
+
+    def test_core_cloud_utils_is_cloud_request(self):
+        """测试 core.cloud_utils.is_cloud_request 边界情况"""
+        from core.cloud_utils import is_cloud_request
+
+        for input_val, expected in self.EDGE_CASES:
+            result = is_cloud_request(input_val)
+            assert result == expected, (
+                f"core.cloud_utils.is_cloud_request({input_val!r}) "
+                f"returned {result}, expected {expected}"
+            )
+
+    def test_cursor_cloud_client_is_cloud_request(self):
+        """测试 CursorCloudClient.is_cloud_request 边界情况"""
+        for input_val, expected in self.EDGE_CASES:
+            result = CursorCloudClient.is_cloud_request(input_val)
+            assert result == expected, (
+                f"CursorCloudClient.is_cloud_request({input_val!r}) "
+                f"returned {result}, expected {expected}"
+            )
+
+    def test_cursor_agent_client_is_cloud_request(self):
+        """测试 CursorAgentClient._is_cloud_request 边界情况"""
+        from cursor.client import CursorAgentClient
+
+        for input_val, expected in self.EDGE_CASES:
+            result = CursorAgentClient._is_cloud_request(input_val)
+            assert result == expected, (
+                f"CursorAgentClient._is_cloud_request({input_val!r}) "
+                f"returned {result}, expected {expected}"
+            )
+
+    def test_is_cloud_request_consistency_all_modules(self):
+        """验证所有模块的 is_cloud_request 返回一致结果"""
+        from core.cloud_utils import is_cloud_request as core_is_cloud
+        from cursor.client import CursorAgentClient
+
+        for input_val, _ in self.EDGE_CASES:
+            core_result = core_is_cloud(input_val)
+            cloud_client_result = CursorCloudClient.is_cloud_request(input_val)
+            agent_client_result = CursorAgentClient._is_cloud_request(input_val)
+
+            assert core_result == cloud_client_result == agent_client_result, (
+                f"is_cloud_request 不一致: input={input_val!r}\n"
+                f"  core.cloud_utils: {core_result}\n"
+                f"  CursorCloudClient: {cloud_client_result}\n"
+                f"  CursorAgentClient: {agent_client_result}"
+            )
+
+    def test_core_cloud_utils_strip_cloud_prefix(self):
+        """测试 core.cloud_utils.strip_cloud_prefix 边界情况"""
+        from core.cloud_utils import strip_cloud_prefix
+
+        for input_val, expected in self.STRIP_CASES:
+            result = strip_cloud_prefix(input_val)
+            assert result == expected, (
+                f"core.cloud_utils.strip_cloud_prefix({input_val!r}) "
+                f"returned {result!r}, expected {expected!r}"
+            )
+
+    def test_cursor_cloud_client_strip_cloud_prefix(self):
+        """测试 CursorCloudClient.strip_cloud_prefix 边界情况"""
+        for input_val, expected in self.STRIP_CASES:
+            # CursorCloudClient.strip_cloud_prefix 对 None 会抛异常或返回不同值
+            # 需要处理 None 的特殊情况
+            if input_val is None:
+                # 委托给 core.cloud_utils 后应返回 ""
+                result = CursorCloudClient.strip_cloud_prefix(input_val)
+                assert result == expected, (
+                    f"CursorCloudClient.strip_cloud_prefix(None) "
+                    f"returned {result!r}, expected {expected!r}"
+                )
+            else:
+                result = CursorCloudClient.strip_cloud_prefix(input_val)
+                assert result == expected, (
+                    f"CursorCloudClient.strip_cloud_prefix({input_val!r}) "
+                    f"returned {result!r}, expected {expected!r}"
+                )
+
+    def test_strip_cloud_prefix_consistency_all_modules(self):
+        """验证所有模块的 strip_cloud_prefix 返回一致结果"""
+        from core.cloud_utils import strip_cloud_prefix as core_strip
+
+        for input_val, _ in self.STRIP_CASES:
+            core_result = core_strip(input_val)
+            cloud_client_result = CursorCloudClient.strip_cloud_prefix(input_val)
+
+            assert core_result == cloud_client_result, (
+                f"strip_cloud_prefix 不一致: input={input_val!r}\n"
+                f"  core.cloud_utils: {core_result!r}\n"
+                f"  CursorCloudClient: {cloud_client_result!r}"
+            )
+
+    def test_cloud_prefix_constant_consistency(self):
+        """验证 CLOUD_PREFIX 常量在所有模块中一致"""
+        from core.cloud_utils import CLOUD_PREFIX as core_prefix
+
+        assert CursorCloudClient.CLOUD_PREFIX == core_prefix, (
+            f"CLOUD_PREFIX 不一致: core={core_prefix!r}, "
+            f"CursorCloudClient={CursorCloudClient.CLOUD_PREFIX!r}"
+        )
+
+    def test_run_py_uses_core_cloud_utils(self):
+        """验证 run.py 使用 core.cloud_utils"""
+        # 通过检查 run.py 的导入来验证
+        import run
+        from core.cloud_utils import is_cloud_request, strip_cloud_prefix
+
+        # run.py 应该直接导入并使用 core.cloud_utils 的函数
+        assert hasattr(run, "is_cloud_request")
+        assert hasattr(run, "strip_cloud_prefix")
+
+        # 验证行为一致
+        test_input = "& test"
+        assert run.is_cloud_request(test_input) == is_cloud_request(test_input)
+        assert run.strip_cloud_prefix(test_input) == strip_cloud_prefix(test_input)
+
+    def test_run_iterate_uses_core_cloud_utils(self):
+        """验证 scripts/run_iterate.py 使用 core.cloud_utils"""
+        from scripts import run_iterate
+        from core.cloud_utils import is_cloud_request, strip_cloud_prefix
+
+        # run_iterate 应该直接导入并使用 core.cloud_utils 的函数
+        assert hasattr(run_iterate, "is_cloud_request")
+        assert hasattr(run_iterate, "strip_cloud_prefix")
+
+        # 验证行为一致
+        test_input = "& test"
+        assert run_iterate.is_cloud_request(test_input) == is_cloud_request(test_input)
+        assert run_iterate.strip_cloud_prefix(test_input) == strip_cloud_prefix(test_input)
+
+    def test_parse_cloud_request_basic(self):
+        """测试 parse_cloud_request 基本功能"""
+        from core.cloud_utils import parse_cloud_request
+
+        # 有效的云端请求
+        is_cloud, clean = parse_cloud_request("& 任务")
+        assert is_cloud is True
+        assert clean == "任务"
+
+        is_cloud, clean = parse_cloud_request("&任务")
+        assert is_cloud is True
+        assert clean == "任务"
+
+        # 非云端请求
+        is_cloud, clean = parse_cloud_request("普通任务")
+        assert is_cloud is False
+        assert clean == "普通任务"
+
+        is_cloud, clean = parse_cloud_request("任务 & 描述")
+        assert is_cloud is False
+        assert clean == "任务 & 描述"
+
+    def test_parse_cloud_request_edge_cases(self):
+        """测试 parse_cloud_request 边界情况"""
+        from core.cloud_utils import parse_cloud_request
+
+        # None 和空值
+        is_cloud, clean = parse_cloud_request(None)
+        assert is_cloud is False
+        assert clean == ""
+
+        is_cloud, clean = parse_cloud_request("")
+        assert is_cloud is False
+        assert clean == ""
+
+        # 只有 & 符号（无实际内容）
+        is_cloud, clean = parse_cloud_request("&")
+        assert is_cloud is False
+        assert clean == "&"  # 不是云端请求，返回原始值
+
+        is_cloud, clean = parse_cloud_request("& ")
+        assert is_cloud is False
+        assert clean == "& "
+
+        is_cloud, clean = parse_cloud_request("  &  ")
+        assert is_cloud is False
+        assert clean == "  &  "
+
+    def test_parse_cloud_request_consistency_with_individual_functions(self):
+        """验证 parse_cloud_request 与 is_cloud_request/strip_cloud_prefix 一致"""
+        from core.cloud_utils import (
+            is_cloud_request,
+            parse_cloud_request,
+            strip_cloud_prefix,
+        )
+
+        test_cases = [
+            "& 任务",
+            "&任务",
+            "普通任务",
+            "任务 & 描述",
+            "&",
+            "& ",
+            "  &  ",
+            "& 包含 & 符号",
+            None,
+            "",
+        ]
+
+        for prompt in test_cases:
+            is_cloud, clean = parse_cloud_request(prompt)
+            expected_is_cloud = is_cloud_request(prompt)
+
+            assert is_cloud == expected_is_cloud, (
+                f"parse_cloud_request({prompt!r})[0] != is_cloud_request({prompt!r})\n"
+                f"  parse_cloud_request: {is_cloud}\n"
+                f"  is_cloud_request: {expected_is_cloud}"
+            )
+
+            if is_cloud:
+                expected_clean = strip_cloud_prefix(prompt)
+                assert clean == expected_clean, (
+                    f"parse_cloud_request({prompt!r})[1] != strip_cloud_prefix({prompt!r})\n"
+                    f"  parse_cloud_request: {clean!r}\n"
+                    f"  strip_cloud_prefix: {expected_clean!r}"
+                )
+
+    def test_cursor_agent_client_strip_cloud_prefix(self):
+        """测试 CursorAgentClient._strip_cloud_prefix 代理方法"""
+        from cursor.client import CursorAgentClient
+        from core.cloud_utils import strip_cloud_prefix as core_strip
+
+        for input_val, expected in self.STRIP_CASES:
+            if input_val is None:
+                # None 情况特殊处理
+                result = CursorAgentClient._strip_cloud_prefix(input_val)
+                assert result == expected, (
+                    f"CursorAgentClient._strip_cloud_prefix(None) "
+                    f"returned {result!r}, expected {expected!r}"
+                )
+            else:
+                result = CursorAgentClient._strip_cloud_prefix(input_val)
+                core_result = core_strip(input_val)
+                assert result == expected, (
+                    f"CursorAgentClient._strip_cloud_prefix({input_val!r}) "
+                    f"returned {result!r}, expected {expected!r}"
+                )
+                assert result == core_result, (
+                    f"CursorAgentClient._strip_cloud_prefix({input_val!r}) "
+                    f"!= core.cloud_utils.strip_cloud_prefix({input_val!r})\n"
+                    f"  Agent: {result!r}\n"
+                    f"  Core: {core_result!r}"
+                )

@@ -24,7 +24,11 @@ from typing import Any, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from core.cloud_utils import CLOUD_PREFIX, is_cloud_request as _is_cloud_request_util
+from core.cloud_utils import (
+    CLOUD_PREFIX,
+    is_cloud_request as _is_cloud_request_util,
+    strip_cloud_prefix as _strip_cloud_prefix_util,
+)
 from cursor.streaming import (
     AdvancedTerminalRenderer,
     StreamEvent,
@@ -429,6 +433,7 @@ class CursorAgentClient:
         """检测是否是云端请求（以 & 开头）
 
         委托给 core.cloud_utils.is_cloud_request 实现。
+        这是代理方法，核心逻辑在 core.cloud_utils 模块中。
 
         边界情况处理:
         - None 或空字符串返回 False
@@ -443,6 +448,21 @@ class CursorAgentClient:
             是否为云端请求
         """
         return _is_cloud_request_util(prompt)
+
+    @staticmethod
+    def _strip_cloud_prefix(prompt: str) -> str:
+        """去除 Cloud 前缀 &
+
+        委托给 core.cloud_utils.strip_cloud_prefix 实现。
+        这是代理方法，核心逻辑在 core.cloud_utils 模块中。
+
+        Args:
+            prompt: 可能带 & 前缀的 prompt
+
+        Returns:
+            去除前缀后的 prompt
+        """
+        return _strip_cloud_prefix_util(prompt)
 
     async def _execute_via_cloud(
         self,
