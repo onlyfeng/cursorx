@@ -332,7 +332,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reviewer-model",
         type=str,
-        default="opus-4.5-thinking",
+        default="gpt-5.2-codex",
         help="[mp] 评审者模型",
     )
 
@@ -901,7 +901,7 @@ class Runner:
         # 多进程选项
         options["planner_model"] = self.args.planner_model
         options["worker_model"] = self.args.worker_model
-        options["reviewer_model"] = getattr(self.args, "reviewer_model", "opus-4.5-thinking")
+        options["reviewer_model"] = getattr(self.args, "reviewer_model", "gpt-5.2-codex")
 
         # 流式日志（自然语言可控制开关）
         # 优先使用自然语言指定的值，否则使用命令行参数（默认 True）

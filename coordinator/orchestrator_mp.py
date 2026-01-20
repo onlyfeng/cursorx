@@ -48,7 +48,7 @@ class MultiProcessOrchestratorConfig(BaseModel):
     # 使用 `agent models` 查看完整列表
     planner_model: str = "gpt-5.2-high"           # 规划者使用 GPT 5.2 High
     worker_model: str = "opus-4.5-thinking"       # 执行者使用 Claude 4.5 Opus (Thinking)
-    reviewer_model: str = "opus-4.5-thinking"     # 评审者使用 Claude 4.5 Opus (Thinking)
+    reviewer_model: str = "gpt-5.2-codex"         # 评审者使用 GPT 5.2 Codex
 
     # 执行模式配置（MP 模式主要使用 CLI，但支持配置以便与 basic 编排器保持一致）
     # 注意：MP 编排器内部子进程始终使用 CLI 执行，这些配置主要用于透传和兼容性

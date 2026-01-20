@@ -74,11 +74,11 @@ planner:
   max_sub_planners: 3       # 最大子规划者数量
   max_tasks_per_plan: 10    # 单次规划最大任务数
   exploration_depth: 3      # 探索深度
-  timeout: 300              # 规划超时（秒）
+  timeout: 500              # 规划超时（秒）
 
 # 执行者配置
 worker:
-  task_timeout: 500         # 任务超时时间（秒）
+  task_timeout: 600         # 任务超时时间（秒）
   max_concurrent_tasks: 1   # 同时处理的任务数
 
   # Worker 进程内知识库集成（可选）
@@ -95,7 +95,7 @@ worker:
 # 评审者配置
 reviewer:
   strict_mode: false        # 严格模式
-  timeout: 120              # 评审超时（秒）
+  timeout: 300              # 评审超时（秒）
 
 # 索引配置 - 语义搜索支持
 indexing:

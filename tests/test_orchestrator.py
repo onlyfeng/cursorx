@@ -226,13 +226,13 @@ class TestModelConfigPerRole:
         # 验证默认模型配置
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "opus-4.5-thinking"
+        assert config.reviewer_model == "gpt-5.2-codex"
 
         # 验证 Planner 使用正确的模型
         assert orchestrator.planner.planner_config.cursor_config.model == "gpt-5.2-high"
 
         # 验证 Reviewer 使用正确的模型
-        assert orchestrator.reviewer.reviewer_config.cursor_config.model == "opus-4.5-thinking"
+        assert orchestrator.reviewer.reviewer_config.cursor_config.model == "gpt-5.2-codex"
 
         # 验证 Workers 使用正确的模型
         for worker in orchestrator.worker_pool.workers:

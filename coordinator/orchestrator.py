@@ -73,7 +73,7 @@ class OrchestratorConfig(BaseModel):
     # 各角色模型配置
     planner_model: str = 'gpt-5.2-high'           # 规划者模型
     worker_model: str = 'opus-4.5-thinking'       # 执行者模型
-    reviewer_model: str = 'opus-4.5-thinking'     # 评审者模型
+    reviewer_model: str = 'gpt-5.2-codex'         # 评审者模型
     # 角色级执行模式配置（默认继承全局 execution_mode）
     # 若为 None，则使用全局 execution_mode
     planner_execution_mode: Optional[ExecutionMode] = None  # 规划者执行模式

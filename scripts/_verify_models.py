@@ -13,7 +13,7 @@ def verify_models():
     # 验证配置值
     results.append(("config.planner_model", config.planner_model, "gpt-5.2-high"))
     results.append(("config.worker_model", config.worker_model, "opus-4.5-thinking"))
-    results.append(("config.reviewer_model", config.reviewer_model, "opus-4.5-thinking"))
+    results.append(("config.reviewer_model", config.reviewer_model, "gpt-5.2-codex"))
     
     # 验证 Planner
     planner_model = orchestrator.planner._config.cursor_config.model
@@ -21,7 +21,7 @@ def verify_models():
     
     # 验证 Reviewer
     reviewer_model = orchestrator.reviewer._config.cursor_config.model
-    results.append(("reviewer.model", reviewer_model, "opus-4.5-thinking"))
+    results.append(("reviewer.model", reviewer_model, "gpt-5.2-codex"))
     
     # 验证 Workers
     for i, worker in enumerate(orchestrator.worker_pool.workers):

@@ -2028,7 +2028,7 @@ class TestRunMpMode:
         assert config.strict_review is False
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "opus-4.5-thinking"
+        assert config.reviewer_model == "gpt-5.2-codex"
         assert config.stream_events_enabled is True
 
     def test_mp_config_with_unlimited_iterations(self) -> None:
@@ -2061,7 +2061,7 @@ class TestRunMpMode:
         assert config.review_timeout == 120.0
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "opus-4.5-thinking"
+        assert config.reviewer_model == "gpt-5.2-codex"
         assert config.stream_events_enabled is True
         # 验证提交相关默认值（auto_commit 默认禁用，需显式开启）
         assert config.enable_auto_commit is False  # 默认禁用自动提交
