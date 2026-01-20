@@ -254,6 +254,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-d", "--directory",
+        type=str,
+        default=".",
+        help="工作目录 (默认: 当前目录)",
+    )
+
+    parser.add_argument(
         "--skip-online",
         action="store_true",
         help="跳过在线文档检查，仅基于现有知识库迭代",
@@ -1708,6 +1715,10 @@ class SelfIterator:
         )
         self.goal_builder = IterationGoalBuilder()
 
+        # 解析工作目录（支持相对路径和绝对路径）
+        work_dir = Path(args.directory).resolve()
+        self.working_directory = work_dir
+
         # 处理 '&' 前缀：如果 requirement 以 '&' 开头，去除前缀
         user_requirement = args.requirement
         self._is_cloud_request = is_cloud_request(user_requirement)
@@ -1729,6 +1740,7 @@ class SelfIterator:
         """
         print_header("自我迭代脚本")
         print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"工作目录: {self.working_directory}")
         print(f"用户需求: {self.args.requirement or '(无)'}")
         if self._is_cloud_request:
             print("Cloud 模式: 启用（检测到 '&' 前缀）")
@@ -1865,10 +1877,10 @@ class SelfIterator:
         """
         print_section("提交阶段")
 
-        # 创建 CommitterAgent
-        cursor_config = CursorAgentConfig(working_directory=str(project_root))
+        # 创建 CommitterAgent - 使用用户指定的工作目录
+        cursor_config = CursorAgentConfig(working_directory=str(self.working_directory))
         committer_config = CommitterConfig(
-            working_directory=str(project_root),
+            working_directory=str(self.working_directory),
             auto_push=self.args.auto_push,
             commit_message_style="conventional",
             cursor_config=cursor_config,
@@ -2382,7 +2394,7 @@ class SelfIterator:
             stall_diagnostics_level = self._get_stall_diagnostics_level()
 
             config = MultiProcessOrchestratorConfig(
-                working_directory=str(project_root),
+                working_directory=str(self.working_directory),
                 max_iterations=max_iterations,
                 worker_count=self.args.workers,
                 # 方案 C: 启用 MP 任务级知识库注入
@@ -2492,13 +2504,13 @@ class SelfIterator:
         if execution_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
             cloud_timeout = getattr(self.args, "cloud_timeout", 600)
             cursor_config = CursorAgentConfig(
-                working_directory=str(project_root),
+                working_directory=str(self.working_directory),
                 timeout=cloud_timeout,
             )
             print_info(f"Cloud 超时: {cloud_timeout}s")
             logger.info(f"Cloud/Auto 执行模式，使用 cloud_timeout={cloud_timeout}s")
         else:
-            cursor_config = CursorAgentConfig(working_directory=str(project_root))
+            cursor_config = CursorAgentConfig(working_directory=str(self.working_directory))
 
         # 解析角色级执行模式（可选）
         planner_exec_mode = self._parse_execution_mode(
@@ -2512,7 +2524,7 @@ class SelfIterator:
         )
 
         config = OrchestratorConfig(
-            working_directory=str(project_root),
+            working_directory=str(self.working_directory),
             max_iterations=max_iterations,
             worker_pool_size=self.args.workers,
             cursor_config=cursor_config,
