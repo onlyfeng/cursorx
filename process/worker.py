@@ -15,6 +15,7 @@ from typing import Optional
 
 from loguru import logger
 
+from core.platform import register_signal_handler, get_platform, Platform
 from .message_queue import ProcessMessage, ProcessMessageType
 
 
@@ -48,17 +49,27 @@ class AgentWorkerProcess(Process):
         self._running = False
 
         # 工作线程池（用于执行耗时任务）
+        # 注意：这些对象在 run() 方法中初始化，以支持 macOS 的 spawn 启动方式
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._current_task_future: Optional[concurrent.futures.Future] = None
         self._last_heartbeat_time: float = 0.0           # 最后心跳响应时间
         self._is_busy: bool = False                      # 是否正在执行任务
-        self._task_lock = threading.Lock()               # 保护任务状态的锁
+        # 锁对象在 run() 中初始化，避免 pickle 序列化问题
+        # macOS 默认使用 spawn 方式启动子进程，需要序列化所有对象
+        # threading.Lock 无法被 pickle 序列化
+        self._task_lock: Optional[threading.Lock] = None
 
     def run(self) -> None:
         """进程主循环"""
-        # 设置信号处理
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
-        signal.signal(signal.SIGINT, self._handle_shutdown)
+        # 设置信号处理（跨平台兼容）
+        # Windows 不完全支持 SIGTERM，使用 register_signal_handler 处理
+        register_signal_handler(
+            signal.SIGTERM,
+            self._handle_shutdown,
+            fallback_sig=signal.SIGINT,  # Windows 回退到 SIGINT
+        )
+        # SIGINT 在所有平台都支持
+        register_signal_handler(signal.SIGINT, self._handle_shutdown)
 
         # 配置进程内日志
         self._setup_logging()
@@ -66,6 +77,10 @@ class AgentWorkerProcess(Process):
         logger.info(f"[{self.agent_id}] 进程启动 (PID: {os.getpid()})")
 
         self._running = True
+
+        # 初始化锁对象（在子进程中创建，避免 pickle 序列化问题）
+        # macOS 使用 spawn 启动方式，需要在子进程中初始化不可序列化的对象
+        self._task_lock = threading.Lock()
 
         # 初始化工作线程池（单线程，确保任务串行执行）
         self._executor = concurrent.futures.ThreadPoolExecutor(

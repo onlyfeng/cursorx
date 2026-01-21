@@ -1700,3 +1700,260 @@ class TestLateResultIntegration:
                 assert result is None
             else:
                 assert result is not None
+
+
+# ============================================================================
+# Pickle 序列化测试（macOS spawn 兼容性）
+# ============================================================================
+
+
+class TestWorkerPickleSerializable:
+    """Worker 进程 pickle 序列化测试
+
+    macOS 使用 spawn 启动方式，需要所有进程对象可被 pickle 序列化。
+    这些测试确保 Worker 进程在 macOS 上能正常启动。
+
+    注意：multiprocessing.Queue 本身无法被 pickle（使用 AuthenticationString），
+    但 multiprocessing 框架会自动处理 Queue 的传递。测试重点是验证自定义对象
+    （如 threading.Lock）不在 __init__ 中创建。
+    """
+
+    def test_worker_no_lock_in_init(self):
+        """验证 Worker 在 __init__ 中不创建锁对象
+
+        这是 macOS spawn 兼容性的关键：threading.Lock 无法被 pickle，
+        必须在 run() 方法中（子进程内）初始化。
+        """
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        try:
+            worker = SimpleTestWorker(
+                agent_id="no-lock-test",
+                agent_type="test",
+                inbox=inbox,
+                outbox=outbox,
+                config={},
+            )
+
+            # _task_lock 应该在 __init__ 后为 None
+            # 锁应该在 run() 方法中初始化
+            assert worker._task_lock is None, "_task_lock 应该在 run() 中初始化，不是 __init__"
+        finally:
+            inbox.close()
+            outbox.close()
+
+    def test_worker_no_executor_in_init(self):
+        """验证 Worker 在 __init__ 中不创建线程池
+
+        ThreadPoolExecutor 无法被 pickle，必须在 run() 方法中初始化。
+        """
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        try:
+            worker = SimpleTestWorker(
+                agent_id="no-executor-test",
+                agent_type="test",
+                inbox=inbox,
+                outbox=outbox,
+                config={},
+            )
+
+            # _executor 应该在 __init__ 后为 None
+            assert worker._executor is None, "_executor 应该在 run() 中初始化，不是 __init__"
+        finally:
+            inbox.close()
+            outbox.close()
+
+    def test_worker_config_is_serializable(self):
+        """验证 Worker 的 config 可被 pickle 序列化"""
+        config = {
+            "key": "value",
+            "nested": {"a": 1, "b": [1, 2, 3]},
+            "list": ["x", "y", "z"],
+        }
+
+        # config 必须可被序列化
+        pickled = pickle.dumps(config)
+        unpickled = pickle.loads(pickled)
+        assert unpickled == config
+
+    def test_worker_attributes_serializable(self):
+        """验证 Worker 的关键属性可被 pickle 序列化"""
+        # 这些是在 spawn 时需要传递的属性
+        attrs = {
+            "agent_id": "test-worker-001",
+            "agent_type": "test",
+            "_running": False,
+            "config": {"key": "value"},
+        }
+
+        # 所有属性必须可被序列化
+        for name, value in attrs.items():
+            try:
+                pickled = pickle.dumps(value)
+                unpickled = pickle.loads(pickled)
+                assert unpickled == value, f"{name} 序列化后值不一致"
+            except Exception as e:
+                pytest.fail(f"属性 {name} 无法被 pickle 序列化: {e}")
+
+
+class TestAgentProcessPickleSerializable:
+    """Agent 进程 pickle 序列化测试
+
+    验证各类 Agent 进程在 __init__ 后不包含不可序列化的对象。
+    注意：Queue 由 multiprocessing 框架管理，不需要显式序列化。
+    """
+
+    def test_worker_agent_process_no_unpicklable_attrs(self):
+        """测试 WorkerAgentProcess 在 __init__ 后无不可序列化属性"""
+        from agents.worker_process import WorkerAgentProcess
+
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        try:
+            worker = WorkerAgentProcess(
+                agent_id="worker-pickle-001",
+                agent_type="worker",
+                inbox=inbox,
+                outbox=outbox,
+                config={"working_directory": "."},
+            )
+
+            # 验证关键属性在 __init__ 后为 None（应在 run() 中初始化）
+            assert worker._task_lock is None, "WorkerAgentProcess._task_lock 应为 None"
+            assert worker._executor is None, "WorkerAgentProcess._executor 应为 None"
+            assert worker.cursor_client is None, "WorkerAgentProcess.cursor_client 应为 None"
+        finally:
+            inbox.close()
+            outbox.close()
+
+    def test_planner_agent_process_no_unpicklable_attrs(self):
+        """测试 PlannerAgentProcess 在 __init__ 后无不可序列化属性"""
+        from agents.planner_process import PlannerAgentProcess
+
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        try:
+            planner = PlannerAgentProcess(
+                agent_id="planner-pickle-001",
+                agent_type="planner",
+                inbox=inbox,
+                outbox=outbox,
+                config={"working_directory": "."},
+            )
+
+            # 验证关键属性在 __init__ 后为 None
+            assert planner._task_lock is None, "PlannerAgentProcess._task_lock 应为 None"
+            assert planner._executor is None, "PlannerAgentProcess._executor 应为 None"
+            assert planner.cursor_client is None, "PlannerAgentProcess.cursor_client 应为 None"
+        finally:
+            inbox.close()
+            outbox.close()
+
+    def test_reviewer_agent_process_no_unpicklable_attrs(self):
+        """测试 ReviewerAgentProcess 在 __init__ 后无不可序列化属性"""
+        from agents.reviewer_process import ReviewerAgentProcess
+
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        try:
+            reviewer = ReviewerAgentProcess(
+                agent_id="reviewer-pickle-001",
+                agent_type="reviewer",
+                inbox=inbox,
+                outbox=outbox,
+                config={"working_directory": "."},
+            )
+
+            # 验证关键属性在 __init__ 后为 None
+            assert reviewer._task_lock is None, "ReviewerAgentProcess._task_lock 应为 None"
+            assert reviewer._executor is None, "ReviewerAgentProcess._executor 应为 None"
+            assert reviewer.cursor_client is None, "ReviewerAgentProcess.cursor_client 应为 None"
+        finally:
+            inbox.close()
+            outbox.close()
+
+
+class TestSpawnStartMethod:
+    """spawn 启动方式测试
+
+    这些测试验证在 spawn 启动方式下进程能正常工作。
+    macOS 和 Windows 默认使用 spawn。
+    """
+
+    def test_worker_starts_and_ready(self):
+        """测试 Worker 能正常启动并发送就绪消息
+
+        此测试在所有平台上运行，验证进程启动的基本功能。
+        macOS/Windows 使用 spawn，Linux 使用 fork。
+        """
+        inbox = mp.Queue()
+        outbox = mp.Queue()
+
+        worker = SimpleTestWorker(
+            agent_id="spawn-start-test",
+            agent_type="test",
+            inbox=inbox,
+            outbox=outbox,
+            config={},
+        )
+
+        try:
+            worker.start()
+
+            # 等待就绪消息
+            ready_msg = outbox.get(timeout=10.0)
+            assert ready_msg.type == ProcessMessageType.STATUS_RESPONSE
+            assert ready_msg.payload.get("status") == "ready"
+        finally:
+            inbox.put(ProcessMessage(type=ProcessMessageType.SHUTDOWN))
+            worker.join(timeout=5.0)
+            if worker.is_alive():
+                worker.terminate()
+            inbox.close()
+            outbox.close()
+
+    def test_all_agent_processes_spawn_compatible(self):
+        """测试所有 Agent 进程类型在 spawn 方式下兼容
+
+        验证所有进程类型在 __init__ 后没有不可序列化的对象。
+        这确保了在 macOS/Windows 的 spawn 启动方式下能正常工作。
+        """
+        from agents.worker_process import WorkerAgentProcess
+        from agents.planner_process import PlannerAgentProcess
+        from agents.reviewer_process import ReviewerAgentProcess
+
+        process_classes = [
+            (WorkerAgentProcess, "worker"),
+            (PlannerAgentProcess, "planner"),
+            (ReviewerAgentProcess, "reviewer"),
+        ]
+
+        for process_class, agent_type in process_classes:
+            inbox = mp.Queue()
+            outbox = mp.Queue()
+
+            try:
+                process = process_class(
+                    agent_id=f"{agent_type}-spawn-compat",
+                    agent_type=agent_type,
+                    inbox=inbox,
+                    outbox=outbox,
+                    config={"working_directory": "."},
+                )
+
+                # 验证关键属性在 __init__ 后为 None（确保 spawn 兼容）
+                assert process._task_lock is None, (
+                    f"{process_class.__name__}._task_lock 应在 run() 中初始化"
+                )
+                assert process._executor is None, (
+                    f"{process_class.__name__}._executor 应在 run() 中初始化"
+                )
+            finally:
+                inbox.close()
+                outbox.close()

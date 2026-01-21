@@ -209,11 +209,19 @@ jobs:
             }
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.9', '3.10', '3.11', '3.12']
+        exclude:
+          # Windows + Python 3.9 可选排除（减少运行时间）
+          - os: windows-latest
+            python-version: '3.9'
+          # macOS + Python 3.9 可选排除（减少运行时间）
+          - os: macos-latest
+            python-version: '3.9'
 
     steps:
       - name: 检出代码
@@ -240,11 +248,32 @@ jobs:
         run: pip check
 
       - name: Python 语法检查
+        shell: bash
         run: |
-          # 检查所有 Python 文件的语法
-          find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*" -not -path "./__pycache__/*" \
-            -exec python -m py_compile {} \;
-          echo "语法检查通过"
+          # 检查所有 Python 文件的语法（跨平台兼容）
+          python -c "
+          import os
+          import py_compile
+          import sys
+
+          errors = []
+          for root, dirs, files in os.walk('.'):
+              # 跳过不需要检查的目录
+              dirs[:] = [d for d in dirs if d not in {'.git', 'venv', '__pycache__', '.venv', 'node_modules'}]
+              for f in files:
+                  if f.endswith('.py'):
+                      path = os.path.join(root, f)
+                      try:
+                          py_compile.compile(path, doraise=True)
+                      except py_compile.PyCompileError as e:
+                          errors.append(str(e))
+
+          if errors:
+              for e in errors:
+                  print(e, file=sys.stderr)
+              sys.exit(1)
+          print('语法检查通过')
+          "
 
       - name: 模块导入检查
         id: import_check
@@ -323,7 +352,7 @@ jobs:
           echo "✅ **所有运行模式验证通过**" >> $GITHUB_STEP_SUMMARY
 
       - name: 上传覆盖率报告到 Codecov
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
@@ -335,7 +364,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: 上传 HTML 覆盖率报告
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-html-report
@@ -343,7 +372,7 @@ jobs:
           retention-days: 7
 
       - name: 生成覆盖率摘要
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         run: |
           # 提取覆盖率百分比
           COVERAGE=$(python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); print(f'{float(tree.getroot().attrib[\"line-rate\"]) * 100:.1f}%')" 2>/dev/null || echo "N/A")
@@ -351,7 +380,7 @@ jobs:
           echo "### 单元测试覆盖率: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: PR 覆盖率评论
-        if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         uses: py-cov-action/python-coverage-comment-action@v3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

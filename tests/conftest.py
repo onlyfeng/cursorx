@@ -3,9 +3,17 @@
 全局 pytest 配置，包含共享 fixtures 和标记定义。
 
 E2E 测试相关配置请参见 conftest_e2e.py。
+
+平台兼容性说明：
+- skip_on_windows: 跳过 Windows 平台
+- skip_on_macos: 跳过 macOS 平台
+- skip_on_linux: 跳过 Linux 平台
+- requires_fork: 需要 fork 启动方式的测试
+- requires_spawn: 需要 spawn 启动方式的测试
 """
 from __future__ import annotations
 
+import multiprocessing as mp
 import os
 import sys
 from pathlib import Path
@@ -46,6 +54,121 @@ from tests.conftest_e2e import (
     create_test_task,
     wait_for_condition,
 )
+
+
+# ==================== 平台特定 Fixtures 和标记 ====================
+
+@pytest.fixture
+def skip_on_windows():
+    """跳过 Windows 平台的 fixture
+
+    用于需要 Unix 特性的测试。
+
+    Example:
+        def test_unix_feature(skip_on_windows):
+            # 此测试在 Windows 上跳过
+            ...
+    """
+    if sys.platform == "win32":
+        pytest.skip("Windows 暂不支持此功能")
+
+
+@pytest.fixture
+def skip_on_macos():
+    """跳过 macOS 平台的 fixture
+
+    Example:
+        def test_linux_specific(skip_on_macos):
+            # 此测试在 macOS 上跳过
+            ...
+    """
+    if sys.platform == "darwin":
+        pytest.skip("macOS 暂不支持此功能")
+
+
+@pytest.fixture
+def skip_on_linux():
+    """跳过 Linux 平台的 fixture
+
+    Example:
+        def test_non_linux(skip_on_linux):
+            # 此测试在 Linux 上跳过
+            ...
+    """
+    if sys.platform.startswith("linux"):
+        pytest.skip("Linux 暂不支持此功能")
+
+
+@pytest.fixture
+def requires_fork():
+    """需要 fork 启动方式的 fixture
+
+    macOS 和 Windows 默认使用 spawn，此 fixture 会跳过测试。
+
+    Example:
+        def test_fork_specific(requires_fork):
+            # 此测试仅在 fork 启动方式下运行
+            ...
+    """
+    method = mp.get_start_method(allow_none=True)
+    if method is None:
+        # 未设置时检查平台默认值
+        if sys.platform != "linux" and not sys.platform.startswith("linux"):
+            pytest.skip("需要 fork 启动方式（仅 Linux 默认支持）")
+    elif method != "fork":
+        pytest.skip(f"需要 fork 启动方式，当前为 {method}")
+
+
+@pytest.fixture
+def requires_spawn():
+    """需要 spawn 启动方式的 fixture
+
+    Linux 默认使用 fork，此 fixture 会跳过测试。
+
+    Example:
+        def test_spawn_specific(requires_spawn):
+            # 此测试仅在 spawn 启动方式下运行
+            ...
+    """
+    method = mp.get_start_method(allow_none=True)
+    if method is None:
+        # 未设置时检查平台默认值
+        if sys.platform.startswith("linux"):
+            pytest.skip("需要 spawn 启动方式（Linux 默认使用 fork）")
+    elif method != "spawn":
+        pytest.skip(f"需要 spawn 启动方式，当前为 {method}")
+
+
+@pytest.fixture
+def current_platform() -> str:
+    """返回当前平台名称
+
+    Returns:
+        平台名称: 'linux', 'macos', 'windows', 'unknown'
+    """
+    if sys.platform == "darwin":
+        return "macos"
+    elif sys.platform.startswith("linux"):
+        return "linux"
+    elif sys.platform == "win32":
+        return "windows"
+    return "unknown"
+
+
+@pytest.fixture
+def mp_start_method() -> str:
+    """返回当前多进程启动方式
+
+    Returns:
+        启动方式: 'fork', 'spawn', 'forkserver'
+    """
+    method = mp.get_start_method(allow_none=True)
+    if method is None:
+        # 返回平台默认值
+        if sys.platform.startswith("linux"):
+            return "fork"
+        return "spawn"
+    return method
 
 
 # ==================== 通用 Fixtures ====================
@@ -121,6 +244,14 @@ __all__ = [
     "env_with_api_key",
     "clean_env",
     "event_loop_policy",
+    # 平台特定 Fixtures
+    "skip_on_windows",
+    "skip_on_macos",
+    "skip_on_linux",
+    "requires_fork",
+    "requires_spawn",
+    "current_platform",
+    "mp_start_method",
     # 断言助手
     "assert_executor_called_with",
     "assert_iteration_failed",
