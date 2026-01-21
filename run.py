@@ -26,6 +26,7 @@
 import argparse
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -63,6 +64,7 @@ from core.config import (
 from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
 from cursor.executor import ExecutionMode
 from core.config import build_cloud_client_config
+from core.project_workspace import inspect_project_state
 
 # ============================================================
 # 运行模式定义
@@ -243,11 +245,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     # 通用参数
+    # --directory 使用 tri-state 设计：
+    # - default=None 表示用户未显式指定
+    # - 运行时解析为 resolved_directory = args.directory or "."
+    # - args._directory_user_set 标记是否为用户显式指定
     parser.add_argument(
         "-d", "--directory",
         type=str,
-        default=".",
-        help="工作目录 (默认: 当前目录)",
+        default=None,
+        help="工作目录 (默认: 当前目录)；显式指定时触发工程初始化/参考子工程发现",
     )
 
     # workers 使用 tri-state (None=未指定，使用 config.yaml)
@@ -723,6 +729,14 @@ def parse_args() -> argparse.Namespace:
         arg in sys.argv for arg in ["--orchestrator", "--no-mp"]
     )
 
+    # 标记用户是否显式设置了 --directory 参数
+    # tri-state 设计：None 表示未指定，运行时解析为当前目录
+    args._directory_user_set = args.directory is not None
+
+    # 解析为实际目录（未指定时使用当前目录）
+    if args.directory is None:
+        args.directory = "."
+
     return args
 
 
@@ -797,6 +811,28 @@ class TaskAnalyzer:
     # 无限迭代关键词
     UNLIMITED_KEYWORDS = ["无限", "持续", "一直", "不停", "循环", "max", "unlimited"]
 
+    # Agent 允许输出的选项字段
+    AGENT_ALLOWED_OPTIONS = {
+        "workers",
+        "max_iterations",
+        "strict",
+        "enable_sub_planners",
+        "execution_mode",
+        "orchestrator",
+        "no_mp",
+        "auto_commit",
+        "auto_push",
+        "commit_per_iteration",
+        "dry_run",
+        "skip_online",
+        "force_update",
+        "self_update",
+        "use_knowledge",
+        "stream_log",
+        "cloud_background",
+        "directory",
+    }
+
     def __init__(self, use_agent: bool = True):
         """初始化分析器
 
@@ -823,17 +859,16 @@ class TaskAnalyzer:
                 reasoning="无任务描述，使用指定模式",
             )
 
-        # 先用规则匹配
-        analysis = self._rule_based_analysis(task, args)
+        # 先用 Agent 进行参数 + 任务解析（执行者模型，默认只读 ask）
+        agent_analysis = self._agent_analysis(task, args) if self.use_agent else None
 
-        # 如果启用 Agent 分析且规则匹配不明确，使用 Agent
-        if self.use_agent and analysis.mode == RunMode.BASIC:
-            agent_analysis = self._agent_analysis(task)
-            if agent_analysis:
-                # 合并 Agent 分析结果
-                analysis.mode = agent_analysis.mode
-                analysis.options.update(agent_analysis.options)
-                analysis.reasoning = agent_analysis.reasoning
+        rule_analysis = self._rule_based_analysis(task, args)
+
+        analysis = self._merge_analysis(
+            original_task=task,
+            agent_analysis=agent_analysis,
+            rule_analysis=rule_analysis,
+        )
 
         # 确保 goal 不为空
         if not analysis.goal:
@@ -903,54 +938,76 @@ class TaskAnalyzer:
         analysis.reasoning = "; ".join(reasoning_parts) if reasoning_parts else "默认模式"
         return analysis
 
-    def _agent_analysis(self, task: str) -> Optional[TaskAnalysis]:
+    def _merge_analysis(
+        self,
+        original_task: str,
+        agent_analysis: Optional[TaskAnalysis],
+        rule_analysis: TaskAnalysis,
+    ) -> TaskAnalysis:
+        """合并 Agent 与规则分析结果"""
+        if not agent_analysis:
+            return rule_analysis
+
+        merged_goal = agent_analysis.goal or rule_analysis.goal or original_task
+        merged_options = {**rule_analysis.options, **agent_analysis.options}
+        merged_reasoning = agent_analysis.reasoning or rule_analysis.reasoning
+        merged_mode = agent_analysis.mode
+
+        # '&' 前缀触发时，强制 Cloud 模式和目标去前缀
+        if rule_analysis.options.get("triggered_by_prefix"):
+            merged_mode = RunMode.CLOUD
+            merged_goal = rule_analysis.goal
+            merged_options.update(rule_analysis.options)
+            merged_reasoning = self._merge_reasoning(
+                merged_reasoning,
+                "检测到 '&' 前缀，强制使用 Cloud 后台模式",
+            )
+            return TaskAnalysis(
+                mode=merged_mode,
+                goal=merged_goal,
+                options=merged_options,
+                reasoning=merged_reasoning,
+            )
+
+        # 如果 Agent 未明确模式，使用规则分析的模式
+        if merged_mode == RunMode.BASIC and rule_analysis.mode != RunMode.BASIC:
+            merged_mode = rule_analysis.mode
+            merged_reasoning = self._merge_reasoning(merged_reasoning, rule_analysis.reasoning)
+
+        return TaskAnalysis(
+            mode=merged_mode,
+            goal=merged_goal,
+            options=merged_options,
+            reasoning=merged_reasoning,
+        )
+
+    @staticmethod
+    def _merge_reasoning(primary: str, extra: str) -> str:
+        if not primary:
+            return extra
+        if not extra:
+            return primary
+        if extra in primary:
+            return primary
+        return f"{primary}; {extra}"
+
+    def _agent_analysis(self, task: str, args: Optional[argparse.Namespace] = None) -> Optional[TaskAnalysis]:
         """使用 Agent 分析任务（只读模式）
 
         使用 --mode ask 确保只读执行，不会修改任何文件。
         """
         try:
-            # 构建分析提示
-            prompt = f"""分析以下任务描述，确定最佳运行模式和选项。
+            context_payload = self._build_agent_context(task, args)
+            prompt = self._build_agent_prompt(task, context_payload)
+            cmd = ["agent", "-p", prompt, "--output-format", "text", "--mode", "ask"]
 
-任务描述: {task}
-
-可用模式：
-- basic: 基本协程模式，适合简单任务
-- mp: 多进程模式，适合需要并行执行的大型任务
-- knowledge: 知识库增强模式，适合需要参考文档的任务
-- iterate: 自我迭代模式，适合需要检查更新、更新知识库的任务
-- cloud: 云端执行模式，适合后台长时间运行的任务（'&' 前缀触发）
-- plan: 规划模式，仅分析任务并生成执行计划，不修改文件
-- ask: 问答模式，直接与 Agent 对话，不修改文件
-
-可用选项：
-- skip_online: 跳过在线文档检查 (bool)
-- dry_run: 仅分析不执行 (bool)
-- strict: 严格评审模式 (bool)
-- max_iterations: 最大迭代次数，-1 表示无限 (int)
-- workers: Worker 数量 (int)
-- auto_commit: 启用自动提交 (bool)
-- auto_push: 启用自动推送，需配合 auto_commit (bool)
-- commit_per_iteration: 每次迭代都提交 (bool)
-- stream_log: 启用流式日志 (bool)
-- no_mp: 禁用多进程编排器，使用协程模式 (bool)
-- orchestrator: 编排器类型，"mp" 或 "basic" (str)
-- execution_mode: 执行模式，"cli"/"cloud"/"auto" (str)
-
-请以 JSON 格式返回分析结果：
-{{
-  "mode": "模式名称",
-  "options": {{"选项名": 值}},
-  "reasoning": "分析理由",
-  "refined_goal": "提炼后的任务目标"
-}}
-
-仅返回 JSON，不要其他内容。"""
+            model = self._resolve_worker_model(args)
+            if model:
+                cmd.extend(["--model", model])
 
             # 调用 agent CLI（使用 ask 模式，确保只读执行）
-            # --mode ask: 问答模式，仅回答问题，不修改文件
             result = subprocess.run(
-                ["agent", "-p", prompt, "--output-format", "text", "--mode", "ask"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -968,25 +1025,165 @@ class TaskAnalyzer:
                 return None
 
             # 尝试提取 JSON
-            json_match = re.search(r'\{[\s\S]*\}', output)
+            json_match = re.search(r"\{[\s\S]*\}", output)
             if not json_match:
                 return None
 
             data = json.loads(json_match.group())
 
-            mode_str = data.get("mode", "basic").lower()
+            mode_str = str(data.get("mode", "basic")).lower()
             mode = MODE_ALIASES.get(mode_str, RunMode.BASIC)
+
+            options = self._normalize_agent_options(data.get("options", {}), args)
 
             return TaskAnalysis(
                 mode=mode,
                 goal=data.get("refined_goal", task),
-                options=data.get("options", {}),
+                options=options,
                 reasoning=data.get("reasoning", "Agent 分析"),
             )
 
         except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
             logger.debug(f"Agent 分析失败: {e}")
             return None
+
+    def _normalize_agent_options(
+        self,
+        options: Any,
+        args: Optional[argparse.Namespace],
+    ) -> dict[str, Any]:
+        """规范化 Agent 返回的 options"""
+        if not isinstance(options, dict):
+            return {}
+
+        normalized: dict[str, Any] = {}
+        for key, value in options.items():
+            if key not in self.AGENT_ALLOWED_OPTIONS:
+                continue
+            normalized[key] = value
+
+        # 类型归一化
+        if "workers" in normalized:
+            try:
+                normalized["workers"] = int(normalized["workers"])
+            except (TypeError, ValueError):
+                normalized.pop("workers", None)
+
+        if "max_iterations" in normalized:
+            try:
+                normalized["max_iterations"] = int(normalized["max_iterations"])
+            except (TypeError, ValueError):
+                normalized.pop("max_iterations", None)
+
+        # 如果用户显式设置了目录，则不覆盖
+        if args and getattr(args, "_directory_user_set", False):
+            normalized.pop("directory", None)
+
+        # 如果用户显式设置了编排器，则不允许覆盖
+        if args and getattr(args, "_orchestrator_user_set", False):
+            normalized.pop("orchestrator", None)
+            normalized.pop("no_mp", None)
+
+        return normalized
+
+    def _resolve_worker_model(self, args: Optional[argparse.Namespace]) -> Optional[str]:
+        """解析执行者模型，用于 Agent 任务解析"""
+        env_model = os.getenv("TASK_ANALYSIS_MODEL")
+        if env_model:
+            return env_model
+
+        if args and getattr(args, "worker_model", None):
+            return args.worker_model
+
+        try:
+            config = get_config()
+            return config.models.worker
+        except Exception:
+            return DEFAULT_WORKER_MODEL
+
+    def _build_agent_context(
+        self,
+        task: str,
+        args: Optional[argparse.Namespace],
+    ) -> dict[str, Any]:
+        """构建 Agent 解析上下文"""
+        context: dict[str, Any] = {
+            "task": task,
+        }
+
+        if args:
+            context["cli_args"] = _build_cli_overrides_from_args(args)
+            context["directory"] = args.directory
+            context["directory_user_set"] = getattr(args, "_directory_user_set", False)
+            context["explicit_mode"] = getattr(args, "mode", None)
+            context["cloud_background"] = getattr(args, "cloud_background", None)
+
+            if args.directory and context["directory_user_set"]:
+                context["project_summary"] = self._collect_project_summary(args.directory)
+
+        return context
+
+    @staticmethod
+    def _collect_project_summary(directory: str) -> dict[str, Any]:
+        """检查目录并生成简要摘要"""
+        path = Path(directory).resolve()
+        summary: dict[str, Any] = {
+            "path": str(path),
+            "exists": path.exists(),
+            "is_dir": path.is_dir(),
+        }
+
+        try:
+            info = inspect_project_state(path)
+            summary.update({
+                "state": info.state.value,
+                "detected_language": info.detected_language,
+                "marker_files": info.marker_files[:5],
+                "source_files_count": info.source_files_count,
+            })
+        except Exception as exc:
+            summary["error"] = str(exc)
+
+        # 采样顶层文件/目录
+        if summary.get("exists") and summary.get("is_dir"):
+            try:
+                entries = []
+                for item in path.iterdir():
+                    entries.append(item.name + ("/" if item.is_dir() else ""))
+                    if len(entries) >= 20:
+                        break
+                summary["top_level_entries"] = entries
+            except Exception:
+                summary["top_level_entries"] = []
+
+        return summary
+
+    def _build_agent_prompt(self, task: str, context_payload: dict[str, Any]) -> str:
+        """构建任务解析提示词"""
+        context_json = json.dumps(context_payload, ensure_ascii=False)
+        return (
+            "你是执行者Agent，请先解析参数和任务信息，并给出结构化结果。\n"
+            "请根据已提供参数 + 任务描述 + 目录检查结果，推断应执行的模式与参数。\n"
+            "如果用户已显式给出参数，必须优先保留，不要擅自覆盖。\n"
+            "如果任务描述中包含参数形式（如 --workers 5 / --directory /path），需要解析出来。\n"
+            "若目录为空或仅文档，结合任务描述推断可能的开发语言并反映在 refined_goal 中（如“使用 Python ...”）。\n"
+            "仅输出 JSON，不要添加额外文字。\n\n"
+            f"上下文: {context_json}\n\n"
+            "可用模式: basic/mp/knowledge/iterate/cloud/plan/ask\n"
+            "可用选项字段:\n"
+            "- directory, workers, max_iterations, strict, enable_sub_planners\n"
+            "- skip_online, force_update, self_update, use_knowledge\n"
+            "- execution_mode, orchestrator, no_mp, cloud_background\n"
+            "- auto_commit, auto_push, commit_per_iteration, dry_run\n"
+            "- stream_log\n\n"
+            "输出格式示例:\n"
+            "{\n"
+            '  "mode": "iterate",\n'
+            '  "options": {"skip_online": true, "workers": 3},\n'
+            '  "reasoning": "任务需要迭代并跳过在线检查",\n'
+            '  "refined_goal": "在目标目录中执行自我迭代更新"\n'
+            "}"
+        )
 
 
 # ============================================================
@@ -1146,9 +1343,14 @@ class Runner:
         # 使用统一的 resolve_orchestrator_settings 解析核心配置
         resolved = resolve_orchestrator_settings(overrides=cli_overrides)
 
+        # 解析工作目录（允许分析结果在未显式指定时覆盖）
+        directory = self.args.directory
+        if analysis_options.get("directory") and not getattr(self.args, "_directory_user_set", False):
+            directory = analysis_options["directory"]
+
         # 构建 options 字典
         options = {
-            "directory": self.args.directory,
+            "directory": directory,
             "workers": resolved["workers"],
             "max_iterations": resolved["max_iterations"],
             "strict": resolved["strict_review"],
@@ -2303,20 +2505,27 @@ async def async_main() -> int:
     # 解析模式
     explicit_mode = MODE_ALIASES.get(args.mode, RunMode.AUTO)
 
-    # 任务分析
-    if explicit_mode == RunMode.AUTO and args.task and not args.no_auto_analyze:
-        # 自动模式：分析任务
-        print_info("分析任务...")
+    # 任务分析（优先使用执行者 Agent 进行参数/任务解析）
+    analysis: TaskAnalysis
+    if args.task and not args.no_auto_analyze:
+        print_info("分析参数与任务...")
         analyzer = TaskAnalyzer(use_agent=True)
         analysis = analyzer.analyze(args.task, args)
     else:
-        # 显式模式或无任务
         if explicit_mode == RunMode.AUTO:
             explicit_mode = RunMode.BASIC
         analysis = TaskAnalysis(
             mode=explicit_mode,
             goal=args.task,
             reasoning="使用指定模式",
+        )
+
+    # 显式指定模式时，优先使用指定模式（但保留解析出的参数/目标）
+    if explicit_mode != RunMode.AUTO:
+        analysis.mode = explicit_mode
+        analysis.reasoning = TaskAnalyzer._merge_reasoning(
+            analysis.reasoning,
+            "显式指定模式，覆盖自动判断",
         )
 
     # 检查是否有任务

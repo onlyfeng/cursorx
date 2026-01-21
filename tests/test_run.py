@@ -63,6 +63,7 @@ def mock_args() -> argparse.Namespace:
         task="测试任务",
         mode="auto",
         directory=".",
+        _directory_user_set=False,  # tri-state 内部标志：是否显式指定了 --directory
         workers=CONFIG_WORKER_POOL_SIZE,  # 来自 config.yaml
         max_iterations=str(CONFIG_MAX_ITERATIONS),  # 来自 config.yaml
         strict_review=None,  # tri-state: None=未指定，使用 config.yaml
@@ -1196,11 +1197,7 @@ class TestTaskAnalyzer:
     def test_analyze_with_agent_fallback(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """测试 analyze 方法在 Agent 分析失败时回退到规则匹配
-
-        注意：analyze 方法只在规则匹配返回 BASIC 模式时才会调用 Agent 分析。
-        当规则匹配已经识别出特定模式（非 BASIC）时，不会调用 Agent。
-        """
+        """测试 analyze 方法在 Agent 分析失败时回退到规则匹配"""
         import subprocess
 
         # 测试 1: 规则匹配返回 BASIC，Agent 超时，应保持 BASIC 模式
@@ -1249,12 +1246,16 @@ class TestTaskAnalyzer:
 
         # 测试 4: 规则匹配已识别特定模式，不会调用 Agent
         with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""  # 模拟空输出，回退到规则分析
+            mock_run.return_value = mock_result
             analyzer = TaskAnalyzer(use_agent=True)
             # 包含 ITERATE 关键词的任务
             analysis = analyzer.analyze("启动自我迭代更新代码", mock_args)
 
-            # 规则分析已识别 ITERATE 模式，不调用 Agent
-            mock_run.assert_not_called()
+            # Agent 已被调用，规则分析兜底
+            mock_run.assert_called_once()
 
             # 验证正确识别 ITERATE 模式
             assert analysis.mode == RunMode.ITERATE
@@ -1262,20 +1263,28 @@ class TestTaskAnalyzer:
 
         # 测试 5: 验证规则匹配识别 MP 模式后不调用 Agent
         with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""  # 模拟空输出，回退到规则分析
+            mock_run.return_value = mock_result
             analyzer = TaskAnalyzer(use_agent=True)
             analysis = analyzer.analyze("使用多进程并行处理", mock_args)
 
-            # 规则分析已识别 MP 模式，不调用 Agent
-            mock_run.assert_not_called()
+            # Agent 已被调用，规则分析兜底
+            mock_run.assert_called_once()
 
             assert analysis.mode == RunMode.MP
 
         # 测试 6: 验证规则匹配识别 KNOWLEDGE 模式后不调用 Agent
         with patch("run.subprocess.run") as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = ""  # 模拟空输出，回退到规则分析
+            mock_run.return_value = mock_result
             analyzer = TaskAnalyzer(use_agent=True)
             analysis = analyzer.analyze("搜索知识库获取文档", mock_args)
 
-            mock_run.assert_not_called()
+            mock_run.assert_called_once()
             assert analysis.mode == RunMode.KNOWLEDGE
 
     def test_detect_non_parallel_keywords(self, mock_args: argparse.Namespace) -> None:
@@ -1596,6 +1605,27 @@ class TestRunner:
         assert options["max_iterations"] == -1
         assert options["skip_online"] is True
         assert options["dry_run"] is True
+
+    def test_merge_options_analysis_directory_override(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证分析结果可覆盖目录（未显式指定时）"""
+        mock_args._directory_user_set = False
+        runner = Runner(mock_args)
+        options = runner._merge_options({"directory": "/tmp/project"})
+
+        assert options["directory"] == "/tmp/project"
+
+    def test_merge_options_analysis_directory_respects_user(
+        self, mock_args: argparse.Namespace
+    ) -> None:
+        """验证显式目录优先，不被分析覆盖"""
+        mock_args._directory_user_set = True
+        mock_args.directory = "/explicit/path"
+        runner = Runner(mock_args)
+        options = runner._merge_options({"directory": "/from/task"})
+
+        assert options["directory"] == "/explicit/path"
 
     def test_merge_options_stream_log_from_analysis(
         self, mock_args: argparse.Namespace
@@ -4906,20 +4936,31 @@ class TestAsyncMain:
             assert exit_code == 0
 
     @pytest.mark.asyncio
-    async def test_explicit_mode_skips_analysis(
+    async def test_explicit_mode_still_analyzes(
         self, base_args: argparse.Namespace
     ) -> None:
-        """测试显式指定模式跳过自动分析"""
+        """测试显式指定模式仍会进行参数解析"""
         from run import async_main, TaskAnalysis, RunMode
 
         # 设置显式 basic 模式
         base_args.task = "显式模式任务"
         base_args.mode = "basic"  # 非 auto 模式
+        base_args.no_auto_analyze = False
 
         with patch("run.parse_args", return_value=base_args), \
              patch("run.setup_logging"), \
              patch("run.TaskAnalyzer") as mock_analyzer_class, \
              patch("run.Runner") as mock_runner_class:
+
+            # 设置 TaskAnalyzer mock
+            mock_analysis = TaskAnalysis(
+                mode=RunMode.MP,
+                goal="解析后的目标",
+                reasoning="解析结果",
+            )
+            mock_analyzer = MagicMock()
+            mock_analyzer.analyze.return_value = mock_analysis
+            mock_analyzer_class.return_value = mock_analyzer
 
             # 设置 Runner mock
             mock_runner = MagicMock()
@@ -4928,8 +4969,11 @@ class TestAsyncMain:
 
             exit_code = await async_main()
 
-            # 验证 TaskAnalyzer 没有被创建（跳过分析）
-            mock_analyzer_class.assert_not_called()
+            # 验证 TaskAnalyzer 被创建并调用 analyze
+            mock_analyzer_class.assert_called_once_with(use_agent=True)
+            mock_analyzer.analyze.assert_called_once_with(
+                "显式模式任务", base_args
+            )
 
             # 验证 Runner.run 被调用，使用了显式指定的模式
             mock_runner.run.assert_called_once()
@@ -4937,7 +4981,7 @@ class TestAsyncMain:
             analysis = call_args[0]
             assert isinstance(analysis, TaskAnalysis)
             assert analysis.mode == RunMode.BASIC
-            assert analysis.goal == "显式模式任务"
+            assert analysis.goal == "解析后的目标"
             assert exit_code == 0
 
     @pytest.mark.asyncio

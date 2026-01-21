@@ -38,6 +38,14 @@ from loguru import logger
 
 from agents.committer import CommitterAgent, CommitterConfig
 from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from core.project_workspace import (
+    ProjectState,
+    ProjectInfo,
+    ReferenceProject,
+    TaskAnalysis,
+    WorkspacePreparationResult,
+    prepare_workspace,
+)
 from core.config import (
     ResolvedSettings,
     resolve_settings,
@@ -206,6 +214,11 @@ class IterationContext:
     knowledge_context: list[dict] = field(default_factory=list)
     iteration_goal: str = ""
     dry_run: bool = False
+    # 目录驱动工程创建/扩展相关
+    project_info: Optional[ProjectInfo] = None
+    reference_projects: list[ReferenceProject] = field(default_factory=list)
+    workspace_preparation: Optional[WorkspacePreparationResult] = None
+    task_analysis: Optional[TaskAnalysis] = None
 
 
 # ============================================================
@@ -263,11 +276,15 @@ def parse_args() -> argparse.Namespace:
         help="额外需求（可选）",
     )
 
+    # --directory 使用 tri-state 设计：
+    # - default=None 表示用户未显式指定
+    # - 运行时解析为 resolved_directory = args.directory or "."
+    # - args._directory_user_set 标记是否为用户显式指定
     parser.add_argument(
         "-d", "--directory",
         type=str,
-        default=".",
-        help="工作目录 (默认: 当前目录)",
+        default=None,
+        help="工作目录 (默认: 当前目录)；显式指定时触发工程初始化/参考子工程发现",
     )
 
     parser.add_argument(
@@ -572,6 +589,14 @@ def parse_args() -> argparse.Namespace:
             "--orchestrator", "--no-mp", "-no-mp",
         ]
     )
+
+    # 标记用户是否显式设置了 --directory 参数
+    # tri-state 设计：None 表示未指定，运行时解析为当前目录
+    args._directory_user_set = args.directory is not None
+
+    # 解析为实际目录（未指定时使用当前目录）
+    if args.directory is None:
+        args.directory = "."
 
     return args
 
@@ -1648,13 +1673,54 @@ class IterationGoalBuilder:
         parts.append("# 自我迭代任务\n")
         parts.append("根据以下信息对系统进行更新和改进:\n")
 
-        # 2. 用户需求
+        # 2. 目标工程目录（当用户显式指定 --directory 时）
+        if context.project_info:
+            project_info = context.project_info
+            parts.append("\n## 目标工程目录\n")
+            parts.append(f"- 路径: {project_info.path}\n")
+            parts.append(f"- 状态: {project_info.state.value}\n")
+            if project_info.detected_language:
+                parts.append(f"- 检测语言: {project_info.detected_language}\n")
+            if project_info.is_newly_initialized:
+                parts.append("- **刚初始化的工程**：请根据用户需求补充完整功能\n")
+            if project_info.marker_files:
+                parts.append(f"- 标记文件: {', '.join(project_info.marker_files[:5])}\n")
+
+        # 3. 参考子工程（仅参考/不要在其内直接改 unless 明确要求）
+        if context.reference_projects:
+            parts.append("\n## 参考工程（子目录）\n")
+            parts.append("以下是在工作目录下发现的参考工程，可参考其代码结构和实现方式。\n")
+            parts.append("**注意**: 仅参考，不要在其内直接修改，除非用户明确要求。\n")
+            for i, ref in enumerate(context.reference_projects[:5], 1):
+                parts.append(f"\n### {i}. {ref.relative_path}\n")
+                parts.append(f"- 语言: {ref.detected_language or '未知'}\n")
+                parts.append(f"- 标记文件: {', '.join(ref.marker_files[:3])}\n")
+                if ref.description:
+                    parts.append(f"- 描述: {ref.description}\n")
+
+        # 4. 任务解析（Agent 结构化）
+        if context.task_analysis:
+            analysis = context.task_analysis
+            parts.append("\n## 任务解析\n")
+            if analysis.language:
+                parts.append(f"- 语言: {analysis.language}\n")
+            if analysis.project_name:
+                parts.append(f"- 项目名: {analysis.project_name}\n")
+            if analysis.framework:
+                parts.append(f"- 框架: {analysis.framework}\n")
+            if analysis.params:
+                params_preview = ", ".join(
+                    f"{k}={v}" for k, v in list(analysis.params.items())[:5]
+                )
+                parts.append(f"- 参数: {params_preview}\n")
+
+        # 5. 用户需求
         if context.user_requirement:
             parts.append("\n## 用户需求\n")
             parts.append(context.user_requirement)
             parts.append("\n")
 
-        # 3. 更新分析
+        # 6. 更新分析
         if context.update_analysis and context.update_analysis.has_updates:
             analysis = context.update_analysis
 
@@ -1676,7 +1742,7 @@ class IterationGoalBuilder:
                 for fix in analysis.fixes[:5]:
                     parts.append(f"- {fix}\n")
 
-        # 4. 知识库上下文
+        # 7. 知识库上下文
         if context.knowledge_context:
             parts.append("\n## 参考文档（来自知识库）\n")
             for i, doc in enumerate(context.knowledge_context[:3], 1):
@@ -1685,7 +1751,7 @@ class IterationGoalBuilder:
                 content_preview = doc['content'][:500]
                 parts.append(f"```\n{content_preview}\n```\n")
 
-        # 5. 执行指导
+        # 8. 执行指导
         parts.append("\n## 执行指导\n")
         parts.append("1. 分析上述更新和需求，确定需要修改的代码文件\n")
         parts.append("2. 更新代码以支持新功能或修复问题\n")
@@ -1754,8 +1820,76 @@ class SelfIterator:
             dry_run=args.dry_run,
         )
 
+        # 保存 _directory_user_set 标记（用于工程准备逻辑）
+        self._directory_user_set = getattr(args, "_directory_user_set", False)
+
         # 统一解析配置（CLI 参数覆盖 config.yaml）
         self._resolved_settings = self._resolve_config_settings()
+
+    async def _prepare_workspace(self) -> bool:
+        """工程准备（仅当用户显式指定 --directory 时触发）
+
+        逻辑：
+        1. 探测目录状态
+        2. 如果是空目录/仅文档目录：
+           a. 推断语言（从任务文本）
+           b. 如果推断成功，生成脚手架
+           c. 如果推断失败，返回提示信息并退出
+        3. 无论是否生成脚手架，都发现参考子工程
+        4. 将结果缓存到 self.context
+
+        只读模式保护：
+        - 当 --dry-run 时保持只读语义：不写入文件
+        - 仅输出"建议创建的工程结构/需要指定语言"的提示并返回
+
+        Returns:
+            True 表示工程准备成功，False 表示需要用户干预
+        """
+        print_section("工程准备")
+
+        # 调用统一的工程准备函数
+        result = prepare_workspace(
+            target_dir=self.working_directory,
+            task_text=self.context.user_requirement,
+            explicit_language=None,  # 目前不支持显式语言参数
+            force_scaffold=False,
+            dry_run=self.context.dry_run,
+        )
+
+        # 缓存结果到 context
+        self.context.workspace_preparation = result
+        self.context.project_info = result.project_info
+        self.context.reference_projects = result.reference_projects
+        self.context.task_analysis = result.task_analysis
+
+        # 处理工程准备结果
+        if result.error:
+            # 工程准备失败（如无法推断语言）
+            print_error(f"工程准备失败: {result.error}")
+            if result.hint:
+                print("\n" + result.hint)
+            return False
+
+        # 显示工程信息
+        project_info = result.project_info
+        if project_info.is_newly_initialized:
+            print_success(f"已初始化 {project_info.detected_language} 工程")
+            if result.scaffold_result:
+                print_info(f"创建文件: {', '.join(result.scaffold_result.created_files)}")
+        elif project_info.state == ProjectState.EXISTING_PROJECT:
+            print_info(f"检测到已有工程: {project_info.detected_language or '未知语言'}")
+            if project_info.marker_files:
+                print_info(f"标记文件: {', '.join(project_info.marker_files[:3])}")
+        elif project_info.state == ProjectState.HAS_SOURCE_FILES:
+            print_info(f"检测到源码文件 ({project_info.source_files_count} 个)，语言: {project_info.detected_language or '未知'}")
+
+        # 显示参考子工程
+        if result.reference_projects:
+            print_info(f"发现 {len(result.reference_projects)} 个参考子工程:")
+            for ref in result.reference_projects[:3]:
+                print(f"  - {ref.relative_path}: {ref.description}")
+
+        return True
 
     def _resolve_config_settings(self) -> ResolvedSettings:
         """统一解析配置设置
@@ -1890,6 +2024,17 @@ class SelfIterator:
                 print(f"提交信息前缀: {self.args.commit_message}")
 
         try:
+            # 步骤 0: 工程准备（仅当用户显式指定 --directory 时）
+            if self._directory_user_set:
+                workspace_ok = await self._prepare_workspace()
+                if not workspace_ok:
+                    # 工程准备失败（如无法推断语言），已输出提示，直接返回
+                    return {
+                        "success": False,
+                        "error": "工程准备失败",
+                        "hint": self.context.workspace_preparation.hint if self.context.workspace_preparation else None,
+                    }
+
             # 步骤 1: 分析在线更新
             if not self.args.skip_online:
                 print_step(1, "分析在线文档更新")

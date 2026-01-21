@@ -463,7 +463,7 @@ check_tests() {
 }
 
 check_core_tests() {
-    # 核心测试集合：run.py、self_iterate、execution_modes、orchestrator_mp_commit
+    # 核心测试集合：run.py、self_iterate、execution_modes、orchestrator_mp_commit、project_workspace
     # 这些测试确保 CI 稳定性
     print_section "核心测试集合"
 
@@ -478,6 +478,7 @@ check_core_tests() {
         "tests/test_self_iterate.py"
         "tests/test_e2e_execution_modes.py"
         "tests/test_orchestrator_mp_commit.py"
+        "tests/test_project_workspace.py"
     )
 
     MISSING_FILES=0
@@ -930,7 +931,7 @@ main() {
             print_section "跳过的检查 (使用 --full 启用)"
             check_info "类型检查 (mypy)"
             check_info "代码风格检查 (flake8/ruff)"
-            check_info "核心测试集合 (test_run, test_self_iterate, test_e2e_execution_modes, test_orchestrator_mp_commit)"
+            check_info "核心测试集合 (test_run, test_self_iterate, test_e2e_execution_modes, test_orchestrator_mp_commit, test_project_workspace)"
             check_info "完整测试运行 (pytest)"
             check_info "代码覆盖率检查 (pytest-cov, 阈值 80%)"
         fi

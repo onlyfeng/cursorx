@@ -684,6 +684,7 @@ def resolve_stream_log_config(
     cli_console: Optional[bool] = None,
     cli_detail_dir: Optional[str] = None,
     cli_raw_dir: Optional[str] = None,
+    config_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """解析流式日志配置（CLI 参数优先）
 
@@ -694,18 +695,36 @@ def resolve_stream_log_config(
         cli_console: CLI 指定的 console 值（None 表示未指定）
         cli_detail_dir: CLI 指定的 detail_dir 值（None 或空字符串表示未指定）
         cli_raw_dir: CLI 指定的 raw_dir 值（None 或空字符串表示未指定）
+        config_data: 显式传入的配置字典（用于测试或外部注入）
 
     Returns:
         包含 enabled, console, detail_dir, raw_dir 的配置字典
     """
-    config = get_config()
-    stream_config = config.logging.stream_json
+    # 兼容旧签名：resolve_stream_log_config(args, config_data)
+    if hasattr(cli_enabled, "stream_log_enabled") and isinstance(cli_console, dict):
+        args = cli_enabled
+        config_data = cli_console
+        cli_enabled = getattr(args, "stream_log_enabled", None)
+        cli_console = getattr(args, "stream_log_console", None)
+        cli_detail_dir = getattr(args, "stream_log_detail_dir", None)
+        cli_raw_dir = getattr(args, "stream_log_raw_dir", None)
 
-    # 从 config.yaml 获取基础值
-    enabled = stream_config.enabled
-    console = stream_config.console
-    detail_dir = stream_config.detail_dir
-    raw_dir = stream_config.raw_dir
+    if config_data is not None:
+        stream_config = (
+            config_data.get("logging", {})
+            .get("stream_json", {})
+        )
+        enabled = stream_config.get("enabled", False)
+        console = stream_config.get("console", True)
+        detail_dir = stream_config.get("detail_dir", "logs/stream_json/detail/")
+        raw_dir = stream_config.get("raw_dir", "logs/stream_json/raw/")
+    else:
+        config = get_config()
+        stream_config = config.logging.stream_json
+        enabled = stream_config.enabled
+        console = stream_config.console
+        detail_dir = stream_config.detail_dir
+        raw_dir = stream_config.raw_dir
 
     # CLI 参数覆盖（仅当显式指定时）
     if cli_enabled is not None:
