@@ -439,11 +439,11 @@ def _infer_language_with_keywords(task_text: str) -> Optional[str]:
 def _infer_language_with_llm(task_text: str) -> Optional[str]:
     """使用大模型推断语言
 
-    通过 agent CLI 调用问答模式，要求只输出语言标签。
+    通过 agent CLI 调用规划模式，要求只输出语言标签。
     """
     prompt = _build_language_infer_prompt(task_text)
     model = os.getenv("LANGUAGE_INFER_MODEL")
-    cmd = ["agent", "-p", prompt, "--mode", "ask", "--output-format", "text"]
+    cmd = ["agent", "-p", prompt, "--mode", "plan", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
 
@@ -511,7 +511,7 @@ def _analyze_task_with_agent(task_text: str) -> Optional[TaskAnalysis]:
 
     prompt = _build_task_analysis_prompt(task_text)
     model = os.getenv("TASK_ANALYSIS_MODEL")
-    cmd = ["agent", "-p", prompt, "--mode", "ask", "--output-format", "text"]
+    cmd = ["agent", "-p", prompt, "--mode", "plan", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
 

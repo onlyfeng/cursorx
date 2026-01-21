@@ -859,7 +859,7 @@ class TaskAnalyzer:
                 reasoning="无任务描述，使用指定模式",
             )
 
-        # 先用 Agent 进行参数 + 任务解析（执行者模型，默认只读 ask）
+        # 先用 Agent 进行参数 + 任务解析（规划者模型，默认只读 plan）
         agent_analysis = self._agent_analysis(task, args) if self.use_agent else None
 
         rule_analysis = self._rule_based_analysis(task, args)
@@ -994,14 +994,14 @@ class TaskAnalyzer:
     def _agent_analysis(self, task: str, args: Optional[argparse.Namespace] = None) -> Optional[TaskAnalysis]:
         """使用 Agent 分析任务（只读模式）
 
-        使用 --mode ask 确保只读执行，不会修改任何文件。
+        使用 --mode plan 确保只读执行，不会修改任何文件。
         """
         try:
             context_payload = self._build_agent_context(task, args)
             prompt = self._build_agent_prompt(task, context_payload)
-            cmd = ["agent", "-p", prompt, "--output-format", "text", "--mode", "ask"]
+            cmd = ["agent", "-p", prompt, "--output-format", "text", "--mode", "plan"]
 
-            model = self._resolve_worker_model(args)
+            model = self._resolve_planner_model(args)
             if model:
                 cmd.extend(["--model", model])
 
@@ -1086,20 +1086,20 @@ class TaskAnalyzer:
 
         return normalized
 
-    def _resolve_worker_model(self, args: Optional[argparse.Namespace]) -> Optional[str]:
-        """解析执行者模型，用于 Agent 任务解析"""
+    def _resolve_planner_model(self, args: Optional[argparse.Namespace]) -> Optional[str]:
+        """解析规划者模型，用于 Agent 任务解析"""
         env_model = os.getenv("TASK_ANALYSIS_MODEL")
         if env_model:
             return env_model
 
-        if args and getattr(args, "worker_model", None):
-            return args.worker_model
+        if args and getattr(args, "planner_model", None):
+            return args.planner_model
 
         try:
             config = get_config()
-            return config.models.worker
+            return config.models.planner
         except Exception:
-            return DEFAULT_WORKER_MODEL
+            return DEFAULT_PLANNER_MODEL
 
     def _build_agent_context(
         self,
@@ -1162,7 +1162,7 @@ class TaskAnalyzer:
         """构建任务解析提示词"""
         context_json = json.dumps(context_payload, ensure_ascii=False)
         return (
-            "你是执行者Agent，请先解析参数和任务信息，并给出结构化结果。\n"
+            "你是规划者Agent，请先解析参数和任务信息，并给出结构化结果。\n"
             "请根据已提供参数 + 任务描述 + 目录检查结果，推断应执行的模式与参数。\n"
             "如果用户已显式给出参数，必须优先保留，不要擅自覆盖。\n"
             "如果任务描述中包含参数形式（如 --workers 5 / --directory /path），需要解析出来。\n"

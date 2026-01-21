@@ -1072,7 +1072,7 @@ class TestTaskAnalyzer:
     def test_agent_analysis_success(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """验证 Agent 分析成功时正确解析 JSON 结果，使用 ask 模式只读执行"""
+        """验证 Agent 分析成功时正确解析 JSON 结果，使用 plan 模式只读执行"""
         import subprocess
 
         with patch("run.subprocess.run") as mock_run:
@@ -1095,9 +1095,9 @@ class TestTaskAnalyzer:
             assert "agent" in cmd_args
             assert "-p" in cmd_args
             assert "--output-format" in cmd_args
-            # 验证使用 ask 模式（只读执行）
+            # 验证使用 plan 模式（只读执行）
             assert "--mode" in cmd_args
-            assert "ask" in cmd_args
+            assert "plan" in cmd_args
 
             # 验证解析结果
             assert result is not None
@@ -1189,10 +1189,10 @@ class TestTaskAnalyzer:
             # 验证返回 None（不抛出异常）
             assert result is None
 
-            # 验证调用使用了 ask 模式（只读保证）
+            # 验证调用使用了 plan 模式（只读保证）
             cmd_args = mock_run.call_args[0][0]
             assert "--mode" in cmd_args
-            assert "ask" in cmd_args
+            assert "plan" in cmd_args
 
     def test_analyze_with_agent_fallback(
         self, mock_args: argparse.Namespace
@@ -2924,14 +2924,14 @@ class TestKnowledgeMode:
 class TestTaskAnalyzerAgentAnalysis:
     """测试 TaskAnalyzer Agent 分析相关功能
 
-    验证 _agent_analysis 使用 ask 模式（只读执行），
+    验证 _agent_analysis 使用 plan 模式（只读执行），
     以及 JSON 提取逻辑在各种边界情况下保持稳定。
     """
 
     def test_agent_analysis_json_extraction(
         self, mock_args: argparse.Namespace, mock_subprocess
     ) -> None:
-        """验证 Agent 分析 JSON 提取，使用 ask 模式"""
+        """验证 Agent 分析 JSON 提取，使用 plan 模式"""
         analyzer = TaskAnalyzer(use_agent=True)
 
         # 模拟包含 JSON 的输出
@@ -2945,10 +2945,10 @@ class TestTaskAnalyzerAgentAnalysis:
 
         assert analysis.mode == RunMode.ITERATE
 
-    def test_agent_analysis_uses_ask_mode(
+    def test_agent_analysis_uses_plan_mode(
         self, mock_args: argparse.Namespace
     ) -> None:
-        """验证 Agent 分析使用 ask 模式（只读保证）"""
+        """验证 Agent 分析使用 plan 模式（只读保证）"""
         with patch("run.subprocess.run") as mock_run:
             mock_result = MagicMock()
             mock_result.returncode = 0
@@ -2958,12 +2958,12 @@ class TestTaskAnalyzerAgentAnalysis:
             analyzer = TaskAnalyzer(use_agent=True)
             analyzer._agent_analysis("测试任务")
 
-            # 验证调用使用了 ask 模式
+            # 验证调用使用了 plan 模式
             mock_run.assert_called_once()
             cmd_args = mock_run.call_args[0][0]
             assert "--mode" in cmd_args
             mode_idx = cmd_args.index("--mode")
-            assert cmd_args[mode_idx + 1] == "ask"
+            assert cmd_args[mode_idx + 1] == "plan"
 
     def test_agent_analysis_fallback_on_invalid_json(
         self, mock_args: argparse.Namespace, mock_subprocess
@@ -2994,11 +2994,11 @@ class TestTaskAnalyzerAgentAnalysis:
             # Agent 分析失败后回退，保持规则分析的 BASIC 模式
             assert analysis.mode == RunMode.BASIC
 
-            # 验证 Agent 被调用且使用 ask 模式
+            # 验证 Agent 被调用且使用 plan 模式
             mock_run.assert_called_once()
             cmd_args = mock_run.call_args[0][0]
             assert "--mode" in cmd_args
-            assert "ask" in cmd_args
+            assert "plan" in cmd_args
 
     def test_agent_analysis_error_fallback(
         self, mock_args: argparse.Namespace, mock_subprocess
