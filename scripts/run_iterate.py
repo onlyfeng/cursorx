@@ -2631,6 +2631,15 @@ class SelfIterator:
             logger.debug("知识库上下文已在 goal 构建阶段注入，跳过增强")
             return goal
 
+        # 保护：如果知识库更新器尚未初始化，则跳过增强
+        # 单元测试中可能直接调用私有执行方法（未执行 run() 的初始化流程），
+        # 此时触发 storage.initialize()/向量索引初始化可能导致耗时或卡住。
+        storage_inited = getattr(self.knowledge_updater.storage, "_initialized", False)
+        manager_inited = getattr(self.knowledge_updater.manager, "_initialized", False)
+        if not storage_inited or not manager_inited:
+            logger.debug("知识库更新器未初始化，跳过知识库增强")
+            return goal
+
         # 尝试从知识库搜索相关文档
         search_query = self.args.requirement
         if not search_query:

@@ -140,6 +140,7 @@ LANGUAGE_KEYWORDS = {
     ],
     "rust": [
         "rust", "rs", "cargo", "rustc",
+        "cargo项目", "cargo 项目", "cargo工程", "cargo 工程",
         "用rust", "rust写", "rust项目", "rust工程",
         "用 rust", "rust 写", "rust 项目", "rust 工程",
     ],
@@ -157,8 +158,9 @@ LANGUAGE_KEYWORDS = {
 
 # 语言推断优先级（更具体的关键词优先）
 # TypeScript 优先于 JavaScript（ts 是 js 的超集）
+# Rust 优先于 Go（避免 "cargo 项目" 被误匹配为 "go 项目"）
 LANGUAGE_PRIORITY_ORDER = [
-    "typescript", "python", "go", "rust", "java",
+    "typescript", "python", "rust", "go", "java",
     "cpp", "c", "node", "javascript",
 ]
 

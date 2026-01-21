@@ -2210,7 +2210,8 @@ class TestRunMpMode:
         assert config.planner_model == "gpt-5.2-high"
         assert config.worker_model == "opus-4.5-thinking"
         assert config.reviewer_model == "gpt-5.2-codex"
-        assert config.stream_events_enabled is True
+        # stream_events_enabled 使用 tri-state 设计：None 表示使用 config.yaml 的值
+        assert config.stream_events_enabled is None
         # 验证提交相关默认值（auto_commit 默认禁用，需显式开启）
         assert config.enable_auto_commit is False  # 默认禁用自动提交
         assert config.auto_push is False
