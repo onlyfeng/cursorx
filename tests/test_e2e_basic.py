@@ -418,6 +418,8 @@ def test_orchestrator_user_set_override_protection():
             self.orchestrator = opts.get("orchestrator", "mp")
             self.no_mp = opts.get("no_mp", False)
             self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
+            self.directory = opts.get("directory", ".")
+            self._directory_user_set = opts.get("_directory_user_set", False)
 
     # 场景1：用户显式设置 --orchestrator mp，requirement 包含非并行关键词
     # 期望：用户设置优先，使用 mp 编排器
