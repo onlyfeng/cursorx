@@ -119,6 +119,7 @@ OPTIONAL_PACKAGES = [
     "httpx",
     "websockets",
     # 开发/测试工具（可选）
+    "pre-commit",
     "pip-audit",
     "mypy",
     "ruff",

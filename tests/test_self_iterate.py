@@ -228,6 +228,7 @@ class TestWebFetcherFailure:
 # ============================================================
 
 
+@pytest.mark.slow
 class TestMPOrchestratorFallback:
     """测试 MultiProcessOrchestrator 失败时回退到 basic 编排器"""
 

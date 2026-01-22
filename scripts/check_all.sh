@@ -23,6 +23,10 @@ CI_MODE=false
 JSON_OUTPUT=false
 FAIL_FAST=false
 FULL_CHECK=false
+SPLIT_TESTS=false
+TEST_CHUNK_SIZE=8
+TEST_TIMEOUT=0
+COVERAGE_TIMEOUT=480
 
 # 环境变量检测：CI=true 自动启用 CI 模式
 if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${JENKINS_URL:-}" ]; then
@@ -54,6 +58,34 @@ while [[ $# -gt 0 ]]; do
             FULL_CHECK=true
             shift
             ;;
+        --split-tests)
+            SPLIT_TESTS=true
+            shift
+            ;;
+        --test-chunk-size)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --test-chunk-size 需要数值"
+                exit 1
+            fi
+            TEST_CHUNK_SIZE="$2"
+            shift 2
+            ;;
+        --test-timeout)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --test-timeout 需要数值 (秒)"
+                exit 1
+            fi
+            TEST_TIMEOUT="$2"
+            shift 2
+            ;;
+        --coverage-timeout)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --coverage-timeout 需要数值 (秒)"
+                exit 1
+            fi
+            COVERAGE_TIMEOUT="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "用法: $0 [选项]"
             echo ""
@@ -62,6 +94,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --json        JSON 输出格式（便于 CI 解析）"
             echo "  --fail-fast   遇到失败立即退出"
             echo "  -f, --full    执行完整检查（包括类型、风格和测试）"
+            echo "  --split-tests 按组运行测试（便于定位卡住/失败用例）"
+            echo "  --test-chunk-size N  每组包含的测试文件数（默认 8）"
+            echo "  --test-timeout N     单组测试超时秒数（默认 0=不限制）"
+            echo "  --coverage-timeout N 覆盖率测试超时秒数（默认 1200）"
             echo "  -h, --help    显示此帮助信息"
             echo ""
             echo "环境变量:"
@@ -71,6 +107,9 @@ while [[ $# -gt 0 ]]; do
             echo "示例:"
             echo "  $0                 快速检查"
             echo "  $0 --full          完整检查"
+            echo "  $0 --full --split-tests --test-chunk-size 6"
+            echo "  $0 --full --split-tests --test-timeout 600"
+            echo "  $0 --full --coverage-timeout 900"
             echo "  $0 --ci --json     CI 环境 JSON 输出"
             echo "  $0 --fail-fast     遇到失败立即退出"
             echo "  CI=true $0         自动 CI 模式"
@@ -83,6 +122,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# 分组测试默认超时（避免卡死）
+if [ "$SPLIT_TESTS" = true ] && [ "$TEST_TIMEOUT" -le 0 ]; then
+    TEST_TIMEOUT=600
+fi
 
 # ============================================================
 # 颜色定义 (CI 模式下禁用)
@@ -255,9 +299,261 @@ output_json_result() {
 EOF
 }
 
+# 解析 pytest 输出中的统计数量
+parse_pytest_count() {
+    local output_file="$1"
+    local label="$2"
+
+    python3 - <<'PY' "$output_file" "$label" 2>/dev/null
+import re
+import sys
+
+path = sys.argv[1]
+label = sys.argv[2]
+try:
+    text = open(path, "r", encoding="utf-8", errors="ignore").read()
+except FileNotFoundError:
+    sys.exit(0)
+
+summary_line = ""
+for line in reversed(text.splitlines()):
+    if "==" in line:
+        summary_line = line
+        break
+
+if not summary_line:
+    sys.exit(0)
+
+match = re.search(r"(\\d+)\\s+" + re.escape(label), summary_line)
+if match:
+    sys.stdout.write(match.group(1))
+PY
+}
+
+# 从混合输出中提取 JSON（取最后一个可解析对象）
+extract_json_from_output() {
+    python3 - <<'PY'
+import json
+import sys
+
+text = sys.stdin.read()
+for i in range(len(text) - 1, -1, -1):
+    if text[i] != "{":
+        continue
+    try:
+        data = json.loads(text[i:])
+    except Exception:
+        continue
+    print(json.dumps(data, ensure_ascii=False))
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# 运行命令并支持超时与输出捕获
+# macOS 兼容：优先使用 gtimeout (brew install coreutils)，否则用 Python 实现
+run_command_with_timeout() {
+    local timeout_seconds="$1"
+    local output_file="$2"
+    local stream_output="$3"
+    shift 3
+
+    if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" -le 0 ]; then
+        if [ "$stream_output" = true ]; then
+            "$@" 2>&1 | tee "$output_file"
+            return ${PIPESTATUS[0]}
+        fi
+        "$@" > "$output_file" 2>&1
+        return $?
+    fi
+
+    # 优先使用 GNU timeout（Linux 或 brew install coreutils）
+    if command -v timeout &> /dev/null; then
+        if [ "$stream_output" = true ]; then
+            timeout "$timeout_seconds" "$@" 2>&1 | tee "$output_file"
+            return ${PIPESTATUS[0]}
+        fi
+        timeout "$timeout_seconds" "$@" > "$output_file" 2>&1
+        return $?
+    fi
+
+    # macOS: 尝试 gtimeout (brew install coreutils)
+    if command -v gtimeout &> /dev/null; then
+        if [ "$stream_output" = true ]; then
+            gtimeout "$timeout_seconds" "$@" 2>&1 | tee "$output_file"
+            return ${PIPESTATUS[0]}
+        fi
+        gtimeout "$timeout_seconds" "$@" > "$output_file" 2>&1
+        return $?
+    fi
+
+    # 回退: 使用 Python 实现（非阻塞，使用 select/poll）
+    python3 - "$timeout_seconds" "$output_file" "$stream_output" "$@" <<'PY'
+import os
+import select
+import subprocess
+import sys
+import time
+
+timeout_seconds = int(sys.argv[1])
+output_file = sys.argv[2]
+stream_output = sys.argv[3].lower() == "true"
+cmd = sys.argv[4:]
+
+with open(output_file, "w", encoding="utf-8", errors="ignore") as handle:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    start = time.time()
+    timed_out = False
+    fd = proc.stdout.fileno()
+
+    # 设置非阻塞读取
+    import fcntl
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    while True:
+        remaining = timeout_seconds - (time.time() - start)
+        if remaining <= 0:
+            timed_out = True
+            break
+
+        # 使用 select 等待数据，最多等 1 秒
+        ready, _, _ = select.select([fd], [], [], min(remaining, 1.0))
+        if ready:
+            try:
+                chunk = os.read(fd, 8192)
+                if not chunk:
+                    break  # EOF
+                text = chunk.decode("utf-8", errors="ignore")
+                handle.write(text)
+                handle.flush()
+                if stream_output:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+            except BlockingIOError:
+                pass
+        else:
+            # 检查进程是否已结束
+            if proc.poll() is not None:
+                # 读取剩余输出
+                try:
+                    remaining_data = proc.stdout.read()
+                    if remaining_data:
+                        text = remaining_data.decode("utf-8", errors="ignore")
+                        handle.write(text)
+                        if stream_output:
+                            sys.stdout.write(text)
+                except Exception:
+                    pass
+                break
+
+    if timed_out:
+        try:
+            proc.kill()
+            proc.wait()
+        except Exception:
+            pass
+        sys.exit(124)
+
+    exit_code = proc.wait()
+    sys.exit(exit_code)
+PY
+}
+
+# 获取 Python 文件列表（优先使用 git）
+collect_python_files() {
+    if command -v git &> /dev/null && [ -d ".git" ]; then
+        git ls-files "*.py"
+        return 0
+    fi
+
+    python3 - <<'PY'
+import os
+
+exclude_dirs = {
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    "build",
+    "dist",
+    "node_modules",
+    ".cursor",
+}
+
+for root, dirs, files in os.walk("."):
+    dirs[:] = [d for d in dirs if d not in exclude_dirs]
+    for name in files:
+        if name.endswith(".py"):
+            path = os.path.join(root, name)
+            if path.startswith("./"):
+                path = path[2:]
+            print(path)
+PY
+}
+
+# 构建测试分组（每行一组文件）
+build_test_groups() {
+    local exclude_csv="$1"
+    EXCLUDE_TESTS="$exclude_csv" TEST_CHUNK_SIZE="$TEST_CHUNK_SIZE" python3 - <<'PY'
+import glob
+import os
+
+exclude = set(filter(None, os.environ.get("EXCLUDE_TESTS", "").split(",")))
+try:
+    chunk_size = int(os.environ.get("TEST_CHUNK_SIZE", "8"))
+except ValueError:
+    chunk_size = 8
+chunk_size = max(chunk_size, 1)
+
+files = [f for f in sorted(glob.glob("tests/**/test_*.py", recursive=True)) if f not in exclude]
+
+for i in range(0, len(files), chunk_size):
+    group = files[i:i + chunk_size]
+    if group:
+        print(" ".join(group))
+PY
+}
+
+# 运行 pytest 并保存输出
+run_pytest_group() {
+    local output_file="$1"
+    shift
+    local exit_code=0
+    local stream_output=true
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        stream_output=false
+    fi
+
+    set +e
+    run_command_with_timeout "$TEST_TIMEOUT" "$output_file" "$stream_output" pytest "$@"
+    exit_code=$?
+    set -e
+
+    return $exit_code
+}
+
 # ============================================================
 # 检查函数
 # ============================================================
+
+# 核心测试文件列表（用于拆分测试时排除）
+CORE_TEST_FILES=(
+    "tests/test_run.py"
+    "tests/test_self_iterate.py"
+    "tests/test_e2e_execution_modes.py"
+    "tests/test_orchestrator_mp_commit.py"
+    "tests/test_project_workspace.py"
+)
 
 check_python_version() {
     print_section "Python 环境检查"
@@ -300,16 +596,17 @@ check_dependencies() {
     DEPS_MISSING=0
 
     # 核心依赖 (包名:导入名)
-    declare -A CORE_DEPS=(
-        ["pydantic"]="pydantic"
-        ["loguru"]="loguru"
-        ["pyyaml"]="yaml"
-        ["aiofiles"]="aiofiles"
-        ["beautifulsoup4"]="bs4"
+    CORE_DEPS=(
+        "pydantic:pydantic"
+        "loguru:loguru"
+        "pyyaml:yaml"
+        "aiofiles:aiofiles"
+        "beautifulsoup4:bs4"
     )
 
-    for pkg in "${!CORE_DEPS[@]}"; do
-        import_name="${CORE_DEPS[$pkg]}"
+    for dep in "${CORE_DEPS[@]}"; do
+        pkg="${dep%%:*}"
+        import_name="${dep##*:}"
         if python3 -c "import $import_name" 2>/dev/null; then
             check_pass "已安装: $pkg"
         else
@@ -319,13 +616,14 @@ check_dependencies() {
     done
 
     # 检查可选依赖
-    declare -A OPTIONAL_DEPS=(
-        ["sentence-transformers"]="sentence_transformers"
-        ["chromadb"]="chromadb"
+    OPTIONAL_DEPS=(
+        "sentence-transformers:sentence_transformers"
+        "chromadb:chromadb"
     )
 
-    for pkg in "${!OPTIONAL_DEPS[@]}"; do
-        import_name="${OPTIONAL_DEPS[$pkg]}"
+    for dep in "${OPTIONAL_DEPS[@]}"; do
+        pkg="${dep%%:*}"
+        import_name="${dep##*:}"
         if python3 -c "import $import_name" 2>/dev/null; then
             check_pass "已安装 (可选): $pkg"
         else
@@ -342,18 +640,28 @@ check_syntax() {
     print_section "Python 语法检查"
 
     SYNTAX_ERRORS=0
-    PY_FILES=$(find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*" -not -path "./__pycache__/*" 2>/dev/null)
+    PY_FILES=$(collect_python_files)
 
+    if [ -z "$PY_FILES" ]; then
+        check_warn "未找到 Python 文件"
+        return 0
+    fi
+
+    local file_count=0
+    local old_ifs="$IFS"
+    IFS=$'\n'
     for file in $PY_FILES; do
+        [ -z "$file" ] && continue
+        file_count=$((file_count + 1))
         if ! python3 -m py_compile "$file" 2>/dev/null; then
             check_fail "语法错误: $file"
             ((SYNTAX_ERRORS++))
         fi
     done
+    IFS="$old_ifs"
 
     if [ $SYNTAX_ERRORS -eq 0 ]; then
-        FILE_COUNT=$(echo "$PY_FILES" | wc -w)
-        check_pass "语法检查通过 ($FILE_COUNT 个文件)"
+        check_pass "语法检查通过 ($file_count 个文件)"
     else
         check_fail "发现 $SYNTAX_ERRORS 个语法错误"
     fi
@@ -445,15 +753,63 @@ check_tests() {
                 echo -e "  ${BLUE}ℹ${NC} 运行测试..."
             fi
 
-            # 运行测试并捕获结果
-            if pytest tests/ -v --tb=short 2>&1 | tee /tmp/pytest_output.txt; then
-                PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_output.txt | tail -1)
-                check_pass "测试通过: ${PASSED:-0} 个"
+            if [ "$SPLIT_TESTS" = true ]; then
+                check_info "按组运行测试 (每组 $TEST_CHUNK_SIZE 个文件)"
+
+                EXCLUDE_TESTS=$(IFS=,; echo "${CORE_TEST_FILES[*]}")
+                GROUP_INDEX=0
+                TOTAL_GROUPS=0
+                while IFS= read -r group; do
+                    [ -z "$group" ] && continue
+                    TOTAL_GROUPS=$((TOTAL_GROUPS + 1))
+                done < <(build_test_groups "$EXCLUDE_TESTS")
+
+                while IFS= read -r group; do
+                    [ -z "$group" ] && continue
+                    GROUP_INDEX=$((GROUP_INDEX + 1))
+                    OUTPUT_FILE="/tmp/pytest_group_${GROUP_INDEX}.txt"
+
+                    if [ "$JSON_OUTPUT" != true ]; then
+                        echo -e "  ${BLUE}ℹ${NC} 测试组 ${GROUP_INDEX}/${TOTAL_GROUPS}: $group"
+                    fi
+
+                    if run_pytest_group "$OUTPUT_FILE" -v --tb=short $group; then
+                        PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
+                        check_pass "测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个"
+                    else
+                        group_exit_code=$?
+                        if [ "$group_exit_code" -eq 124 ]; then
+                            if [ "$JSON_OUTPUT" != true ]; then
+                                echo -e "  ${YELLOW}⚠${NC} 测试组 ${GROUP_INDEX} 超时，输出摘要:"
+                                tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            fi
+                            check_fail "测试组 ${GROUP_INDEX} 超时"
+                        else
+                            FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
+                            if [ "$JSON_OUTPUT" != true ]; then
+                                echo -e "  ${YELLOW}⚠${NC} 测试组 ${GROUP_INDEX} 失败，输出摘要:"
+                                tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            fi
+                            check_fail "测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个"
+                        fi
+                    fi
+                    rm -f "$OUTPUT_FILE"
+                done < <(build_test_groups "$EXCLUDE_TESTS")
             else
-                FAILED=$(grep -oP '\d+(?= failed)' /tmp/pytest_output.txt | tail -1)
-                check_fail "测试失败: ${FAILED:-?} 个"
+                if run_pytest_group "/tmp/pytest_output.txt" tests/ -v --tb=short; then
+                    PASSED=$(parse_pytest_count "/tmp/pytest_output.txt" "passed")
+                    check_pass "测试通过: ${PASSED:-0} 个"
+                else
+                    group_exit_code=$?
+                    if [ "$group_exit_code" -eq 124 ]; then
+                        check_fail "测试超时"
+                    else
+                        FAILED=$(parse_pytest_count "/tmp/pytest_output.txt" "failed")
+                        check_fail "测试失败: ${FAILED:-?} 个"
+                    fi
+                fi
+                rm -f /tmp/pytest_output.txt
             fi
-            rm -f /tmp/pytest_output.txt
         else
             check_skip "pytest 未安装 (pip install pytest)"
         fi
@@ -471,15 +827,6 @@ check_core_tests() {
         check_skip "pytest 未安装 (pip install pytest)"
         return 0
     fi
-
-    # 核心测试文件列表
-    CORE_TEST_FILES=(
-        "tests/test_run.py"
-        "tests/test_self_iterate.py"
-        "tests/test_e2e_execution_modes.py"
-        "tests/test_orchestrator_mp_commit.py"
-        "tests/test_project_workspace.py"
-    )
 
     MISSING_FILES=0
     for test_file in "${CORE_TEST_FILES[@]}"; do
@@ -501,16 +848,35 @@ check_core_tests() {
     fi
 
     # 运行核心测试（跳过 slow 和 e2e 标记的测试以保持快速）
-    CORE_TEST_CMD="pytest ${CORE_TEST_FILES[*]} -v --tb=short -m 'not slow and not e2e'"
+    # 使用超时保护，默认 300 秒
+    CORE_TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
+    CORE_OUTPUT_FILE="/tmp/pytest_core_output.txt"
 
-    if eval "$CORE_TEST_CMD" 2>&1 | tee /tmp/pytest_core_output.txt; then
-        PASSED=$(grep -oP '\d+(?= passed)' /tmp/pytest_core_output.txt | tail -1)
+    local stream_output=true
+    if [ "$JSON_OUTPUT" = true ]; then
+        stream_output=false
+    fi
+
+    set +e
+    run_command_with_timeout "$CORE_TEST_TIMEOUT" "$CORE_OUTPUT_FILE" "$stream_output" \
+        pytest "${CORE_TEST_FILES[@]}" -v --tb=short -m 'not slow and not e2e'
+    CORE_EXIT=$?
+    set -e
+
+    if [ "$CORE_EXIT" -eq 0 ]; then
+        PASSED=$(parse_pytest_count "$CORE_OUTPUT_FILE" "passed")
         check_pass "核心测试通过: ${PASSED:-0} 个"
+    elif [ "$CORE_EXIT" -eq 124 ]; then
+        check_fail "核心测试超时 (${CORE_TEST_TIMEOUT}s)"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
+            tail -n 30 "$CORE_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+        fi
     else
-        FAILED=$(grep -oP '\d+(?= failed)' /tmp/pytest_core_output.txt | tail -1)
+        FAILED=$(parse_pytest_count "$CORE_OUTPUT_FILE" "failed")
         check_fail "核心测试失败: ${FAILED:-?} 个"
     fi
-    rm -f /tmp/pytest_core_output.txt
+    rm -f "$CORE_OUTPUT_FILE"
 }
 
 check_coverage() {
@@ -533,8 +899,17 @@ check_coverage() {
 
     # 运行带覆盖率的测试
     # 目标: run.py 及核心模块
-    COV_OUTPUT=$(pytest tests/ --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 2>&1) || true
+    COV_OUTPUT_FILE="/tmp/pytest_coverage_output.txt"
+    set +e
+    # 跳过 slow 标记的测试以避免覆盖率检查期间的超时
+    run_command_with_timeout "$COVERAGE_TIMEOUT" "$COV_OUTPUT_FILE" false pytest tests/ \
+        -m 'not slow' \
+        --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
+        --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80
     COV_EXIT=$?
+    set -e
+    COV_OUTPUT=$(cat "$COV_OUTPUT_FILE" 2>/dev/null || echo "")
+    rm -f "$COV_OUTPUT_FILE"
 
     # 提取覆盖率百分比
     TOTAL_COV=$(echo "$COV_OUTPUT" | grep -E "^TOTAL" | awk '{print $NF}' | tr -d '%')
@@ -543,12 +918,16 @@ check_coverage() {
         if [ "$COV_EXIT" -eq 0 ]; then
             check_pass "代码覆盖率: ${TOTAL_COV}% (阈值: 80%)"
         else
-            # 检查是否是覆盖率不足导致的失败
-            if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
-                check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)"
+            if [ "$COV_EXIT" -eq 124 ]; then
+                check_fail "覆盖率检查超时"
             else
-                # 测试失败但覆盖率可能已计算
-                check_warn "测试有失败，覆盖率: ${TOTAL_COV}%"
+                # 检查是否是覆盖率不足导致的失败
+                if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
+                    check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)"
+                else
+                    # 测试失败但覆盖率可能已计算
+                    check_warn "测试有失败，覆盖率: ${TOTAL_COV}%"
+                fi
             fi
         fi
 
@@ -560,15 +939,24 @@ check_coverage() {
             done
         fi
     else
-        check_warn "无法获取覆盖率数据"
+        if [ "$COV_EXIT" -eq 124 ]; then
+            check_fail "覆盖率检查超时"
+        else
+            check_warn "无法获取覆盖率数据"
+        fi
         if [ "$JSON_OUTPUT" != true ]; then
             echo "$COV_OUTPUT" | tail -10
         fi
     fi
 
-    # 生成 HTML 报告 (如果需要)
-    if [ "$FULL_CHECK" = true ]; then
-        pytest tests/ --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks --cov=knowledge --cov=indexing --cov=process --cov-report=html --cov-report=xml -q 2>/dev/null || true
+    # 生成 HTML 报告 (如果需要) - 跳过，因为已经在上面运行过覆盖率测试
+    # 如果上面的测试成功，coverage 数据已存在，只需生成报告
+    if [ "$FULL_CHECK" = true ] && [ "$COV_EXIT" -eq 0 ]; then
+        # 使用已有的 .coverage 数据生成报告（不重新运行测试）
+        if python3 -c "import coverage" 2>/dev/null; then
+            python3 -m coverage html -d htmlcov 2>/dev/null || true
+            python3 -m coverage xml -o coverage.xml 2>/dev/null || true
+        fi
         if [ -d "htmlcov" ]; then
             check_info "HTML 覆盖率报告: htmlcov/index.html"
         fi
@@ -661,8 +1049,17 @@ check_agent_cli() {
 
     if command -v agent &> /dev/null; then
         # 只获取版本，不做网络调用
-        AGENT_VERSION=$(timeout 5 agent --version 2>&1 || echo "未知")
-        check_pass "agent CLI 已安装: $AGENT_VERSION"
+        AGENT_OUTPUT="/tmp/agent_version.txt"
+        if run_command_with_timeout 5 "$AGENT_OUTPUT" false agent --version; then
+            AGENT_VERSION=$(head -n 1 "$AGENT_OUTPUT")
+            [ -z "$AGENT_VERSION" ] && AGENT_VERSION="未知"
+            check_pass "agent CLI 已安装: $AGENT_VERSION"
+        else
+            AGENT_VERSION=$(head -n 1 "$AGENT_OUTPUT")
+            [ -z "$AGENT_VERSION" ] && AGENT_VERSION="未知"
+            check_warn "agent CLI 可执行，但获取版本失败: $AGENT_VERSION"
+        fi
+        rm -f "$AGENT_OUTPUT"
         check_info "运行 'agent status' 检查认证状态"
     else
         check_warn "agent CLI 未安装"
@@ -727,21 +1124,25 @@ check_pre_commit() {
         fi
 
         # 捕获输出并检查结果
+        set +e
         PRE_COMMIT_OUTPUT=$(PYTHONPATH=. python3 scripts/pre_commit_check.py --json 2>&1)
         PRE_COMMIT_EXIT=$?
+        set -e
+
+        PRE_COMMIT_JSON=$(echo "$PRE_COMMIT_OUTPUT" | extract_json_from_output 2>/dev/null || echo "")
 
         if [ $PRE_COMMIT_EXIT -eq 0 ]; then
             # 解析 JSON 输出获取通过数量
-            PASSED_COUNT=$(echo "$PRE_COMMIT_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('passed_count', 0))" 2>/dev/null || echo "?")
+            PASSED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('passed_count', 0))" 2>/dev/null || echo "?")
             check_pass "预提交检查通过 ($PASSED_COUNT 项)"
         else
             # 解析失败数量
-            FAILED_COUNT=$(echo "$PRE_COMMIT_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo "?")
+            FAILED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo "?")
             check_fail "预提交检查失败 ($FAILED_COUNT 项)"
 
             # 在非 JSON 模式下显示失败详情
-            if [ "$JSON_OUTPUT" != true ]; then
-                echo "$PRE_COMMIT_OUTPUT" | python3 -c "
+            if [ "$JSON_OUTPUT" != true ] && [ -n "$PRE_COMMIT_JSON" ]; then
+                echo "$PRE_COMMIT_JSON" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -750,7 +1151,8 @@ try:
             print(f\"    - {c.get('name')}: {c.get('message')}\")
             if c.get('fix_suggestion'):
                 print(f\"      修复: {c.get('fix_suggestion')}\")
-except: pass
+except Exception:
+    pass
 " 2>/dev/null
             fi
         fi

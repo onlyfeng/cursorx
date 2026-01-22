@@ -1005,8 +1005,9 @@ class TestExecuteWithRetry:
             mock_execute.return_value = CursorAgentResult(
                 success=False, error="错误"
             )
-
-            result = await client.execute_with_retry("测试", max_retries=5)
+            # Mock asyncio.sleep 以避免测试超时（指数退避总等待时间可能超过 30s）
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await client.execute_with_retry("测试", max_retries=5)
 
         assert mock_execute.call_count == 5
 

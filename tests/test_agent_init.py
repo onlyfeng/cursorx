@@ -311,8 +311,8 @@ class TestCursorAgentConfigDefaults:
         assert config.resume_thread_id is None
         assert config.background is False
         assert config.fullscreen is False
-        # 流式日志配置（默认启用）
-        assert config.stream_events_enabled is True
+        # 流式日志配置（默认关闭，与 DEFAULT_STREAM_EVENTS_ENABLED 同步）
+        assert config.stream_events_enabled is False
         assert config.stream_log_console is True
 
 
