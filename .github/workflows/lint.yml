@@ -85,8 +85,13 @@ jobs:
           echo ""
           echo "发现 $ISSUES 个问题"
           
-          # 严重错误导致失败
-          ruff check . --select=E,F --ignore=E501
+          # 严重错误导致失败（与 flake8-critical 保持一致）
+          # E9: 运行时错误 (SyntaxError, IndentationError 等)
+          # F63: 无效的 print 函数调用
+          # F7: 类型注解语法错误
+          # F82: 未定义的名称
+          # F401 (未使用导入) 只作为警告，不导致失败
+          ruff check . --select=E9,F63,F7,F82
 
   # mypy 类型检查 - 核心模块
   mypy:

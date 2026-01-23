@@ -25,10 +25,8 @@ from pydantic import BaseModel, Field
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from cursor.executor import AgentResult, ExecutionMode
-from knowledge.manager import KnowledgeManager
 from knowledge.models import Document
 from knowledge.storage import SearchResult
-from tasks.queue import TaskQueue
 from tasks.task import Task, TaskPriority, TaskStatus, TaskType
 
 

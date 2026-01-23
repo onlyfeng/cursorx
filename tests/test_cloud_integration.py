@@ -1438,7 +1438,7 @@ class TestCloudClientFactory:
     @pytest.mark.asyncio
     async def test_execute_task_uses_unified_auth(self):
         """测试 execute_task() 使用统一的认证流程"""
-        from cursor.cloud_client import CloudClientFactory, CloudAuthConfig
+        from cursor.cloud_client import CloudClientFactory
         from cursor.client import CursorAgentConfig
 
         agent_config = CursorAgentConfig(api_key="execute-task-key")
