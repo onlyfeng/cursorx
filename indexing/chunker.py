@@ -2,6 +2,8 @@
 
 提供基于语义的代码分块功能，支持多种编程语言
 """
+from __future__ import annotations
+
 import ast
 import re
 from dataclasses import dataclass, field

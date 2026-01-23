@@ -3,6 +3,7 @@ Cursor Cloud Agent 网络配置模块
 
 提供出口 IP 范围管理、验证和防火墙规则导出功能。
 """
+from __future__ import annotations
 
 import ipaddress
 import json
