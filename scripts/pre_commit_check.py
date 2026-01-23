@@ -982,171 +982,162 @@ def check_config_files(verbose: bool = False) -> CheckResult:
 # 主函数
 # ============================================================
 
-def run_checks(verbose: bool = False) -> CheckReport:
-    """运行所有检查"""
-    report = CheckReport()
-    
-    print_header("预提交检查")
-    print(f"  项目路径: {PROJECT_ROOT}")
-    print(f"  Python: {sys.version.split()[0]}")
-    
-    # 1. 语法检查
-    print_section("1. 语法检查")
-    result = check_syntax(verbose)
-    report.add(result)
+def _print_check_result(section: str, result: CheckResult, silent: bool) -> None:
+    """打印检查结果（辅助函数）"""
+    if silent:
+        return
+    print_section(section)
     if result.passed:
         print_pass(result.message)
     else:
         print_fail(result.message)
         for detail in result.details:
             print_info(detail)
+
+
+def run_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+    """运行所有检查
+    
+    Args:
+        verbose: 是否显示详细信息
+        silent: 是否静默模式（不打印进度，用于 --json 输出）
+    """
+    report = CheckReport()
+    
+    if not silent:
+        print_header("预提交检查")
+        print(f"  项目路径: {PROJECT_ROOT}")
+        print(f"  Python: {sys.version.split()[0]}")
+    
+    # 1. 语法检查
+    result = check_syntax(verbose)
+    report.add(result)
+    _print_check_result("1. 语法检查", result, silent)
     
     # 2. 依赖检查
-    print_section("2. 依赖检查")
     result = check_dependencies(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("2. 依赖检查", result, silent)
     
     # 3. 模块导入检查
-    print_section("3. 模块导入检查")
     result = check_module_imports(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("3. 模块导入检查", result, silent)
     
     # 4. 完整导入验证（verify_all_imports）
-    print_section("4. 完整导入验证")
     result = verify_all_imports(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("4. 完整导入验证", result, silent)
     
     # 5. 关键组件检查
-    print_section("5. 关键组件检查")
     result = check_critical_components(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("5. 关键组件检查", result, silent)
     
     # 6. 配置文件检查
-    print_section("6. 配置文件检查")
     result = check_config_files(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("6. 配置文件检查", result, silent)
     
     # 7. 运行模式验证
-    print_section("7. 运行模式验证")
     result = verify_run_modes(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("7. 运行模式验证", result, silent)
     
     # 8. 冒烟测试
-    print_section("8. 冒烟测试")
     result = check_smoke_test(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    _print_check_result("8. 冒烟测试", result, silent)
     
     return report
 
 
-def run_quick_checks(verbose: bool = False) -> CheckReport:
-    """运行快速检查（仅语法和导入）"""
+def run_quick_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+    """运行快速检查（仅语法和导入）
+    
+    Args:
+        verbose: 是否显示详细信息
+        silent: 是否静默模式（不打印进度，用于 --json 输出）
+    """
     report = CheckReport()
     
-    print_header("快速预提交检查")
-    print(f"  项目路径: {PROJECT_ROOT}")
-    print(f"  Python: {sys.version.split()[0]}")
-    print(f"  模式: 快速检查（仅语法和导入）")
+    if not silent:
+        print_header("快速预提交检查")
+        print(f"  项目路径: {PROJECT_ROOT}")
+        print(f"  Python: {sys.version.split()[0]}")
+        print(f"  模式: 快速检查（仅语法和导入）")
     
     # 1. 语法检查
-    print_section("1. 语法检查")
+    if not silent:
+        print_section("1. 语法检查")
     result = check_syntax(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    if not silent:
+        if result.passed:
+            print_pass(result.message)
+        else:
+            print_fail(result.message)
+            for detail in result.details:
+                print_info(detail)
     
     # 2. 模块导入检查
-    print_section("2. 模块导入检查")
+    if not silent:
+        print_section("2. 模块导入检查")
     result = check_module_imports(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    if not silent:
+        if result.passed:
+            print_pass(result.message)
+        else:
+            print_fail(result.message)
+            for detail in result.details:
+                print_info(detail)
     
     # 3. 完整导入验证（verify_all_imports）
-    print_section("3. 完整导入验证")
+    if not silent:
+        print_section("3. 完整导入验证")
     result = verify_all_imports(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    if not silent:
+        if result.passed:
+            print_pass(result.message)
+        else:
+            print_fail(result.message)
+            for detail in result.details:
+                print_info(detail)
     
     return report
 
 
-def run_module_only_checks(verbose: bool = False) -> CheckReport:
-    """仅运行模块导入检查（用于 CI 快速验证）"""
+def run_module_only_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+    """仅运行模块导入检查（用于 CI 快速验证）
+    
+    Args:
+        verbose: 是否显示详细信息
+        silent: 是否静默模式（不打印进度，用于 --json 输出）
+    """
     report = CheckReport()
     
-    print_header("模块导入检查")
-    print(f"  项目路径: {PROJECT_ROOT}")
-    print(f"  Python: {sys.version.split()[0]}")
-    print(f"  模式: 仅模块导入检查")
-    if is_ci_environment():
-        print(f"  环境: CI/GitHub Actions")
+    if not silent:
+        print_header("模块导入检查")
+        print(f"  项目路径: {PROJECT_ROOT}")
+        print(f"  Python: {sys.version.split()[0]}")
+        print(f"  模式: 仅模块导入检查")
+        if is_ci_environment():
+            print(f"  环境: CI/GitHub Actions")
     
     # 1. 完整导入验证（verify_all_imports）
-    print_section("1. 完整导入验证")
+    if not silent:
+        print_section("1. 完整导入验证")
     result = verify_all_imports(verbose)
     report.add(result)
-    if result.passed:
-        print_pass(result.message)
-    else:
-        print_fail(result.message)
-        for detail in result.details:
-            print_info(detail)
+    if not silent:
+        if result.passed:
+            print_pass(result.message)
+        else:
+            print_fail(result.message)
+            for detail in result.details:
+                print_info(detail)
     
     return report
 
@@ -1212,12 +1203,14 @@ def main() -> int:
     
     try:
         # 根据模式选择检查范围
+        # 在 --json 模式下使用静默模式，避免进度输出污染 JSON
+        silent = args.json
         if args.module_only:
-            report = run_module_only_checks(verbose=args.verbose)
+            report = run_module_only_checks(verbose=args.verbose, silent=silent)
         elif args.quick:
-            report = run_quick_checks(verbose=args.verbose)
+            report = run_quick_checks(verbose=args.verbose, silent=silent)
         else:
-            report = run_checks(verbose=args.verbose)
+            report = run_checks(verbose=args.verbose, silent=silent)
         
         # 计算退出码
         exit_code = 0 if report.all_passed else 1
