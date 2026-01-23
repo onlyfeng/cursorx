@@ -13,9 +13,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from .task import TaskStatus
 
 # 检查 httpx 可用性
 try:

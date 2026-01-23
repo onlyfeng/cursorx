@@ -35,7 +35,10 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from cursor.client import CursorAgentConfig
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent

@@ -16,9 +16,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from .auth import CloudAuthManager
+    from ..streaming import StreamEvent
 
 # 导入异常类和错误处理工具
 from .exceptions import (
