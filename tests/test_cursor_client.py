@@ -1802,7 +1802,6 @@ class TestStreamLineReading:
         long_content = b'x' * (1024 * 1024)  # 1MB 内容
 
         async def mock_readline():
-            nonlocal call_count
             idx = call_count[0]
             call_count[0] += 1
             if idx == 0:
@@ -1848,7 +1847,6 @@ class TestStreamLineReading:
         chunk_data = b'{"type": "long_data", "value": "' + b'y' * 1000 + b'"}\n'
 
         async def mock_readline():
-            nonlocal call_count
             idx = call_count[0]
             call_count[0] += 1
             if idx == 0:
@@ -1871,7 +1869,6 @@ class TestStreamLineReading:
         read_call_count = [0]
 
         async def mock_read(size):
-            nonlocal read_call_count
             idx = read_call_count[0]
             read_call_count[0] += 1
             if idx == 0:
@@ -1903,7 +1900,6 @@ class TestStreamLineReading:
         chunk_data = b'{"type": "recovered"}\n'
 
         async def mock_readline():
-            nonlocal call_count
             idx = call_count[0]
             call_count[0] += 1
             if idx == 0:
@@ -1917,7 +1913,6 @@ class TestStreamLineReading:
         read_call_count = [0]
 
         async def mock_read(size):
-            nonlocal read_call_count
             idx = read_call_count[0]
             read_call_count[0] += 1
             if idx == 0:
@@ -1947,7 +1942,6 @@ class TestStreamLineReading:
         partial_data = b'{"partial": true}'
 
         async def mock_readline():
-            nonlocal call_count
             idx = call_count[0]
             call_count[0] += 1
             if idx == 0:

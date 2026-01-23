@@ -7,6 +7,8 @@
 - CloudTask: 云端任务
 - CloudTaskClient: 任务管理客户端（轮询、WebSocket、SSE）
 """
+from __future__ import annotations
+
 import asyncio
 import os
 import time

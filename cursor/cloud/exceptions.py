@@ -8,6 +8,8 @@
 - AuthError: 认证错误
 - handle_http_error: HTTP 错误处理工具
 """
+from __future__ import annotations
+
 import asyncio
 from datetime import datetime
 from enum import Enum

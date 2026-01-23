@@ -23,6 +23,8 @@
   # 无限迭代
   python run.py "实现功能" --max-iterations MAX
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json

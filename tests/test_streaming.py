@@ -1876,7 +1876,6 @@ class TestReadLinesLongLineHandling:
             chunk_content = b"chunked_content_part1_part2\n"
 
             async def mock_read(n):
-                nonlocal read_chunks
                 if not read_chunks:
                     read_chunks.append(True)
                     return chunk_content
