@@ -15,18 +15,14 @@ from agents.reviewer_process import ReviewDecision, ReviewerAgentProcess
 from agents.worker_process import WorkerAgentProcess
 from core.base import AgentRole
 from core.config import (
-    DEFAULT_PLANNER_MODEL,
-    DEFAULT_WORKER_MODEL,
-    DEFAULT_REVIEWER_MODEL,
-    DEFAULT_PLANNING_TIMEOUT,
-    DEFAULT_WORKER_TIMEOUT,
-    DEFAULT_REVIEW_TIMEOUT,
     DEFAULT_MAX_ITERATIONS,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_PLANNING_TIMEOUT,
+    DEFAULT_REVIEW_TIMEOUT,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_WORKER_MODEL,
     DEFAULT_WORKER_POOL_SIZE,
-    DEFAULT_STREAM_EVENTS_ENABLED,
-    DEFAULT_STREAM_LOG_CONSOLE,
-    DEFAULT_STREAM_LOG_DETAIL_DIR,
-    DEFAULT_STREAM_LOG_RAW_DIR,
+    DEFAULT_WORKER_TIMEOUT,
     get_config,
 )
 from core.knowledge import (
@@ -34,7 +30,6 @@ from core.knowledge import (
     MAX_CHARS_PER_DOC,
     MAX_KNOWLEDGE_DOCS,
     MAX_TOTAL_KNOWLEDGE_CHARS,
-    is_cursor_related,
     truncate_knowledge_docs,
 )
 from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState

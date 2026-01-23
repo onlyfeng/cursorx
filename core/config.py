@@ -1626,8 +1626,6 @@ def build_orchestrator_config(
     )
 
     # ========== Agent CLI 配置 ==========
-    import os
-
     agent_path = _resolve_with_priority(
         overrides.get("agent_path"),
         None,

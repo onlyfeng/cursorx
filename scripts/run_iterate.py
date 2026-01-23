@@ -37,7 +37,7 @@ sys.path.insert(0, str(project_root))
 from loguru import logger
 
 from agents.committer import CommitterAgent, CommitterConfig
-from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
+from core.cloud_utils import is_cloud_request, strip_cloud_prefix
 from core.project_workspace import (
     ProjectState,
     ProjectInfo,
@@ -48,11 +48,10 @@ from core.project_workspace import (
 )
 from core.config import (
     ResolvedSettings,
-    resolve_settings,
-    resolve_orchestrator_settings,
     parse_max_iterations,
-    format_debug_config,
     print_debug_config,
+    resolve_orchestrator_settings,
+    resolve_settings,
 )
 from coordinator import (
     MultiProcessOrchestrator,

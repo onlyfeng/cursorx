@@ -715,8 +715,6 @@ class CursorCloudClient:
         Returns:
             CloudTask: 匹配的任务，未找到返回 None
         """
-        import re
-
         tasks_data: list[dict] = []
 
         # 尝试解析为标准 JSON

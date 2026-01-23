@@ -26,7 +26,6 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from core.cloud_utils import (
-    CLOUD_PREFIX,
     is_cloud_request as _is_cloud_request_util,
     strip_cloud_prefix as _strip_cloud_prefix_util,
 )

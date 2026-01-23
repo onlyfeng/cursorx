@@ -44,8 +44,8 @@ from cursor.cloud_client import (
 )
 
 # 导入 Cloud Client 相关类
-from cursor.cloud.client import CloudAgentResult, CursorCloudClient
-from cursor.cloud.task import CloudTaskOptions, TaskStatus
+from cursor.cloud.client import CursorCloudClient
+from cursor.cloud.task import CloudTaskOptions
 
 
 class ExecutionMode(str, Enum):

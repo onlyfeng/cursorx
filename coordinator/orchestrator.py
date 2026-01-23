@@ -14,17 +14,10 @@ from agents.planner import PlannerAgent, PlannerConfig
 from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
 from core.base import AgentRole
 from core.config import (
-    DEFAULT_PLANNING_TIMEOUT,
-    DEFAULT_WORKER_TIMEOUT,
-    DEFAULT_REVIEW_TIMEOUT,
-    DEFAULT_MAX_ITERATIONS,
-    DEFAULT_WORKER_POOL_SIZE,
     DEFAULT_ENABLE_SUB_PLANNERS,
+    DEFAULT_MAX_ITERATIONS,
     DEFAULT_STRICT_REVIEW,
-    DEFAULT_STREAM_EVENTS_ENABLED,
-    DEFAULT_STREAM_LOG_CONSOLE,
-    DEFAULT_STREAM_LOG_DETAIL_DIR,
-    DEFAULT_STREAM_LOG_RAW_DIR,
+    DEFAULT_WORKER_POOL_SIZE,
     get_config,
 )
 from core.state import CommitContext, CommitPolicy, IterationStatus, SystemState

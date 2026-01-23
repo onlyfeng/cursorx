@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from knowledge import KnowledgeManager
 
 # 从共享模块导入 Cursor 关键词检测（避免重复定义）
-from core.knowledge import CURSOR_KEYWORDS, is_cursor_related
+from core.knowledge import is_cursor_related
 
 
 class WorkerConfig(BaseModel):

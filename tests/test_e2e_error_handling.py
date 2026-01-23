@@ -10,15 +10,13 @@
 使用 Mock 替代真实 Cursor CLI 调用
 """
 import asyncio
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agents.reviewer import ReviewDecision
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
-from tasks.task import TaskStatus
 
 
 class TestPlanningErrors:
