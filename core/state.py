@@ -8,6 +8,8 @@
 - CommitPolicy: 提交策略配置
 - CommitContext: 提交上下文数据
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, field as dc_field
 from datetime import datetime
 from enum import Enum

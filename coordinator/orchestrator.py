@@ -3,6 +3,8 @@
 协调规划者、执行者、评审者的工作流程
 支持知识库集成
 """
+from __future__ import annotations
+
 import asyncio
 from typing import TYPE_CHECKING, Any, Dict, Optional
 

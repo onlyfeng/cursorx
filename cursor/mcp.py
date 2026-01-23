@@ -3,6 +3,8 @@
 通过 agent mcp 命令管理 MCP 服务器
 参考: https://cursor.com/cn/docs/cli/mcp
 """
+from __future__ import annotations
+
 import asyncio
 import subprocess
 from dataclasses import dataclass

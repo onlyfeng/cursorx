@@ -2,6 +2,8 @@
 
 基于多进程架构的编排器，每个 Agent 作为独立进程运行
 """
+from __future__ import annotations
+
 import asyncio
 import uuid
 from typing import Any, Optional

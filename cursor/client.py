@@ -12,6 +12,8 @@ CLI 用法:
 - 编码任务: opus-4.5-thinking (擅长代码生成)
 - 评审任务: opus-4.5-thinking (擅长代码审查)
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import os

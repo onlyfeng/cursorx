@@ -8,6 +8,8 @@ Cloud Agent 客户端，用于将任务推送到云端执行。
     client = CursorCloudClient()
     result = await client.execute("& 实现功能")
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import os

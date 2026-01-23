@@ -7,6 +7,8 @@
 
 使用 mock 模拟 Cursor CLI 调用，避免实际执行 CLI 命令
 """
+from __future__ import annotations
+
 import json
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
