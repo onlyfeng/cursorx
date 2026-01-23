@@ -15,8 +15,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.planner import PlannerAgent, PlannerConfig
-from agents.worker import CURSOR_KEYWORDS, WorkerAgent, WorkerConfig
+from agents.worker import WorkerAgent, WorkerConfig
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
+from core.knowledge import CURSOR_KEYWORDS
 from knowledge.models import Document
 from knowledge.storage import SearchResult
 from tasks.task import Task, TaskPriority, TaskStatus, TaskType

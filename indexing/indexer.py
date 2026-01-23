@@ -2,6 +2,8 @@
 
 提供代码库的索引、更新和管理功能
 """
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json

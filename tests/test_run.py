@@ -6,17 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
 from core.config import get_config
 from run import (
-    CLOUD_PREFIX,
     MODE_ALIASES,
     RunMode,
     TaskAnalysis,
     TaskAnalyzer,
     Runner,
-    is_cloud_request,
     parse_max_iterations,
-    strip_cloud_prefix,
     Colors,
     print_header,
     print_info,

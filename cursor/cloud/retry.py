@@ -8,8 +8,15 @@
 import asyncio
 import functools
 import random
+import sys
 from dataclasses import dataclass, field
-from typing import Callable, Optional, ParamSpec, TypeVar
+from typing import Callable, Optional, TypeVar
+
+# ParamSpec 在 Python 3.10+ 中可用
+if sys.version_info >= (3, 10):
+    from typing import ParamSpec
+else:
+    from typing_extensions import ParamSpec
 
 from loguru import logger
 
