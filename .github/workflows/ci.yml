@@ -244,6 +244,9 @@ jobs:
       - name: 使用 pip-sync 安装依赖
         run: pip-sync requirements.txt
 
+      - name: 安装测试工具
+        run: pip install pytest-timeout
+
       - name: 验证依赖安装
         run: |
           # pip check 可能在某些平台上因 torch 兼容性问题失败

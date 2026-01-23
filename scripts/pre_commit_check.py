@@ -1242,10 +1242,9 @@ def main() -> int:
             print(json.dumps(output, ensure_ascii=False, indent=2))
         else:
             report.print_summary()
-        
-        # 在 CI 环境中写入 GitHub Step Summary
-        if is_ci_environment():
-            write_github_step_summary(report)
+            # 在 CI 环境中写入 GitHub Step Summary（仅非 JSON 模式）
+            if is_ci_environment():
+                write_github_step_summary(report)
         
         return exit_code
         
