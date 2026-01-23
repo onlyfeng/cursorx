@@ -13,14 +13,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, Callable, Optional
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, Field

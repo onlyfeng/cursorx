@@ -37,14 +37,13 @@ from indexing.config import (
     normalize_indexing_config,
 )
 from indexing.embedding import (
-    DEFAULT_MODEL,
     EmbeddingCache,
     SentenceTransformerEmbedding,
     get_available_models,
 )
 from indexing.indexer import CodebaseIndexer, IndexProgress
 from indexing.search import SearchOptions, SemanticSearch
-from indexing.vector_store import DEFAULT_PERSIST_DIR, ChromaVectorStore
+from indexing.vector_store import ChromaVectorStore
 
 # 默认配置
 DEFAULT_CONFIG_FILE = "config.yaml"

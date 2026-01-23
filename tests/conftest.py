@@ -14,7 +14,6 @@ E2E 测试相关配置请参见 conftest_e2e.py。
 from __future__ import annotations
 
 import multiprocessing as mp
-import os
 import sys
 from pathlib import Path
 

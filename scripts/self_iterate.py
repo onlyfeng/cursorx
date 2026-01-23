@@ -14,7 +14,6 @@
     此兼容入口将在未来版本中移除。
 """
 import sys
-import warnings
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径

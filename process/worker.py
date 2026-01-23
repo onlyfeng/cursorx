@@ -15,7 +15,7 @@ from typing import Optional
 
 from loguru import logger
 
-from core.platform import register_signal_handler, get_platform, Platform
+from core.platform import register_signal_handler
 from .message_queue import ProcessMessage, ProcessMessageType
 
 

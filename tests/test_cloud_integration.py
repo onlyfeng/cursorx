@@ -40,8 +40,6 @@ from cursor import (
     CloudAgentExecutor,
     CloudAuthConfig,
     CloudAuthManager,
-    # 工厂类
-    CloudClientFactory,
     # 任务管理
     CloudTask,
     CloudTaskClient,
@@ -1332,7 +1330,7 @@ class TestCloudClientFactory:
 
     def test_create_auth_manager(self):
         """测试创建 CloudAuthManager"""
-        from cursor.cloud_client import CloudClientFactory, CloudAuthManager, CloudAuthConfig
+        from cursor.cloud_client import CloudClientFactory, CloudAuthManager
         from cursor.client import CursorAgentConfig
 
         agent_config = CursorAgentConfig(api_key="test-api-key")

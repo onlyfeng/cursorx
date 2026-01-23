@@ -1955,7 +1955,6 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
     def test_cloud_auth_manager_reads_api_key_from_config_yaml(self, tmp_path):
         """测试 CloudAuthManager 从 config.yaml 的 cloud_agent.api_key 读取 API Key"""
         import yaml
-        from pathlib import Path
         from core.config import ConfigManager
 
         # 创建包含 cloud_agent.api_key 的 config.yaml

@@ -63,8 +63,6 @@ from cursor.client import CursorAgentConfig
 from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
 from core.config import (
     build_cloud_client_config,
-    build_cursor_agent_config,
-    build_cloud_auth_config,
     DEFAULT_CLOUD_AUTH_TIMEOUT,
 )
 from cursor.executor import ExecutionMode
