@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from coordinator import Orchestrator, OrchestratorConfig
 from core.config import (
+    build_cloud_auth_config,
     get_config,
     parse_max_iterations,
     resolve_orchestrator_settings,

@@ -22,6 +22,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from .auth import CloudAuthManager
+    from ..streaming import StreamEvent
 
 # 导入异常类和错误处理工具
 from .exceptions import (
