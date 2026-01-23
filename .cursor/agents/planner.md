@@ -1,7 +1,7 @@
 ---
 name: planner
-description: 任务规划专家。用于分析需求、分解任务、制定实施计划时调用。
 model: gpt-5.2-high
+description: 任务规划专家。用于分析需求、分解任务、制定实施计划时调用。
 readonly: true
 ---
 
