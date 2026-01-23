@@ -256,6 +256,8 @@ jobs:
 
       - name: Python 语法检查
         shell: bash
+        env:
+          PYTHONUTF8: "1"  # 强制 UTF-8 编码（解决 Windows 中文输出问题）
         run: |
           # 检查所有 Python 文件的语法（跨平台兼容）
           python -c "
@@ -279,7 +281,7 @@ jobs:
               for e in errors:
                   print(e, file=sys.stderr)
               sys.exit(1)
-          print('语法检查通过')
+          print('Syntax check passed')
           "
 
       - name: 模块导入检查
