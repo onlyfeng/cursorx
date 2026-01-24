@@ -13,7 +13,7 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -216,7 +216,7 @@ def check_optional_dependency(module_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def import_module_safe(module_name: str) -> tuple[Any | None, str | None]:
+def import_module_safe(module_name: str) -> tuple[Optional[Any], Optional[str]]:
     """安全导入模块
 
     Args:

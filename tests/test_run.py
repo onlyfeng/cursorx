@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import run as run_module
+
 from core.cloud_utils import CLOUD_PREFIX, is_cloud_request, strip_cloud_prefix
 from core.config import get_config
 from run import (
@@ -2578,7 +2580,7 @@ class TestRunnerRunMethods:
         mock_orchestrator = MagicMock()
         mock_orchestrator.run = AsyncMock(return_value={"success": True})
         with patch.object(coordinator, "Orchestrator", return_value=mock_orchestrator), \
-             patch("run.print_info") as mock_print_info:
+             patch.object(run_module, "print_info") as mock_print_info:
             options = runner._merge_options({"max_iterations": -1})
             options["max_iterations"] = -1  # 确保设置
             result = await runner._run_basic("测试目标", options)
@@ -4877,7 +4879,7 @@ class TestAsyncMain:
         with patch("run.parse_args", return_value=base_args), \
              patch("run.setup_logging"), \
              patch("run.print_error") as mock_print_error, \
-             patch("run.print_info"):
+             patch.object(run_module, "print_info"):
 
             exit_code = await async_main()
 
@@ -5036,7 +5038,7 @@ class TestAsyncMain:
              patch("run.setup_logging"), \
              patch("run.TaskAnalyzer") as mock_analyzer_class, \
              patch("run.print_error") as mock_print_error, \
-             patch("run.print_info"):
+             patch.object(run_module, "print_info"):
 
             exit_code = await async_main()
 

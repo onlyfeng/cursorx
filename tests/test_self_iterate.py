@@ -14,9 +14,22 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch as _patch
 
 import pytest
+
+import scripts.run_iterate as run_iterate
+
+# 兼容 importlib 模式下的 patch 目标解析，避免重复模块实例
+def patch(target, *args, **kwargs):
+    if isinstance(target, str) and target.startswith("scripts.run_iterate."):
+        attr = target.split("scripts.run_iterate.", 1)[1]
+        return _patch.object(run_iterate, attr, *args, **kwargs)
+    return _patch(target, *args, **kwargs)
+
+
+patch.object = _patch.object
+
 
 # 导入被测模块
 from scripts.run_iterate import (
