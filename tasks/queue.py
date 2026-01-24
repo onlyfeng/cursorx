@@ -16,11 +16,21 @@ class TaskQueue:
     """
 
     def __init__(self):
+        self._ensure_event_loop()
         self._queues: dict[int, asyncio.PriorityQueue] = defaultdict(asyncio.PriorityQueue)
         self._tasks: dict[str, Task] = {}  # 所有任务的索引
         self._lock = asyncio.Lock()
         # 队列索引：追踪已入队的任务 ID（用于 reconcile 检测不一致）
         self._queued_ids: dict[int, set[str]] = defaultdict(set)
+
+    @staticmethod
+    def _ensure_event_loop() -> None:
+        """确保主线程存在可用事件循环（兼容测试环境）。"""
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
     async def enqueue(self, task: Task) -> None:
         """入队任务"""

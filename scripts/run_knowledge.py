@@ -6,6 +6,7 @@
 2. 使用语义搜索增强代码理解
 3. 自我更新迭代能力
 """
+from __future__ import annotations
 import argparse
 import asyncio
 import sys

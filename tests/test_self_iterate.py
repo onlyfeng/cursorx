@@ -14,7 +14,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch as _patch
+from unittest.mock import AsyncMock, MagicMock, patch as _patch, DEFAULT
 
 import pytest
 
@@ -29,6 +29,10 @@ def patch(target, *args, **kwargs):
 
 
 patch.object = _patch.object
+patch.dict = _patch.dict
+patch.multiple = _patch.multiple
+patch.stopall = _patch.stopall
+patch.DEFAULT = DEFAULT
 
 
 # 导入被测模块
