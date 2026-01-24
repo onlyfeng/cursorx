@@ -14,7 +14,18 @@ import argparse
 import sys
 
 
+def _configure_windows_stdio() -> None:
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+            sys.stderr.reconfigure(errors="backslashreplace")
+        except Exception:
+            pass
+
+
 def main() -> int:
+    _configure_windows_stdio()
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-p", "--print", dest="prompt", default="")
     parser.add_argument("--mode", dest="mode", default=None)
