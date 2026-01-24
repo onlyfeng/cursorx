@@ -126,7 +126,8 @@ class TestInspectProjectState:
         assert result.state == ProjectState.EXISTING_PROJECT
         assert result.detected_language == "python"
         assert "pyproject.toml" in result.marker_files
-        assert result.path == python_project
+        # macOS 上 /var 可能映射为 /private/var，使用 resolve() 规避路径别名差异
+        assert result.path.resolve() == python_project.resolve()
 
     def test_existing_node_project(self, node_project):
         """测试已有 Node.js 工程"""

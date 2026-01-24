@@ -44,8 +44,9 @@
 
 1.3 交互式演示
 -----------
-体验知识库功能：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --demo
+体验知识库功能（基于现有 CLI 命令）：
+    python scripts/knowledge_cli.py add-file ./docs/KNOWLEDGE_BASE_GUIDE.txt
+    python scripts/knowledge_cli.py search "Python"
 
 
 ================================================================================
@@ -145,15 +146,8 @@
 
 4.3 自动测试模式
 ---------------
-运行自动化测试并生成报告：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --auto
-
-输出包括：
-    - 文档存储测试
-    - 关键词搜索测试
-    - 搜索准确性测试
-    - 文档分块测试
-    - 测试结果摘要
+推荐直接使用 pytest 运行验证/回归测试（可重复、可在 CI 复用）：
+    PYTHONPATH=. pytest tests/test_knowledge_validation.py -v
 
 4.4 向量索引验证
 ---------------
@@ -168,41 +162,18 @@
 
 
 ================================================================================
-5. 交互式测试
+5. 查询示例
 ================================================================================
 
-5.1 演示模式
+说明：项目已提供 `scripts/knowledge_cli.py` 用于知识库管理与查询；测试与验证建议使用 `pytest`。
+5.1 直接查询
 -----------
-使用演示数据体验查询效果：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --demo
+    python scripts/knowledge_cli.py search "Python 有什么特点？"
+    python scripts/knowledge_cli.py search "如何创建 Docker 镜像？"
 
-演示数据包含：
-    - Python 编程入门指南
-    - 机器学习基础概念
-    - RESTful API 设计规范
-    - Docker 容器技术
-    - Git 版本控制指南
-
-5.2 交互查询模式
----------------
-启动交互式查询：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py
-
-然后输入问题进行查询：
-    问题> Python 有什么特点？
-    问题> 如何创建 Docker 镜像？
-    问题> q  # 退出
-
-5.3 直接查询
------------
-单次查询：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --query "什么是机器学习？"
-
-5.4 使用真实存储
----------------
-查询项目真实知识库（而非演示数据）：
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --real
-    PYTHONPATH=. python scripts/test_knowledge_interactive.py --real --query "问题"
+5.2 使用真实存储进行验证
+---------------------
+    PYTHONPATH=. python tests/test_knowledge_validation.py
 
 
 ================================================================================
@@ -263,12 +234,9 @@ A6:
     bash scripts/validate_knowledge.sh --validation        # 验证模块
     bash scripts/validate_knowledge.sh --vector            # 向量测试
 
-交互式测试：
-    python scripts/test_knowledge_interactive.py           # 交互模式
-    python scripts/test_knowledge_interactive.py --auto    # 自动测试
-    python scripts/test_knowledge_interactive.py --demo    # 演示模式
-    python scripts/test_knowledge_interactive.py --query   # 直接查询
-    python scripts/test_knowledge_interactive.py --real    # 真实存储
+测试与验证建议：
+    PYTHONPATH=. python tests/test_knowledge_validation.py              # 快速验证（可直接运行）
+    PYTHONPATH=. pytest tests/test_knowledge_validation.py -v           # pytest 方式运行
 
 
 ================================================================================
@@ -277,49 +245,30 @@ A6:
 
 7.1 更新 Cursor CLI 知识库
 -------------------------
-从本地文档更新：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py update
+从 URL 列表批量导入（推荐）：
+    python scripts/knowledge_cli.py import cursor_cli_docs.txt
 
-从网页 URL 更新（需要网络）：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py update --url
+也可逐个添加：
+    python scripts/knowledge_cli.py add https://cursor.com/cn/docs/cli/overview
 
 7.2 验证知识库
 -------------
 验证知识库内容是否正确：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py verify
+    PYTHONPATH=. pytest tests/test_knowledge_validation.py -v
 
 7.3 Agent 查询测试
 -----------------
-运行完整测试（更新 + 验证 + Agent 查询）：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py test
-
-7.4 交互式查询
--------------
-启动交互式查询模式：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py interactive
-
-7.5 直接查询
+说明：项目的单元/E2E 测试会覆盖核心工作流；知识库查询建议用 CLI 直接验证。
+7.4 查询示例
 -----------
 单次查询：
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "CLI 参数"
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "斜杠命令"
-    PYTHONPATH=. python scripts/test_cursor_knowledge.py query "MCP 服务器"
+    python scripts/knowledge_cli.py search "CLI 参数"
+    python scripts/knowledge_cli.py search "斜杠命令"
+    python scripts/knowledge_cli.py search "MCP 服务器"
 
-7.6 测试查询示例
----------------
-以下查询可用于验证知识库：
-
-    # 查询 CLI 命令行参数
-    python scripts/test_cursor_knowledge.py query "CLI 参数"
-
-    # 查询斜杠命令
-    python scripts/test_cursor_knowledge.py query "斜杠命令"
-
-    # 查询模型列表
-    python scripts/test_cursor_knowledge.py query "模型"
-
-    # 查询认证方法
-    python scripts/test_cursor_knowledge.py query "登录 认证"
+更多示例：
+    python scripts/knowledge_cli.py search "模型"
+    python scripts/knowledge_cli.py search "登录 认证"
 
 7.7 知识库内容来源
 -----------------

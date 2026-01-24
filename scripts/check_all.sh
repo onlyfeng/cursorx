@@ -26,7 +26,10 @@ FULL_CHECK=false
 SPLIT_TESTS=false
 TEST_CHUNK_SIZE=8
 TEST_TIMEOUT=0
-COVERAGE_TIMEOUT=480
+# 覆盖率/综合测试超时（秒）
+# 默认值偏保守，避免本地环境下单元+覆盖率过早超时；可用 --coverage-timeout 覆盖
+COVERAGE_TIMEOUT=1800
+E2E_TIMEOUT=900
 
 # 环境变量检测：CI=true 自动启用 CI 模式
 if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${JENKINS_URL:-}" ]; then
@@ -97,7 +100,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --split-tests 按组运行测试（便于定位卡住/失败用例）"
             echo "  --test-chunk-size N  每组包含的测试文件数（默认 8）"
             echo "  --test-timeout N     单组测试超时秒数（默认 0=不限制）"
-            echo "  --coverage-timeout N 覆盖率测试超时秒数（默认 1200）"
+            echo "  --coverage-timeout N 覆盖率测试超时秒数（默认 1800）"
             echo "  -h, --help    显示此帮助信息"
             echo ""
             echo "环境变量:"
@@ -467,7 +470,10 @@ PY
 # 获取 Python 文件列表（优先使用 git）
 collect_python_files() {
     if command -v git &> /dev/null && [ -d ".git" ]; then
-        git ls-files "*.py"
+        # 仅返回当前存在的文件（避免 git index 中已删除文件导致误报）
+        git ls-files "*.py" | while IFS= read -r file; do
+            [ -f "$file" ] && echo "$file"
+        done
         return 0
     fi
 
@@ -554,6 +560,10 @@ CORE_TEST_FILES=(
     "tests/test_orchestrator_mp_commit.py"
     "tests/test_project_workspace.py"
 )
+
+# 测试分层（与 pyproject.toml 的 markers 定义保持一致）
+UNIT_MARKER_EXPR="not e2e and not slow and not integration"
+E2E_MARKER_EXPR="e2e and not slow"
 
 check_python_version() {
     print_section "Python 环境检查"
@@ -879,8 +889,85 @@ check_core_tests() {
     rm -f "$CORE_OUTPUT_FILE"
 }
 
-check_coverage() {
-    print_section "代码覆盖率检查"
+check_unit_tests() {
+    print_section "单元测试"
+
+    if [ -d "tests" ]; then
+        TEST_COUNT=$(find tests -name "test_*.py" | wc -l)
+        check_pass "测试目录存在 ($TEST_COUNT 个测试文件)"
+
+        if ! command -v pytest &> /dev/null; then
+            check_skip "pytest 未安装 (pip install pytest)"
+            return 0
+        fi
+
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${BLUE}ℹ${NC} 运行单元测试 (-m \"$UNIT_MARKER_EXPR\")..."
+        fi
+
+        if [ "$SPLIT_TESTS" = true ]; then
+            check_info "按组运行单元测试 (每组 $TEST_CHUNK_SIZE 个文件)"
+
+            GROUP_INDEX=0
+            TOTAL_GROUPS=0
+            while IFS= read -r group; do
+                [ -z "$group" ] && continue
+                TOTAL_GROUPS=$((TOTAL_GROUPS + 1))
+            done < <(build_test_groups "")
+
+            while IFS= read -r group; do
+                [ -z "$group" ] && continue
+                GROUP_INDEX=$((GROUP_INDEX + 1))
+                OUTPUT_FILE="/tmp/pytest_unit_group_${GROUP_INDEX}.txt"
+
+                if [ "$JSON_OUTPUT" != true ]; then
+                    echo -e "  ${BLUE}ℹ${NC} 单元测试组 ${GROUP_INDEX}/${TOTAL_GROUPS}: $group"
+                fi
+
+                if run_pytest_group "$OUTPUT_FILE" -v --tb=short -m "$UNIT_MARKER_EXPR" $group; then
+                    PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
+                    check_pass "单元测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个"
+                else
+                    group_exit_code=$?
+                    if [ "$group_exit_code" -eq 124 ]; then
+                        if [ "$JSON_OUTPUT" != true ]; then
+                            echo -e "  ${YELLOW}⚠${NC} 单元测试组 ${GROUP_INDEX} 超时，输出摘要:"
+                            tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        fi
+                        check_fail "单元测试组 ${GROUP_INDEX} 超时"
+                    else
+                        FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
+                        if [ "$JSON_OUTPUT" != true ]; then
+                            echo -e "  ${YELLOW}⚠${NC} 单元测试组 ${GROUP_INDEX} 失败，输出摘要:"
+                            tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        fi
+                        check_fail "单元测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个"
+                    fi
+                fi
+                rm -f "$OUTPUT_FILE"
+            done < <(build_test_groups "")
+        else
+            if run_pytest_group "/tmp/pytest_unit_output.txt" tests/ -v --tb=short -m "$UNIT_MARKER_EXPR"; then
+                PASSED=$(parse_pytest_count "/tmp/pytest_unit_output.txt" "passed")
+                check_pass "单元测试通过: ${PASSED:-0} 个"
+            else
+                group_exit_code=$?
+                if [ "$group_exit_code" -eq 124 ]; then
+                    check_fail "单元测试超时"
+                else
+                    FAILED=$(parse_pytest_count "/tmp/pytest_unit_output.txt" "failed")
+                    check_fail "单元测试失败: ${FAILED:-?} 个"
+                fi
+            fi
+            rm -f /tmp/pytest_unit_output.txt
+        fi
+    else
+        check_warn "tests 目录不存在"
+    fi
+}
+
+check_unit_tests_with_coverage() {
+    print_section "单元测试 + 覆盖率"
 
     if ! command -v pytest &> /dev/null; then
         check_skip "pytest 未安装 (pip install pytest)"
@@ -894,16 +981,14 @@ check_coverage() {
     fi
 
     if [ "$JSON_OUTPUT" != true ]; then
-        echo -e "  ${BLUE}ℹ${NC} 运行覆盖率检查..."
+        echo -e "  ${BLUE}ℹ${NC} 运行单元测试（含覆盖率）..."
     fi
 
-    # 运行带覆盖率的测试
-    # 目标: run.py 及核心模块
-    COV_OUTPUT_FILE="/tmp/pytest_coverage_output.txt"
+    # 运行带覆盖率的单元测试（一次完成，避免重复跑 pytest）
+    COV_OUTPUT_FILE="/tmp/pytest_unit_cov_output.txt"
     set +e
-    # 跳过 slow 标记的测试以避免覆盖率检查期间的超时
     run_command_with_timeout "$COVERAGE_TIMEOUT" "$COV_OUTPUT_FILE" false pytest tests/ \
-        -m 'not slow' \
+        -m "$UNIT_MARKER_EXPR" \
         --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
         --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80
     COV_EXIT=$?
@@ -916,17 +1001,17 @@ check_coverage() {
 
     if [ -n "$TOTAL_COV" ]; then
         if [ "$COV_EXIT" -eq 0 ]; then
-            check_pass "代码覆盖率: ${TOTAL_COV}% (阈值: 80%)"
+            check_pass "单元测试通过，覆盖率: ${TOTAL_COV}% (阈值: 80%)"
         else
             if [ "$COV_EXIT" -eq 124 ]; then
-                check_fail "覆盖率检查超时"
+                check_fail "单元测试/覆盖率检查超时"
             else
                 # 检查是否是覆盖率不足导致的失败
                 if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
                     check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)"
                 else
                     # 测试失败但覆盖率可能已计算
-                    check_warn "测试有失败，覆盖率: ${TOTAL_COV}%"
+                    check_fail "单元测试失败，覆盖率: ${TOTAL_COV}%"
                 fi
             fi
         fi
@@ -940,7 +1025,7 @@ check_coverage() {
         fi
     else
         if [ "$COV_EXIT" -eq 124 ]; then
-            check_fail "覆盖率检查超时"
+            check_fail "单元测试/覆盖率检查超时"
         else
             check_warn "无法获取覆盖率数据"
         fi
@@ -964,6 +1049,54 @@ check_coverage() {
             check_info "XML 覆盖率报告: coverage.xml"
         fi
     fi
+}
+
+check_e2e_tests() {
+    print_section "E2E 测试"
+
+    if ! command -v pytest &> /dev/null; then
+        check_skip "pytest 未安装 (pip install pytest)"
+        return 0
+    fi
+
+    if [ "$JSON_OUTPUT" != true ]; then
+        echo -e "  ${BLUE}ℹ${NC} 运行 E2E 测试..."
+    fi
+
+    local stream_output=true
+    if [ "$JSON_OUTPUT" = true ]; then
+        stream_output=false
+    fi
+
+    E2E_OUTPUT_FILE="/tmp/pytest_e2e_output.txt"
+    set +e
+    run_command_with_timeout "$E2E_TIMEOUT" "$E2E_OUTPUT_FILE" "$stream_output" pytest tests/ \
+        -v --tb=short -m "$E2E_MARKER_EXPR"
+    E2E_EXIT=$?
+    set -e
+
+    if [ "$E2E_EXIT" -eq 0 ]; then
+        PASSED=$(parse_pytest_count "$E2E_OUTPUT_FILE" "passed")
+        check_pass "E2E 测试通过: ${PASSED:-0} 个"
+    elif [ "$E2E_EXIT" -eq 5 ]; then
+        # pytest 退出码 5: no tests collected
+        check_warn "未找到 E2E 测试用例（不计为失败）"
+    elif [ "$E2E_EXIT" -eq 124 ]; then
+        check_fail "E2E 测试超时 (${E2E_TIMEOUT}s)"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
+            tail -n 30 "$E2E_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+        fi
+    else
+        FAILED=$(parse_pytest_count "$E2E_OUTPUT_FILE" "failed")
+        check_fail "E2E 测试失败: ${FAILED:-?} 个"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
+            tail -n 30 "$E2E_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+        fi
+    fi
+
+    rm -f "$E2E_OUTPUT_FILE"
 }
 
 check_config() {
@@ -1325,17 +1458,24 @@ main() {
     if [ "$FULL_CHECK" = true ]; then
         check_type_hints
         check_code_style
-        check_core_tests   # 核心测试集合（快速验证关键功能）
-        check_tests        # 完整测试
-        check_coverage
+        # 综合：单元测试 + 覆盖率（一次完成），再跑一次 E2E（若无用例不失败）
+        # --split-tests 用于排查/定位，避免覆盖率聚合带来的重复执行，split 模式下跳过覆盖率阈值检查
+        if [ "$SPLIT_TESTS" = true ]; then
+            check_warn "--split-tests 模式下跳过覆盖率阈值检查（避免重复执行），建议单独再跑一次 --full 获取覆盖率"
+            check_unit_tests
+        else
+            check_unit_tests_with_coverage
+        fi
+        check_e2e_tests
     else
+        # 默认：快速 + 核心测试集合
+        check_core_tests
         if [ "$JSON_OUTPUT" != true ]; then
             print_section "跳过的检查 (使用 --full 启用)"
             check_info "类型检查 (mypy)"
             check_info "代码风格检查 (flake8/ruff)"
-            check_info "核心测试集合 (test_run, test_self_iterate, test_e2e_execution_modes, test_orchestrator_mp_commit, test_project_workspace)"
-            check_info "完整测试运行 (pytest)"
-            check_info "代码覆盖率检查 (pytest-cov, 阈值 80%)"
+            check_info "单元测试 + 覆盖率 (pytest-cov, 阈值 80%)"
+            check_info "E2E 测试 (-m e2e)"
         fi
     fi
 
