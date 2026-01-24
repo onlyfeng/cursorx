@@ -26,6 +26,17 @@ FULL_CHECK=false
 SPLIT_TESTS=false
 TEST_CHUNK_SIZE=8
 TEST_TIMEOUT=0
+PYTEST_ARGS_STR=""
+PYTEST_EXTRA_ARGS=()
+PYTEST_PARALLEL=false
+PYTEST_PARALLEL_WORKERS="auto"
+LOG_DIR=""
+LOG_DIR_SET=false
+KEEP_LOGS=false
+DIAGNOSE_HANG=false
+DIAGNOSE_HANG_SET=false
+CASE_TIMEOUT=0
+SPLIT_COVERAGE=false
 # 覆盖率/综合测试超时（秒）
 # 默认值偏保守，避免本地环境下单元+覆盖率过早超时；可用 --coverage-timeout 覆盖
 COVERAGE_TIMEOUT=1800
@@ -81,6 +92,14 @@ while [[ $# -gt 0 ]]; do
             TEST_TIMEOUT="$2"
             shift 2
             ;;
+        --case-timeout)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --case-timeout 需要数值 (秒)"
+                exit 1
+            fi
+            CASE_TIMEOUT="$2"
+            shift 2
+            ;;
         --coverage-timeout)
             if [ -z "${2:-}" ]; then
                 echo "参数错误: --coverage-timeout 需要数值 (秒)"
@@ -88,6 +107,59 @@ while [[ $# -gt 0 ]]; do
             fi
             COVERAGE_TIMEOUT="$2"
             shift 2
+            ;;
+        --split-coverage)
+            SPLIT_COVERAGE=true
+            shift
+            ;;
+        --pytest-args)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --pytest-args 需要参数"
+                exit 1
+            fi
+            PYTEST_ARGS_STR="$2"
+            shift 2
+            ;;
+        --pytest-arg)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --pytest-arg 需要参数"
+                exit 1
+            fi
+            PYTEST_EXTRA_ARGS+=("$2")
+            shift 2
+            ;;
+        --pytest-parallel)
+            PYTEST_PARALLEL=true
+            if [ -n "${2:-}" ] && [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+                PYTEST_PARALLEL_WORKERS="$2"
+                shift 2
+            else
+                PYTEST_PARALLEL_WORKERS="auto"
+                shift
+            fi
+            ;;
+        --log-dir)
+            if [ -z "${2:-}" ]; then
+                echo "参数错误: --log-dir 需要路径"
+                exit 1
+            fi
+            LOG_DIR="$2"
+            LOG_DIR_SET=true
+            shift 2
+            ;;
+        --keep-logs)
+            KEEP_LOGS=true
+            shift
+            ;;
+        --diagnose-hang)
+            DIAGNOSE_HANG=true
+            DIAGNOSE_HANG_SET=true
+            shift
+            ;;
+        --no-diagnose-hang)
+            DIAGNOSE_HANG=false
+            DIAGNOSE_HANG_SET=true
+            shift
             ;;
         --help|-h)
             echo "用法: $0 [选项]"
@@ -100,7 +172,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --split-tests 按组运行测试（便于定位卡住/失败用例）"
             echo "  --test-chunk-size N  每组包含的测试文件数（默认 8）"
             echo "  --test-timeout N     单组测试超时秒数（默认 0=不限制）"
+            echo "  --case-timeout N     单用例超时秒数（需 pytest-timeout）"
             echo "  --coverage-timeout N 覆盖率测试超时秒数（默认 1800）"
+            echo "  --split-coverage     分组测试下启用覆盖率合并"
+            echo "  --pytest-args \"...\" 透传 pytest 参数（简单场景）"
+            echo "  --pytest-arg ARG     追加单个 pytest 参数（可多次）"
+            echo "  --pytest-parallel [N] 启用 pytest-xdist 并行（默认 auto）"
+            echo "  --log-dir PATH       指定测试日志目录"
+            echo "  --keep-logs          保留测试日志（默认成功可清理）"
+            echo "  --diagnose-hang      启用卡住定位诊断输出"
+            echo "  --no-diagnose-hang   禁用卡住定位诊断输出"
             echo "  -h, --help    显示此帮助信息"
             echo ""
             echo "环境变量:"
@@ -113,6 +194,9 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --full --split-tests --test-chunk-size 6"
             echo "  $0 --full --split-tests --test-timeout 600"
             echo "  $0 --full --coverage-timeout 900"
+            echo "  $0 --full --split-tests --split-coverage"
+            echo "  $0 --full --diagnose-hang"
+            echo "  $0 --full --pytest-parallel 4"
             echo "  $0 --ci --json     CI 环境 JSON 输出"
             echo "  $0 --fail-fast     遇到失败立即退出"
             echo "  CI=true $0         自动 CI 模式"
@@ -129,6 +213,11 @@ done
 # 分组测试默认超时（避免卡死）
 if [ "$SPLIT_TESTS" = true ] && [ "$TEST_TIMEOUT" -le 0 ]; then
     TEST_TIMEOUT=600
+fi
+
+# 完整检查默认启用卡住定位诊断（可用 --no-diagnose-hang 关闭）
+if [ "$FULL_CHECK" = true ] && [ "$DIAGNOSE_HANG_SET" = false ]; then
+    DIAGNOSE_HANG=true
 fi
 
 # ============================================================
@@ -164,29 +253,62 @@ SKIP_COUNT=0
 
 # JSON 结果收集
 declare -a JSON_CHECKS=()
+declare -a SECTION_DURATIONS=()
 CURRENT_SECTION=""
+LOG_DIR_CREATED=false
+PYTEST_ENV_READY=false
+TIMEOUT_BACKEND=""
+RUN_ID=""
+PYTEST_COMMON_ARGS=()
+LOG_DIR_NOTICE=false
 
 # 项目根目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+RUN_ID="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || date '+%Y%m%d_%H%M%S')"
+if [ -z "$LOG_DIR" ]; then
+    LOG_DIR="${TMPDIR:-/tmp}/check_all_${RUN_ID}"
+fi
 cd "$PROJECT_ROOT"
 
 # ============================================================
 # 辅助函数
 # ============================================================
 
+# JSON 字符串转义
+json_escape() {
+    echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'
+}
+
 # 添加 JSON 检查结果
 add_json_check() {
     local status="$1"
     local name="$2"
     local message="$3"
+    local log_file="${4:-}"
+    local duration_ms="${5:-}"
+    local meta_json="${6:-}"
     local section="${CURRENT_SECTION:-unknown}"
 
     # 转义 JSON 特殊字符
-    message=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
-    name=$(echo "$name" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
+    message=$(json_escape "$message")
+    name=$(json_escape "$name")
+    section=$(json_escape "$section")
 
-    JSON_CHECKS+=("{\"section\":\"$section\",\"status\":\"$status\",\"name\":\"$name\",\"message\":\"$message\"}")
+    local json="{\"section\":\"$section\",\"status\":\"$status\",\"name\":\"$name\",\"message\":\"$message\""
+    if [ -n "$log_file" ]; then
+        log_file=$(json_escape "$log_file")
+        json="$json,\"log_file\":\"$log_file\""
+    fi
+    if [ -n "$duration_ms" ]; then
+        json="$json,\"duration_ms\":$duration_ms"
+    fi
+    if [ -n "$meta_json" ]; then
+        json="$json,$meta_json"
+    fi
+    json="$json}"
+
+    JSON_CHECKS+=("$json")
 }
 
 print_header() {
@@ -211,19 +333,31 @@ print_section() {
 }
 
 check_pass() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
     if [ "$JSON_OUTPUT" = true ]; then
-        add_json_check "pass" "$1" ""
+        add_json_check "pass" "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
     else
-        echo -e "  ${GREEN}✓${NC} $1"
+        echo -e "  ${GREEN}✓${NC} $name"
     fi
     ((++PASS_COUNT)) || true
 }
 
 check_fail() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
     if [ "$JSON_OUTPUT" = true ]; then
-        add_json_check "fail" "$1" ""
+        add_json_check "fail" "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
     else
-        echo -e "  ${RED}✗${NC} $1"
+        echo -e "  ${RED}✗${NC} $name"
     fi
     ((++FAIL_COUNT)) || true
 
@@ -240,29 +374,229 @@ check_fail() {
 }
 
 check_warn() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
     if [ "$JSON_OUTPUT" = true ]; then
-        add_json_check "warn" "$1" ""
+        add_json_check "warn" "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
     else
-        echo -e "  ${YELLOW}⚠${NC} $1"
+        echo -e "  ${YELLOW}⚠${NC} $name"
     fi
     ((++WARN_COUNT)) || true
 }
 
 check_skip() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
     if [ "$JSON_OUTPUT" = true ]; then
-        add_json_check "skip" "$1" ""
+        add_json_check "skip" "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
     else
-        echo -e "  ${BLUE}○${NC} $1 ${YELLOW}(跳过)${NC}"
+        echo -e "  ${BLUE}○${NC} $name ${YELLOW}(跳过)${NC}"
     fi
     ((++SKIP_COUNT)) || true
 }
 
 check_info() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
     if [ "$JSON_OUTPUT" = true ]; then
-        add_json_check "info" "$1" ""
+        add_json_check "info" "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
     else
-        echo -e "  ${BLUE}ℹ${NC} $1"
+        echo -e "  ${BLUE}ℹ${NC} $name"
     fi
+}
+
+# 当前时间 (毫秒)
+now_ms() {
+    python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+}
+
+# 格式化耗时
+format_duration() {
+    local ms="$1"
+    if [ -z "$ms" ] || [ "$ms" -lt 0 ]; then
+        echo "unknown"
+        return
+    fi
+    if [ "$ms" -lt 1000 ]; then
+        echo "${ms}ms"
+    else
+        awk "BEGIN {printf \"%.2fs\", $ms/1000}"
+    fi
+}
+
+# 记录检查耗时
+record_section_duration() {
+    local name="$1"
+    local duration_ms="$2"
+    local escaped_name
+    escaped_name=$(json_escape "$name")
+    SECTION_DURATIONS+=("{\"name\":\"$escaped_name\",\"duration_ms\":$duration_ms}")
+}
+
+# 运行检查并统计耗时
+run_check() {
+    local section_name="$1"
+    shift
+    local start_ms
+    start_ms=$(now_ms)
+    set +e
+    "$@"
+    local status=$?
+    set -e
+    local end_ms
+    end_ms=$(now_ms)
+    local duration_ms=$((end_ms - start_ms))
+    record_section_duration "$section_name" "$duration_ms"
+    if [ "$JSON_OUTPUT" != true ]; then
+        echo -e "  ${BLUE}ℹ${NC} 耗时: $(format_duration "$duration_ms")"
+    fi
+    return $status
+}
+
+# 检测超时实现
+detect_timeout_backend() {
+    if command -v timeout &> /dev/null; then
+        echo "timeout"
+        return
+    fi
+    if command -v gtimeout &> /dev/null; then
+        echo "gtimeout"
+        return
+    fi
+    echo "python"
+}
+
+# 确保日志目录存在
+ensure_log_dir() {
+    if [ "$LOG_DIR_CREATED" = true ]; then
+        return
+    fi
+    if [ -z "$LOG_DIR" ]; then
+        LOG_DIR="${TMPDIR:-/tmp}/check_all_${RUN_ID}"
+    fi
+    if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+        LOG_DIR="${TMPDIR:-/tmp}/check_all_${RUN_ID}"
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+    fi
+    LOG_DIR_CREATED=true
+}
+
+# 生成 pytest 复现命令字符串
+format_pytest_command() {
+    local cmd="pytest"
+    for arg in "$@"; do
+        cmd+=" $(printf '%q' "$arg")"
+    done
+    echo "$cmd"
+}
+
+# 从日志中提取最后一个测试用例
+extract_last_test_case() {
+    local log_file="$1"
+    python3 - <<'PY' "$log_file" 2>/dev/null
+import re
+import sys
+
+path = sys.argv[1]
+try:
+    lines = open(path, "r", encoding="utf-8", errors="ignore").read().splitlines()
+except FileNotFoundError:
+    sys.exit(0)
+
+pattern = re.compile(r"(tests/[^\\s:]+::[^\\s]+)")
+for line in reversed(lines):
+    m = pattern.search(line)
+    if m:
+        print(m.group(1))
+        break
+PY
+}
+
+# 生成 JSON 额外字段
+build_meta_json() {
+    local last_test="$1"
+    local command="$2"
+    local parts=()
+    if [ -n "$last_test" ]; then
+        parts+=("\"last_test\":\"$(json_escape "$last_test")\"")
+    fi
+    if [ -n "$command" ]; then
+        parts+=("\"command\":\"$(json_escape "$command")\"")
+    fi
+    if [ ${#parts[@]} -eq 0 ]; then
+        echo ""
+        return
+    fi
+    local IFS=,
+    echo "${parts[*]}"
+}
+
+# 准备 pytest 参数（按需启用诊断/并行/超时）
+prepare_pytest_env() {
+    if [ "$PYTEST_ENV_READY" = true ]; then
+        return
+    fi
+    ensure_log_dir
+    if [ "$LOG_DIR_NOTICE" != true ] && [ "$JSON_OUTPUT" != true ]; then
+        check_info "测试日志目录: $LOG_DIR"
+        LOG_DIR_NOTICE=true
+    fi
+
+    if [ -n "$PYTEST_ARGS_STR" ]; then
+        read -r -a EXTRA_FROM_STR <<< "$PYTEST_ARGS_STR"
+        for arg in "${EXTRA_FROM_STR[@]}"; do
+            PYTEST_EXTRA_ARGS+=("$arg")
+        done
+    fi
+
+    PYTEST_COMMON_ARGS=()
+    if [ "$DIAGNOSE_HANG" = true ]; then
+        PYTEST_COMMON_ARGS+=("-vv" "--durations=25" "--durations-min=1")
+    else
+        PYTEST_COMMON_ARGS+=("-v")
+    fi
+    PYTEST_COMMON_ARGS+=("--tb=short")
+
+    if [ "$FAIL_FAST" = true ]; then
+        PYTEST_COMMON_ARGS+=("--maxfail=1")
+    fi
+
+    if [ "$PYTEST_PARALLEL" = true ]; then
+        if python3 -c "import xdist" 2>/dev/null; then
+            PYTEST_COMMON_ARGS+=("-n" "$PYTEST_PARALLEL_WORKERS")
+        else
+            check_warn "pytest-xdist 未安装，--pytest-parallel 无效"
+        fi
+    fi
+
+    if [ "$CASE_TIMEOUT" -gt 0 ]; then
+        if python3 -c "import pytest_timeout" 2>/dev/null; then
+            PYTEST_COMMON_ARGS+=("--timeout=$CASE_TIMEOUT" "--timeout-method=thread")
+        else
+            check_warn "pytest-timeout 未安装，--case-timeout 无效"
+        fi
+    fi
+
+    if [ ${#PYTEST_EXTRA_ARGS[@]} -gt 0 ]; then
+        PYTEST_COMMON_ARGS+=("${PYTEST_EXTRA_ARGS[@]}")
+    fi
+
+    PYTEST_ENV_READY=true
 }
 
 # 输出 JSON 结果
@@ -281,6 +615,16 @@ output_json_result() {
         fi
     done
 
+    # 构建耗时数组
+    local durations_json=""
+    for duration in "${SECTION_DURATIONS[@]}"; do
+        if [ -n "$durations_json" ]; then
+            durations_json="$durations_json,$duration"
+        else
+            durations_json="$duration"
+        fi
+    done
+
     cat << EOF
 {
   "success": $success,
@@ -295,8 +639,12 @@ output_json_result() {
   "ci_mode": $CI_MODE,
   "fail_fast": $FAIL_FAST,
   "full_check": $FULL_CHECK,
+  "diagnose_hang": $DIAGNOSE_HANG,
+  "timeout_backend": "$(json_escape "${TIMEOUT_BACKEND:-}")",
+  "log_dir": "$(json_escape "${LOG_DIR:-}")",
   "project_root": "$PROJECT_ROOT",
   "timestamp": "$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')",
+  "durations": [$durations_json],
   "checks": [$checks_json]
 }
 EOF
@@ -532,18 +880,31 @@ PY
 # 运行 pytest 并保存输出
 run_pytest_group() {
     local output_file="$1"
-    shift
+    local timeout_seconds="$2"
+    shift 2
     local exit_code=0
     local stream_output=true
+    local errexit_on=0
 
     if [ "$JSON_OUTPUT" = true ]; then
         stream_output=false
     fi
 
+    case $- in
+        *e*) errexit_on=1 ;;
+    esac
+
     set +e
-    run_command_with_timeout "$TEST_TIMEOUT" "$output_file" "$stream_output" pytest "$@"
+    if [ -z "$timeout_seconds" ] || [ "$timeout_seconds" -lt 0 ]; then
+        timeout_seconds="$TEST_TIMEOUT"
+    fi
+    run_command_with_timeout "$timeout_seconds" "$output_file" "$stream_output" pytest "$@"
     exit_code=$?
-    set -e
+    if [ "$errexit_on" -eq 1 ]; then
+        set -e
+    else
+        set +e
+    fi
 
     return $exit_code
 }
@@ -589,6 +950,20 @@ check_python_version() {
         check_pass "pip 版本: $PIP_VERSION"
     else
         check_warn "pip3 命令不可用"
+    fi
+}
+
+check_timeout_backend() {
+    print_section "超时机制检查"
+
+    TIMEOUT_BACKEND=$(detect_timeout_backend)
+    if [ "$TIMEOUT_BACKEND" = "timeout" ]; then
+        check_pass "timeout 可用 (Linux/GNU coreutils)"
+    elif [ "$TIMEOUT_BACKEND" = "gtimeout" ]; then
+        check_pass "gtimeout 可用 (macOS coreutils)"
+        check_info "可选安装: brew install coreutils"
+    else
+        check_info "未检测到 timeout/gtimeout，使用 Python 回退实现"
     fi
 }
 
@@ -759,6 +1134,7 @@ check_tests() {
         check_pass "测试目录存在 ($TEST_COUNT 个测试文件)"
 
         if command -v pytest &> /dev/null; then
+            prepare_pytest_env
             if [ "$JSON_OUTPUT" != true ]; then
                 echo -e "  ${BLUE}ℹ${NC} 运行测试..."
             fi
@@ -777,48 +1153,84 @@ check_tests() {
                 while IFS= read -r group; do
                     [ -z "$group" ] && continue
                     GROUP_INDEX=$((GROUP_INDEX + 1))
-                    OUTPUT_FILE="/tmp/pytest_group_${GROUP_INDEX}.txt"
+                    OUTPUT_FILE="$LOG_DIR/pytest_group_${GROUP_INDEX}.log"
 
                     if [ "$JSON_OUTPUT" != true ]; then
                         echo -e "  ${BLUE}ℹ${NC} 测试组 ${GROUP_INDEX}/${TOTAL_GROUPS}: $group"
                     fi
 
-                    if run_pytest_group "$OUTPUT_FILE" -v --tb=short $group; then
+                    local start_ms
+                    start_ms=$(now_ms)
+                    if run_pytest_group "$OUTPUT_FILE" "$TEST_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" $group; then
+                        local duration_ms=$(( $(now_ms) - start_ms ))
                         PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
-                        check_pass "测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个"
+                        check_pass "测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个" "" "$OUTPUT_FILE" "$duration_ms"
                     else
                         group_exit_code=$?
+                        local duration_ms=$(( $(now_ms) - start_ms ))
+                        last_test=$(extract_last_test_case "$OUTPUT_FILE")
+                        cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" $group)
+                        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+
                         if [ "$group_exit_code" -eq 124 ]; then
                             if [ "$JSON_OUTPUT" != true ]; then
                                 echo -e "  ${YELLOW}⚠${NC} 测试组 ${GROUP_INDEX} 超时，输出摘要:"
                                 tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                                [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                                check_info "日志: $OUTPUT_FILE"
+                                check_info "复现: $cmd_str"
+                                check_info "建议: 使用 --test-chunk-size 1 缩小范围"
                             fi
-                            check_fail "测试组 ${GROUP_INDEX} 超时"
+                            check_fail "测试组 ${GROUP_INDEX} 超时" "timeout" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                         else
                             FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
                             if [ "$JSON_OUTPUT" != true ]; then
                                 echo -e "  ${YELLOW}⚠${NC} 测试组 ${GROUP_INDEX} 失败，输出摘要:"
                                 tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                                [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                                check_info "日志: $OUTPUT_FILE"
+                                check_info "复现: $cmd_str"
                             fi
-                            check_fail "测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个"
+                            check_fail "测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个" "failed" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                         fi
                     fi
-                    rm -f "$OUTPUT_FILE"
                 done < <(build_test_groups "$EXCLUDE_TESTS")
             else
-                if run_pytest_group "/tmp/pytest_output.txt" tests/ -v --tb=short; then
-                    PASSED=$(parse_pytest_count "/tmp/pytest_output.txt" "passed")
-                    check_pass "测试通过: ${PASSED:-0} 个"
+                OUTPUT_FILE="$LOG_DIR/pytest_all.log"
+                local start_ms
+                start_ms=$(now_ms)
+                if run_pytest_group "$OUTPUT_FILE" "$TEST_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" tests/; then
+                    local duration_ms=$(( $(now_ms) - start_ms ))
+                    PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
+                    check_pass "测试通过: ${PASSED:-0} 个" "" "$OUTPUT_FILE" "$duration_ms"
                 else
                     group_exit_code=$?
+                    local duration_ms=$(( $(now_ms) - start_ms ))
+                    last_test=$(extract_last_test_case "$OUTPUT_FILE")
+                    cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" tests/)
+                    meta_json=$(build_meta_json "$last_test" "$cmd_str")
+
                     if [ "$group_exit_code" -eq 124 ]; then
-                        check_fail "测试超时"
+                        if [ "$JSON_OUTPUT" != true ]; then
+                            echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
+                            tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                            check_info "日志: $OUTPUT_FILE"
+                            check_info "复现: $cmd_str"
+                        fi
+                        check_fail "测试超时" "timeout" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                     else
-                        FAILED=$(parse_pytest_count "/tmp/pytest_output.txt" "failed")
-                        check_fail "测试失败: ${FAILED:-?} 个"
+                        FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
+                        if [ "$JSON_OUTPUT" != true ]; then
+                            echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
+                            tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                            check_info "日志: $OUTPUT_FILE"
+                            check_info "复现: $cmd_str"
+                        fi
+                        check_fail "测试失败: ${FAILED:-?} 个" "failed" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                     fi
                 fi
-                rm -f /tmp/pytest_output.txt
             fi
         else
             check_skip "pytest 未安装 (pip install pytest)"
@@ -837,6 +1249,7 @@ check_core_tests() {
         check_skip "pytest 未安装 (pip install pytest)"
         return 0
     fi
+    prepare_pytest_env
 
     MISSING_FILES=0
     for test_file in "${CORE_TEST_FILES[@]}"; do
@@ -859,34 +1272,50 @@ check_core_tests() {
 
     # 运行核心测试（跳过 slow 和 e2e 标记的测试以保持快速）
     # 使用超时保护，默认 300 秒
-    CORE_TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
-    CORE_OUTPUT_FILE="/tmp/pytest_core_output.txt"
-
-    local stream_output=true
-    if [ "$JSON_OUTPUT" = true ]; then
-        stream_output=false
+    CORE_TEST_TIMEOUT="$TEST_TIMEOUT"
+    if [ "$CORE_TEST_TIMEOUT" -le 0 ]; then
+        CORE_TEST_TIMEOUT=300
     fi
+    CORE_OUTPUT_FILE="$LOG_DIR/pytest_core.log"
 
+    local start_ms
+    start_ms=$(now_ms)
     set +e
-    run_command_with_timeout "$CORE_TEST_TIMEOUT" "$CORE_OUTPUT_FILE" "$stream_output" \
-        pytest "${CORE_TEST_FILES[@]}" -v --tb=short -m 'not slow and not e2e'
+    run_pytest_group "$CORE_OUTPUT_FILE" "$CORE_TEST_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" \
+        "${CORE_TEST_FILES[@]}" -m 'not slow and not e2e'
     CORE_EXIT=$?
     set -e
+    local duration_ms=$(( $(now_ms) - start_ms ))
 
     if [ "$CORE_EXIT" -eq 0 ]; then
         PASSED=$(parse_pytest_count "$CORE_OUTPUT_FILE" "passed")
-        check_pass "核心测试通过: ${PASSED:-0} 个"
+        check_pass "核心测试通过: ${PASSED:-0} 个" "" "$CORE_OUTPUT_FILE" "$duration_ms"
     elif [ "$CORE_EXIT" -eq 124 ]; then
-        check_fail "核心测试超时 (${CORE_TEST_TIMEOUT}s)"
+        last_test=$(extract_last_test_case "$CORE_OUTPUT_FILE")
+        cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" "${CORE_TEST_FILES[@]}" -m 'not slow and not e2e')
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "核心测试超时 (${CORE_TEST_TIMEOUT}s)" "timeout" "$CORE_OUTPUT_FILE" "$duration_ms" "$meta_json"
         if [ "$JSON_OUTPUT" != true ]; then
             echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
             tail -n 30 "$CORE_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $CORE_OUTPUT_FILE"
+            check_info "复现: $cmd_str"
         fi
     else
         FAILED=$(parse_pytest_count "$CORE_OUTPUT_FILE" "failed")
-        check_fail "核心测试失败: ${FAILED:-?} 个"
+        last_test=$(extract_last_test_case "$CORE_OUTPUT_FILE")
+        cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" "${CORE_TEST_FILES[@]}" -m 'not slow and not e2e')
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "核心测试失败: ${FAILED:-?} 个" "failed" "$CORE_OUTPUT_FILE" "$duration_ms" "$meta_json"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
+            tail -n 30 "$CORE_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $CORE_OUTPUT_FILE"
+            check_info "复现: $cmd_str"
+        fi
     fi
-    rm -f "$CORE_OUTPUT_FILE"
 }
 
 check_unit_tests() {
@@ -900,6 +1329,8 @@ check_unit_tests() {
             check_skip "pytest 未安装 (pip install pytest)"
             return 0
         fi
+
+        prepare_pytest_env
 
         if [ "$JSON_OUTPUT" != true ]; then
             echo -e "  ${BLUE}ℹ${NC} 运行单元测试 (-m \"$UNIT_MARKER_EXPR\")..."
@@ -918,48 +1349,84 @@ check_unit_tests() {
             while IFS= read -r group; do
                 [ -z "$group" ] && continue
                 GROUP_INDEX=$((GROUP_INDEX + 1))
-                OUTPUT_FILE="/tmp/pytest_unit_group_${GROUP_INDEX}.txt"
+                OUTPUT_FILE="$LOG_DIR/pytest_unit_group_${GROUP_INDEX}.log"
 
                 if [ "$JSON_OUTPUT" != true ]; then
                     echo -e "  ${BLUE}ℹ${NC} 单元测试组 ${GROUP_INDEX}/${TOTAL_GROUPS}: $group"
                 fi
 
-                if run_pytest_group "$OUTPUT_FILE" -v --tb=short -m "$UNIT_MARKER_EXPR" $group; then
+                local start_ms
+                start_ms=$(now_ms)
+                if run_pytest_group "$OUTPUT_FILE" "$TEST_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" $group; then
+                    local duration_ms=$(( $(now_ms) - start_ms ))
                     PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
-                    check_pass "单元测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个"
+                    check_pass "单元测试组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个" "" "$OUTPUT_FILE" "$duration_ms"
                 else
                     group_exit_code=$?
+                    local duration_ms=$(( $(now_ms) - start_ms ))
+                    last_test=$(extract_last_test_case "$OUTPUT_FILE")
+                    cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" $group)
+                    meta_json=$(build_meta_json "$last_test" "$cmd_str")
+
                     if [ "$group_exit_code" -eq 124 ]; then
                         if [ "$JSON_OUTPUT" != true ]; then
                             echo -e "  ${YELLOW}⚠${NC} 单元测试组 ${GROUP_INDEX} 超时，输出摘要:"
                             tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                            check_info "日志: $OUTPUT_FILE"
+                            check_info "复现: $cmd_str"
+                            check_info "建议: 使用 --test-chunk-size 1 缩小范围"
                         fi
-                        check_fail "单元测试组 ${GROUP_INDEX} 超时"
+                        check_fail "单元测试组 ${GROUP_INDEX} 超时" "timeout" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                     else
                         FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
                         if [ "$JSON_OUTPUT" != true ]; then
                             echo -e "  ${YELLOW}⚠${NC} 单元测试组 ${GROUP_INDEX} 失败，输出摘要:"
                             tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                            check_info "日志: $OUTPUT_FILE"
+                            check_info "复现: $cmd_str"
                         fi
-                        check_fail "单元测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个"
+                        check_fail "单元测试组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个" "failed" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                     fi
                 fi
-                rm -f "$OUTPUT_FILE"
             done < <(build_test_groups "")
         else
-            if run_pytest_group "/tmp/pytest_unit_output.txt" tests/ -v --tb=short -m "$UNIT_MARKER_EXPR"; then
-                PASSED=$(parse_pytest_count "/tmp/pytest_unit_output.txt" "passed")
-                check_pass "单元测试通过: ${PASSED:-0} 个"
+            OUTPUT_FILE="$LOG_DIR/pytest_unit_all.log"
+            local start_ms
+            start_ms=$(now_ms)
+            if run_pytest_group "$OUTPUT_FILE" "$TEST_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" tests/; then
+                local duration_ms=$(( $(now_ms) - start_ms ))
+                PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
+                check_pass "单元测试通过: ${PASSED:-0} 个" "" "$OUTPUT_FILE" "$duration_ms"
             else
                 group_exit_code=$?
+                local duration_ms=$(( $(now_ms) - start_ms ))
+                last_test=$(extract_last_test_case "$OUTPUT_FILE")
+                cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" tests/)
+                meta_json=$(build_meta_json "$last_test" "$cmd_str")
+
                 if [ "$group_exit_code" -eq 124 ]; then
-                    check_fail "单元测试超时"
+                    if [ "$JSON_OUTPUT" != true ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 单元测试超时，输出摘要:"
+                        tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                        check_info "日志: $OUTPUT_FILE"
+                        check_info "复现: $cmd_str"
+                    fi
+                    check_fail "单元测试超时" "timeout" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                 else
-                    FAILED=$(parse_pytest_count "/tmp/pytest_unit_output.txt" "failed")
-                    check_fail "单元测试失败: ${FAILED:-?} 个"
+                    FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
+                    if [ "$JSON_OUTPUT" != true ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 单元测试失败，输出摘要:"
+                        tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                        check_info "日志: $OUTPUT_FILE"
+                        check_info "复现: $cmd_str"
+                    fi
+                    check_fail "单元测试失败: ${FAILED:-?} 个" "failed" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
                 fi
             fi
-            rm -f /tmp/pytest_unit_output.txt
         fi
     else
         check_warn "tests 目录不存在"
@@ -979,39 +1446,174 @@ check_unit_tests_with_coverage() {
         check_skip "pytest-cov 未安装 (pip install pytest-cov)"
         return 0
     fi
+    prepare_pytest_env
+
+    if [ "$SPLIT_TESTS" = true ] && [ "$SPLIT_COVERAGE" != true ]; then
+        check_warn "--split-tests 模式下未启用覆盖率合并（使用 --split-coverage 开启）"
+        return 0
+    fi
 
     if [ "$JSON_OUTPUT" != true ]; then
         echo -e "  ${BLUE}ℹ${NC} 运行单元测试（含覆盖率）..."
     fi
+    COV_OUTPUT_FILE=""
+    duration_ms=""
+    COV_META_JSON=""
+    COV_CMD_STR=""
+    COV_LAST_TEST=""
 
-    # 运行带覆盖率的单元测试（一次完成，避免重复跑 pytest）
-    COV_OUTPUT_FILE="/tmp/pytest_unit_cov_output.txt"
-    set +e
-    run_command_with_timeout "$COVERAGE_TIMEOUT" "$COV_OUTPUT_FILE" false pytest tests/ \
-        -m "$UNIT_MARKER_EXPR" \
-        --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
-        --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80
-    COV_EXIT=$?
-    set -e
-    COV_OUTPUT=$(cat "$COV_OUTPUT_FILE" 2>/dev/null || echo "")
-    rm -f "$COV_OUTPUT_FILE"
+    if [ "$SPLIT_TESTS" = true ] && [ "$SPLIT_COVERAGE" = true ]; then
+        # 分组运行覆盖率（覆盖率合并）
+        check_info "按组运行单元测试 + 覆盖率 (每组 $TEST_CHUNK_SIZE 个文件)"
+        rm -f .coverage 2>/dev/null || true
+
+        GROUP_INDEX=0
+        TOTAL_GROUPS=0
+        COV_GROUP_FAILED=false
+        while IFS= read -r group; do
+            [ -z "$group" ] && continue
+            TOTAL_GROUPS=$((TOTAL_GROUPS + 1))
+        done < <(build_test_groups "")
+
+        local group_timeout="$TEST_TIMEOUT"
+        if [ "$group_timeout" -le 0 ]; then
+            group_timeout=600
+        fi
+
+        while IFS= read -r group; do
+            [ -z "$group" ] && continue
+            GROUP_INDEX=$((GROUP_INDEX + 1))
+            OUTPUT_FILE="$LOG_DIR/pytest_cov_group_${GROUP_INDEX}.log"
+
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo -e "  ${BLUE}ℹ${NC} 覆盖率组 ${GROUP_INDEX}/${TOTAL_GROUPS}: $group"
+            fi
+
+            local cov_args=(
+                --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks
+                --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing
+            )
+            if [ "$GROUP_INDEX" -gt 1 ]; then
+                cov_args+=(--cov-append)
+            fi
+
+            local start_ms
+            start_ms=$(now_ms)
+            if run_pytest_group "$OUTPUT_FILE" "$group_timeout" "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" "${cov_args[@]}" $group; then
+                local duration_ms=$(( $(now_ms) - start_ms ))
+                PASSED=$(parse_pytest_count "$OUTPUT_FILE" "passed")
+                check_pass "覆盖率组 ${GROUP_INDEX} 通过: ${PASSED:-0} 个" "" "$OUTPUT_FILE" "$duration_ms"
+            else
+                group_exit_code=$?
+                local duration_ms=$(( $(now_ms) - start_ms ))
+                last_test=$(extract_last_test_case "$OUTPUT_FILE")
+                cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" "${cov_args[@]}" $group)
+                meta_json=$(build_meta_json "$last_test" "$cmd_str")
+
+                if [ "$group_exit_code" -eq 124 ]; then
+                    if [ "$JSON_OUTPUT" != true ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 覆盖率组 ${GROUP_INDEX} 超时，输出摘要:"
+                        tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                        check_info "日志: $OUTPUT_FILE"
+                        check_info "复现: $cmd_str"
+                        check_info "建议: 使用 --test-chunk-size 1 缩小范围"
+                    fi
+                    check_fail "覆盖率组 ${GROUP_INDEX} 超时" "timeout" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
+                    COV_GROUP_FAILED=true
+                else
+                    FAILED=$(parse_pytest_count "$OUTPUT_FILE" "failed")
+                    if [ "$JSON_OUTPUT" != true ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 覆盖率组 ${GROUP_INDEX} 失败，输出摘要:"
+                        tail -n 20 "$OUTPUT_FILE" | sed 's/^/    /'
+                        [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+                        check_info "日志: $OUTPUT_FILE"
+                        check_info "复现: $cmd_str"
+                    fi
+                    check_fail "覆盖率组 ${GROUP_INDEX} 失败: ${FAILED:-?} 个" "failed" "$OUTPUT_FILE" "$duration_ms" "$meta_json"
+                    COV_GROUP_FAILED=true
+                fi
+            fi
+        done < <(build_test_groups "")
+
+        # 汇总覆盖率（基于 .coverage）
+        COV_REPORT_FILE="$LOG_DIR/coverage_report.log"
+        if python3 -c "import coverage" 2>/dev/null; then
+            set +e
+            python3 -m coverage report --fail-under=80 > "$COV_REPORT_FILE" 2>&1
+            COV_EXIT=$?
+            set -e
+            COV_OUTPUT=$(cat "$COV_REPORT_FILE" 2>/dev/null || echo "")
+        else
+            COV_EXIT=1
+            COV_OUTPUT=""
+        fi
+        COV_OUTPUT_FILE="$COV_REPORT_FILE"
+        if [ "$COV_GROUP_FAILED" = true ] && [ "$COV_EXIT" -eq 0 ]; then
+            COV_EXIT=1
+        fi
+    else
+        # 运行带覆盖率的单元测试（一次完成，避免重复跑 pytest）
+        COV_OUTPUT_FILE="$LOG_DIR/pytest_unit_cov.log"
+        local start_ms
+        start_ms=$(now_ms)
+        set +e
+        run_command_with_timeout "$COVERAGE_TIMEOUT" "$COV_OUTPUT_FILE" false pytest \
+            "${PYTEST_COMMON_ARGS[@]}" \
+            -m "$UNIT_MARKER_EXPR" \
+            --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
+            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 \
+            tests/
+        COV_EXIT=$?
+        set -e
+        local duration_ms=$(( $(now_ms) - start_ms ))
+        COV_OUTPUT=$(cat "$COV_OUTPUT_FILE" 2>/dev/null || echo "")
+        COV_CMD_STR=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" \
+            --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
+            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 tests/)
+        if [ "$COV_EXIT" -ne 0 ]; then
+            COV_LAST_TEST=$(extract_last_test_case "$COV_OUTPUT_FILE")
+            COV_META_JSON=$(build_meta_json "$COV_LAST_TEST" "$COV_CMD_STR")
+        fi
+    fi
 
     # 提取覆盖率百分比
     TOTAL_COV=$(echo "$COV_OUTPUT" | grep -E "^TOTAL" | awk '{print $NF}' | tr -d '%')
 
     if [ -n "$TOTAL_COV" ]; then
         if [ "$COV_EXIT" -eq 0 ]; then
-            check_pass "单元测试通过，覆盖率: ${TOTAL_COV}% (阈值: 80%)"
+            check_pass "单元测试通过，覆盖率: ${TOTAL_COV}% (阈值: 80%)" "" "$COV_OUTPUT_FILE" "$duration_ms"
         else
             if [ "$COV_EXIT" -eq 124 ]; then
-                check_fail "单元测试/覆盖率检查超时"
+                check_fail "单元测试/覆盖率检查超时" "timeout" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
+                if [ "$JSON_OUTPUT" != true ] && [ -n "$COV_OUTPUT_FILE" ]; then
+                    echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
+                    tail -n 30 "$COV_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+                    [ -n "$COV_LAST_TEST" ] && check_info "最后开始的测试: $COV_LAST_TEST"
+                    check_info "日志: $COV_OUTPUT_FILE"
+                    [ -n "$COV_CMD_STR" ] && check_info "复现: $COV_CMD_STR"
+                fi
             else
                 # 检查是否是覆盖率不足导致的失败
                 if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
-                    check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)"
+                    check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)" "coverage" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
+                    if [ "$JSON_OUTPUT" != true ] && [ -n "$COV_OUTPUT_FILE" ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 覆盖率不足输出摘要:"
+                        tail -n 20 "$COV_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+                        [ -n "$COV_LAST_TEST" ] && check_info "最后开始的测试: $COV_LAST_TEST"
+                        check_info "日志: $COV_OUTPUT_FILE"
+                        [ -n "$COV_CMD_STR" ] && check_info "复现: $COV_CMD_STR"
+                    fi
                 else
                     # 测试失败但覆盖率可能已计算
-                    check_fail "单元测试失败，覆盖率: ${TOTAL_COV}%"
+                    check_fail "单元测试失败，覆盖率: ${TOTAL_COV}%" "failed" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
+                    if [ "$JSON_OUTPUT" != true ] && [ -n "$COV_OUTPUT_FILE" ]; then
+                        echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
+                        tail -n 20 "$COV_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+                        [ -n "$COV_LAST_TEST" ] && check_info "最后开始的测试: $COV_LAST_TEST"
+                        check_info "日志: $COV_OUTPUT_FILE"
+                        [ -n "$COV_CMD_STR" ] && check_info "复现: $COV_CMD_STR"
+                    fi
                 fi
             fi
         fi
@@ -1025,7 +1627,7 @@ check_unit_tests_with_coverage() {
         fi
     else
         if [ "$COV_EXIT" -eq 124 ]; then
-            check_fail "单元测试/覆盖率检查超时"
+            check_fail "单元测试/覆盖率检查超时" "timeout" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
         else
             check_warn "无法获取覆盖率数据"
         fi
@@ -1058,45 +1660,54 @@ check_e2e_tests() {
         check_skip "pytest 未安装 (pip install pytest)"
         return 0
     fi
+    prepare_pytest_env
 
     if [ "$JSON_OUTPUT" != true ]; then
         echo -e "  ${BLUE}ℹ${NC} 运行 E2E 测试..."
     fi
 
-    local stream_output=true
-    if [ "$JSON_OUTPUT" = true ]; then
-        stream_output=false
-    fi
-
-    E2E_OUTPUT_FILE="/tmp/pytest_e2e_output.txt"
+    E2E_OUTPUT_FILE="$LOG_DIR/pytest_e2e.log"
+    local start_ms
+    start_ms=$(now_ms)
     set +e
-    run_command_with_timeout "$E2E_TIMEOUT" "$E2E_OUTPUT_FILE" "$stream_output" pytest tests/ \
-        -v --tb=short -m "$E2E_MARKER_EXPR"
+    run_pytest_group "$E2E_OUTPUT_FILE" "$E2E_TIMEOUT" "${PYTEST_COMMON_ARGS[@]}" \
+        -m "$E2E_MARKER_EXPR" tests/
     E2E_EXIT=$?
     set -e
+    local duration_ms=$(( $(now_ms) - start_ms ))
 
     if [ "$E2E_EXIT" -eq 0 ]; then
         PASSED=$(parse_pytest_count "$E2E_OUTPUT_FILE" "passed")
-        check_pass "E2E 测试通过: ${PASSED:-0} 个"
+        check_pass "E2E 测试通过: ${PASSED:-0} 个" "" "$E2E_OUTPUT_FILE" "$duration_ms"
     elif [ "$E2E_EXIT" -eq 5 ]; then
         # pytest 退出码 5: no tests collected
         check_warn "未找到 E2E 测试用例（不计为失败）"
     elif [ "$E2E_EXIT" -eq 124 ]; then
-        check_fail "E2E 测试超时 (${E2E_TIMEOUT}s)"
+        last_test=$(extract_last_test_case "$E2E_OUTPUT_FILE")
+        cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$E2E_MARKER_EXPR" tests/)
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "E2E 测试超时 (${E2E_TIMEOUT}s)" "timeout" "$E2E_OUTPUT_FILE" "$duration_ms" "$meta_json"
         if [ "$JSON_OUTPUT" != true ]; then
             echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
             tail -n 30 "$E2E_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $E2E_OUTPUT_FILE"
+            check_info "复现: $cmd_str"
         fi
     else
         FAILED=$(parse_pytest_count "$E2E_OUTPUT_FILE" "failed")
-        check_fail "E2E 测试失败: ${FAILED:-?} 个"
+        last_test=$(extract_last_test_case "$E2E_OUTPUT_FILE")
+        cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$E2E_MARKER_EXPR" tests/)
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "E2E 测试失败: ${FAILED:-?} 个" "failed" "$E2E_OUTPUT_FILE" "$duration_ms" "$meta_json"
         if [ "$JSON_OUTPUT" != true ]; then
             echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
             tail -n 30 "$E2E_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $E2E_OUTPUT_FILE"
+            check_info "复现: $cmd_str"
         fi
     fi
-
-    rm -f "$E2E_OUTPUT_FILE"
 }
 
 check_config() {
@@ -1440,36 +2051,41 @@ main() {
     fi
 
     # 执行所有检查
-    check_python_version
-    check_dependencies
-    check_syntax
-    check_imports
-    check_directories
-    check_main_entries
-    check_run_modes
-    check_deprecated_patterns
-    check_config
-    check_git
-    check_agent_cli
-    check_knowledge_base
-    check_pre_commit
+    run_check "Python 环境检查" check_python_version
+    run_check "超时机制检查" check_timeout_backend
+    run_check "依赖检查" check_dependencies
+    run_check "Python 语法检查" check_syntax
+    run_check "模块结构检查" check_imports
+    run_check "目录结构检查" check_directories
+    run_check "入口文件检查" check_main_entries
+    run_check "运行模式检查" check_run_modes
+    run_check "过时模式检测" check_deprecated_patterns
+    run_check "配置文件检查" check_config
+    run_check "Git 状态检查" check_git
+    run_check "Agent CLI 检查" check_agent_cli
+    run_check "知识库验证" check_knowledge_base
+    run_check "预提交检查 (Python)" check_pre_commit
 
     # 可选的深度检查
     if [ "$FULL_CHECK" = true ]; then
-        check_type_hints
-        check_code_style
+        run_check "类型检查 (mypy)" check_type_hints
+        run_check "代码风格检查" check_code_style
         # 综合：单元测试 + 覆盖率（一次完成），再跑一次 E2E（若无用例不失败）
         # --split-tests 用于排查/定位，避免覆盖率聚合带来的重复执行，split 模式下跳过覆盖率阈值检查
         if [ "$SPLIT_TESTS" = true ]; then
-            check_warn "--split-tests 模式下跳过覆盖率阈值检查（避免重复执行），建议单独再跑一次 --full 获取覆盖率"
-            check_unit_tests
+            if [ "$SPLIT_COVERAGE" = true ]; then
+                run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+            else
+                check_warn "--split-tests 模式下跳过覆盖率阈值检查（避免重复执行），建议单独再跑一次 --full 获取覆盖率"
+                run_check "单元测试" check_unit_tests
+            fi
         else
-            check_unit_tests_with_coverage
+            run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
         fi
-        check_e2e_tests
+        run_check "E2E 测试" check_e2e_tests
     else
         # 默认：快速 + 核心测试集合
-        check_core_tests
+        run_check "核心测试集合" check_core_tests
         if [ "$JSON_OUTPUT" != true ]; then
             print_section "跳过的检查 (使用 --full 启用)"
             check_info "类型检查 (mypy)"
@@ -1501,6 +2117,12 @@ main() {
     echo ""
 
     TOTAL=$((PASS_COUNT + FAIL_COUNT + WARN_COUNT + SKIP_COUNT))
+
+    # 成功时可清理日志（避免污染）
+    if [ "$JSON_OUTPUT" != true ] && [ "$KEEP_LOGS" != true ] && [ "$LOG_DIR_SET" != true ] && \
+       [ "$FAIL_COUNT" -eq 0 ] && [ "$LOG_DIR_CREATED" = true ]; then
+        rm -rf "$LOG_DIR" 2>/dev/null || true
+    fi
 
     if [ $FAIL_COUNT -eq 0 ]; then
         echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
