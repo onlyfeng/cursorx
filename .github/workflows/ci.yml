@@ -324,6 +324,7 @@ jobs:
           fi
 
       - name: 运行单元测试（含覆盖率）
+        shell: bash
         run: |
           pytest tests/ -v --tb=short --color=yes \
             -m "not e2e and not slow and not integration" \
@@ -333,6 +334,7 @@ jobs:
             --timeout=60
 
       - name: Validate run modes
+        shell: bash
         run: |
           echo "## run.py 运行模式验证" >> $GITHUB_STEP_SUMMARY
           
