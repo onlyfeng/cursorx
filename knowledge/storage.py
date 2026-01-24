@@ -171,17 +171,24 @@ class KnowledgeStorage:
         self._index: dict[str, IndexEntry] = {}
         self._url_to_id: dict[str, str] = {}    # URL -> doc_id 映射
         self._initialized = False
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
 
         # 向量存储（延迟初始化）
         self._vector_store: Optional[KnowledgeVectorStore] = None
+
+    async def _get_lock(self) -> asyncio.Lock:
+        """延迟创建锁，避免无事件循环时报错。"""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def initialize(self) -> None:
         """初始化存储，创建必要的目录结构并加载索引"""
         if self._initialized:
             return
 
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             if self._initialized:
                 return
 
@@ -282,7 +289,8 @@ class KnowledgeStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             # 计算内容哈希
             content_hash = hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16]
 
@@ -498,7 +506,8 @@ class KnowledgeStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             if doc_id not in self._index:
                 return False
 
@@ -921,7 +930,8 @@ class KnowledgeStorage:
         if not self._initialized:
             await self.initialize()
 
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             try:
                 # 删除所有文档文件
                 for doc_id in list(self._index.keys()):
