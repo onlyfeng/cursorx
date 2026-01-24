@@ -119,6 +119,14 @@ class AuthStatus:
 
 # ========== 配置类 ==========
 
+def _safe_home_dir() -> Path:
+    """获取用户目录，缺失时回退到当前目录。"""
+    try:
+        return Path.home()
+    except Exception:
+        return Path.cwd()
+
+
 class CloudAuthConfig(BaseModel):
     """Cloud 认证配置"""
     # API Key（优先从环境变量读取）
@@ -129,12 +137,12 @@ class CloudAuthConfig(BaseModel):
 
     # 全局配置文件路径
     global_config_file: str = Field(
-        default_factory=lambda: str(Path.home() / ".cursor" / "config.json")
+        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "config.json")
     )
 
     # CLI 配置文件路径
     cli_config_file: str = Field(
-        default_factory=lambda: str(Path.home() / ".cursor" / "cli-config.json")
+        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "cli-config.json")
     )
 
     # API 端点
@@ -150,7 +158,7 @@ class CloudAuthConfig(BaseModel):
     # 缓存配置
     cache_token: bool = True
     token_cache_file: str = Field(
-        default_factory=lambda: str(Path.home() / ".cursor" / "token_cache.json")
+        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "token_cache.json")
     )
 
     # 超时配置

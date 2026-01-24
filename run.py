@@ -44,6 +44,18 @@ if TYPE_CHECKING:
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+def _configure_windows_stdio() -> None:
+    """Windows 控制台默认编码可能不支持中文，确保 UTF-8 输出。"""
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+_configure_windows_stdio()
+
 from loguru import logger
 
 from core.cloud_utils import is_cloud_request, strip_cloud_prefix

@@ -74,7 +74,10 @@ class Document(BaseModel):
         self.content = content
         if title:
             self.title = title
-        self.updated_at = datetime.now()
+        now = datetime.now()
+        if now <= self.updated_at:
+            now = self.updated_at + datetime.resolution
+        self.updated_at = now
 
     def get_chunk_count(self) -> int:
         """获取分块数量"""

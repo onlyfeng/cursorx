@@ -551,7 +551,7 @@ class TestCompleteWorkflow:
 ## 内容
 
 包含一些测试内容。
-""")
+""", encoding="utf-8")
 
         # 添加文件
         doc = await manager.add_file(test_file)
