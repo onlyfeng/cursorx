@@ -16,25 +16,22 @@ class TaskQueue:
     """
 
     def __init__(self):
-        self._ensure_event_loop()
         self._queues: dict[int, asyncio.PriorityQueue] = defaultdict(asyncio.PriorityQueue)
         self._tasks: dict[str, Task] = {}  # 所有任务的索引
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         # 队列索引：追踪已入队的任务 ID（用于 reconcile 检测不一致）
         self._queued_ids: dict[int, set[str]] = defaultdict(set)
 
-    @staticmethod
-    def _ensure_event_loop() -> None:
-        """确保主线程存在可用事件循环（兼容测试环境）。"""
-        try:
-            asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+    async def _get_lock(self) -> asyncio.Lock:
+        """延迟创建锁，避免无事件循环时报错。"""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def enqueue(self, task: Task) -> None:
         """入队任务"""
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             iteration_id = task.iteration_id
             # 优先级队列：负优先级值使高优先级任务排在前面
             priority = -task.priority.value
@@ -64,7 +61,8 @@ class TaskQueue:
         task.error = None
         task.started_at = None
 
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             iteration_id = task.iteration_id
             # 优先级队列：负优先级值使高优先级任务排在前面
             priority = -task.priority.value
@@ -172,7 +170,8 @@ class TaskQueue:
 
     async def clear_iteration(self, iteration_id: int) -> None:
         """清除指定迭代的队列（保留任务记录）"""
-        async with self._lock:
+        lock = await self._get_lock()
+        async with lock:
             if iteration_id in self._queues:
                 # 清空队列
                 while not self._queues[iteration_id].empty():

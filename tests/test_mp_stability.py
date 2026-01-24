@@ -1208,7 +1208,7 @@ class TestDiagnosticCooldown:
         return MultiProcessOrchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_diagnostic_cooldown_window(self, orchestrator, capsys):
+    async def test_diagnostic_cooldown_window(self, orchestrator, capsys, monkeypatch):
         """测试诊断日志冷却窗口：窗口内最多输出一次
 
         通过时间推进模拟多次卡死检测，验证冷却机制。
@@ -1227,8 +1227,14 @@ class TestDiagnosticCooldown:
         iteration_id = 1
         cooldown_interval = orchestrator.config.stall_recovery_interval
 
-        # 初始化时间状态
+        # 初始化时间状态（使用可控时间，避免不同机器上抖动）
         _last_diagnostic_time = 0.0
+        current_time = cooldown_interval
+
+        def fake_time() -> float:
+            return current_time
+
+        monkeypatch.setattr(time, "time", fake_time)
 
         def emit_diagnostic_with_cooldown(stall_reason: str) -> bool:
             """模拟带冷却的诊断输出，返回是否实际输出了"""
@@ -1259,7 +1265,7 @@ class TestDiagnosticCooldown:
         assert result3 is False, "冷却窗口内不应该输出"
 
         # 等待冷却窗口过期
-        time.sleep(cooldown_interval + 0.05)
+        current_time += cooldown_interval + 0.05
 
         # 冷却窗口后再次调用：应该输出
         result4 = emit_diagnostic_with_cooldown(stall_reason)
@@ -1273,7 +1279,7 @@ class TestDiagnosticCooldown:
         assert diagnostic_count == 2, f"诊断日志应该输出 2 次，实际 {diagnostic_count} 次"
 
     @pytest.mark.asyncio
-    async def test_diagnostic_cooldown_integration(self, orchestrator, capsys):
+    async def test_diagnostic_cooldown_integration(self, orchestrator, capsys, monkeypatch):
         """集成测试：模拟 _execution_phase 中的诊断冷却逻辑
 
         使用实际的冷却检测逻辑，验证在快速循环中诊断不会频繁输出。
@@ -1291,9 +1297,18 @@ class TestDiagnosticCooldown:
         cooldown_interval = orchestrator.config.stall_recovery_interval
         orchestrator._last_stall_diagnostic_time = 0.0
 
+        # 使用可控时间，避免真实 sleep 造成抖动
+        current_time = cooldown_interval
+
+        def fake_time() -> float:
+            return current_time
+
+        monkeypatch.setattr(time, "time", fake_time)
+
         # 模拟 10 次快速循环（应该只触发诊断 1-2 次）
         loop_count = 10
         diagnostic_emitted = 0
+        loop_interval = 0.02  # 20ms，远短于 200ms 冷却
 
         for i in range(loop_count):
             now = time.time()
@@ -1305,7 +1320,7 @@ class TestDiagnosticCooldown:
                 diagnostic_emitted += 1
 
             # 模拟循环间隔（短于冷却窗口）
-            time.sleep(0.02)  # 20ms，远短于 200ms 冷却
+            current_time += loop_interval
 
         # 验证：只输出了 1 次（因为循环总时间约 200ms，刚好达到冷却窗口）
         log_content = log_output.getvalue()
@@ -2239,7 +2254,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         return MultiProcessOrchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_cooldown_prevents_repeated_diagnostics(self, orchestrator):
+    async def test_cooldown_prevents_repeated_diagnostics(self, orchestrator, monkeypatch):
         """测试冷却窗口内不重复输出诊断
 
         模拟快速连续多次 stall 检测循环，验证 [诊断] 关键行
@@ -2257,6 +2272,14 @@ class TestStallDiagnosticCooldownInExecutionPhase:
 
         cooldown_interval = orchestrator.config.stall_recovery_interval
         stall_reason = "pending=1 > 0 但 active_tasks=0, available_workers=0"
+
+        # 使用可控时间，避免真实 sleep 造成抖动
+        current_time = cooldown_interval
+
+        def fake_time() -> float:
+            return current_time
+
+        monkeypatch.setattr(time, "time", fake_time)
 
         # 模拟 10 次快速循环的 stall 检测
         loop_count = 10
@@ -2279,7 +2302,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
                 logger.warning(f"[诊断] 卡死检测 | loop={i}, stall_reason=\"{stall_reason}\"")
                 logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
-            time.sleep(loop_interval)
+            current_time += loop_interval
 
         log_content = log_output.getvalue()
         diagnostic_count = log_content.count("[诊断] ⚠ 卡死模式检测")
@@ -2352,7 +2375,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         assert actual_count == 2, f"应该输出 2 次，实际 {actual_count} 次"
 
     @pytest.mark.asyncio
-    async def test_summary_and_stall_message_both_controlled_by_cooldown(self, orchestrator):
+    async def test_summary_and_stall_message_both_controlled_by_cooldown(self, orchestrator, monkeypatch):
         """测试摘要日志和卡死模式检测都受冷却控制
 
         验证：冷却窗口内，[诊断] 卡死检测 和 [诊断] ⚠ 都不会重复输出。
@@ -2369,6 +2392,14 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         stall_reason = "pending=1 > 0 但 active_tasks=0, available_workers=0"
         iteration_id = 1
 
+        # 使用可控时间，避免真实 sleep 造成抖动
+        current_time = cooldown_interval
+
+        def fake_time() -> float:
+            return current_time
+
+        monkeypatch.setattr(time, "time", fake_time)
+
         # 模拟 5 次快速触发
         for i in range(5):
             now = time.time()
@@ -2381,7 +2412,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
                 logger.warning(f"[诊断] 卡死检测 | iteration={iteration_id}")
                 logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
-            time.sleep(0.02)  # 20ms，远短于冷却窗口
+            current_time += 0.02  # 20ms，远短于冷却窗口
 
         log_content = log_output.getvalue()
 

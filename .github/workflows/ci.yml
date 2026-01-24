@@ -286,6 +286,7 @@ jobs:
 
       - name: 模块导入检查
         id: import_check
+        shell: bash
         run: |
           # 运行快速导入检查并捕获 JSON 输出
           set +e
