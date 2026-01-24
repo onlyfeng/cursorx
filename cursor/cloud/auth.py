@@ -188,8 +188,14 @@ class CloudAuthManager:
         self.config = config or CloudAuthConfig()
         self._status = AuthStatus()
         self._agent_path = self._find_agent_executable()
-        self._token_refresh_lock = asyncio.Lock()
+        self._token_refresh_lock: Optional[asyncio.Lock] = None
         self._on_auth_change_callbacks: list[Callable[[AuthStatus], None]] = []
+
+    async def _get_token_refresh_lock(self) -> asyncio.Lock:
+        """延迟创建锁，避免无事件循环时报错。"""
+        if self._token_refresh_lock is None:
+            self._token_refresh_lock = asyncio.Lock()
+        return self._token_refresh_lock
 
     def _find_agent_executable(self) -> str:
         """查找 agent 可执行文件"""
@@ -532,7 +538,8 @@ class CloudAuthManager:
         对于使用 OAuth 的场景，刷新 access_token
         对于 API Key 场景，重新验证
         """
-        async with self._token_refresh_lock:
+        lock = await self._get_token_refresh_lock()
+        async with lock:
             logger.info("正在刷新认证 Token...")
 
             # 如果有 refresh_token，使用 OAuth 刷新

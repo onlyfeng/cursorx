@@ -1197,6 +1197,14 @@ def main() -> int:
     # 检测 CI 环境或显式指定 --ci 参数时禁用颜色
     if args.ci or is_ci_environment():
         Colors.disable()
+
+    # Windows 控制台默认编码可能不支持中文，确保 UTF-8 输出
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     
     # 记录开始时间
     start_time = datetime.now(timezone.utc)
