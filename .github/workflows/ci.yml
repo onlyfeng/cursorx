@@ -294,6 +294,11 @@ jobs:
           EXIT_CODE=$?
           set -e
           
+          # 失败时输出原始 JSON 便于排查
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "$OUTPUT"
+          fi
+
           # 保存输出到环境变量
           echo "IMPORT_CHECK_OUTPUT<<EOF" >> $GITHUB_ENV
           echo "$OUTPUT" >> $GITHUB_ENV
