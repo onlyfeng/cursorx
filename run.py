@@ -899,17 +899,29 @@ class TaskAnalyzer:
 
         # 优先检测 '&' 前缀（Cloud 模式）
         if is_cloud_request(task):
-            analysis.mode = RunMode.CLOUD
-            # 设置 Cloud 模式相关选项
-            analysis.options["execution_mode"] = "cloud"
-            # '&' 前缀触发时，默认使用后台模式（Cloud Relay 语义）
-            analysis.options["cloud_background"] = True
-            analysis.options["triggered_by_prefix"] = True
-            # 去除 '&' 前缀，保留实际任务内容
-            analysis.goal = strip_cloud_prefix(task)
-            reasoning_parts.append("检测到 '&' 前缀，使用 Cloud 后台模式")
-            # Cloud 模式默认不开启 auto_commit（安全策略）
-            # allow_write/force_write 由用户显式控制
+            # 检查是否配置了 Cloud API Key
+            api_key = CloudClientFactory.resolve_api_key()
+            if api_key:
+                analysis.mode = RunMode.CLOUD
+                # 设置 Cloud 模式相关选项
+                analysis.options["execution_mode"] = "cloud"
+                # '&' 前缀触发时，默认使用后台模式（Cloud Relay 语义）
+                analysis.options["cloud_background"] = True
+                analysis.options["triggered_by_prefix"] = True
+                # 去除 '&' 前缀，保留实际任务内容
+                analysis.goal = strip_cloud_prefix(task)
+                reasoning_parts.append("检测到 '&' 前缀，使用 Cloud 后台模式")
+                # Cloud 模式默认不开启 auto_commit（安全策略）
+                # allow_write/force_write 由用户显式控制
+            else:
+                # 未配置 Cloud API Key，回退到 CLI 模式并发出警告
+                print_warning(
+                    "检测到 '&' 前缀但未配置 Cloud API Key，"
+                    "回退到 CLI 模式。请设置 CURSOR_API_KEY 环境变量或使用 --cloud-api-key 参数。"
+                )
+                # 去除 '&' 前缀，继续使用 CLI 模式处理
+                analysis.goal = strip_cloud_prefix(task)
+                reasoning_parts.append("'&' 前缀但无 Cloud API Key，回退到 CLI 模式")
         else:
             # 检测模式关键词
             for mode, keywords in self.MODE_KEYWORDS.items():
@@ -1577,6 +1589,9 @@ class Runner:
     def _get_execution_mode(self, options: dict) -> ExecutionMode:
         """获取执行模式
 
+        如果目标模式是 cloud/auto 但未配置 Cloud API Key，
+        会发出警告并回退到 CLI 模式。
+
         Args:
             options: 合并后的选项字典
 
@@ -1589,7 +1604,19 @@ class Runner:
             "auto": ExecutionMode.AUTO,
             "cloud": ExecutionMode.CLOUD,
         }
-        return mode_map.get(mode_str, ExecutionMode.CLI)
+        target_mode = mode_map.get(mode_str, ExecutionMode.CLI)
+
+        # 如果目标模式是 cloud/auto，检查 API Key
+        if target_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
+            api_key = CloudClientFactory.resolve_api_key()
+            if not api_key:
+                print_warning(
+                    f"execution_mode={mode_str} 但未配置 Cloud API Key，"
+                    "回退到 CLI 模式。请设置 CURSOR_API_KEY 环境变量。"
+                )
+                return ExecutionMode.CLI
+
+        return target_mode
 
     def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
         """解析执行模式字符串为 ExecutionMode 枚举

@@ -13,7 +13,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 from unittest.mock import AsyncMock, MagicMock, patch as _patch, DEFAULT
 
 import pytest
@@ -803,7 +803,19 @@ class TestExecutionModeSelection:
     1. execution_mode=cli 时使用默认 mp 编排器
     2. execution_mode=cloud/auto 时强制使用 basic 编排器
     3. OrchestratorConfig 正确接收 execution_mode 和 cloud_auth_config
+
+    注意：这些测试需要 mock Cloud API Key 存在，否则 cloud/auto 模式会回退到 cli
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 cloud/auto 执行模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     def test_get_execution_mode_cli(
         self, base_iterate_args: argparse.Namespace
@@ -892,28 +904,41 @@ class TestExecutionModeSelection:
         self, base_iterate_args: argparse.Namespace
     ) -> None:
         """测试从命令行参数获取 cloud_auth_config"""
+        from cursor.cloud_client import CloudClientFactory
+
         base_iterate_args.cloud_api_key = "test-api-key-12345"
         base_iterate_args.cloud_auth_timeout = 60
 
-        iterator = SelfIterator(base_iterate_args)
-        config = iterator._get_cloud_auth_config()
+        # 使用特定 API Key 覆盖 autouse fixture
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="test-api-key-12345"
+        ):
+            iterator = SelfIterator(base_iterate_args)
+            config = iterator._get_cloud_auth_config()
 
-        assert config is not None
-        assert config.api_key == "test-api-key-12345"
-        assert config.auth_timeout == 60
+            assert config is not None
+            assert config.api_key == "test-api-key-12345"
+            assert config.auth_timeout == 60
 
     def test_get_cloud_auth_config_none_when_no_key(
         self, base_iterate_args: argparse.Namespace
     ) -> None:
         """测试无 API Key 时返回 None"""
-        base_iterate_args.cloud_api_key = None
-        # 确保环境变量也没有设置
-        import os
-        with patch.dict(os.environ, {}, clear=True):
-            iterator = SelfIterator(base_iterate_args)
-            config = iterator._get_cloud_auth_config()
+        from cursor.cloud_client import CloudClientFactory
 
-            assert config is None
+        base_iterate_args.cloud_api_key = None
+
+        # 覆盖 autouse fixture 为无 API Key
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value=None
+        ):
+            # 确保环境变量也没有设置
+            import os
+            with patch.dict(os.environ, {}, clear=True):
+                iterator = SelfIterator(base_iterate_args)
+                config = iterator._get_cloud_auth_config()
+
+                assert config is None
 
     @pytest.mark.asyncio
     async def test_basic_orchestrator_receives_execution_mode(
@@ -955,37 +980,44 @@ class TestExecutionModeSelection:
         self, base_iterate_args: argparse.Namespace
     ) -> None:
         """测试 basic 编排器正确接收 cloud_auth_config 配置"""
+        from cursor.cloud_client import CloudClientFactory
+
         base_iterate_args.execution_mode = "cloud"
         base_iterate_args.cloud_api_key = "test-cloud-key"
         base_iterate_args.cloud_auth_timeout = 45
         base_iterate_args.skip_online = True
-        iterator = SelfIterator(base_iterate_args)
-        iterator.context.iteration_goal = "测试目标"
 
-        with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
-            with patch("scripts.run_iterate.Orchestrator") as MockOrch:
-                with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
-                    with patch("scripts.run_iterate.CursorAgentConfig"):
-                        mock_km = MagicMock()
-                        mock_km.initialize = AsyncMock()
-                        MockKM.return_value = mock_km
+        # 使用特定 API Key 覆盖 autouse fixture
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="test-cloud-key"
+        ):
+            iterator = SelfIterator(base_iterate_args)
+            iterator.context.iteration_goal = "测试目标"
 
-                        mock_config_instance = MagicMock()
-                        MockConfig.return_value = mock_config_instance
+            with patch("scripts.run_iterate.OrchestratorConfig") as MockConfig:
+                with patch("scripts.run_iterate.Orchestrator") as MockOrch:
+                    with patch("scripts.run_iterate.KnowledgeManager") as MockKM:
+                        with patch("scripts.run_iterate.CursorAgentConfig"):
+                            mock_km = MagicMock()
+                            mock_km.initialize = AsyncMock()
+                            MockKM.return_value = mock_km
 
-                        mock_orch = MagicMock()
-                        mock_orch.run = AsyncMock(return_value={"success": True})
-                        MockOrch.return_value = mock_orch
+                            mock_config_instance = MagicMock()
+                            MockConfig.return_value = mock_config_instance
 
-                        await iterator._run_with_basic_orchestrator(3, mock_km)
+                            mock_orch = MagicMock()
+                            mock_orch.run = AsyncMock(return_value={"success": True})
+                            MockOrch.return_value = mock_orch
 
-                        # 验证 cloud_auth_config 参数
-                        MockConfig.assert_called_once()
-                        call_kwargs = MockConfig.call_args.kwargs
-                        cloud_auth = call_kwargs.get("cloud_auth_config")
-                        assert cloud_auth is not None
-                        assert cloud_auth.api_key == "test-cloud-key"
-                        assert cloud_auth.auth_timeout == 45
+                            await iterator._run_with_basic_orchestrator(3, mock_km)
+
+                            # 验证 cloud_auth_config 参数
+                            MockConfig.assert_called_once()
+                            call_kwargs = MockConfig.call_args.kwargs
+                            cloud_auth = call_kwargs.get("cloud_auth_config")
+                            assert cloud_auth is not None
+                            assert cloud_auth.api_key == "test-cloud-key"
+                            assert cloud_auth.auth_timeout == 45
 
     @pytest.mark.asyncio
     async def test_cloud_timeout_passed_to_cursor_config_for_cloud_mode(
@@ -1241,7 +1273,19 @@ class TestAmpersandPrefixCloudMode:
     2. goal 剥离 '&' 前缀后保留实际任务内容
     3. 剥离后的 goal 不影响执行模式判断
     4. 边界用例：仅 '&'、空白等
+
+    注意：这些测试需要 mock Cloud API Key 存在，否则 '&' 前缀会回退到 cli 模式
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 '&' 前缀触发 Cloud 模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     @pytest.fixture
     def cloud_prefix_args(self) -> argparse.Namespace:
@@ -1582,7 +1626,19 @@ class TestCloudModeViaRunPyIntegration:
 
     场景：run.py 已经剥离了 '&' 前缀并设置了 execution_mode="cloud"，
     传给 SelfIterator 的 requirement 已经没有 '&' 前缀。
+
+    注意：这些测试需要 mock Cloud API Key 存在，否则 cloud 模式会回退到 cli
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 Cloud 执行模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     @pytest.fixture
     def iterate_args_from_run_py(self) -> argparse.Namespace:
@@ -5167,7 +5223,19 @@ class TestExecutionModeConfigDefault:
     2. _resolved_settings 使用 config.yaml 中的值
     3. '&' 前缀触发 Cloud 模式仍优先于配置默认值
     4. Cloud/Auto 模式下 orchestrator 兼容性策略仍生效（强制 basic）
+
+    注意：部分测试需要 mock Cloud API Key 存在，否则 cloud/auto 模式会回退到 cli
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 cloud/auto 执行模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     @pytest.fixture
     def config_execution_mode(self) -> str:

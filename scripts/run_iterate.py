@@ -1808,9 +1808,21 @@ class SelfIterator:
         user_requirement = args.requirement
         self._is_cloud_request = is_cloud_request(user_requirement)
         if self._is_cloud_request:
-            user_requirement = strip_cloud_prefix(user_requirement)
-            logger.debug(f"检测到 '&' 前缀，原始 requirement: {args.requirement}")
-            logger.debug(f"处理后 requirement: {user_requirement}")
+            # 检查是否配置了 Cloud API Key
+            api_key = CloudClientFactory.resolve_api_key()
+            if api_key:
+                user_requirement = strip_cloud_prefix(user_requirement)
+                logger.debug(f"检测到 '&' 前缀，原始 requirement: {args.requirement}")
+                logger.debug(f"处理后 requirement: {user_requirement}")
+            else:
+                # 未配置 Cloud API Key，回退到 CLI 模式
+                print_warning(
+                    "检测到 '&' 前缀但未配置 Cloud API Key，"
+                    "回退到 CLI 模式。请设置 CURSOR_API_KEY 环境变量或使用 --cloud-api-key 参数。"
+                )
+                self._is_cloud_request = False
+                user_requirement = strip_cloud_prefix(user_requirement)
+                logger.debug("'&' 前缀但无 Cloud API Key，回退到 CLI 模式")
 
         self.context = IterationContext(
             user_requirement=user_requirement,
@@ -2334,7 +2346,7 @@ class SelfIterator:
         """获取执行模式
 
         优先级:
-        1. 检测 requirement 是否以 '&' 开头，如果是则自动切换到 CLOUD 模式
+        1. 检测 requirement 是否以 '&' 开头，如果是则自动切换到 CLOUD 模式（需配置 API Key）
         2. 从命令行参数 --execution-mode 读取（CLI 显式指定）
         3. 从 config.yaml 读取（通过 _resolved_settings）
 
@@ -2343,17 +2355,27 @@ class SelfIterator:
         - auto_commit 独立于 force_write，需用户显式启用
         - 确保 allow_write/force_write 的权限语义与 auto_commit 策略不冲突
 
+        Cloud API Key 检查:
+        - 如果检测到 '&' 前缀但未配置 Cloud API Key，回退到 CLI 模式
+        - 如果显式指定 cloud/auto 模式但未配置 API Key，回退到 CLI 模式
+
         Returns:
             ExecutionMode 枚举值
         """
         # 优先检测 requirement 是否以 '&' 开头
         requirement = getattr(self.args, "requirement", "")
         if is_cloud_request(requirement):
-            logger.info(f"检测到 '&' 前缀，自动切换到 Cloud 模式")
-            # 去除 & 前缀，保留实际任务内容
-            # 注意：这里只是检测，不修改 args.requirement
-            # 实际 goal 会在 IterationGoalBuilder 中处理
-            return ExecutionMode.CLOUD
+            # 检查是否配置了 Cloud API Key
+            api_key = CloudClientFactory.resolve_api_key()
+            if api_key:
+                logger.info("检测到 '&' 前缀，自动切换到 Cloud 模式")
+                # 去除 & 前缀，保留实际任务内容
+                # 注意：这里只是检测，不修改 args.requirement
+                # 实际 goal 会在 IterationGoalBuilder 中处理
+                return ExecutionMode.CLOUD
+            else:
+                logger.debug("'&' 前缀但无 Cloud API Key，使用 CLI 模式")
+                # 回退到 CLI 模式，警告已在 __init__ 中输出
 
         # tri-state: 使用 resolved_settings 中的值（已处理 CLI > config.yaml 优先级）
         mode_str = self._resolved_settings.execution_mode
@@ -2362,7 +2384,19 @@ class SelfIterator:
             "auto": ExecutionMode.AUTO,
             "cloud": ExecutionMode.CLOUD,
         }
-        return mode_map.get(mode_str, ExecutionMode.CLI)
+        target_mode = mode_map.get(mode_str, ExecutionMode.CLI)
+
+        # 如果目标模式是 cloud/auto，检查 API Key
+        if target_mode in (ExecutionMode.CLOUD, ExecutionMode.AUTO):
+            api_key = CloudClientFactory.resolve_api_key()
+            if not api_key:
+                print_warning(
+                    f"execution_mode={mode_str} 但未配置 Cloud API Key，"
+                    "回退到 CLI 模式。请设置 CURSOR_API_KEY 环境变量。"
+                )
+                return ExecutionMode.CLI
+
+        return target_mode
 
     def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
         """解析执行模式字符串为 ExecutionMode 枚举

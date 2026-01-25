@@ -2,6 +2,7 @@
 import argparse
 import sys
 from io import StringIO
+from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -231,7 +232,20 @@ class TestModeAliases:
 
 
 class TestExecutionModeCloudAuthMapping:
-    """测试 execution_mode/cloud_auth 参数映射到 OrchestratorConfig 与 IterateArgs"""
+    """测试 execution_mode/cloud_auth 参数映射到 OrchestratorConfig 与 IterateArgs
+
+    注意：部分测试需要 mock Cloud API Key 存在，否则 cloud 模式会回退到 cli
+    """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 Cloud 执行模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     @pytest.fixture
     def iterate_mode_args(self) -> argparse.Namespace:
@@ -302,20 +316,26 @@ class TestExecutionModeCloudAuthMapping:
         self, mock_args: argparse.Namespace
     ) -> None:
         """测试 '&' 前缀检测后设置 execution_mode 选项"""
+        from cursor.cloud_client import CloudClientFactory
+
         analyzer = TaskAnalyzer(use_agent=False)
 
-        # 测试 '&' 前缀任务
-        analysis = analyzer.analyze("& 分析代码架构", mock_args)
+        # Mock Cloud API Key 存在
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            # 测试 '&' 前缀任务
+            analysis = analyzer.analyze("& 分析代码架构", mock_args)
 
-        # 验证模式被设置为 CLOUD
-        assert analysis.mode == RunMode.CLOUD
+            # 验证模式被设置为 CLOUD
+            assert analysis.mode == RunMode.CLOUD
 
-        # 验证 execution_mode 选项被设置
-        assert analysis.options.get("execution_mode") == "cloud"
+            # 验证 execution_mode 选项被设置
+            assert analysis.options.get("execution_mode") == "cloud"
 
-        # 验证 goal 被正确剥离 '&' 前缀
-        assert analysis.goal == "分析代码架构"
-        assert not analysis.goal.startswith("&")
+            # 验证 goal 被正确剥离 '&' 前缀
+            assert analysis.goal == "分析代码架构"
+            assert not analysis.goal.startswith("&")
 
     def test_cloud_mode_goal_stripping_preserves_content(
         self, mock_args: argparse.Namespace
@@ -476,7 +496,19 @@ class TestCloudModeAutoCommitSafety:
     """测试 Cloud 模式下 auto_commit 默认禁用的安全策略
 
     确保即使使用 '&' 前缀触发 Cloud 模式，auto_commit 仍需显式开启。
+
+    注意：这些测试需要 mock Cloud API Key 存在，否则 cloud 模式会回退到 cli
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 存在，用于测试 Cloud 执行模式"""
+        from cursor.cloud_client import CloudClientFactory
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            yield
 
     @pytest.fixture
     def cloud_mode_args(self) -> argparse.Namespace:
@@ -1363,28 +1395,40 @@ class TestTaskAnalyzer:
 
     def test_detect_cloud_prefix_basic(self, mock_args: argparse.Namespace) -> None:
         """验证检测 '&' 前缀并路由到 Cloud 模式"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        analysis = analyzer.analyze("& 分析代码结构", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        assert analysis.mode == RunMode.CLOUD, "以 '&' 开头应使用 Cloud 模式"
-        assert analysis.goal == "分析代码结构", "goal 应去除 '&' 前缀"
-        assert "Cloud" in analysis.reasoning or "'&'" in analysis.reasoning
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            analysis = analyzer.analyze("& 分析代码结构", mock_args)
+
+            assert analysis.mode == RunMode.CLOUD, "以 '&' 开头应使用 Cloud 模式"
+            assert analysis.goal == "分析代码结构", "goal 应去除 '&' 前缀"
+            assert "Cloud" in analysis.reasoning or "'&'" in analysis.reasoning
 
     def test_detect_cloud_prefix_with_whitespace(self, mock_args: argparse.Namespace) -> None:
         """验证检测带空白的 '&' 前缀"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        analysis = analyzer.analyze("  & 分析代码", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.goal.strip() == "分析代码"
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            analysis = analyzer.analyze("  & 分析代码", mock_args)
+
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.goal.strip() == "分析代码"
 
     def test_detect_cloud_prefix_no_space(self, mock_args: argparse.Namespace) -> None:
         """验证检测紧跟内容的 '&' 前缀"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        analysis = analyzer.analyze("&分析代码结构", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.goal == "分析代码结构"
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            analysis = analyzer.analyze("&分析代码结构", mock_args)
+
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.goal == "分析代码结构"
 
     def test_no_cloud_for_only_ampersand(self, mock_args: argparse.Namespace) -> None:
         """验证只有 '&' 符号不触发 Cloud 模式"""
@@ -1409,11 +1453,18 @@ class TestTaskAnalyzer:
 
     def test_cloud_mode_sets_execution_mode_option(self, mock_args: argparse.Namespace) -> None:
         """验证 Cloud 模式设置 execution_mode 选项"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        analysis = analyzer.analyze("& 后台执行任务", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.options.get("execution_mode") == "cloud"
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        # Mock Cloud API Key 存在
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            analysis = analyzer.analyze("& 后台执行任务", mock_args)
+
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.options.get("execution_mode") == "cloud"
 
     def test_detect_cloud_keywords(self, mock_args: argparse.Namespace) -> None:
         """验证检测 Cloud 模式关键词（不需要 '&' 前缀）"""
@@ -1431,39 +1482,51 @@ class TestTaskAnalyzer:
 
     def test_cloud_prefix_priority_over_keywords(self, mock_args: argparse.Namespace) -> None:
         """验证 '&' 前缀优先于其他模式关键词"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        # 同时包含 '&' 前缀和其他模式关键词
-        analysis = analyzer.analyze("& 自我迭代更新代码", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        # '&' 前缀应优先
-        assert analysis.mode == RunMode.CLOUD
-        # goal 应去除前缀
-        assert "自我迭代" in analysis.goal
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            # 同时包含 '&' 前缀和其他模式关键词
+            analysis = analyzer.analyze("& 自我迭代更新代码", mock_args)
+
+            # '&' 前缀应优先
+            assert analysis.mode == RunMode.CLOUD
+            # goal 应去除前缀
+            assert "自我迭代" in analysis.goal
 
     def test_cloud_prefix_priority_over_plan_keywords(
         self, mock_args: argparse.Namespace
     ) -> None:
         """验证 '&' 前缀优先于 plan 模式关键词"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        # 同时包含 '&' 前缀和 plan 模式关键词
-        analysis = analyzer.analyze("& 规划任务执行步骤", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        # '&' 前缀应优先选择 CLOUD 模式
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.options.get("execution_mode") == "cloud"
-        # goal 应去除 '&' 前缀
-        assert "规划任务" in analysis.goal
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            # 同时包含 '&' 前缀和 plan 模式关键词
+            analysis = analyzer.analyze("& 规划任务执行步骤", mock_args)
+
+            # '&' 前缀应优先选择 CLOUD 模式
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.options.get("execution_mode") == "cloud"
+            # goal 应去除 '&' 前缀
+            assert "规划任务" in analysis.goal
 
     def test_cloud_prefix_priority_over_ask_keywords(
         self, mock_args: argparse.Namespace
     ) -> None:
         """验证 '&' 前缀优先于 ask 模式关键词"""
-        analyzer = TaskAnalyzer(use_agent=False)
-        # 同时包含 '&' 前缀和 ask 模式关键词
-        analysis = analyzer.analyze("& 问答模式解决问题", mock_args)
+        from cursor.cloud_client import CloudClientFactory
 
-        # '&' 前缀应优先选择 CLOUD 模式
-        assert analysis.mode == RunMode.CLOUD
+        analyzer = TaskAnalyzer(use_agent=False)
+
+        with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-key"):
+            # 同时包含 '&' 前缀和 ask 模式关键词
+            analysis = analyzer.analyze("& 问答模式解决问题", mock_args)
+
+            # '&' 前缀应优先选择 CLOUD 模式
+            assert analysis.mode == RunMode.CLOUD
         assert analysis.options.get("execution_mode") == "cloud"
         # goal 应去除 '&' 前缀
         assert "问答模式" in analysis.goal
@@ -2086,13 +2149,26 @@ class TestRunner:
     ) -> None:
         """验证 _get_execution_mode 辅助方法"""
         from cursor.executor import ExecutionMode
+        from cursor.cloud_client import CloudClientFactory
 
         runner = Runner(mock_args)
 
-        # 测试各种模式字符串
+        # 测试 cli 模式（无需 API Key）
         assert runner._get_execution_mode({"execution_mode": "cli"}) == ExecutionMode.CLI
-        assert runner._get_execution_mode({"execution_mode": "auto"}) == ExecutionMode.AUTO
-        assert runner._get_execution_mode({"execution_mode": "cloud"}) == ExecutionMode.CLOUD
+
+        # 测试 auto/cloud 模式（需要 API Key）
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            assert runner._get_execution_mode({"execution_mode": "auto"}) == ExecutionMode.AUTO
+            assert runner._get_execution_mode({"execution_mode": "cloud"}) == ExecutionMode.CLOUD
+
+        # 测试无 API Key 时 auto/cloud 回退到 CLI
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value=None
+        ):
+            assert runner._get_execution_mode({"execution_mode": "auto"}) == ExecutionMode.CLI
+            assert runner._get_execution_mode({"execution_mode": "cloud"}) == ExecutionMode.CLI
 
         # 测试无效值回退到 CLI
         assert runner._get_execution_mode({"execution_mode": "invalid"}) == ExecutionMode.CLI
@@ -2120,17 +2196,23 @@ class TestRunner:
         self, mock_args: argparse.Namespace
     ) -> None:
         """验证 '&' 前缀触发的 Cloud 模式与 _merge_options 一致"""
+        from cursor.cloud_client import CloudClientFactory
+
         analyzer = TaskAnalyzer(use_agent=False)
         runner = Runner(mock_args)
 
-        # '&' 前缀应设置 execution_mode='cloud'
-        analysis = analyzer.analyze("& 后台执行任务", mock_args)
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.options.get("execution_mode") == "cloud"
+        # Mock Cloud API Key 存在
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            # '&' 前缀应设置 execution_mode='cloud'
+            analysis = analyzer.analyze("& 后台执行任务", mock_args)
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.options.get("execution_mode") == "cloud"
 
-        # _merge_options 应正确处理
-        options = runner._merge_options(analysis.options)
-        assert options["execution_mode"] == "cloud"
+            # _merge_options 应正确处理
+            options = runner._merge_options(analysis.options)
+            assert options["execution_mode"] == "cloud"
 
 
 # ============================================================
@@ -6620,20 +6702,26 @@ class TestExecutionModeConfigDefault:
     ) -> None:
         """测试 '&' 前缀触发 Cloud 模式优先于配置默认值
 
-        场景：配置中 execution_mode=cli，但任务带 '&' 前缀
+        场景：配置中 execution_mode=cli，但任务带 '&' 前缀且配置了 API Key
         期望：Cloud 模式被激活，覆盖配置默认值
         """
+        from cursor.cloud_client import CloudClientFactory
+
         # 模拟配置默认值为 cli
         mock_args.execution_mode = "cli"
         analyzer = TaskAnalyzer(use_agent=False)
 
-        # 带 '&' 前缀的任务
-        analysis = analyzer.analyze("& 分析代码架构", mock_args)
+        # Mock Cloud API Key 存在
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", return_value="mock-api-key"
+        ):
+            # 带 '&' 前缀的任务
+            analysis = analyzer.analyze("& 分析代码架构", mock_args)
 
-        # '&' 前缀应触发 Cloud 模式
-        assert analysis.mode == RunMode.CLOUD
-        assert analysis.options.get("execution_mode") == "cloud"
-        assert analysis.goal == "分析代码架构"
+            # '&' 前缀应触发 Cloud 模式
+            assert analysis.mode == RunMode.CLOUD
+            assert analysis.options.get("execution_mode") == "cloud"
+            assert analysis.goal == "分析代码架构"
 
     def test_merge_options_uses_analysis_execution_mode_over_config(
         self, mock_args: argparse.Namespace
