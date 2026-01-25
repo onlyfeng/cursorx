@@ -1704,12 +1704,16 @@ class TestRunPlanAskCliIntegration:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
 
         assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
-        assert "执行计划" in proc.stdout
+        # 检查关键输出（跨平台兼容）
         assert "MOCK_PLAN_OUTPUT: ok" in proc.stdout
+        # 中文字符在 Windows 上可能被转义，检查实际输出或 Unicode 转义形式
+        assert "执行计划" in proc.stdout or "\\u6267\\u884c\\u8ba1\\u5212" in proc.stdout
 
     def test_run_py_ask_mode_invokes_agent_cli_with_ask(self) -> None:
         env = os.environ.copy()
@@ -1721,9 +1725,13 @@ class TestRunPlanAskCliIntegration:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
 
         assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
-        assert "回答" in proc.stdout
+        # 检查关键输出（跨平台兼容）
         assert "MOCK_ASK_OUTPUT: ok" in proc.stdout
+        # 中文字符在 Windows 上可能被转义，检查实际输出或 Unicode 转义形式
+        assert "回答" in proc.stdout or "\\u56de\\u7b54" in proc.stdout
