@@ -91,6 +91,7 @@ test = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.0.0",             # 代码覆盖率
+    "pytest-timeout>=2.4.0",         # 测试超时控制
     "respx>=0.20.0",                 # HTTP mock
 ]
 # 完整安装 (所有可选依赖)
@@ -163,6 +164,7 @@ optional = true
 pytest = ">=7.0.0"
 pytest-asyncio = ">=0.23.0"
 pytest-cov = ">=4.0.0"
+pytest-timeout = ">=2.4.0"
 respx = ">=0.20.0"
 
 [tool.poetry.extras]
