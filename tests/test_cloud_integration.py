@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import os
 import tempfile
+from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2194,6 +2195,23 @@ class TestSelfIteratorExecutionModeIntegration:
     3. 验证 cloud_auth_config 正确传递到 Orchestrator
     4. 验证 '&' 前缀自动切换到 Cloud 模式
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 以避免因无 API Key 导致的模式回退
+
+        当测试显式设置了 API Key 时返回该值，否则返回 mock 值。
+        """
+        from cursor.cloud_client import CloudClientFactory
+
+        def _resolve_api_key(explicit_api_key=None, **kwargs):
+            # 如果测试显式设置了 API Key，使用它；否则返回 mock 值
+            return explicit_api_key if explicit_api_key else "mock-api-key"
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", side_effect=_resolve_api_key
+        ):
+            yield
 
     @pytest.fixture
     def cloud_iterate_args(self):

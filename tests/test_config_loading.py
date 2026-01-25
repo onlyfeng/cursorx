@@ -15,6 +15,7 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1989,6 +1990,22 @@ class TestRunIterateGetOrchestratorType:
     这是纯函数测试，避免运行完整网络/多进程。
     验证 execution_mode 强制 basic 的逻辑。
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 以避免因无 API Key 导致的模式回退
+
+        当测试显式设置了 API Key 时返回该值，否则返回 mock 值。
+        """
+        from cursor.cloud_client import CloudClientFactory
+
+        def _resolve_api_key(explicit_api_key=None, **kwargs):
+            return explicit_api_key if explicit_api_key else "mock-api-key"
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", side_effect=_resolve_api_key
+        ):
+            yield
 
     @pytest.fixture
     def base_iterate_args(self) -> argparse.Namespace:
@@ -7433,6 +7450,22 @@ class TestCloudAutoMpCompatibility:
     验证该规则在不同入口（run.py, run_iterate.py）中保持一致
     """
 
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 以避免因无 API Key 导致的模式回退
+
+        当测试显式设置了 API Key 时返回该值，否则返回 mock 值。
+        """
+        from cursor.cloud_client import CloudClientFactory
+
+        def _resolve_api_key(explicit_api_key=None, **kwargs):
+            return explicit_api_key if explicit_api_key else "mock-api-key"
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", side_effect=_resolve_api_key
+        ):
+            yield
+
     def test_run_py_cloud_mode_forces_basic_orchestrator(
         self, tmp_path: Path, reset_config_manager, monkeypatch
     ) -> None:
@@ -11695,6 +11728,22 @@ class TestEntryScriptConfigLoadingComplete:
     3. execution_mode=cloud/auto 时强制 basic 编排器策略
     4. stream_json.enabled 能驱动 CursorAgentConfig.stream_events_enabled
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_cloud_api_key(self) -> Generator[None, None, None]:
+        """Mock Cloud API Key 以避免因无 API Key 导致的模式回退
+
+        当测试显式设置了 API Key 时返回该值，否则返回 mock 值。
+        """
+        from cursor.cloud_client import CloudClientFactory
+
+        def _resolve_api_key(explicit_api_key=None, **kwargs):
+            return explicit_api_key if explicit_api_key else "mock-api-key"
+
+        with patch.object(
+            CloudClientFactory, "resolve_api_key", side_effect=_resolve_api_key
+        ):
+            yield
 
     @pytest.fixture
     def comprehensive_config(self, tmp_path: Path) -> Path:
