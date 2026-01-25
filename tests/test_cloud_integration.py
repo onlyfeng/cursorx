@@ -1045,20 +1045,23 @@ class TestCloudSessionManagement:
     @pytest.mark.asyncio
     async def test_push_to_cloud_timeout(self, cursor_cloud_client):
         """测试推送到云端超时"""
-        async def slow_communicate():
-            await asyncio.sleep(100)
-            return (b"", b"")
-
-        mock_process = AsyncMock()
-        mock_process.communicate = slow_communicate
+        # 使用 MagicMock 避免创建未 await 的协程
+        mock_process = MagicMock()
+        mock_process.communicate = MagicMock(return_value=MagicMock())
 
         with patch.object(
             cursor_cloud_client.auth_manager,
             "authenticate",
-            return_value=AuthStatus(authenticated=True),
+            new=AsyncMock(return_value=AuthStatus(authenticated=True)),
         ):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_process):
-                with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+            with patch(
+                "asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=mock_process),
+            ):
+                with patch(
+                    "asyncio.wait_for",
+                    new=AsyncMock(side_effect=asyncio.TimeoutError()),
+                ):
                     result = await cursor_cloud_client.push_to_cloud("session-slow")
 
                     assert result.success is False
@@ -1067,16 +1070,29 @@ class TestCloudSessionManagement:
     @pytest.mark.asyncio
     async def test_resume_from_cloud_timeout(self, cursor_cloud_client):
         """测试从云端恢复超时"""
+        # 模拟超时：wait_for 抛出 TimeoutError，但协程不会被真正执行
+        # 使用 MagicMock 而非 AsyncMock 避免创建未 await 的协程
+        mock_process = MagicMock()
+        # communicate 返回普通值，因为 wait_for 会在调用前就抛出异常
+        mock_process.communicate = MagicMock(return_value=MagicMock())
+
         with patch.object(
             cursor_cloud_client.auth_manager,
             "authenticate",
-            return_value=AuthStatus(authenticated=True),
+            new=AsyncMock(return_value=AuthStatus(authenticated=True)),
         ):
-            with patch("asyncio.create_subprocess_exec", side_effect=asyncio.TimeoutError()):
+            with patch(
+                "asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=mock_process),
+            ):
                 # 使用较短的超时
                 options = CloudTaskOptions(timeout=1)
 
-                with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+                # wait_for 直接抛出 TimeoutError，模拟超时场景
+                with patch(
+                    "asyncio.wait_for",
+                    new=AsyncMock(side_effect=asyncio.TimeoutError()),
+                ):
                     result = await cursor_cloud_client.resume_from_cloud(
                         "task-timeout",
                         options=options,

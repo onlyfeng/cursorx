@@ -210,6 +210,8 @@ omit = [
     "*/__pycache__/*",
     "*/venv/*",
     "*/.venv/*",
+    # PyTorch/sentence-transformers 生成的临时文件，无法被 coverage 解析
+    "*/_remote_module_non_scriptable*",
 ]
 
 [tool.coverage.report]

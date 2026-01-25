@@ -508,12 +508,9 @@ class TestExecuteFailure:
         config = CursorAgentConfig(timeout=1)
         client = CursorAgentClient(config=config)
 
-        async def slow_communicate():
-            await asyncio.sleep(10)
-            return (b"", b"")
-
+        # 使用 AsyncMock 避免创建未 await 的协程
         mock_process = AsyncMock()
-        mock_process.communicate = slow_communicate
+        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
 
         with patch(
             "asyncio.create_subprocess_exec",
