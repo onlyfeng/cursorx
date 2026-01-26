@@ -2115,8 +2115,8 @@ class TestIntegrationScenarios:
 
             # 验证执行者配置
             call_args = mock_exec.call_args.args
-            assert "--mode" in call_args
-            assert "agent" in call_args
+            # agent 为默认模式，CLI 不应传 --mode agent（部分版本仅支持 plan/ask）
+            assert "--mode" not in call_args
             assert "--force" in call_args
 
         assert result.success is True
@@ -2126,7 +2126,7 @@ class TestIntegrationScenarios:
         """测试执行者工作流 - code 模式兼容性
 
         注意: mode="code" 被映射为 "agent" 以保持向后兼容。
-        实际命令为: --mode agent
+        实际行为为: agent 为默认模式，不传 --mode
         """
         config = CursorAgentConfig(
             model="opus-4.5-thinking",
@@ -2153,9 +2153,7 @@ class TestIntegrationScenarios:
 
             # 验证 code 模式被映射为 agent
             call_args = mock_exec.call_args.args
-            assert "--mode" in call_args
-            mode_idx = call_args.index("--mode")
-            assert call_args[mode_idx + 1] == "agent"  # code 被映射为 agent
+            assert "--mode" not in call_args
             assert "--force" in call_args
 
         assert result.success is True

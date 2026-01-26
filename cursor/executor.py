@@ -193,7 +193,7 @@ class CLIAgentExecutor:
     """CLI Agent 执行器
 
     封装 CursorAgentClient，通过本地 Cursor CLI 执行任务
-    支持 --mode 参数指定执行模式（agent/plan/ask）
+    支持 --mode 参数指定执行模式（plan/ask）；agent 为默认模式，不传 --mode
     """
 
     def __init__(

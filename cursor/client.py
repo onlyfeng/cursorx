@@ -56,10 +56,10 @@ class CursorAgentConfig(BaseModel):
     全局选项:
     - -p / --print: 非交互模式，输出到控制台
     - -m / --model <model>: 指定模型
-    - --mode <mode>: Agent 工作模式 (plan | ask | agent)
+    - --mode <mode>: 工作模式 (plan | ask)
       - plan: 规划模式，仅分析和规划，不修改文件
       - ask: 询问模式，回答问题和提供建议
-      - agent: 完整代理模式，执行代码修改任务（默认）
+      - 完整代理模式（agent）为默认行为：**不需要也不应传** `--mode agent`
     - --output-format <format>: text | json | stream-json
     - --stream-partial-output: 增量流式输出（配合 stream-json）
     - -f / --force: 允许直接修改文件，无需确认
@@ -198,11 +198,15 @@ class CursorAgentConfig(BaseModel):
     # 全屏模式（--fullscreen）
     fullscreen: bool = False
 
-    # Agent 工作模式（--mode）
+    # Agent 工作模式（逻辑模式）
+    #
+    # 说明：当前 Cursor CLI 的 `--mode` 仅支持 plan/ask；
+    # 完整代理模式（agent）是默认行为，因此不会向 CLI 传 `--mode agent`。
+    #
     # - "plan": 规划模式，仅分析和规划，不修改文件（适合 Planner）
     # - "ask": 询问模式，回答问题和提供建议（适合咨询场景）
-    # - "agent": 完整代理模式，执行代码修改任务（适合 Worker，默认）
-    # - "code": 已废弃，兼容旧配置，实际映射为 "agent"
+    # - "agent": 完整代理模式（默认行为，不传 --mode）
+    # - "code": 已废弃，兼容旧配置，等价于 "agent"
     # - None: 不指定模式，使用默认行为
     mode: Optional[str] = None
 
@@ -652,11 +656,18 @@ class CursorAgentClient:
         if self.config.model:
             cmd.extend(["--model", self.config.model])
 
-        # 添加工作模式 (plan/ask/agent)
-        # 兼容旧的 "code" 模式，映射为 "agent"
+        # 添加工作模式（plan/ask）
+        #
+        # 重要：当前 Cursor CLI 的 --mode 仅接受 plan/ask。
+        # - agent 模式是默认行为，不需要也不应传 --mode agent
+        # - 兼容旧的 "code" 模式：视为 "agent"（同样不传 --mode）
+        mode_arg: Optional[str] = None
         if self.config.mode:
             effective_mode = "agent" if self.config.mode == "code" else self.config.mode
-            cmd.extend(["--mode", effective_mode])
+            if effective_mode in ("plan", "ask"):
+                mode_arg = effective_mode
+        if mode_arg:
+            cmd.extend(["--mode", mode_arg])
 
         # 添加输出格式
         # text: 纯文本输出
@@ -725,8 +736,8 @@ class CursorAgentClient:
 
             # 构建命令描述（用于日志）
             cmd_desc = f"agent -p '...' --model {self.config.model}"
-            if self.config.mode:
-                cmd_desc += f" --mode {self.config.mode}"
+            if mode_arg:
+                cmd_desc += f" --mode {mode_arg}"
             if self.config.force_write:
                 cmd_desc += " --force"
 
@@ -950,8 +961,14 @@ class CursorAgentClient:
 
         # 构建命令描述（用于日志）
         cmd_desc = f"agent -p '...' --model {self.config.model}"
+        # 与 _call_agent_cli 的行为保持一致：仅在 plan/ask 时展示 --mode
+        mode_arg: Optional[str] = None
         if self.config.mode:
-            cmd_desc += f" --mode {self.config.mode}"
+            effective_mode = "agent" if self.config.mode == "code" else self.config.mode
+            if effective_mode in ("plan", "ask"):
+                mode_arg = effective_mode
+        if mode_arg:
+            cmd_desc += f" --mode {mode_arg}"
         if self.config.force_write:
             cmd_desc += " --force"
 
