@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
@@ -141,7 +141,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
