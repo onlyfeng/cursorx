@@ -1,27 +1,23 @@
 """测试 core/project_workspace.py 目录驱动工程创建/扩展模块"""
+
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from core.project_workspace import (
-    ProjectState,
-    ProjectInfo,
-    ReferenceProject,
-    ScaffoldResult,
-    WorkspacePreparationResult,
-    inspect_project_state,
-    infer_language,
-    scaffold,
-    detect_reference_projects,
-    prepare_workspace,
-    get_language_hint,
-    get_supported_languages,
+    LANGUAGE_KEYWORDS,
     PROJECT_MARKERS,
     SOURCE_EXTENSIONS,
-    LANGUAGE_KEYWORDS,
+    ProjectState,
+    detect_reference_projects,
+    get_language_hint,
+    get_supported_languages,
+    infer_language,
+    inspect_project_state,
+    prepare_workspace,
+    scaffold,
 )
-
 
 # ============================================================
 # Fixtures
@@ -487,6 +483,7 @@ class TestPrepareWorkspace:
 
         assert result.project_info.is_newly_initialized
         assert result.project_info.detected_language == "rust"
+        assert result.scaffold_result is not None
         assert result.scaffold_result.success
         assert result.error is None
 

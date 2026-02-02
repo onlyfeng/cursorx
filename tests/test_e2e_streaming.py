@@ -9,11 +9,12 @@
 
 使用 Mock 替代真实 Cursor CLI 调用
 """
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -60,9 +61,7 @@ class TestStreamingWorkflow:
         return Orchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_streaming_enabled_workflow(
-        self, streaming_orchestrator: Orchestrator
-    ) -> None:
+    async def test_streaming_enabled_workflow(self, streaming_orchestrator: Orchestrator) -> None:
         """启用流式的完整工作流"""
         orchestrator = streaming_orchestrator
 
@@ -88,35 +87,31 @@ class TestStreamingWorkflow:
             "summary": "流式处理测试完成",
         }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                    async def simulate_complete(queue: Any, iteration_id: int) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for task in tasks:
-                            task.complete({"output": "流式执行完成"})
+            async def simulate_complete(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "流式执行完成"})
 
-                    mock_workers.side_effect = simulate_complete
+            mock_workers.side_effect = simulate_complete
 
-                    result = await orchestrator.run("流式工作流测试")
+            result = await orchestrator.run("流式工作流测试")
 
-                    # 验证结果
-                    assert result["success"] is True
-                    assert result["iterations_completed"] == 1
-                    assert result["total_tasks_created"] == 1
-                    assert result["total_tasks_completed"] == 1
+            # 验证结果
+            assert result["success"] is True
+            assert result["iterations_completed"] == 1
+            assert result["total_tasks_created"] == 1
+            assert result["total_tasks_completed"] == 1
 
-                    # 验证流式配置已应用
-                    assert orchestrator.config.stream_events_enabled is True
+            # 验证流式配置已应用
+            assert orchestrator.config.stream_events_enabled is True
 
     @pytest.mark.asyncio
     async def test_progress_tracker_integration(self) -> None:
@@ -295,15 +290,17 @@ class TestStreamEventProcessing:
 
     def test_system_init_event(self) -> None:
         """系统初始化事件解析"""
-        line = json.dumps({
-            "type": "system",
-            "subtype": "init",
-            "model": "gpt-5.2-high",
-            "apiKeySource": "env",
-            "cwd": "/test/path",
-            "session_id": "test-session-123",
-            "permissionMode": "default",
-        })
+        line = json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "model": "gpt-5.2-high",
+                "apiKeySource": "env",
+                "cwd": "/test/path",
+                "session_id": "test-session-123",
+                "permissionMode": "default",
+            }
+        )
 
         event = parse_stream_event(line)
 
@@ -317,16 +314,18 @@ class TestStreamEventProcessing:
     def test_tool_call_events(self) -> None:
         """工具调用事件序列测试"""
         # 测试 read 工具调用开始
-        read_started = json.dumps({
-            "type": "tool_call",
-            "subtype": "started",
-            "call_id": "call-1",
-            "tool_call": {
-                "readToolCall": {
-                    "args": {"path": "src/main.py"},
-                }
-            },
-        })
+        read_started = json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "call_id": "call-1",
+                "tool_call": {
+                    "readToolCall": {
+                        "args": {"path": "src/main.py"},
+                    }
+                },
+            }
+        )
 
         event = parse_stream_event(read_started)
         assert event is not None
@@ -336,76 +335,88 @@ class TestStreamEventProcessing:
         assert event.tool_call.path == "src/main.py"
 
         # 测试 read 工具调用完成
-        read_completed = json.dumps({
-            "type": "tool_call",
-            "subtype": "completed",
-            "call_id": "call-1",
-            "tool_call": {
-                "readToolCall": {
-                    "args": {"path": "src/main.py"},
-                    "result": {"success": {"totalLines": 150, "content": "..."}},
-                }
-            },
-        })
+        read_completed = json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "call_id": "call-1",
+                "tool_call": {
+                    "readToolCall": {
+                        "args": {"path": "src/main.py"},
+                        "result": {"success": {"totalLines": 150, "content": "..."}},
+                    }
+                },
+            }
+        )
 
         event = parse_stream_event(read_completed)
         assert event is not None
         assert event.type == StreamEventType.TOOL_COMPLETED
+        assert event.tool_call is not None
         assert event.tool_call.success is True
 
         # 测试 write 工具调用
-        write_completed = json.dumps({
-            "type": "tool_call",
-            "subtype": "completed",
-            "tool_call": {
-                "writeToolCall": {
-                    "args": {"path": "output.py"},
-                    "result": {"success": {"linesCreated": 50, "fileSize": 1024}},
-                }
-            },
-        })
+        write_completed = json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "tool_call": {
+                    "writeToolCall": {
+                        "args": {"path": "output.py"},
+                        "result": {"success": {"linesCreated": 50, "fileSize": 1024}},
+                    }
+                },
+            }
+        )
 
         event = parse_stream_event(write_completed)
         assert event is not None
+        assert event.tool_call is not None
         assert event.tool_call.tool_type == "write"
         assert event.tool_call.success is True
         assert event.tool_call.result.get("linesCreated") == 50
 
         # 测试 shell 工具调用
-        shell_started = json.dumps({
-            "type": "tool_call",
-            "subtype": "started",
-            "tool_call": {
-                "shellToolCall": {
-                    "args": {"command": "pytest tests/"},
-                }
-            },
-        })
+        shell_started = json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "tool_call": {
+                    "shellToolCall": {
+                        "args": {"command": "pytest tests/"},
+                    }
+                },
+            }
+        )
 
         event = parse_stream_event(shell_started)
         assert event is not None
+        assert event.tool_call is not None
         assert event.tool_call.tool_type == "shell"
         assert event.tool_call.args.get("command") == "pytest tests/"
 
         # 测试 str_replace 工具调用（差异操作）
-        str_replace_started = json.dumps({
-            "type": "tool_call",
-            "subtype": "started",
-            "tool_call": {
-                "strReplaceToolCall": {
-                    "args": {
-                        "path": "config.py",
-                        "old_string": "DEBUG = False",
-                        "new_string": "DEBUG = True",
-                    },
-                }
-            },
-        })
+        str_replace_started = json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "tool_call": {
+                    "strReplaceToolCall": {
+                        "args": {
+                            "path": "config.py",
+                            "old_string": "DEBUG = False",
+                            "new_string": "DEBUG = True",
+                        },
+                    }
+                },
+            }
+        )
 
         event = parse_stream_event(str_replace_started)
         assert event is not None
         # str_replace 被识别为差异操作
         assert event.type == StreamEventType.DIFF_STARTED
+        assert event.tool_call is not None
         assert event.tool_call.is_diff is True
         assert event.tool_call.old_string == "DEBUG = False"
         assert event.tool_call.new_string == "DEBUG = True"
@@ -432,34 +443,38 @@ class TestStreamEventProcessing:
         assert len(tracker.events) == 5
 
         # 测试带有 list 内容的消息解析
-        line = json.dumps({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"text": "第一部分 "},
-                    {"text": "第二部分 "},
-                    {"text": "第三部分"},
-                ]
-            },
-        })
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"text": "第一部分 "},
+                        {"text": "第二部分 "},
+                        {"text": "第三部分"},
+                    ]
+                },
+            }
+        )
 
-        event = parse_stream_event(line)
-        assert event is not None
-        assert event.type == StreamEventType.ASSISTANT
-        assert event.content == "第一部分 第二部分 第三部分"
+        parsed_event = parse_stream_event(line)
+        assert parsed_event is not None
+        assert parsed_event.type == StreamEventType.ASSISTANT
+        assert parsed_event.content == "第一部分 第二部分 第三部分"
 
     def test_result_event_processing(self) -> None:
         """结果事件处理测试"""
         # 测试成功结果
-        success_result = json.dumps({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "duration_ms": 3456,
-            "duration_api_ms": 3000,
-            "result": "任务完成",
-            "session_id": "session-abc",
-        })
+        success_result = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "duration_ms": 3456,
+                "duration_api_ms": 3000,
+                "result": "任务完成",
+                "session_id": "session-abc",
+            }
+        )
 
         event = parse_stream_event(success_result)
         assert event is not None
@@ -505,14 +520,18 @@ class TestStreamingConfiguration:
 
         # 写入测试数据
         logger.handle_raw_line('{"type":"system","subtype":"init","model":"test"}')
-        logger.handle_event(StreamEvent(
-            type=StreamEventType.SYSTEM_INIT,
-            model="test-model",
-        ))
-        logger.handle_event(StreamEvent(
-            type=StreamEventType.ASSISTANT,
-            content="测试消息",
-        ))
+        logger.handle_event(
+            StreamEvent(
+                type=StreamEventType.SYSTEM_INIT,
+                model="test-model",
+            )
+        )
+        logger.handle_event(
+            StreamEvent(
+                type=StreamEventType.ASSISTANT,
+                content="测试消息",
+            )
+        )
         logger.close()
 
         # 验证目录和文件创建
@@ -547,10 +566,12 @@ class TestStreamingConfiguration:
             raw_dir="",
         )
 
-        logger_with_console.handle_event(StreamEvent(
-            type=StreamEventType.ASSISTANT,
-            content="控制台输出测试",
-        ))
+        logger_with_console.handle_event(
+            StreamEvent(
+                type=StreamEventType.ASSISTANT,
+                content="控制台输出测试",
+            )
+        )
         logger_with_console.close()
 
         captured = capsys.readouterr()
@@ -566,10 +587,12 @@ class TestStreamingConfiguration:
             raw_dir="",
         )
 
-        logger_no_console.handle_event(StreamEvent(
-            type=StreamEventType.ASSISTANT,
-            content="不应该输出到控制台",
-        ))
+        logger_no_console.handle_event(
+            StreamEvent(
+                type=StreamEventType.ASSISTANT,
+                content="不应该输出到控制台",
+            )
+        )
         logger_no_console.close()
 
         captured = capsys.readouterr()
@@ -589,7 +612,7 @@ class TestStreamingConfiguration:
             "logging": {
                 "stream_json": {
                     "enabled": False,  # 被 CLI 覆盖
-                    "console": True,   # 被 CLI 覆盖
+                    "console": True,  # 被 CLI 覆盖
                     "detail_dir": "logs/default/detail/",
                     "raw_dir": "logs/default/raw/",
                 }
@@ -597,7 +620,13 @@ class TestStreamingConfiguration:
         }
 
         # 使用单进程版本的配置解析
-        resolved = resolve_stream_log_config_single(args, config_data)
+        resolved = resolve_stream_log_config_single(
+            cli_enabled=args.stream_log_enabled,
+            cli_console=args.stream_log_console,
+            cli_detail_dir=args.stream_log_detail_dir,
+            cli_raw_dir=args.stream_log_raw_dir,
+            config_data=config_data,
+        )
 
         assert resolved["enabled"] is True
         assert resolved["console"] is False
@@ -605,7 +634,13 @@ class TestStreamingConfiguration:
         assert resolved["raw_dir"] == "/custom/raw/"
 
         # 使用多进程版本的配置解析
-        resolved_mp = resolve_stream_log_config_multi(args, config_data)
+        resolved_mp = resolve_stream_log_config_multi(
+            cli_enabled=args.stream_log_enabled,
+            cli_console=args.stream_log_console,
+            cli_detail_dir=args.stream_log_detail_dir,
+            cli_raw_dir=args.stream_log_raw_dir,
+            config_data=config_data,
+        )
 
         assert resolved_mp["enabled"] is True
         assert resolved_mp["console"] is False
@@ -622,9 +657,15 @@ class TestStreamingConfiguration:
         )
 
         # 空配置
-        config_data = {}
+        config_data: dict[str, Any] = {}
 
-        resolved = resolve_stream_log_config_single(args, config_data)
+        resolved = resolve_stream_log_config_single(
+            cli_enabled=args.stream_log_enabled,
+            cli_console=args.stream_log_console,
+            cli_detail_dir=args.stream_log_detail_dir,
+            cli_raw_dir=args.stream_log_raw_dir,
+            config_data=config_data,
+        )
 
         # 验证默认值
         assert resolved["enabled"] is False
@@ -669,7 +710,7 @@ class TestStreamingConfiguration:
             stream_log_raw_dir="/override/raw/",  # 仅覆盖 raw_dir
         )
 
-        config_data = {
+        config_data: dict[str, Any] = {
             "logging": {
                 "stream_json": {
                     "enabled": False,
@@ -680,7 +721,13 @@ class TestStreamingConfiguration:
             }
         }
 
-        resolved = resolve_stream_log_config_single(args, config_data)
+        resolved = resolve_stream_log_config_single(
+            cli_enabled=args.stream_log_enabled,
+            cli_console=args.stream_log_console,
+            cli_detail_dir=args.stream_log_detail_dir,
+            cli_raw_dir=args.stream_log_raw_dir,
+            config_data=config_data,
+        )
 
         # enabled 被 CLI 覆盖
         assert resolved["enabled"] is True

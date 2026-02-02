@@ -59,6 +59,7 @@
     # 冷却窗口测试：快速连续触发应只输出一次
     # 参见 TestDiagnosticCooldown 和 TestDiagnosticCooldownWithTimeInjection 类
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -121,9 +122,7 @@ class TestMPStability:
         await orchestrator.task_queue.enqueue(task)
 
         # 模拟 _send_and_wait 返回 None（超时）
-        with patch.object(
-            orchestrator, "_send_and_wait", new_callable=AsyncMock, return_value=None
-        ):
+        with patch.object(orchestrator, "_send_and_wait", new_callable=AsyncMock, return_value=None):
             # 模拟 Worker 存活
             orchestrator.worker_ids = ["worker-test-1", "worker-test-2"]
             orchestrator.process_manager._processes = {
@@ -132,57 +131,43 @@ class TestMPStability:
             }
 
             # 模拟健康检查通过
-            with patch.object(
-                orchestrator.process_manager,
-                "health_check",
-                return_value=HealthCheckResult(
-                    healthy=["worker-test-1", "worker-test-2"],
-                    unhealthy=[],
-                    all_healthy=True,
+            with (
+                patch.object(
+                    orchestrator.process_manager,
+                    "health_check",
+                    return_value=HealthCheckResult(
+                        healthy=["worker-test-1", "worker-test-2"],
+                        unhealthy=[],
+                        all_healthy=True,
+                    ),
                 ),
+                patch.object(orchestrator.process_manager, "is_alive", return_value=True),
             ):
-                with patch.object(
-                    orchestrator.process_manager, "is_alive", return_value=True
-                ):
-                    # 模拟 track_task_assignment
-                    with patch.object(
-                        orchestrator.process_manager, "track_task_assignment"
-                    ):
-                        # 设置超时后自动退出循环
-                        async def mock_execution_phase_limited():
-                            """限制执行阶段只运行一次分配"""
-                            import time
+                # 模拟 track_task_assignment
+                with patch.object(orchestrator.process_manager, "track_task_assignment"):
+                    # 设置超时后自动退出循环
+                    async def mock_execution_phase_limited():
+                        """限制执行阶段只运行一次分配"""
 
-                            iteration_id = 1
-                            available_workers = list(orchestrator.worker_ids)
-                            active_tasks = {}
+                        iteration_id = 1
+                        available_workers = list(orchestrator.worker_ids)
+                        active_tasks: dict[str, Task] = {}
 
-                            # 只分配一个任务
-                            task = await orchestrator.task_queue.dequeue(
-                                iteration_id, timeout=0.1
-                            )
-                            if task:
-                                worker_id = available_workers.pop(0)
-                                # 模拟发送和超时
-                                response = await orchestrator._send_and_wait(
-                                    worker_id, MagicMock(), 1.0
-                                )
-                                if response is None:
-                                    # 超时处理：应该重新入队
-                                    task_obj = orchestrator.task_queue.get_task(
-                                        task.id
-                                    )
-                                    if (
-                                        task_obj
-                                        and task_obj.status == TaskStatus.ASSIGNED
-                                    ):
-                                        if orchestrator.config.requeue_on_worker_death:
-                                            task_obj.status = TaskStatus.PENDING
-                                            orchestrator.task_queue.update_task(
-                                                task_obj
-                                            )
+                        # 只分配一个任务
+                        task = await orchestrator.task_queue.dequeue(iteration_id, timeout=0.1)
+                        if task:
+                            worker_id = available_workers.pop(0)
+                            # 模拟发送和超时
+                            response = await orchestrator._send_and_wait(worker_id, MagicMock(), 1.0)
+                            if response is None:
+                                # 超时处理：应该重新入队
+                                task_obj = orchestrator.task_queue.get_task(task.id)
+                                if task_obj and task_obj.status == TaskStatus.ASSIGNED:
+                                    if orchestrator.config.requeue_on_worker_death:
+                                        task_obj.status = TaskStatus.PENDING
+                                        orchestrator.task_queue.update_task(task_obj)
 
-                        await mock_execution_phase_limited()
+                    await mock_execution_phase_limited()
 
         # 验证任务状态
         updated_task = orchestrator.task_queue.get_task("test-task-timeout")
@@ -254,15 +239,11 @@ class TestMPStability:
         assert stats["pending"] > 0, "应该有待处理任务"
 
         # 模拟无可用 Worker
-        available_workers = []
-        active_tasks = {}
+        available_workers: list[str] = []
+        active_tasks: dict[str, Task] = {}
 
         # 这就是卡死模式
-        is_stall = (
-            stats["pending"] > 0
-            and len(active_tasks) == 0
-            and len(available_workers) == 0
-        )
+        is_stall = stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0
         assert is_stall, "应该检测到卡死模式"
 
     @pytest.mark.asyncio
@@ -284,7 +265,7 @@ class TestMPStability:
         # 验证卡死模式
         tasks = orchestrator.task_queue.get_tasks_by_iteration(1)
         assigned_tasks = [t for t in tasks if t.status == TaskStatus.ASSIGNED]
-        active_tasks = {}
+        active_tasks: dict[str, Task] = {}
 
         # 这就是卡死模式：有 ASSIGNED 任务但无 active_tasks
         is_stall = len(assigned_tasks) > 0 and len(active_tasks) == 0
@@ -329,6 +310,7 @@ class TestTaskQueueReconcile:
     def task_queue(self):
         """创建 TaskQueue 实例"""
         from tasks.queue import TaskQueue
+
         return TaskQueue()
 
     @pytest.mark.asyncio
@@ -692,9 +674,9 @@ class TestDiagnosticLogging:
         # 模拟卡死检测场景（stall_detected=True 时才会输出摘要日志）
         iteration_id = 1
         queue_stats = {"total": 5, "pending": 2, "in_progress": 0, "completed": 2, "failed": 0}
-        available_workers = []  # 无可用 worker -> stall_detected
-        active_tasks = {}       # 无活动任务 -> stall_detected
-        in_flight_tasks = {}
+        available_workers: list[str] = []  # 无可用 worker -> stall_detected
+        active_tasks: dict[str, Task] = {}  # 无活动任务 -> stall_detected
+        in_flight_tasks: dict[str, Task] = {}
 
         # 检测卡死
         stall_detected = queue_stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0
@@ -710,7 +692,7 @@ class TestDiagnosticLogging:
                 f"available_workers={len(available_workers)}, "
                 f"active_tasks={len(active_tasks)}, "
                 f"in_flight={len(in_flight_tasks)}, "
-                f"stall_reason=\"{stall_reason}\""
+                f'stall_reason="{stall_reason}"'
             )
             logger.warning(summary)
 
@@ -753,8 +735,9 @@ class TestDiagnosticOutput:
         - 摘要日志格式正确（包含 stall_reason）
         - 卡死模式检测使用 error 级别
         """
-        from loguru import logger
         import sys
+
+        from loguru import logger
 
         # 配置 loguru 输出到 stderr（pytest 可以捕获）
         logger.remove()
@@ -763,9 +746,9 @@ class TestDiagnosticOutput:
         # 模拟卡死检测输出
         iteration_id = 1
         queue_stats = {"total": 5, "pending": 2, "in_progress": 1, "completed": 2, "failed": 0}
-        available_workers = []
-        active_tasks = {}
-        in_flight_tasks = {"task-1": {"agent_id": "worker-1"}}
+        available_workers: list[str] = []
+        active_tasks: dict[str, Task] = {}
+        in_flight_tasks: dict[str, dict[str, str]] = {"task-1": {"agent_id": "worker-1"}}
 
         # 检测卡死模式
         stall_detected = False
@@ -788,7 +771,7 @@ class TestDiagnosticOutput:
                 f"available_workers={len(available_workers)}, "
                 f"active_tasks={len(active_tasks)}, "
                 f"in_flight={len(in_flight_tasks)}, "
-                f"stall_reason=\"{stall_reason}\""
+                f'stall_reason="{stall_reason}"'
             )
             logger.warning(summary)
 
@@ -811,25 +794,23 @@ class TestDiagnosticOutput:
     @pytest.mark.asyncio
     async def test_detailed_diagnostics_format(self, capsys):
         """测试详细诊断日志格式（仅当 stall_diagnostics_detail=True）"""
-        from loguru import logger
         import sys
+
+        from loguru import logger
 
         logger.remove()
         logger.add(sys.stderr, level="WARNING", format="{message}")
 
         # 模拟详细诊断输出
         queue_stats = {"total": 10, "pending": 3, "in_progress": 2, "completed": 4, "failed": 1}
-        tasks = [
-            {"id": f"task-{i}", "status": "pending", "retry_count": 0, "assigned_to": None}
-            for i in range(10)
-        ]
+        tasks = [{"id": f"task-{i}", "status": "pending", "retry_count": 0, "assigned_to": None} for i in range(10)]
         max_tasks = 5
 
-        logger.warning(f"[诊断] === 详细诊断 (循环 #100) ===")
+        logger.warning("[诊断] === 详细诊断 (循环 #100) ===")
         logger.warning(f"[诊断] TaskQueue.get_statistics(): {queue_stats}")
-        logger.warning(f"[诊断] available_workers: []")
-        logger.warning(f"[诊断] active_tasks: []")
-        logger.warning(f"[诊断] in_flight_tasks: ['task-1']")
+        logger.warning("[诊断] available_workers: []")
+        logger.warning("[诊断] active_tasks: []")
+        logger.warning("[诊断] in_flight_tasks: ['task-1']")
 
         # 限制输出任务数
         for task in tasks[:max_tasks]:
@@ -887,8 +868,8 @@ def run_stability_test():
 
         # 测试 2: 卡死模式检测
         print("\n[测试 2] 卡死模式检测")
-        available_workers = []
-        active_tasks = {}
+        available_workers: list[str] = []
+        active_tasks: dict[str, Task] = {}
         is_stall = stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0
         print(f"  pending={stats['pending']}, active_tasks=0, available_workers=0")
         print(f"  卡死检测: {is_stall}")
@@ -916,10 +897,11 @@ def run_stability_test():
         # 测试 4: 诊断日志格式验证
         print("\n[测试 4] 诊断日志格式")
         from loguru import logger
+
         queue_stats = {"total": 3, "pending": 1, "in_progress": 1, "completed": 1, "failed": 0}
-        logger.warning(f"[诊断] === 卡死检测触发 (循环 #1) ===")
+        logger.warning("[诊断] === 卡死检测触发 (循环 #1) ===")
         logger.warning(f"[诊断] TaskQueue.get_statistics(): {queue_stats}")
-        logger.warning(f"[诊断] ⚠ 卡死模式检测: pending=1 > 0 但 active_tasks=0, available_workers=0")
+        logger.warning("[诊断] ⚠ 卡死模式检测: pending=1 > 0 但 active_tasks=0, available_workers=0")
         print("  ✓ 日志格式正常")
 
         print("\n" + "=" * 60)
@@ -1096,7 +1078,7 @@ class TestTimeoutRequeueRegression:
 
         使用受控的短超时避免测试卡住。
         """
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         iteration_id = 1
 
@@ -1126,9 +1108,7 @@ class TestTimeoutRequeueRegression:
             call_count += 1
             if call_count > max_calls:
                 # 防止无限循环，第二次后标记任务失败
-                return MagicMock(
-                    payload={"task_id": task.id, "success": True, "result": "mock"}
-                )
+                return MagicMock(payload={"task_id": task.id, "success": True, "result": "mock"})
             # 模拟超时
             await asyncio.sleep(0.01)
             return None
@@ -1139,7 +1119,7 @@ class TestTimeoutRequeueRegression:
                     with patch.object(orchestrator.process_manager, "untrack_task", return_value=None):
                         # 模拟简化版执行阶段逻辑
                         available_workers = list(orchestrator.worker_ids)
-                        active_tasks = {}
+                        active_tasks: dict[str, Task] = {}
                         worker_task_mapping = {}
 
                         # 第一轮：分配任务
@@ -1163,9 +1143,7 @@ class TestTimeoutRequeueRegression:
                                 if task_obj and task_obj.status == TaskStatus.IN_PROGRESS:
                                     if orchestrator.config.requeue_on_worker_death:
                                         # 修复后的正确处理：调用 requeue
-                                        await orchestrator.task_queue.requeue(
-                                            task_obj, reason="Worker 响应超时"
-                                        )
+                                        await orchestrator.task_queue.requeue(task_obj, reason="Worker 响应超时")
                                         available_workers.append(worker_id)
 
         # 验证任务已重新入队
@@ -1214,8 +1192,8 @@ class TestDiagnosticCooldown:
         通过时间推进模拟多次卡死检测，验证冷却机制。
         """
         import time
-        import sys
         from io import StringIO
+
         from loguru import logger
 
         # 配置 loguru 捕获到 StringIO
@@ -1286,6 +1264,7 @@ class TestDiagnosticCooldown:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         # 配置 loguru 捕获
@@ -1345,14 +1324,13 @@ class TestExecutionHealthCheckInterval:
         config = MultiProcessOrchestratorConfig()
 
         # 默认值应该 >= 30s（避免过频触发）
-        assert config.execution_health_check_interval >= 30.0, \
+        assert config.execution_health_check_interval >= 30.0, (
             f"execution_health_check_interval 默认值应 >= 30s，实际为 {config.execution_health_check_interval}"
+        )
 
     def test_execution_health_check_interval_configurable(self):
         """测试 execution_health_check_interval 可配置"""
-        config = MultiProcessOrchestratorConfig(
-            execution_health_check_interval=60.0
-        )
+        config = MultiProcessOrchestratorConfig(execution_health_check_interval=60.0)
         assert config.execution_health_check_interval == 60.0
 
     def test_consecutive_unresponsive_threshold_default(self):
@@ -1360,14 +1338,11 @@ class TestExecutionHealthCheckInterval:
         config = MultiProcessOrchestratorConfig()
 
         # 默认值应该 >= 2（避免单次未响应就告警）
-        assert config.consecutive_unresponsive_threshold >= 2, \
-            "consecutive_unresponsive_threshold 默认值应 >= 2"
+        assert config.consecutive_unresponsive_threshold >= 2, "consecutive_unresponsive_threshold 默认值应 >= 2"
 
     def test_consecutive_unresponsive_threshold_configurable(self):
         """测试 consecutive_unresponsive_threshold 可配置"""
-        config = MultiProcessOrchestratorConfig(
-            consecutive_unresponsive_threshold=5
-        )
+        config = MultiProcessOrchestratorConfig(consecutive_unresponsive_threshold=5)
         assert config.consecutive_unresponsive_threshold == 5
 
     @pytest.mark.asyncio
@@ -1431,22 +1406,19 @@ class TestConsecutiveUnresponsiveWarning:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                    # worker-1 应该被视为不健康
-                    assert "worker-1" in result.unhealthy
-                    # 连续未响应次数应该为 1
-                    assert orchestrator._consecutive_unresponsive_count.get("worker-1") == 1
-                    # 未达阈值，不应该触发 cooldown（未记录到 _health_warning_cooldown）
-                    assert "worker-1" not in orchestrator._health_warning_cooldown
+            # worker-1 应该被视为不健康
+            assert "worker-1" in result.unhealthy
+            # 连续未响应次数应该为 1
+            assert orchestrator._consecutive_unresponsive_count.get("worker-1") == 1
+            # 未达阈值，不应该触发 cooldown（未记录到 _health_warning_cooldown）
+            assert "worker-1" not in orchestrator._health_warning_cooldown
 
     @pytest.mark.asyncio
     async def test_consecutive_unresponsive_triggers_warning(self, orchestrator):
@@ -1463,29 +1435,26 @@ class TestConsecutiveUnresponsiveWarning:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    threshold = orchestrator.config.consecutive_unresponsive_threshold
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            threshold = orchestrator.config.consecutive_unresponsive_threshold
 
-                    # 模拟连续多次健康检查，worker-1 持续不响应
-                    for i in range(threshold):
-                        current_time = time.time()
-                        for agent_id in ["planner-1", "worker-0", "reviewer-1"]:
-                            orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
-                        # worker-1 不响应
+            # 模拟连续多次健康检查，worker-1 持续不响应
+            for i in range(threshold):
+                current_time = time.time()
+                for agent_id in ["planner-1", "worker-0", "reviewer-1"]:
+                    orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
+                # worker-1 不响应
 
-                        result = await orchestrator._perform_health_check()
+                result = await orchestrator._perform_health_check()
 
-                    # 连续未响应次数应该达到阈值
-                    assert orchestrator._consecutive_unresponsive_count.get("worker-1") == threshold
-                    # 达到阈值后应该触发 cooldown 记录
-                    assert "worker-1" in orchestrator._health_warning_cooldown
+            # 连续未响应次数应该达到阈值
+            assert orchestrator._consecutive_unresponsive_count.get("worker-1") == threshold
+            # 达到阈值后应该触发 cooldown 记录
+            assert "worker-1" in orchestrator._health_warning_cooldown
 
     @pytest.mark.asyncio
     async def test_responsive_resets_counter(self, orchestrator):
@@ -1504,16 +1473,16 @@ class TestConsecutiveUnresponsiveWarning:
         for agent_id in ["planner-1", "worker-0", "worker-1", "reviewer-1"]:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", return_value=True
-            ):
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", return_value=True),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                # worker-1 应该被视为健康
-                assert "worker-1" in result.healthy
-                # 连续未响应计数应该被重置
-                assert orchestrator._consecutive_unresponsive_count.get("worker-1") == 0
+            # worker-1 应该被视为健康
+            assert "worker-1" in result.healthy
+            # 连续未响应计数应该被重置
+            assert orchestrator._consecutive_unresponsive_count.get("worker-1") == 0
 
     @pytest.mark.asyncio
     async def test_health_check_detail_includes_consecutive_count(self, orchestrator):
@@ -1535,20 +1504,17 @@ class TestConsecutiveUnresponsiveWarning:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                    # 验证详情中包含连续未响应次数
-                    assert "worker-1" in result.details
-                    assert "consecutive_unresponsive" in result.details["worker-1"]
-                    assert result.details["worker-1"]["consecutive_unresponsive"] == 1
+            # 验证详情中包含连续未响应次数
+            assert "worker-1" in result.details
+            assert "consecutive_unresponsive" in result.details["worker-1"]
+            assert result.details["worker-1"]["consecutive_unresponsive"] == 1
 
 
 class TestWorkerSetupLogging:
@@ -1559,20 +1525,20 @@ class TestWorkerSetupLogging:
 
     def test_setup_logging_default_info_level(self, capsys):
         """测试默认 INFO 级别不打印 DEBUG 日志"""
-        import sys
         from io import StringIO
+
         from loguru import logger
 
         # 模拟 _setup_logging 逻辑（来自 process/worker.py）
-        config = {
+        config: dict[str, bool | str] = {
             "verbose": False,
             "log_level": "INFO",
             "heartbeat_debug": False,
         }
 
         # 模拟配置日志（与 _setup_logging 相同）
-        verbose = config.get("verbose", False)
-        log_level = config.get("log_level", "DEBUG" if verbose else "INFO")
+        verbose: bool = bool(config.get("verbose", False))
+        log_level: str = str(config.get("log_level", "DEBUG" if verbose else "INFO"))
 
         log_output = StringIO()
         logger.remove()
@@ -1599,17 +1565,18 @@ class TestWorkerSetupLogging:
     def test_setup_logging_verbose_mode(self, capsys):
         """测试 verbose 模式打印 DEBUG 日志"""
         from io import StringIO
+
         from loguru import logger
 
         # 模拟 verbose 配置
-        config = {
+        config: dict[str, bool | str] = {
             "verbose": True,
             "log_level": "DEBUG",
             "heartbeat_debug": False,
         }
 
-        verbose = config.get("verbose", False)
-        log_level = config.get("log_level", "DEBUG" if verbose else "INFO")
+        verbose: bool = bool(config.get("verbose", False))
+        log_level: str = str(config.get("log_level", "DEBUG" if verbose else "INFO"))
 
         log_output = StringIO()
         logger.remove()
@@ -1633,15 +1600,16 @@ class TestWorkerSetupLogging:
     def test_setup_logging_warning_level(self, capsys):
         """测试 WARNING 级别过滤 INFO 和 DEBUG 日志"""
         from io import StringIO
+
         from loguru import logger
 
-        config = {
+        config: dict[str, bool | str] = {
             "verbose": False,
             "log_level": "WARNING",
             "heartbeat_debug": False,
         }
 
-        log_level = config.get("log_level", "INFO")
+        log_level: str = str(config.get("log_level", "INFO"))
 
         log_output = StringIO()
         logger.remove()
@@ -1668,6 +1636,7 @@ class TestWorkerSetupLogging:
     def test_heartbeat_debug_flag(self, capsys):
         """测试 heartbeat_debug 标志控制心跳日志（Worker 端）"""
         from io import StringIO
+
         from loguru import logger
 
         # 模拟 heartbeat_debug=False（默认，不打印心跳日志）
@@ -1712,8 +1681,8 @@ class TestOrchestratorHeartbeatDebug:
             worker_count=2,
             enable_knowledge_search=False,
             enable_auto_commit=False,
-            verbose=True,          # 详细模式
-            heartbeat_debug=False, # 但不输出心跳日志
+            verbose=True,  # 详细模式
+            heartbeat_debug=False,  # 但不输出心跳日志
         )
 
     @pytest.fixture
@@ -1725,14 +1694,12 @@ class TestOrchestratorHeartbeatDebug:
             worker_count=2,
             enable_knowledge_search=False,
             enable_auto_commit=False,
-            verbose=False,         # 非详细模式
+            verbose=False,  # 非详细模式
             heartbeat_debug=True,  # 但启用心跳日志
         )
 
     @pytest.mark.asyncio
-    async def test_verbose_without_heartbeat_debug_no_heartbeat_log(
-        self, config_verbose_no_heartbeat_debug
-    ):
+    async def test_verbose_without_heartbeat_debug_no_heartbeat_log(self, config_verbose_no_heartbeat_debug):
         """测试 verbose=True 但 heartbeat_debug=False 时不输出心跳响应日志
 
         场景：
@@ -1743,6 +1710,7 @@ class TestOrchestratorHeartbeatDebug:
         - 不应出现"心跳响应收到"相关文本
         """
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -1767,18 +1735,14 @@ class TestOrchestratorHeartbeatDebug:
 
         # 关键断言：verbose 模式但 heartbeat_debug=False 时不应有心跳日志
         assert "心跳响应收到" not in log_content, (
-            f"verbose=True, heartbeat_debug=False 时不应出现心跳响应日志\n"
-            f"日志内容:\n{log_content}"
+            f"verbose=True, heartbeat_debug=False 时不应出现心跳响应日志\n日志内容:\n{log_content}"
         )
         assert "心跳响应" not in log_content, (
-            f"verbose=True, heartbeat_debug=False 时不应出现任何心跳响应相关文本\n"
-            f"日志内容:\n{log_content}"
+            f"verbose=True, heartbeat_debug=False 时不应出现任何心跳响应相关文本\n日志内容:\n{log_content}"
         )
 
     @pytest.mark.asyncio
-    async def test_heartbeat_debug_enabled_shows_heartbeat_log(
-        self, config_heartbeat_debug_enabled
-    ):
+    async def test_heartbeat_debug_enabled_shows_heartbeat_log(self, config_heartbeat_debug_enabled):
         """测试 heartbeat_debug=True 时输出心跳响应日志
 
         场景：
@@ -1788,6 +1752,7 @@ class TestOrchestratorHeartbeatDebug:
         - 应出现"心跳响应收到"相关文本
         """
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -1811,10 +1776,7 @@ class TestOrchestratorHeartbeatDebug:
         log_content = log_output.getvalue()
 
         # 关键断言：heartbeat_debug=True 时应有心跳日志
-        assert "心跳响应收到" in log_content, (
-            f"heartbeat_debug=True 时应出现心跳响应日志\n"
-            f"日志内容:\n{log_content}"
-        )
+        assert "心跳响应收到" in log_content, f"heartbeat_debug=True 时应出现心跳响应日志\n日志内容:\n{log_content}"
         # 验证日志内容完整性
         assert "worker-test-002" in log_content, "应包含发送者信息"
         assert "busy=True" in log_content, "应包含 busy 状态"
@@ -1823,14 +1785,10 @@ class TestOrchestratorHeartbeatDebug:
     async def test_heartbeat_debug_default_is_false(self):
         """测试 heartbeat_debug 默认值为 False"""
         config = MultiProcessOrchestratorConfig()
-        assert config.heartbeat_debug is False, (
-            "heartbeat_debug 默认值应为 False（避免刷屏）"
-        )
+        assert config.heartbeat_debug is False, "heartbeat_debug 默认值应为 False（避免刷屏）"
 
     @pytest.mark.asyncio
-    async def test_heartbeat_data_recorded_regardless_of_debug_flag(
-        self, config_verbose_no_heartbeat_debug
-    ):
+    async def test_heartbeat_data_recorded_regardless_of_debug_flag(self, config_verbose_no_heartbeat_debug):
         """测试心跳数据记录不受 heartbeat_debug 影响
 
         验证：即使 heartbeat_debug=False，心跳响应数据仍应被正确记录。
@@ -1838,8 +1796,9 @@ class TestOrchestratorHeartbeatDebug:
         """
         orchestrator = MultiProcessOrchestrator(config_verbose_no_heartbeat_debug)
 
-        from process.message_queue import ProcessMessage, ProcessMessageType
         import time
+
+        from process.message_queue import ProcessMessage, ProcessMessageType
 
         sender = "worker-data-test-001"
         heartbeat_msg = ProcessMessage(
@@ -1854,14 +1813,10 @@ class TestOrchestratorHeartbeatDebug:
         # 验证心跳数据被记录
         assert sender in orchestrator._heartbeat_responses, "心跳响应时间应被记录"
         assert sender in orchestrator._heartbeat_payloads, "心跳 payload 应被记录"
-        assert orchestrator._heartbeat_payloads[sender].get("busy") is True, (
-            "busy 状态应正确记录"
-        )
+        assert orchestrator._heartbeat_payloads[sender].get("busy") is True, "busy 状态应正确记录"
 
     @pytest.mark.asyncio
-    async def test_health_check_debug_log_controlled_by_heartbeat_debug_false(
-        self, config_verbose_no_heartbeat_debug
-    ):
+    async def test_health_check_debug_log_controlled_by_heartbeat_debug_false(self, config_verbose_no_heartbeat_debug):
         """测试健康检查 debug 日志在 heartbeat_debug=False 时不输出
 
         场景：
@@ -1873,6 +1828,7 @@ class TestOrchestratorHeartbeatDebug:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -1892,36 +1848,31 @@ class TestOrchestratorHeartbeatDebug:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
 
         # Mock 进程管理器
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", return_value=True
-            ):
-                # 执行健康检查
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", return_value=True),
+        ):
+            # 执行健康检查
+            result = await orchestrator._perform_health_check()
 
         log_content = log_output.getvalue()
 
         # 关键断言：heartbeat_debug=False 时不应有健康检查 debug 日志
         assert "健康检查开始" not in log_content, (
-            f"heartbeat_debug=False 时不应出现'健康检查开始'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=False 时不应出现'健康检查开始'日志\n日志内容:\n{log_content}"
         )
         assert "健康检查完成" not in log_content, (
-            f"heartbeat_debug=False 时不应出现'健康检查完成'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=False 时不应出现'健康检查完成'日志\n日志内容:\n{log_content}"
         )
         assert "健康检查通过" not in log_content, (
-            f"heartbeat_debug=False 时不应出现'健康检查通过'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=False 时不应出现'健康检查通过'日志\n日志内容:\n{log_content}"
         )
 
         # 验证健康检查功能正常（日志控制不影响功能）
         assert result.all_healthy is True, "健康检查应该通过"
 
     @pytest.mark.asyncio
-    async def test_health_check_debug_log_controlled_by_heartbeat_debug_true(
-        self, config_heartbeat_debug_enabled
-    ):
+    async def test_health_check_debug_log_controlled_by_heartbeat_debug_true(self, config_heartbeat_debug_enabled):
         """测试健康检查 debug 日志在 heartbeat_debug=True 时输出
 
         场景：
@@ -1932,6 +1883,7 @@ class TestOrchestratorHeartbeatDebug:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -1951,27 +1903,24 @@ class TestOrchestratorHeartbeatDebug:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
 
         # Mock 进程管理器
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", return_value=True
-            ):
-                # 执行健康检查
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", return_value=True),
+        ):
+            # 执行健康检查
+            result = await orchestrator._perform_health_check()
 
         log_content = log_output.getvalue()
 
         # 关键断言：heartbeat_debug=True 时应有健康检查 debug 日志
         assert "健康检查开始" in log_content, (
-            f"heartbeat_debug=True 时应出现'健康检查开始'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=True 时应出现'健康检查开始'日志\n日志内容:\n{log_content}"
         )
         assert "健康检查完成" in log_content, (
-            f"heartbeat_debug=True 时应出现'健康检查完成'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=True 时应出现'健康检查完成'日志\n日志内容:\n{log_content}"
         )
         assert "健康检查通过" in log_content, (
-            f"heartbeat_debug=True 时应出现'健康检查通过'日志\n"
-            f"日志内容:\n{log_content}"
+            f"heartbeat_debug=True 时应出现'健康检查通过'日志\n日志内容:\n{log_content}"
         )
 
         # 验证健康检查功能正常
@@ -1987,6 +1936,7 @@ class TestOrchestratorHeartbeatDebug:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         # 测试 heartbeat_debug=False 不输出
@@ -2004,20 +1954,20 @@ class TestOrchestratorHeartbeatDebug:
         orchestrator_false._heartbeat_responses["planner-test"] = current_time + 0.1
         orchestrator_false._heartbeat_responses["reviewer-test"] = current_time + 0.1
 
-        with patch.object(orchestrator_false.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator_false.process_manager, "is_alive", return_value=True
-            ):
-                with patch.object(
-                    orchestrator_false.process_manager, "get_tasks_by_agent",
-                    return_value=["task-1"]  # 模拟有任务分配
-                ):
-                    await orchestrator_false._perform_health_check()
+        with (
+            patch.object(orchestrator_false.process_manager, "broadcast"),
+            patch.object(orchestrator_false.process_manager, "is_alive", return_value=True),
+            patch.object(
+                orchestrator_false.process_manager,
+                "get_tasks_by_agent",
+                return_value=["task-1"],  # 模拟有任务分配
+            ),
+        ):
+            await orchestrator_false._perform_health_check()
 
         log_content_false = log_output_false.getvalue()
         assert "假定为忙碌" not in log_content_false, (
-            f"heartbeat_debug=False 时不应出现'假定为忙碌'日志\n"
-            f"日志内容:\n{log_content_false}"
+            f"heartbeat_debug=False 时不应出现'假定为忙碌'日志\n日志内容:\n{log_content_false}"
         )
 
         # 测试 heartbeat_debug=True 输出
@@ -2034,20 +1984,16 @@ class TestOrchestratorHeartbeatDebug:
         orchestrator_true._heartbeat_responses["planner-test"] = current_time + 0.1
         orchestrator_true._heartbeat_responses["reviewer-test"] = current_time + 0.1
 
-        with patch.object(orchestrator_true.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator_true.process_manager, "is_alive", return_value=True
-            ):
-                with patch.object(
-                    orchestrator_true.process_manager, "get_tasks_by_agent",
-                    return_value=["task-1"]
-                ):
-                    await orchestrator_true._perform_health_check()
+        with (
+            patch.object(orchestrator_true.process_manager, "broadcast"),
+            patch.object(orchestrator_true.process_manager, "is_alive", return_value=True),
+            patch.object(orchestrator_true.process_manager, "get_tasks_by_agent", return_value=["task-1"]),
+        ):
+            await orchestrator_true._perform_health_check()
 
         log_content_true = log_output_true.getvalue()
         assert "假定为忙碌" in log_content_true, (
-            f"heartbeat_debug=True 时应出现'假定为忙碌'日志\n"
-            f"日志内容:\n{log_content_true}"
+            f"heartbeat_debug=True 时应出现'假定为忙碌'日志\n日志内容:\n{log_content_true}"
         )
 
 
@@ -2095,6 +2041,7 @@ class TestNormalLongTaskNoDiagnosticWarning:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         # 配置日志捕获
@@ -2105,17 +2052,17 @@ class TestNormalLongTaskNoDiagnosticWarning:
         # 模拟场景数据
         iteration_id = 1
         queue_stats = {"total": 2, "pending": 0, "in_progress": 2, "completed": 0, "failed": 0}
-        available_workers = []  # Worker 都在忙
+        available_workers: list[str] = []  # Worker 都在忙
         active_tasks = {"worker-0": "mock_task_1", "worker-1": "mock_task_2"}  # 有活动任务
-        in_flight_tasks = {"task-1": {}, "task-2": {}}
-        tasks_in_iteration = []  # 无 ASSIGNED/IN_PROGRESS 状态异常任务
+        in_flight_tasks: dict[str, dict[str, object]] = {"task-1": {}, "task-2": {}}
+        tasks_in_iteration: list[Task] = []  # 无 ASSIGNED/IN_PROGRESS 状态异常任务
 
         # 模拟卡死检测逻辑（与 _execution_phase 一致）
         stall_detected = False
         stall_reason = ""
 
-        assigned_tasks = [t for t in tasks_in_iteration if getattr(t, 'status', None) == TaskStatus.ASSIGNED]
-        in_progress_tasks = [t for t in tasks_in_iteration if getattr(t, 'status', None) == TaskStatus.IN_PROGRESS]
+        assigned_tasks = [t for t in tasks_in_iteration if getattr(t, "status", None) == TaskStatus.ASSIGNED]
+        in_progress_tasks = [t for t in tasks_in_iteration if getattr(t, "status", None) == TaskStatus.IN_PROGRESS]
 
         if queue_stats["pending"] > 0 and len(active_tasks) == 0 and len(available_workers) == 0:
             stall_detected = True
@@ -2144,7 +2091,7 @@ class TestNormalLongTaskNoDiagnosticWarning:
         )
 
         if should_emit_diagnostic:
-            logger.warning(f"[诊断] 卡死检测 | iteration={iteration_id}, stall_reason=\"{stall_reason}\"")
+            logger.warning(f'[诊断] 卡死检测 | iteration={iteration_id}, stall_reason="{stall_reason}"')
             logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
         # 验证：不应输出任何诊断日志
@@ -2161,6 +2108,7 @@ class TestNormalLongTaskNoDiagnosticWarning:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -2171,25 +2119,21 @@ class TestNormalLongTaskNoDiagnosticWarning:
 
         # 场景 1：正常状态（有 active_tasks）
         queue_stats_normal = {"total": 2, "pending": 0, "in_progress": 2, "completed": 0, "failed": 0}
-        active_tasks_normal = {"worker-0": "task_1"}
-        available_workers_normal = []
+        active_tasks_normal: dict[str, str] = {"worker-0": "task_1"}
+        available_workers_normal: list[str] = []
 
         stall_detected_normal = (
-            queue_stats_normal["pending"] > 0
-            and len(active_tasks_normal) == 0
-            and len(available_workers_normal) == 0
+            queue_stats_normal["pending"] > 0 and len(active_tasks_normal) == 0 and len(available_workers_normal) == 0
         )
         assert stall_detected_normal is False, "正常状态不应检测到 stall"
 
         # 场景 2：卡死状态（pending>0, active_tasks=0, available_workers=0）
         queue_stats_stall = {"total": 2, "pending": 2, "in_progress": 0, "completed": 0, "failed": 0}
-        active_tasks_stall = {}  # 无活动任务
-        available_workers_stall = []  # 无可用 Worker
+        active_tasks_stall: dict[str, Task] = {}  # 无活动任务
+        available_workers_stall: list[str] = []  # 无可用 Worker
 
         stall_detected_stall = (
-            queue_stats_stall["pending"] > 0
-            and len(active_tasks_stall) == 0
-            and len(available_workers_stall) == 0
+            queue_stats_stall["pending"] > 0 and len(active_tasks_stall) == 0 and len(available_workers_stall) == 0
         )
         assert stall_detected_stall is True, "卡死状态应检测到 stall"
 
@@ -2198,10 +2142,7 @@ class TestNormalLongTaskNoDiagnosticWarning:
         stall_reason = "pending=2 > 0 但 active_tasks=0, available_workers=0"
 
         # 正常状态：不应输出
-        should_emit_normal = (
-            stall_detected_normal
-            and orchestrator.config.stall_diagnostics_enabled
-        )
+        should_emit_normal = stall_detected_normal and orchestrator.config.stall_diagnostics_enabled
         if should_emit_normal:
             logger.warning(f"[诊断] 卡死检测 | iteration={iteration_id}, normal")
 
@@ -2216,7 +2157,7 @@ class TestNormalLongTaskNoDiagnosticWarning:
         )
         if should_emit_stall:
             orchestrator._last_stall_diagnostic_time = now
-            logger.warning(f"[诊断] 卡死检测 | iteration={iteration_id}, stall_reason=\"{stall_reason}\"")
+            logger.warning(f'[诊断] 卡死检测 | iteration={iteration_id}, stall_reason="{stall_reason}"')
             logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
         log_content = log_output.getvalue()
@@ -2264,6 +2205,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -2289,17 +2231,14 @@ class TestStallDiagnosticCooldownInExecutionPhase:
             now = time.time()
 
             # 模拟诊断输出逻辑（与 _execution_phase 一致）
-            should_emit = (
-                orchestrator.config.stall_diagnostics_enabled
-                and (
-                    orchestrator._last_stall_diagnostic_time == 0.0
-                    or now - orchestrator._last_stall_diagnostic_time >= cooldown_interval
-                )
+            should_emit = orchestrator.config.stall_diagnostics_enabled and (
+                orchestrator._last_stall_diagnostic_time == 0.0
+                or now - orchestrator._last_stall_diagnostic_time >= cooldown_interval
             )
 
             if should_emit:
                 orchestrator._last_stall_diagnostic_time = now
-                logger.warning(f"[诊断] 卡死检测 | loop={i}, stall_reason=\"{stall_reason}\"")
+                logger.warning(f'[诊断] 卡死检测 | loop={i}, stall_reason="{stall_reason}"')
                 logger.error(f"[诊断] ⚠ 卡死模式检测: {stall_reason}")
 
             current_time += loop_interval
@@ -2311,8 +2250,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         # 期望输出次数：1-2 次（第一次 + 可能的冷却后一次）
         # 允许边界抖动：最多 3 次
         assert 1 <= diagnostic_count <= 3, (
-            f"冷却窗口内诊断输出次数应在 1-3 次，实际 {diagnostic_count} 次\n"
-            f"日志内容:\n{log_content}"
+            f"冷却窗口内诊断输出次数应在 1-3 次，实际 {diagnostic_count} 次\n日志内容:\n{log_content}"
         )
 
     @pytest.mark.asyncio
@@ -2326,6 +2264,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -2382,6 +2321,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         """
         import time
         from io import StringIO
+
         from loguru import logger
 
         log_output = StringIO()
@@ -2421,8 +2361,7 @@ class TestStallDiagnosticCooldownInExecutionPhase:
         stall_count = log_content.count("[诊断] ⚠ 卡死模式检测")
 
         assert summary_count == stall_count, (
-            f"摘要日志和卡死模式检测应该同步输出，"
-            f"summary={summary_count}, stall={stall_count}"
+            f"摘要日志和卡死模式检测应该同步输出，summary={summary_count}, stall={stall_count}"
         )
         assert summary_count == 1, f"冷却窗口内只应输出 1 次，实际 {summary_count} 次"
 
@@ -2453,8 +2392,8 @@ class TestDiagnosticCooldownWithTimeInjection:
     async def test_cooldown_with_mocked_time(self, orchestrator):
         """使用 Mock 时间测试冷却窗口"""
         from io import StringIO
+
         from loguru import logger
-        from unittest.mock import patch
 
         # 配置日志捕获
         log_output = StringIO()
@@ -2526,18 +2465,18 @@ class TestDiagnosticCooldownWithTimeInjection:
     async def test_orchestrator_last_stall_diagnostic_time(self, orchestrator):
         """测试 orchestrator 的 _last_stall_diagnostic_time 字段存在并可用"""
         # 验证字段存在
-        assert hasattr(orchestrator, "_last_stall_diagnostic_time"), \
+        assert hasattr(orchestrator, "_last_stall_diagnostic_time"), (
             "orchestrator 应该有 _last_stall_diagnostic_time 字段"
+        )
 
         # 验证初始值
-        assert orchestrator._last_stall_diagnostic_time == 0.0, \
-            "_last_stall_diagnostic_time 初始值应为 0.0"
+        assert orchestrator._last_stall_diagnostic_time == 0.0, "_last_stall_diagnostic_time 初始值应为 0.0"
 
         # 验证可以更新
         import time
+
         orchestrator._last_stall_diagnostic_time = time.time()
-        assert orchestrator._last_stall_diagnostic_time > 0, \
-            "_last_stall_diagnostic_time 应该可以更新"
+        assert orchestrator._last_stall_diagnostic_time > 0, "_last_stall_diagnostic_time 应该可以更新"
 
 
 class TestSendAndWaitTimeoutThrottling:
@@ -2589,7 +2528,9 @@ class TestSendAndWaitTimeoutThrottling:
     async def test_single_timeout_uses_info_level(self, orchestrator):
         """测试单次超时使用 INFO 级别"""
         from io import StringIO
+
         from loguru import logger
+
         from process.message_queue import ProcessMessage, ProcessMessageType
 
         log_output = StringIO()
@@ -2627,7 +2568,9 @@ class TestSendAndWaitTimeoutThrottling:
     async def test_consecutive_timeout_triggers_warning(self, orchestrator):
         """测试连续超时达到阈值后触发 WARNING"""
         from io import StringIO
+
         from loguru import logger
+
         from process.message_queue import ProcessMessage, ProcessMessageType
 
         log_output = StringIO()
@@ -2664,7 +2607,9 @@ class TestSendAndWaitTimeoutThrottling:
     async def test_warning_cooldown_prevents_repeated_warnings(self, orchestrator):
         """测试 WARNING 级别受 cooldown 控制"""
         from io import StringIO
+
         from loguru import logger
+
         from process.message_queue import ProcessMessage, ProcessMessageType
 
         # 使用较短的 cooldown 以加速测试
@@ -2705,7 +2650,9 @@ class TestSendAndWaitTimeoutThrottling:
     async def test_critical_agent_timeout_uses_error_level(self, orchestrator):
         """测试关键阶段（planner/reviewer）连续超时使用 ERROR 级别"""
         from io import StringIO
+
         from loguru import logger
+
         from process.message_queue import ProcessMessage, ProcessMessageType
 
         log_output = StringIO()
@@ -2743,7 +2690,9 @@ class TestSendAndWaitTimeoutThrottling:
     async def test_reviewer_timeout_uses_error_level(self, orchestrator):
         """测试 reviewer 连续超时使用 ERROR 级别"""
         from io import StringIO
+
         from loguru import logger
+
         from process.message_queue import ProcessMessage, ProcessMessageType
 
         log_output = StringIO()
@@ -2775,8 +2724,9 @@ class TestSendAndWaitTimeoutThrottling:
     @pytest.mark.asyncio
     async def test_successful_response_resets_timeout_count(self, orchestrator):
         """测试正常响应后重置超时计数"""
-        from process.message_queue import ProcessMessage, ProcessMessageType
         import asyncio
+
+        from process.message_queue import ProcessMessage, ProcessMessageType
 
         orchestrator.worker_ids = ["worker-reset-001"]
         orchestrator.process_manager._processes = {

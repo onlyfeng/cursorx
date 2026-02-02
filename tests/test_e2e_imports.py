@@ -9,6 +9,7 @@
 2. test_entry_script_runnable - 测试 run.py 入口脚本可执行
 3. test_no_circular_imports - 检测循环导入问题
 """
+
 import importlib
 import os
 import pkgutil
@@ -88,9 +89,7 @@ class TestCoreModulesImport:
                 return
 
             # 递归导入子模块
-            for importer, modname, ispkg in pkgutil.walk_packages(
-                package.__path__, prefix=package_name + "."
-            ):
+            for importer, modname, ispkg in pkgutil.walk_packages(package.__path__, prefix=package_name + "."):
                 try:
                     importlib.import_module(modname)
                     imported_modules.append(modname)
@@ -172,6 +171,7 @@ class TestEntryScriptRunnable:
         # 测试可以导入 run 模块
         try:
             import run  # noqa: F401
+
             print("  [OK] run 模块可导入")
         except Exception as e:
             pytest.fail(f"run 模块导入失败: {e}")
@@ -189,8 +189,7 @@ class TestEntryScriptRunnable:
             # --help 应该返回 0 或显示帮助信息
             if result.returncode == 0:
                 print("  [OK] run.py --help 执行成功")
-                assert "usage" in result.stdout.lower() or "cursorx" in result.stdout.lower(), \
-                    "帮助信息不完整"
+                assert "usage" in result.stdout.lower() or "cursorx" in result.stdout.lower(), "帮助信息不完整"
             else:
                 # 有些脚本可能因为缺少参数而返回非零
                 # 但只要不是语法/导入错误就可以接受
@@ -390,6 +389,7 @@ class TestModuleIntegrity:
 # 主函数（直接运行支持）
 # ============================================================
 
+
 def main():
     """直接运行测试"""
     print("\n" + "=" * 60)
@@ -397,12 +397,14 @@ def main():
     print("=" * 60 + "\n")
 
     # 运行测试
-    exit_code = pytest.main([
-        __file__,
-        "-v",
-        "--tb=short",
-        "-x",  # 遇到第一个失败就停止
-    ])
+    exit_code = pytest.main(
+        [
+            __file__,
+            "-v",
+            "--tb=short",
+            "-x",  # 遇到第一个失败就停止
+        ]
+    )
 
     return exit_code
 

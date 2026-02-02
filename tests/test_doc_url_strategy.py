@@ -11,6 +11,7 @@
 8. normalize_url 严格规范化（重复斜杠、大小写、fragment 等）
 9. is_allowed_doc_url 对规范化后 URL 的一致判断
 """
+
 import pytest
 
 from knowledge.doc_url_strategy import (
@@ -22,7 +23,6 @@ from knowledge.doc_url_strategy import (
     parse_llms_txt_urls,
     select_urls_to_fetch,
 )
-
 
 # ============================================================
 # Fixtures
@@ -256,9 +256,7 @@ class TestIsAllowedDocUrl:
             allowed_domains=["example.com"],
             exclude_patterns=[],
         )
-        assert not is_allowed_doc_url(
-            "/docs/guide", config, base_url="https://other.com"
-        )
+        assert not is_allowed_doc_url("/docs/guide", config, base_url="https://other.com")
 
     def test_exclude_pattern_file_extension(self) -> None:
         """测试排除模式：文件扩展名"""
@@ -622,9 +620,7 @@ class TestFilterUrlsByKeywords:
             "https://example.com/python-guide",
             "https://example.com/java-docs",
         ]
-        result = filter_urls_by_keywords(
-            urls, ["nonexistent"], min_match_score=0.5
-        )
+        result = filter_urls_by_keywords(urls, ["nonexistent"], min_match_score=0.5)
         # min_match_score=0.5 时，需要至少匹配 50% 的关键词
         assert len(result) == 0
 
@@ -669,9 +665,7 @@ class TestFilterUrlsByKeywords:
             "https://example.com/other",  # 匹配 0/2 = 0.0
         ]
         # min_match_score=0.6 应该只保留 python-asyncio
-        result = filter_urls_by_keywords(
-            urls, ["python", "asyncio"], min_match_score=0.6
-        )
+        result = filter_urls_by_keywords(urls, ["python", "asyncio"], min_match_score=0.6)
         assert len(result) == 1
         assert "https://example.com/python-asyncio" in result
 
@@ -682,9 +676,7 @@ class TestFilterUrlsByKeywords:
             "https://example.com/java",
             "https://example.com/other",
         ]
-        result = filter_urls_by_keywords(
-            urls, ["python"], min_match_score=0.0
-        )
+        result = filter_urls_by_keywords(urls, ["python"], min_match_score=0.0)
         # 阈值为 0，所有 URL 都应该返回（包括不匹配的）
         assert len(result) == 3
 
@@ -696,9 +688,7 @@ class TestFilterUrlsByKeywords:
             "https://example.com/java-spring",  # 匹配 0/3
         ]
         # 阈值 0.3，允许匹配 1 个关键词
-        result = filter_urls_by_keywords(
-            urls, ["python", "django", "react"], min_match_score=0.3
-        )
+        result = filter_urls_by_keywords(urls, ["python", "django", "react"], min_match_score=0.3)
         assert len(result) == 2
         assert "https://example.com/python-django-tutorial" in result
         assert "https://example.com/python-flask" in result
@@ -736,6 +726,7 @@ class TestAllowedDomainsFiltering:
         # 只应包含允许域名的 URL
         for url in result:
             from urllib.parse import urlparse
+
             domain = urlparse(url).netloc
             assert (
                 domain in ["docs.python.org", "example.com"]
@@ -835,11 +826,9 @@ https://api.cursor.com/reference
         # 验证只包含 cursor.com 及其子域名的 URL
         for url in result:
             from urllib.parse import urlparse
+
             domain = urlparse(url).netloc.lower()
-            assert (
-                domain == "cursor.com"
-                or domain.endswith(".cursor.com")
-            ), f"外域 URL 不应出现: {url}"
+            assert domain == "cursor.com" or domain.endswith(".cursor.com"), f"外域 URL 不应出现: {url}"
 
         # 验证外域 URL 不在结果中
         assert not any("github.com" in u for u in result)
@@ -1049,10 +1038,7 @@ class TestKeywordPathMatching:
         )
         # 匹配更多关键词的应该排在前面
         asyncio_idx = next(i for i, u in enumerate(result) if "asyncio" in u)
-        python_only_idx = next(
-            i for i, u in enumerate(result)
-            if "python" in u and "asyncio" not in u
-        )
+        python_only_idx = next(i for i, u in enumerate(result) if "python" in u and "asyncio" not in u)
         assert asyncio_idx < python_only_idx
 
     def test_keyword_case_insensitive_path(self) -> None:
@@ -1184,9 +1170,7 @@ class TestSelectUrlsToFetchPriority:
         # changelog 应该在最前面
         assert result[0] == "https://example.com/changelog"
 
-    def test_priority_order_llms_before_related(
-        self, no_filter_config: DocURLStrategyConfig
-    ) -> None:
+    def test_priority_order_llms_before_related(self, no_filter_config: DocURLStrategyConfig) -> None:
         """测试 llms.txt 链接优先级高于 related_doc_urls"""
         result = select_urls_to_fetch(
             changelog_links=[],
@@ -1201,9 +1185,7 @@ class TestSelectUrlsToFetchPriority:
         related_idx = result.index("https://example.com/related")
         assert llms_idx < related_idx
 
-    def test_priority_order_related_before_core(
-        self, no_filter_config: DocURLStrategyConfig
-    ) -> None:
+    def test_priority_order_related_before_core(self, no_filter_config: DocURLStrategyConfig) -> None:
         """测试 related_doc_urls 优先级高于 core_docs"""
         result = select_urls_to_fetch(
             changelog_links=[],
@@ -1219,15 +1201,17 @@ class TestSelectUrlsToFetchPriority:
 
     def test_deterministic_output(self, no_filter_config: DocURLStrategyConfig) -> None:
         """测试输出确定性（多次调用结果一致）"""
-        kwargs = {
-            "changelog_links": ["https://a.com/cl1", "https://a.com/cl2"],
-            "related_doc_urls": ["https://a.com/r1", "https://a.com/r2"],
-            "llms_txt_content": "https://a.com/l1\nhttps://a.com/l2",
-            "core_docs": ["https://a.com/c1", "https://a.com/c2"],
-            "keywords": ["test"],
-            "config": no_filter_config,
-        }
-        results = [select_urls_to_fetch(**kwargs) for _ in range(10)]
+        results = [
+            select_urls_to_fetch(
+                changelog_links=["https://a.com/cl1", "https://a.com/cl2"],
+                related_doc_urls=["https://a.com/r1", "https://a.com/r2"],
+                llms_txt_content="https://a.com/l1\nhttps://a.com/l2",
+                core_docs=["https://a.com/c1", "https://a.com/c2"],
+                keywords=["test"],
+                config=no_filter_config,
+            )
+            for _ in range(10)
+        ]
         assert all(r == results[0] for r in results), "结果应确定性一致"
 
     def test_same_priority_sorted_by_url(self, no_filter_config: DocURLStrategyConfig) -> None:
@@ -1268,9 +1252,7 @@ class TestSelectUrlsToFetchDedup:
         # 应保留 changelog 优先级版本（第一个位置）
         assert result[0] == duplicate_url
 
-    def test_dedup_with_fragment_difference(
-        self, no_filter_config: DocURLStrategyConfig
-    ) -> None:
+    def test_dedup_with_fragment_difference(self, no_filter_config: DocURLStrategyConfig) -> None:
         """测试 fragment 不同但 URL 相同的去重"""
         result = select_urls_to_fetch(
             changelog_links=["https://example.com/page#section1"],
@@ -1357,11 +1339,7 @@ class TestSelectUrlsToFetchTruncation:
         result = select_urls_to_fetch(
             changelog_links=["https://a.com/high-priority"],
             related_doc_urls=[],
-            llms_txt_content=(
-                "https://a.com/llms1\n"
-                "https://a.com/llms2\n"
-                "https://a.com/llms3\n"
-            ),
+            llms_txt_content=("https://a.com/llms1\nhttps://a.com/llms2\nhttps://a.com/llms3\n"),
             core_docs=[],
             keywords=[],
             config=config,
@@ -1455,9 +1433,7 @@ class TestSelectUrlsToFetchKeywords:
         api_idx = next(i for i, u in enumerate(result) if "api" in u)
         assert python_idx < api_idx
 
-    def test_no_keywords_llms_still_participates(
-        self, no_filter_config: DocURLStrategyConfig
-    ) -> None:
+    def test_no_keywords_llms_still_participates(self, no_filter_config: DocURLStrategyConfig) -> None:
         """测试无关键词时 llms 仍参与选择（但不因关键词提升）
 
         关键词只影响优先级加成，不影响是否参与选择。
@@ -1806,10 +1782,7 @@ class TestBoundaryConditions:
             "https://example.com/page3",
             "https://Example.COM/page2",  # 规范化后重复
         ]
-        results = [
-            deduplicate_urls(urls, normalize_before_dedup=True)
-            for _ in range(10)
-        ]
+        results = [deduplicate_urls(urls, normalize_before_dedup=True) for _ in range(10)]
         # 所有结果应该完全相同
         assert all(r == results[0] for r in results)
         # 结果应该按首次出现顺序保留
@@ -1874,15 +1847,17 @@ https://example.com/doc3
             allowed_domains=[],
             exclude_patterns=[],
         )
-        inputs = {
-            "changelog_links": ["https://a.com/cl1", "https://a.com/cl2"],
-            "related_doc_urls": ["https://a.com/rel1"],
-            "llms_txt_content": "https://a.com/llms1\nhttps://a.com/llms2",
-            "core_docs": ["https://a.com/core1"],
-            "keywords": ["test"],
-            "config": config,
-        }
-        results = [select_urls_to_fetch(**inputs) for _ in range(20)]
+        results = [
+            select_urls_to_fetch(
+                changelog_links=["https://a.com/cl1", "https://a.com/cl2"],
+                related_doc_urls=["https://a.com/rel1"],
+                llms_txt_content="https://a.com/llms1\nhttps://a.com/llms2",
+                core_docs=["https://a.com/core1"],
+                keywords=["test"],
+                config=config,
+            )
+            for _ in range(20)
+        ]
         # 所有结果应该完全相同
         assert all(r == results[0] for r in results)
 
@@ -2035,8 +2010,7 @@ https://docs.cursor.com/guide
                 "https://external.com/docs",  # 外域
             ],
             llms_txt_content=(
-                "https://cursor.com/docs/llms-guide\n"
-                "https://stackoverflow.com/cursor\n"  # 外域
+                "https://cursor.com/docs/llms-guide\nhttps://stackoverflow.com/cursor\n"  # 外域
             ),
             core_docs=[
                 "https://cursor.com/docs/core",
@@ -2048,9 +2022,7 @@ https://docs.cursor.com/guide
 
         # 应只包含允许前缀的 URL
         assert all(
-            u.startswith("https://cursor.com/docs")
-            or u.startswith("https://cursor.com/cn/docs")
-            for u in result
+            u.startswith("https://cursor.com/docs") or u.startswith("https://cursor.com/cn/docs") for u in result
         ), f"所有 URL 应匹配允许前缀，实际: {result}"
 
         # 外域 URL 不应出现
@@ -2641,9 +2613,9 @@ https://cursor.com/docs/api
         """测试相对路径和绝对路径前缀混合使用"""
         config = DocURLStrategyConfig(
             allowed_url_prefixes=[
-                "/docs",                           # 相对路径
-                "https://cursor.com/cn/docs",      # 绝对路径
-                "/changelog",                      # 相对路径
+                "/docs",  # 相对路径
+                "https://cursor.com/cn/docs",  # 绝对路径
+                "/changelog",  # 相对路径
             ],
             max_urls=10,
             exclude_patterns=[],
@@ -2998,10 +2970,10 @@ class TestLlmsTxtSampleDataReuse:
     def test_parse_standard_llms_txt(self) -> None:
         """测试解析标准格式 llms.txt"""
         urls = parse_llms_txt_urls(SAMPLE_LLMS_TXT_STANDARD)
-        
+
         # 应解析出多个 URL
         assert len(urls) >= 5, f"应至少解析出 5 个 URL，实际 {len(urls)}"
-        
+
         # 验证包含预期的 URL
         assert any("quickstart" in u for u in urls)
         assert any("api/v1" in u for u in urls)
@@ -3009,10 +2981,10 @@ class TestLlmsTxtSampleDataReuse:
     def test_parse_llms_txt_with_external_urls(self) -> None:
         """测试解析包含外域链接的 llms.txt"""
         urls = parse_llms_txt_urls(SAMPLE_LLMS_TXT_WITH_EXTERNAL)
-        
+
         # 应解析出所有 URL（包括外域）
         assert len(urls) >= 5
-        
+
         # 验证包含内外域 URL
         assert any("docs.example.com" in u for u in urls)
         assert any("github.com" in u for u in urls)
@@ -3020,7 +2992,7 @@ class TestLlmsTxtSampleDataReuse:
     def test_parse_minimal_llms_txt(self) -> None:
         """测试解析最小格式 llms.txt"""
         urls = parse_llms_txt_urls(SAMPLE_LLMS_TXT_MINIMAL)
-        
+
         assert len(urls) == 3
         assert "https://example.com/doc1" in urls
         assert "https://example.com/doc2" in urls
@@ -3033,7 +3005,7 @@ class TestLlmsTxtSampleDataReuse:
             exclude_patterns=[],
             max_urls=20,
         )
-        
+
         result = select_urls_to_fetch(
             changelog_links=[],
             related_doc_urls=[],
@@ -3042,12 +3014,12 @@ class TestLlmsTxtSampleDataReuse:
             keywords=[],
             config=config,
         )
-        
+
         # 验证外域被过滤
         assert not any("github.com" in u for u in result)
         assert not any("stackoverflow.com" in u for u in result)
         assert not any("npmjs.com" in u for u in result)
-        
+
         # 验证内域保留
         assert any("docs.example.com" in u for u in result)
 
@@ -3057,7 +3029,7 @@ class TestLlmsTxtSampleDataReuse:
             allowed_url_prefixes=["https://docs.example.com/api"],
             max_urls=10,
         )
-        
+
         result = select_urls_to_fetch(
             changelog_links=[],
             related_doc_urls=[],
@@ -3066,7 +3038,7 @@ class TestLlmsTxtSampleDataReuse:
             keywords=[],
             config=config,
         )
-        
+
         # 只保留匹配前缀的 URL
         for url in result:
             assert url.startswith("https://docs.example.com/api"), f"URL 应匹配前缀: {url}"
@@ -3075,7 +3047,7 @@ class TestLlmsTxtSampleDataReuse:
         """测试样例数据解析结果的确定性"""
         # 多次解析应得到相同结果
         results = [parse_llms_txt_urls(SAMPLE_LLMS_TXT_STANDARD) for _ in range(5)]
-        
+
         # 所有结果应相同
         assert all(r == results[0] for r in results), "解析结果应确定性一致"
 
@@ -3087,7 +3059,7 @@ class TestLlmsTxtSampleDataReuse:
 Plain URL: https://example.com/page3
 """
         urls = parse_llms_txt_urls(content)
-        
+
         # 应提取所有 URL
         assert len(urls) >= 3
         assert "https://example.com/page1" in urls
@@ -3132,9 +3104,9 @@ class TestHtmlSampleDataReuse:
         """测试从样例 HTML 提取链接"""
         # 使用简单的正则提取（不依赖 BeautifulSoup 测试）
         import re
-        
+
         links = re.findall(r'href="([^"]+)"', SAMPLE_HTML_DOC_PAGE)
-        
+
         assert len(links) >= 2
         assert "https://docs.example.com/api" in links
         assert "https://github.com/example/repo" in links
@@ -3149,21 +3121,18 @@ class TestHtmlSampleDataReuse:
     def test_filter_links_from_sample_html(self) -> None:
         """测试从样例 HTML 过滤链接"""
         import re
-        
+
         links = re.findall(r'href="(https?://[^"]+)"', SAMPLE_HTML_DOC_PAGE)
-        
+
         # 使用配置过滤
         config = DocURLStrategyConfig(
             allowed_domains=["docs.example.com"],
             exclude_patterns=[],
             max_urls=10,
         )
-        
-        filtered = [
-            url for url in links 
-            if is_allowed_doc_url(url, config)
-        ]
-        
+
+        filtered = [url for url in links if is_allowed_doc_url(url, config)]
+
         # 应只保留 docs.example.com
         assert len(filtered) == 1
         assert "docs.example.com" in filtered[0]
@@ -3186,29 +3155,29 @@ class TestOfflineIntegration:
             fallback_core_docs_count=3,
             exclude_patterns=[],
         )
-        
+
         # 模拟各来源数据（不需要网络）
         changelog_links = [
             "https://cursor.com/changelog/2026-01",
             "https://github.com/cursor/releases",  # 外域
         ]
-        
+
         related_doc_urls = [
             "https://cursor.com/docs/guide",
             "https://stackoverflow.com/cursor",  # 外域
         ]
-        
+
         llms_txt_content = """
 https://cursor.com/docs/api
 https://cursor.com/docs/reference
 https://external.com/docs  # 外域
 """
-        
+
         core_docs = [
             "https://cursor.com/docs/getting-started",
             "https://other.org/docs",  # 外域
         ]
-        
+
         result = select_urls_to_fetch(
             changelog_links=changelog_links,
             related_doc_urls=related_doc_urls,
@@ -3217,14 +3186,14 @@ https://external.com/docs  # 外域
             keywords=[],
             config=config,
         )
-        
+
         # 验证结果
         assert len(result) >= 1
-        
+
         # 所有结果应来自 cursor.com
         for url in result:
             assert "cursor.com" in url, f"URL 应来自 cursor.com: {url}"
-        
+
         # 外域应被过滤
         assert not any("github.com" in u for u in result)
         assert not any("stackoverflow.com" in u for u in result)
@@ -3240,7 +3209,7 @@ https://external.com/docs  # 外域
             ("https://example.com/page#section", "https://example.com/page"),
             ("https://example.com//docs//page", "https://example.com/docs/page"),
         ]
-        
+
         for original, expected in test_cases:
             result = normalize_url(original)
             assert result == expected, f"规范化失败: {original} -> {result}, 期望 {expected}"
@@ -3254,9 +3223,9 @@ https://external.com/docs  # 外域
             "https://example.com/page#section",  # 带 fragment
             "https://example.com/other",  # 不同页面
         ]
-        
+
         result = deduplicate_urls(urls, normalize_before_dedup=True)
-        
+
         # 前 4 个应该去重为 1 个
         assert len(result) == 2
         assert "https://example.com/page" in result
@@ -3861,6 +3830,277 @@ class TestFetchPolicyModes:
 
 
 # ============================================================
+# Test: allowed_path_prefixes 内链路径 gate 测试
+# ============================================================
+
+
+class TestEnforcePathPrefixes:
+    """测试 enforce_path_prefixes 内链路径前缀检查功能
+
+    覆盖场景：
+    - enforce_path_prefixes=False（Phase A 行为）
+    - enforce_path_prefixes=True（Phase B 启用内链路径 gate）
+    - 外链 allowlist 与内链 gate 的组合矩阵
+    """
+
+    def test_enforce_disabled_all_internal_links_pass(self) -> None:
+        """测试 enforce_path_prefixes=False 时，所有内链都通过（Phase A 行为）"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/pricing",  # 不在 allowed_path_prefixes 中
+            "https://cursor.com/about",  # 不在 allowed_path_prefixes 中
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs", "cn/docs"],
+            enforce_path_prefixes=False,  # Phase A：不执行路径检查
+        )
+
+        # 所有内链都应通过（不执行路径检查）
+        assert len(result.urls_to_fetch) == 3
+        assert "https://cursor.com/docs/cli" in result.urls_to_fetch
+        assert "https://cursor.com/pricing" in result.urls_to_fetch
+        assert "https://cursor.com/about" in result.urls_to_fetch
+
+        # 没有被过滤的 URL
+        assert len(result.filtered_urls) == 0
+
+    def test_enforce_enabled_only_matching_prefixes_pass(self) -> None:
+        """测试 enforce_path_prefixes=True 时，仅匹配前缀的内链通过"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",  # 匹配 "docs"
+            "https://cursor.com/cn/docs/guide",  # 匹配 "cn/docs"
+            "https://cursor.com/pricing",  # 不匹配
+            "https://cursor.com/about",  # 不匹配
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs", "cn/docs"],
+            enforce_path_prefixes=True,  # Phase B：执行路径检查
+        )
+
+        # 仅匹配前缀的内链通过
+        assert len(result.urls_to_fetch) == 2
+        assert "https://cursor.com/docs/cli" in result.urls_to_fetch
+        assert "https://cursor.com/cn/docs/guide" in result.urls_to_fetch
+
+        # 不匹配的内链被过滤
+        assert len(result.filtered_urls) == 2
+        for filtered in result.filtered_urls:
+            assert filtered["reason"] == "internal_link_path_not_allowed"
+            assert filtered["url"] in [
+                "https://cursor.com/pricing",
+                "https://cursor.com/about",
+            ]
+
+    def test_enforce_enabled_empty_prefixes_all_pass(self) -> None:
+        """测试 enforce_path_prefixes=True 但 allowed_path_prefixes 为空时，所有内链通过"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/pricing",
+            "https://cursor.com/any/path",
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=[],  # 空列表表示全部允许
+            enforce_path_prefixes=True,
+        )
+
+        # 空 allowed_path_prefixes 表示全部允许
+        assert len(result.urls_to_fetch) == 3
+        assert len(result.filtered_urls) == 0
+
+    def test_enforce_enabled_with_external_links(self) -> None:
+        """测试 enforce_path_prefixes=True 与外链处理的组合"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",  # 内链，匹配
+            "https://cursor.com/pricing",  # 内链，不匹配
+            "https://github.com/cursor/repo",  # 外链
+            "https://external.com/guide",  # 外链
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs", "changelog"],
+            enforce_path_prefixes=True,
+        )
+
+        # 仅匹配前缀的内链通过
+        assert result.urls_to_fetch == ["https://cursor.com/docs/cli"]
+
+        # 外链被记录
+        assert "https://github.com/cursor/repo" in result.external_links_recorded
+        assert "https://external.com/guide" in result.external_links_recorded
+
+        # filtered_urls 应包含内链路径过滤和外链记录
+        reasons = {f["reason"] for f in result.filtered_urls}
+        assert "internal_link_path_not_allowed" in reasons
+        assert "external_link_record_only" in reasons
+
+    def test_combination_matrix_allowlist_and_enforce(self) -> None:
+        """测试外链 allowlist 与内链 gate 的组合矩阵
+
+        矩阵：
+        - 内链匹配 path_prefix: 通过
+        - 内链不匹配 path_prefix: 拒绝（enforce=True）
+        - 外链在 allowlist 中: 通过（fetch_allowlist 模式）
+        - 外链不在 allowlist 中: 拒绝
+        """
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",  # 内链，匹配 prefix
+            "https://cursor.com/pricing",  # 内链，不匹配 prefix
+            "https://github.com/cursor/repo",  # 外链，在 allowlist
+            "https://gitlab.com/repo",  # 外链，不在 allowlist
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="fetch_allowlist",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs", "cn/docs"],
+            enforce_path_prefixes=True,
+            external_link_allowlist=["github.com"],
+        )
+
+        # 内链匹配 prefix + 外链在 allowlist 应通过
+        assert "https://cursor.com/docs/cli" in result.urls_to_fetch
+        assert "https://github.com/cursor/repo" in result.urls_to_fetch
+
+        # 内链不匹配 prefix 应拒绝
+        assert "https://cursor.com/pricing" not in result.urls_to_fetch
+
+        # 外链不在 allowlist 应拒绝
+        assert "https://gitlab.com/repo" not in result.urls_to_fetch
+
+        # 验证 filtered_urls 中的原因
+        filtered_reasons = {f["url"]: f["reason"] for f in result.filtered_urls}
+        assert filtered_reasons.get("https://cursor.com/pricing") == "internal_link_path_not_allowed"
+        assert filtered_reasons.get("https://gitlab.com/repo") == "external_link_not_in_allowlist"
+
+    def test_path_prefix_exact_match(self) -> None:
+        """测试路径前缀精确匹配"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs",  # 精确匹配 "docs"
+            "https://cursor.com/docs/cli",  # 子路径匹配 "docs"
+            "https://cursor.com/documentation",  # 不匹配（不是 "docs/" 的子路径）
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs"],
+            enforce_path_prefixes=True,
+        )
+
+        # "docs" 精确匹配和 "docs/cli" 子路径匹配都应通过
+        assert "https://cursor.com/docs" in result.urls_to_fetch
+        assert "https://cursor.com/docs/cli" in result.urls_to_fetch
+
+        # "documentation" 不是 "docs" 的子路径，应被拒绝
+        assert "https://cursor.com/documentation" not in result.urls_to_fetch
+        assert len(result.filtered_urls) == 1
+        assert result.filtered_urls[0]["reason"] == "internal_link_path_not_allowed"
+
+    def test_path_prefix_with_leading_slash(self) -> None:
+        """测试路径前缀支持前导斜杠格式"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/cn/docs/guide",
+        ]
+
+        # 带前导斜杠的前缀也应正常工作
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["/docs", "/cn/docs"],  # 带前导斜杠
+            enforce_path_prefixes=True,
+        )
+
+        assert len(result.urls_to_fetch) == 2
+        assert "https://cursor.com/docs/cli" in result.urls_to_fetch
+        assert "https://cursor.com/cn/docs/guide" in result.urls_to_fetch
+
+
+# ============================================================
+# Test: _matches_path_prefixes 辅助函数测试
+# ============================================================
+
+
+class TestMatchesPathPrefixes:
+    """测试 _matches_path_prefixes 辅助函数"""
+
+    def test_empty_prefixes_returns_true(self) -> None:
+        """测试空前缀列表返回 True（全部允许）"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        assert _matches_path_prefixes("https://example.com/any/path", []) is True
+
+    def test_exact_path_match(self) -> None:
+        """测试精确路径匹配"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        assert _matches_path_prefixes("https://example.com/docs", ["docs"]) is True
+
+    def test_subpath_match(self) -> None:
+        """测试子路径匹配"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        assert _matches_path_prefixes("https://example.com/docs/guide", ["docs"]) is True
+        assert _matches_path_prefixes("https://example.com/docs/api/v1", ["docs"]) is True
+
+    def test_no_match(self) -> None:
+        """测试不匹配的情况"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        assert _matches_path_prefixes("https://example.com/pricing", ["docs"]) is False
+        assert _matches_path_prefixes("https://example.com/documentation", ["docs"]) is False
+
+    def test_nested_prefix_match(self) -> None:
+        """测试嵌套前缀匹配"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        assert _matches_path_prefixes("https://example.com/cn/docs/guide", ["cn/docs"]) is True
+        assert _matches_path_prefixes("https://example.com/cn/other", ["cn/docs"]) is False
+
+    def test_multiple_prefixes(self) -> None:
+        """测试多个前缀匹配"""
+        from knowledge.doc_url_strategy import _matches_path_prefixes
+
+        prefixes = ["docs", "cn/docs", "changelog"]
+        assert _matches_path_prefixes("https://example.com/docs", prefixes) is True
+        assert _matches_path_prefixes("https://example.com/cn/docs/guide", prefixes) is True
+        assert _matches_path_prefixes("https://example.com/changelog/2025", prefixes) is True
+        assert _matches_path_prefixes("https://example.com/pricing", prefixes) is False
+
+
+# ============================================================
 # Test: 旧字段兼容性测试（包含 warning 断言）
 # ============================================================
 
@@ -3880,6 +4120,7 @@ def loguru_caplog():
     """
     import io
     from contextlib import contextmanager
+
     from loguru import logger
 
     @contextmanager
@@ -3905,14 +4146,12 @@ class TestDeprecatedFieldCompatibility:
     注意：使用自定义 loguru_caplog fixture 捕获 loguru 日志
     """
 
-    def test_validate_fetch_policy_prefixes_deprecation_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_validate_fetch_policy_prefixes_deprecation_warning(self, loguru_caplog) -> None:
         """测试 validate_fetch_policy_prefixes 触发 deprecation warning"""
         from knowledge.doc_url_strategy import (
-            validate_fetch_policy_prefixes,
-            reset_deprecated_func_warnings,
             DEPRECATED_MSG_FUNC_PREFIX,
+            reset_deprecated_func_warnings,
+            validate_fetch_policy_prefixes,
         )
 
         # 清除之前可能的警告状态（使用统一的 reset 函数）
@@ -3926,13 +4165,10 @@ class TestDeprecatedFieldCompatibility:
 
         # 验证触发 deprecation warning（使用统一的文案片段常量）
         log_text = output.getvalue()
-        assert DEPRECATED_MSG_FUNC_PREFIX in log_text, \
-            f"应包含 '{DEPRECATED_MSG_FUNC_PREFIX}'，实际: {log_text}"
+        assert DEPRECATED_MSG_FUNC_PREFIX in log_text, f"应包含 '{DEPRECATED_MSG_FUNC_PREFIX}'，实际: {log_text}"
         assert "validate_fetch_policy_path_prefixes" in log_text
 
-    def test_validate_url_strategy_prefixes_path_format_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_validate_url_strategy_prefixes_path_format_warning(self, loguru_caplog) -> None:
         """测试 url_strategy 使用旧版路径前缀格式时触发 warning"""
         from knowledge.doc_url_strategy import validate_url_strategy_prefixes
 
@@ -3948,18 +4184,18 @@ class TestDeprecatedFieldCompatibility:
         assert "旧版" in log_text
         assert "完整 URL 前缀" in log_text
 
-    def test_validate_url_strategy_prefixes_full_url_no_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_validate_url_strategy_prefixes_full_url_no_warning(self, loguru_caplog) -> None:
         """测试 url_strategy 使用完整 URL 前缀格式时不触发 warning"""
         from knowledge.doc_url_strategy import validate_url_strategy_prefixes
 
         with loguru_caplog() as output:
             # 使用完整 URL 前缀格式（新版）
-            result = validate_url_strategy_prefixes([
-                "https://cursor.com/docs",
-                "https://cursor.com/cn/docs",
-            ])
+            result = validate_url_strategy_prefixes(
+                [
+                    "https://cursor.com/docs",
+                    "https://cursor.com/cn/docs",
+                ]
+            )
 
         # 验证返回值
         assert "https://cursor.com/docs" in result
@@ -3968,17 +4204,17 @@ class TestDeprecatedFieldCompatibility:
         log_text = output.getvalue()
         assert "旧版" not in log_text
 
-    def test_validate_fetch_policy_path_prefixes_full_url_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_validate_fetch_policy_path_prefixes_full_url_warning(self, loguru_caplog) -> None:
         """测试 fetch_policy 使用完整 URL 格式时触发 warning"""
         from knowledge.doc_url_strategy import validate_fetch_policy_path_prefixes
 
         with loguru_caplog() as output:
             # 使用完整 URL 格式（错误用法）
-            result = validate_fetch_policy_path_prefixes([
-                "https://cursor.com/docs",  # 应该是 "docs"
-            ])
+            result = validate_fetch_policy_path_prefixes(
+                [
+                    "https://cursor.com/docs",  # 应该是 "docs"
+                ]
+            )
 
         # 验证返回值不变
         assert result == ["https://cursor.com/docs"]
@@ -3987,9 +4223,7 @@ class TestDeprecatedFieldCompatibility:
         log_text = output.getvalue()
         assert "路径前缀格式" in log_text
 
-    def test_validate_external_link_mode_invalid_value_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_validate_external_link_mode_invalid_value_warning(self, loguru_caplog) -> None:
         """测试无效的 external_link_mode 值触发 warning 并回退默认值"""
         from knowledge.doc_url_strategy import validate_external_link_mode
 
@@ -4043,12 +4277,14 @@ class TestExternalLinkAllowlistStructure:
         """测试 allowlist 解析为结构化对象"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "github.com",
-            "https://docs.python.org/3",
-            "api.openai.com",
-            "",  # 无效项
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "github.com",
+                "https://docs.python.org/3",
+                "api.openai.com",
+                "",  # 无效项
+            ]
+        )
 
         # 验证解析结果
         assert "github.com" in result.domains
@@ -4070,9 +4306,11 @@ class TestExternalLinkAllowlistStructure:
         """测试 ExternalLinkAllowlist.matches URL 前缀匹配"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        allowlist = validate_external_link_allowlist([
-            "https://github.com/cursor",
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "https://github.com/cursor",
+            ]
+        )
 
         assert allowlist.matches("https://github.com/cursor/repo")
         assert allowlist.matches("https://github.com/cursor/docs")
@@ -4094,9 +4332,7 @@ class TestExternalLinkAllowlistStructure:
         valid = validate_external_link_allowlist(["github.com"])
         assert not valid.is_empty()
 
-    def test_external_link_allowlist_invalid_items_warning(
-        self, loguru_caplog
-    ) -> None:
+    def test_external_link_allowlist_invalid_items_warning(self, loguru_caplog) -> None:
         """测试无效项触发 warning"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
@@ -4198,9 +4434,7 @@ class TestIntegratedUrlPolicyBehavior:
         log_text = output.getvalue()
         assert "apply_fetch_policy" in log_text
 
-    def test_deprecated_field_with_behavior_consistency(
-        self, loguru_caplog
-    ) -> None:
+    def test_deprecated_field_with_behavior_consistency(self, loguru_caplog) -> None:
         """测试旧字段使用时的行为一致性
 
         验证：
@@ -4208,10 +4442,10 @@ class TestIntegratedUrlPolicyBehavior:
         - 行为与新字段一致
         """
         from knowledge.doc_url_strategy import (
+            DEPRECATED_MSG_FUNC_PREFIX,
+            reset_deprecated_func_warnings,
             validate_fetch_policy_path_prefixes,
             validate_fetch_policy_prefixes,
-            reset_deprecated_func_warnings,
-            DEPRECATED_MSG_FUNC_PREFIX,
         )
 
         # 清除之前的警告状态（使用统一的 reset 函数）
@@ -4231,12 +4465,11 @@ class TestIntegratedUrlPolicyBehavior:
 
         # 验证旧函数触发 deprecation warning（使用统一的文案片段常量）
         log_text = output.getvalue()
-        assert DEPRECATED_MSG_FUNC_PREFIX in log_text, \
+        assert DEPRECATED_MSG_FUNC_PREFIX in log_text, (
             f"废弃警告应包含 '{DEPRECATED_MSG_FUNC_PREFIX}'，实际: {log_text}"
+        )
 
-    def test_config_manager_parse_fetch_policy_compat(
-        self, loguru_caplog
-    ) -> None:
+    def test_config_manager_parse_fetch_policy_compat(self, loguru_caplog) -> None:
         """测试 ConfigManager 解析 fetch_policy 的兼容性
 
         验证 allowed_url_prefixes（旧）→ allowed_path_prefixes（新）的兼容处理
@@ -4263,9 +4496,7 @@ class TestIntegratedUrlPolicyBehavior:
         log_text = output.getvalue()
         assert "废弃" in log_text
 
-    def test_config_manager_parse_fetch_policy_new_field(
-        self, loguru_caplog
-    ) -> None:
+    def test_config_manager_parse_fetch_policy_new_field(self, loguru_caplog) -> None:
         """测试 ConfigManager 解析 fetch_policy 使用新字段名
 
         验证 allowed_path_prefixes 优先于 allowed_url_prefixes
@@ -4291,9 +4522,7 @@ class TestIntegratedUrlPolicyBehavior:
         log_text = output.getvalue()
         assert "废弃" not in log_text
 
-    def test_config_manager_both_fields_priority(
-        self, loguru_caplog
-    ) -> None:
+    def test_config_manager_both_fields_priority(self, loguru_caplog) -> None:
         """测试同时配置新旧字段时新字段优先"""
         from core.config import ConfigManager
 
@@ -4338,11 +4567,13 @@ class TestValidateExternalLinkAllowlist:
         """测试域名项解析"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "github.com",
-            "docs.python.org",
-            "api.openai.com",
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "github.com",
+                "docs.python.org",
+                "api.openai.com",
+            ]
+        )
 
         assert "github.com" in result.domains
         assert "docs.python.org" in result.domains
@@ -4355,11 +4586,13 @@ class TestValidateExternalLinkAllowlist:
         """测试 URL 前缀项解析"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "https://github.com/cursor",
-            "https://docs.python.org/3/library",
-            "http://example.com/api",
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "https://github.com/cursor",
+                "https://docs.python.org/3/library",
+                "http://example.com/api",
+            ]
+        )
 
         assert len(result.domains) == 0
         assert len(result.prefixes) == 3
@@ -4373,12 +4606,14 @@ class TestValidateExternalLinkAllowlist:
         """测试混合项（域名 + URL 前缀）解析"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "github.com",
-            "https://docs.python.org/3",
-            "api.openai.com",
-            "https://example.com/api/v2",
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "github.com",
+                "https://docs.python.org/3",
+                "api.openai.com",
+                "https://example.com/api/v2",
+            ]
+        )
 
         assert "github.com" in result.domains
         assert "api.openai.com" in result.domains
@@ -4390,10 +4625,12 @@ class TestValidateExternalLinkAllowlist:
         """测试带路径的域名格式（如 github.com/org）"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "github.com/cursor",
-            "github.com/openai/whisper",
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "github.com/cursor",
+                "github.com/openai/whisper",
+            ]
+        )
 
         # 带路径的域名应转为 URL 前缀
         assert len(result.domains) == 0
@@ -4405,12 +4642,14 @@ class TestValidateExternalLinkAllowlist:
         """测试非法项处理"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        result = validate_external_link_allowlist([
-            "github.com",
-            "",  # 空字符串
-            "   ",  # 仅空白
-            "https://valid.com/path",
-        ])
+        result = validate_external_link_allowlist(
+            [
+                "github.com",
+                "",  # 空字符串
+                "   ",  # 仅空白
+                "https://valid.com/path",
+            ]
+        )
 
         assert "github.com" in result.domains
         assert len(result.prefixes) == 1
@@ -4433,10 +4672,12 @@ class TestValidateExternalLinkAllowlist:
         """测试 ExternalLinkAllowlist.matches() 域名匹配"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        allowlist = validate_external_link_allowlist([
-            "github.com",
-            "python.org",
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "github.com",
+                "python.org",
+            ]
+        )
 
         # 精确域名匹配
         assert allowlist.matches("https://github.com/repo")
@@ -4454,10 +4695,12 @@ class TestValidateExternalLinkAllowlist:
         """测试 ExternalLinkAllowlist.matches() URL 前缀匹配"""
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
-        allowlist = validate_external_link_allowlist([
-            "https://github.com/cursor",
-            "https://docs.python.org/3",
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "https://github.com/cursor",
+                "https://docs.python.org/3",
+            ]
+        )
 
         # 精确前缀匹配
         assert allowlist.matches("https://github.com/cursor/repo")
@@ -4472,10 +4715,12 @@ class TestValidateExternalLinkAllowlist:
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
         # 同时配置域名和 URL 前缀
-        allowlist = validate_external_link_allowlist([
-            "github.com",  # 域名
-            "https://github.com/cursor",  # URL 前缀
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "github.com",  # 域名
+                "https://github.com/cursor",  # URL 前缀
+            ]
+        )
 
         # URL 前缀匹配
         assert allowlist.matches("https://github.com/cursor/repo")
@@ -4507,9 +4752,11 @@ class TestValidateExternalLinkAllowlist:
         ]
 
         # 使用结构化 allowlist
-        allowlist = validate_external_link_allowlist([
-            "https://github.com/cursor",  # URL 前缀
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "https://github.com/cursor",  # URL 前缀
+            ]
+        )
 
         result = apply_fetch_policy(
             urls=urls,
@@ -4544,11 +4791,332 @@ class TestValidateExternalLinkAllowlist:
         from knowledge.doc_url_strategy import validate_external_link_allowlist
 
         # 带末尾斜杠的 URL 会被规范化
-        allowlist = validate_external_link_allowlist([
-            "https://github.com/cursor/",
-            "https://EXAMPLE.COM/Docs/",
-        ])
+        allowlist = validate_external_link_allowlist(
+            [
+                "https://github.com/cursor/",
+                "https://EXAMPLE.COM/Docs/",
+            ]
+        )
 
         # 规范化后应移除末尾斜杠，域名小写
         assert any("github.com/cursor" in p for p in allowlist.prefixes)
         assert any("example.com/Docs" in p for p in allowlist.prefixes)
+
+
+# ============================================================
+# Test: apply_fetch_policy 集成测试
+# ============================================================
+# 验证 apply_fetch_policy 的完整过滤流程，确保：
+# 1. 返回结果正确覆盖后续抓取层输入
+# 2. 日志结构包含过滤原因与外链记录
+# ============================================================
+
+
+class TestApplyFetchPolicyIntegration:
+    """apply_fetch_policy 集成测试
+
+    模拟 KnowledgeUpdater.update_from_analysis 的调用流程，验证：
+    - 内链（允许/不允许路径）的过滤行为
+    - 外链（允许/不允许域名）的过滤行为
+    - 返回结果的 urls_to_fetch 可直接用于抓取层
+    - filtered_urls 和 external_links_recorded 结构正确
+    """
+
+    def test_integration_mixed_urls_with_enforce_enabled(self) -> None:
+        """测试启用 enforce_path_prefixes 时的混合 URL 过滤
+
+        场景：
+        - 内链允许路径: /docs/*, /cn/docs/*
+        - 内链不允许路径: /pricing, /about
+        - 外链允许域名: github.com/cursor
+        - 外链不允许域名: external.com
+
+        预期：
+        - urls_to_fetch: 仅包含允许的内链 + 允许的外链
+        - filtered_urls: 包含所有被过滤的 URL 及原因
+        - external_links_recorded: 包含被记录但未抓取的外链
+        """
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        # 模拟 _build_urls_to_fetch 后的 URL 列表
+        urls_from_build = [
+            # 内链 - 允许的路径
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/docs/mcp",
+            "https://cursor.com/cn/docs/guide",
+            # 内链 - 不允许的路径
+            "https://cursor.com/pricing",
+            "https://cursor.com/about",
+            # 外链 - 允许的（github.com/cursor）
+            "https://github.com/cursor/repo",
+            # 外链 - 不允许的
+            "https://github.com/other/project",
+            "https://external.com/guide",
+            "https://stackoverflow.com/questions/12345",
+        ]
+
+        # 调用 apply_fetch_policy（模拟 update_from_analysis 中的调用）
+        result = apply_fetch_policy(
+            urls=urls_from_build,
+            fetch_policy_mode="fetch_allowlist",  # 允许白名单内的外链
+            base_url="https://cursor.com/cn/changelog",
+            primary_domains=["cursor.com"],
+            allowed_domains=None,  # 不额外添加域名
+            external_link_allowlist=["github.com/cursor"],  # 仅允许 cursor 组织
+            allowed_path_prefixes=["docs", "cn/docs"],  # 仅允许 docs 路径
+            enforce_path_prefixes=True,  # 启用内链路径检查
+        )
+
+        # 验证 1: urls_to_fetch 仅包含允许的 URL
+        expected_fetch_urls = {
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/docs/mcp",
+            "https://cursor.com/cn/docs/guide",
+            "https://github.com/cursor/repo",  # 匹配外链白名单
+        }
+        assert set(result.urls_to_fetch) == expected_fetch_urls, f"urls_to_fetch 不匹配: {result.urls_to_fetch}"
+
+        # 验证 2: filtered_urls 包含正确的过滤原因
+        filtered_reasons = {f["url"]: f["reason"] for f in result.filtered_urls}
+
+        # 内链路径不匹配
+        assert filtered_reasons.get("https://cursor.com/pricing") == "internal_link_path_not_allowed"
+        assert filtered_reasons.get("https://cursor.com/about") == "internal_link_path_not_allowed"
+
+        # 外链不在白名单
+        assert filtered_reasons.get("https://github.com/other/project") == "external_link_not_in_allowlist"
+        assert filtered_reasons.get("https://external.com/guide") == "external_link_not_in_allowlist"
+        assert filtered_reasons.get("https://stackoverflow.com/questions/12345") == "external_link_not_in_allowlist"
+
+        # 验证 3: external_links_recorded 包含被记录的外链
+        expected_recorded = {
+            "https://github.com/other/project",
+            "https://external.com/guide",
+            "https://stackoverflow.com/questions/12345",
+        }
+        assert set(result.external_links_recorded) == expected_recorded, (
+            f"external_links_recorded 不匹配: {result.external_links_recorded}"
+        )
+
+    def test_integration_record_only_mode_preserves_all_internal_links(self) -> None:
+        """测试 record_only 模式 + enforce_path_prefixes=False 时保留所有内链
+
+        这是 Phase A 的默认行为，确保向后兼容。
+        """
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            # 内链 - 各种路径
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/pricing",
+            "https://cursor.com/about",
+            "https://cursor.com/blog/post-1",
+            # 外链
+            "https://github.com/cursor/repo",
+            "https://external.com/guide",
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs", "cn/docs"],  # 配置了路径前缀
+            enforce_path_prefixes=False,  # 但未启用强制检查
+        )
+
+        # 所有内链都应通过（不管路径是否匹配）
+        internal_urls = [u for u in urls if "cursor.com" in u]
+        for url in internal_urls:
+            assert url in result.urls_to_fetch, f"内链 {url} 应在 urls_to_fetch 中"
+
+        # 外链应被记录但不抓取
+        assert "https://github.com/cursor/repo" not in result.urls_to_fetch
+        assert "https://external.com/guide" not in result.urls_to_fetch
+        assert "https://github.com/cursor/repo" in result.external_links_recorded
+        assert "https://external.com/guide" in result.external_links_recorded
+
+    def test_integration_skip_all_mode_no_external_links_recorded(self) -> None:
+        """测试 skip_all 模式不记录外链"""
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://github.com/cursor/repo",
+            "https://external.com/guide",
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="skip_all",
+            primary_domains=["cursor.com"],
+        )
+
+        # 仅内链通过
+        assert result.urls_to_fetch == ["https://cursor.com/docs/cli"]
+
+        # skip_all 模式下不记录外链
+        assert len(result.external_links_recorded) == 0
+
+        # 但 filtered_urls 应包含外链
+        assert len(result.filtered_urls) == 2
+        for f in result.filtered_urls:
+            assert f["reason"] == "external_link_skip_all"
+
+    def test_integration_result_can_be_used_for_fetch(self) -> None:
+        """测试返回结果可直接用于抓取层（模拟 _fetch_related_docs 输入）
+
+        验证 FetchPolicyResult.urls_to_fetch 的格式和内容：
+        - 类型正确（list[str]）
+        - URL 格式正确（完整 URL）
+        - 无重复 URL
+        """
+        from knowledge.doc_url_strategy import FetchPolicyResult, apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/docs/cli",  # 重复 URL（测试去重不在此层）
+            "https://cursor.com/cn/docs/guide",
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+        )
+
+        # 验证返回类型
+        assert isinstance(result, FetchPolicyResult)
+        assert isinstance(result.urls_to_fetch, list)
+
+        # 验证 URL 格式（完整 URL）
+        for url in result.urls_to_fetch:
+            assert url.startswith("https://"), f"URL 应为完整格式: {url}"
+
+        # 注意：apply_fetch_policy 不负责去重，去重在 _build_urls_to_fetch 阶段
+        # 这里保持输入顺序
+
+    def test_integration_log_structure_for_observability(self) -> None:
+        """测试日志结构可用于可观测性（模拟 UrlSelectionLog 填充）
+
+        验证 filtered_urls 和 external_links_recorded 的结构可用于：
+        - 日志记录
+        - 调试诊断
+        - 统计分析
+        """
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/pricing",  # 内链，路径不匹配
+            "https://github.com/cursor/repo",  # 外链，白名单内
+            "https://external.com/guide",  # 外链，白名单外
+        ]
+
+        result = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="fetch_allowlist",
+            primary_domains=["cursor.com"],
+            external_link_allowlist=["github.com/cursor"],
+            allowed_path_prefixes=["docs"],
+            enforce_path_prefixes=True,
+        )
+
+        # 验证 filtered_urls 结构可用于日志
+        assert isinstance(result.filtered_urls, list)
+        for item in result.filtered_urls:
+            assert "url" in item, "filtered_urls 条目应包含 'url'"
+            assert "reason" in item, "filtered_urls 条目应包含 'reason'"
+            assert isinstance(item["url"], str)
+            assert isinstance(item["reason"], str)
+            # reason 应为预定义的值
+            assert item["reason"] in {
+                "internal_link_path_not_allowed",
+                "external_link_record_only",
+                "external_link_skip_all",
+                "external_link_not_in_allowlist",
+            }
+
+        # 验证 external_links_recorded 结构
+        assert isinstance(result.external_links_recorded, list)
+        for url in result.external_links_recorded:
+            assert isinstance(url, str)
+            assert url.startswith("http")
+
+        # 验证统计可用于分析
+        internal_filtered = sum(1 for f in result.filtered_urls if f["reason"] == "internal_link_path_not_allowed")
+        external_filtered = len(result.filtered_urls) - internal_filtered
+        assert internal_filtered == 1  # /pricing
+        assert external_filtered == 1  # external.com
+
+    def test_integration_cli_override_enforce_path_prefixes(self) -> None:
+        """测试 CLI 参数覆盖 enforce_path_prefixes
+
+        模拟 --enforce-path-prefixes / --no-enforce-path-prefixes 的效果
+        """
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/pricing",
+        ]
+
+        # 模拟 --enforce-path-prefixes
+        result_enforced = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs"],
+            enforce_path_prefixes=True,
+        )
+        assert "https://cursor.com/pricing" not in result_enforced.urls_to_fetch
+
+        # 模拟 --no-enforce-path-prefixes
+        result_not_enforced = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs"],
+            enforce_path_prefixes=False,
+        )
+        assert "https://cursor.com/pricing" in result_not_enforced.urls_to_fetch
+
+    def test_integration_allowed_path_prefixes_from_config(self) -> None:
+        """测试 allowed_path_prefixes 配置链路（CLI > config.yaml > DEFAULT）
+
+        验证默认值与配置覆盖的行为一致性
+        """
+        from core.config import DEFAULT_FETCH_POLICY_ALLOWED_PATH_PREFIXES
+        from knowledge.doc_url_strategy import apply_fetch_policy
+
+        urls = [
+            "https://cursor.com/docs/cli",
+            "https://cursor.com/changelog/2025",
+            "https://cursor.com/pricing",
+        ]
+
+        # 使用默认路径前缀
+        result_default = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=DEFAULT_FETCH_POLICY_ALLOWED_PATH_PREFIXES,
+            enforce_path_prefixes=True,
+        )
+
+        # 默认前缀包含 docs 和 changelog
+        assert "https://cursor.com/docs/cli" in result_default.urls_to_fetch
+        assert "https://cursor.com/changelog/2025" in result_default.urls_to_fetch
+        assert "https://cursor.com/pricing" not in result_default.urls_to_fetch
+
+        # CLI 覆盖：仅允许 docs
+        result_cli_override = apply_fetch_policy(
+            urls=urls,
+            fetch_policy_mode="record_only",
+            primary_domains=["cursor.com"],
+            allowed_path_prefixes=["docs"],  # CLI 覆盖
+            enforce_path_prefixes=True,
+        )
+
+        assert "https://cursor.com/docs/cli" in result_cli_override.urls_to_fetch
+        assert "https://cursor.com/changelog/2025" not in result_cli_override.urls_to_fetch
+        assert "https://cursor.com/pricing" not in result_cli_override.urls_to_fetch

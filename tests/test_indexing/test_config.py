@@ -2,10 +2,10 @@
 
 测试配置键名映射与兼容性
 """
-import tempfile
-from pathlib import Path
 
-import pytest
+from pathlib import Path
+from typing import Any
+
 import yaml
 
 from indexing.cli import load_config
@@ -14,7 +14,6 @@ from indexing.config import (
     normalize_indexing_config,
 )
 from indexing.embedding import DEFAULT_MODEL
-from indexing.vector_store import DEFAULT_PERSIST_DIR
 
 
 class TestNormalizeIndexingConfig:
@@ -132,7 +131,7 @@ class TestExtractSearchOptions:
 
     def test_default_search_options(self):
         """测试搜索选项默认值"""
-        raw = {"search": {}}
+        raw: dict[str, Any] = {"search": {}}
         result = extract_search_options(raw)
 
         assert result["top_k"] == 10
@@ -229,6 +228,7 @@ indexing:
     def test_load_config_nonexistent_file(self):
         """测试配置文件不存在时使用 core.config 默认值"""
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config("/nonexistent/path/config.yaml")
@@ -382,6 +382,7 @@ class TestIndexingCliDefaultConfig:
     def test_load_config_nonexistent_path(self):
         """测试不存在的配置文件路径使用 core.config 默认配置"""
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config("/nonexistent/path/config.yaml")
@@ -839,6 +840,7 @@ indexing:
 
         # 获取 core.config 的默认值用于验证
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -864,6 +866,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -882,8 +885,9 @@ indexing:
 
         monkeypatch.setattr(Path, "cwd", lambda: empty_dir)
 
-        from core.config import IndexingConfig
         from unittest.mock import patch
+
+        from core.config import IndexingConfig
 
         core_defaults = IndexingConfig()
 
@@ -915,6 +919,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -927,11 +932,9 @@ indexing:
 
         # 显式验证不是旧的硬编码值（如果 core_defaults 恰好等于旧值则跳过）
         if core_defaults.chunk_size != 1500:
-            assert config.chunking.chunk_size != 1500, \
-                "chunk_size 不应该是旧的硬编码值 1500"
+            assert config.chunking.chunk_size != 1500, "chunk_size 不应该是旧的硬编码值 1500"
         if core_defaults.chunk_overlap != 200:
-            assert config.chunking.chunk_overlap != 200, \
-                "chunk_overlap 不应该是旧的硬编码值 200"
+            assert config.chunking.chunk_overlap != 200, "chunk_overlap 不应该是旧的硬编码值 200"
 
     def test_include_exclude_patterns_fallback_to_core_config(self, tmp_path, monkeypatch):
         """测试 include/exclude patterns 回退到 core.config 默认值"""
@@ -946,6 +949,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -968,6 +972,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -994,6 +999,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -1020,9 +1026,7 @@ class TestLoadConfigNoIndexingSectionFallback:
     3. 回退值与 core.config.IndexingConfig 一致，而非 indexing 模块硬编码值
     """
 
-    def test_load_config_no_indexing_section_uses_core_config_defaults(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_no_indexing_section_uses_core_config_defaults(self, tmp_path, monkeypatch):
         """测试 config.yaml 无 indexing 段时使用 core.config 默认值"""
         # 创建 config.yaml，但不包含 indexing 段
         config_content = """
@@ -1041,37 +1045,30 @@ cloud_agent:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
 
         # 所有 indexing 配置应回退到 core.config 的默认值
         assert config.embedding.model_name == core_defaults.model, (
-            f"model 应回退到 core.config 默认值 {core_defaults.model}，"
-            f"实际值: {config.embedding.model_name}"
+            f"model 应回退到 core.config 默认值 {core_defaults.model}，实际值: {config.embedding.model_name}"
         )
         assert config.vector_store.persist_directory == core_defaults.persist_path, (
             f"persist_path 应回退到 core.config 默认值 {core_defaults.persist_path}，"
             f"实际值: {config.vector_store.persist_directory}"
         )
         assert config.chunking.chunk_size == core_defaults.chunk_size, (
-            f"chunk_size 应回退到 core.config 默认值 {core_defaults.chunk_size}，"
-            f"实际值: {config.chunking.chunk_size}"
+            f"chunk_size 应回退到 core.config 默认值 {core_defaults.chunk_size}，实际值: {config.chunking.chunk_size}"
         )
         assert config.chunking.chunk_overlap == core_defaults.chunk_overlap, (
             f"chunk_overlap 应回退到 core.config 默认值 {core_defaults.chunk_overlap}，"
             f"实际值: {config.chunking.chunk_overlap}"
         )
-        assert config.include_patterns == core_defaults.include_patterns, (
-            f"include_patterns 应回退到 core.config 默认值"
-        )
-        assert config.exclude_patterns == core_defaults.exclude_patterns, (
-            f"exclude_patterns 应回退到 core.config 默认值"
-        )
+        assert config.include_patterns == core_defaults.include_patterns, "include_patterns 应回退到 core.config 默认值"
+        assert config.exclude_patterns == core_defaults.exclude_patterns, "exclude_patterns 应回退到 core.config 默认值"
 
-    def test_load_config_null_indexing_uses_core_config_defaults(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_null_indexing_uses_core_config_defaults(self, tmp_path, monkeypatch):
         """测试 config.yaml 的 indexing 段为 null 时使用 core.config 默认值"""
         config_content = """
 system:
@@ -1084,6 +1081,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -1093,9 +1091,7 @@ indexing:
         assert config.vector_store.persist_directory == core_defaults.persist_path
         assert config.chunking.chunk_size == core_defaults.chunk_size
 
-    def test_load_config_none_auto_discover_no_indexing_uses_defaults(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_none_auto_discover_no_indexing_uses_defaults(self, tmp_path, monkeypatch):
         """测试 load_config(None) 自动发现时，无 indexing 段使用 core.config 默认值"""
         # 创建 config.yaml，不包含 indexing 段
         config_content = """
@@ -1110,25 +1106,22 @@ models:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         # 使用 load_config(None) 触发自动发现
         config = load_config(None)
 
         # 验证回退到 core.config 默认值
-        assert config.embedding.model_name == core_defaults.model, (
-            f"自动发现时 model 应回退到 core.config 默认值"
-        )
+        assert config.embedding.model_name == core_defaults.model, "自动发现时 model 应回退到 core.config 默认值"
         assert config.vector_store.persist_directory == core_defaults.persist_path, (
-            f"自动发现时 persist_path 应回退到 core.config 默认值"
+            "自动发现时 persist_path 应回退到 core.config 默认值"
         )
         assert config.chunking.chunk_size == core_defaults.chunk_size, (
-            f"自动发现时 chunk_size 应回退到 core.config 默认值"
+            "自动发现时 chunk_size 应回退到 core.config 默认值"
         )
 
-    def test_load_config_fallback_values_match_core_config_not_hardcoded(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_fallback_values_match_core_config_not_hardcoded(self, tmp_path, monkeypatch):
         """测试回退值来自 core.config.IndexingConfig 而非 indexing 模块硬编码值
 
         历史问题：indexing 模块曾有独立的硬编码默认值，可能与 core.config 不一致。
@@ -1145,6 +1138,7 @@ system:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -1167,9 +1161,7 @@ system:
             f"expected={core_defaults.chunk_overlap}, actual={config.chunking.chunk_overlap}"
         )
 
-    def test_load_config_partial_indexing_section_fallback(
-        self, tmp_path, monkeypatch
-    ):
+    def test_load_config_partial_indexing_section_fallback(self, tmp_path, monkeypatch):
         """测试 indexing 段部分配置时，未配置字段回退到 core.config"""
         # 创建 config.yaml，只设置部分 indexing 字段
         config_content = """
@@ -1183,6 +1175,7 @@ indexing:
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
         from core.config import IndexingConfig
+
         core_defaults = IndexingConfig()
 
         config = load_config(str(config_file))
@@ -1530,7 +1523,6 @@ indexing:
         config_file.write_text(config_content, encoding="utf-8")
 
         # 直接加载 YAML 并测试 extract_search_options
-        import yaml
         with open(config_file) as f:
             data = yaml.safe_load(f)
         raw_indexing = data.get("indexing", {})
@@ -1544,7 +1536,7 @@ indexing:
 
     def test_search_options_consistency_with_core_config(self, tmp_path, monkeypatch):
         """测试 search options 与 core.config.IndexingSearchConfig 解析一致"""
-        from core.config import ConfigManager, IndexingSearchConfig
+        from core.config import ConfigManager
 
         # 保存原始状态
         original_instance = ConfigManager._instance
@@ -1575,6 +1567,7 @@ indexing:
 
             # 通过 extract_search_options 读取
             import yaml
+
             with open(config_file) as f:
                 data = yaml.safe_load(f)
             raw_indexing = data.get("indexing", {})
@@ -1603,7 +1596,6 @@ indexing:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(config_content, encoding="utf-8")
 
-        import yaml
         with open(config_file) as f:
             data = yaml.safe_load(f)
         raw_indexing = data.get("indexing", {})
@@ -1642,7 +1634,6 @@ indexing:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(config_content, encoding="utf-8")
 
-        import yaml
         with open(config_file) as f:
             data = yaml.safe_load(f)
         raw_indexing = data.get("indexing", {})
@@ -1667,7 +1658,6 @@ indexing:
 
 
 class TestIndexingConfigDefaultsAlignment:
-
     def test_embedding_config_model_name_matches_core_config(self):
         """测试 EmbeddingConfig.model_name 与 core.config.IndexingConfig.model 一致"""
         from core.config import IndexingConfig as CoreIndexingConfig
@@ -1765,24 +1755,16 @@ class TestIndexingConfigDefaultsAlignment:
         mismatches = []
 
         if embedding_defaults.model_name != core_defaults.model:
-            mismatches.append(
-                f"model_name: {embedding_defaults.model_name} != {core_defaults.model}"
-            )
+            mismatches.append(f"model_name: {embedding_defaults.model_name} != {core_defaults.model}")
 
         if chunk_defaults.chunk_size != core_defaults.chunk_size:
-            mismatches.append(
-                f"chunk_size: {chunk_defaults.chunk_size} != {core_defaults.chunk_size}"
-            )
+            mismatches.append(f"chunk_size: {chunk_defaults.chunk_size} != {core_defaults.chunk_size}")
 
         if chunk_defaults.chunk_overlap != core_defaults.chunk_overlap:
-            mismatches.append(
-                f"chunk_overlap: {chunk_defaults.chunk_overlap} != {core_defaults.chunk_overlap}"
-            )
+            mismatches.append(f"chunk_overlap: {chunk_defaults.chunk_overlap} != {core_defaults.chunk_overlap}")
 
         if vector_defaults.persist_directory != core_defaults.persist_path:
-            mismatches.append(
-                f"persist_directory: {vector_defaults.persist_directory} != {core_defaults.persist_path}"
-            )
+            mismatches.append(f"persist_directory: {vector_defaults.persist_directory} != {core_defaults.persist_path}")
 
         if index_defaults.include_patterns != core_defaults.include_patterns:
             mismatches.append(
@@ -1795,7 +1777,7 @@ class TestIndexingConfigDefaultsAlignment:
             )
 
         assert not mismatches, (
-            f"indexing/config.py 与 core/config.py 默认值不一致:\n"
+            "indexing/config.py 与 core/config.py 默认值不一致:\n"
             + "\n".join(f"  - {m}" for m in mismatches)
             + "\n请同时更新两处配置以保持一致"
         )

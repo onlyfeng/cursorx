@@ -8,23 +8,19 @@
 
 使用 Mock 替代真实 Cursor CLI 调用
 """
+
 from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agents.committer import CommitterAgent, CommitterConfig, CommitResult
 from agents.planner import PlannerAgent, PlannerConfig
-from agents.reviewer import ReviewDecision, ReviewerAgent, ReviewerConfig
-from agents.worker import WorkerAgent, WorkerConfig
+from agents.reviewer import ReviewDecision
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
-from coordinator.worker_pool import WorkerPool
-from core.base import AgentRole, AgentStatus
-from core.state import IterationStatus
-from tasks.task import Task, TaskPriority, TaskStatus, TaskType
+from tasks.task import Task, TaskType
 
 
 class TestPlannerWorkerCollaboration:
@@ -42,9 +38,7 @@ class TestPlannerWorkerCollaboration:
         return Orchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_planner_creates_tasks_for_workers(
-        self, orchestrator: Orchestrator
-    ) -> None:
+    async def test_planner_creates_tasks_for_workers(self, orchestrator: Orchestrator) -> None:
         """规划者创建任务并分配给 Worker"""
         # Mock 规划阶段 - 返回多个任务
         mock_plan_result = {
@@ -86,52 +80,44 @@ class TestPlannerWorkerCollaboration:
             "summary": "所有任务完成",
         }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                    # 模拟任务完成
-                    async def simulate_task_completion(
-                        queue: Any, iteration_id: int
-                    ) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        # 验证任务数量正确
-                        assert len(tasks) == 3
-                        # 验证任务类型
-                        task_types = [t.type for t in tasks]
-                        assert TaskType.IMPLEMENT in task_types
-                        assert TaskType.TEST in task_types
-                        # 模拟完成
-                        for task in tasks:
-                            task.complete({"output": f"{task.title} 完成"})
+            # 模拟任务完成
+            async def simulate_task_completion(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                # 验证任务数量正确
+                assert len(tasks) == 3
+                # 验证任务类型
+                task_types = [t.type for t in tasks]
+                assert TaskType.IMPLEMENT in task_types
+                assert TaskType.TEST in task_types
+                # 模拟完成
+                for task in tasks:
+                    task.complete({"output": f"{task.title} 完成"})
 
-                    mock_workers.side_effect = simulate_task_completion
+            mock_workers.side_effect = simulate_task_completion
 
-                    # 执行工作流
-                    result = await orchestrator.run("实现用户认证功能")
+            # 执行工作流
+            result = await orchestrator.run("实现用户认证功能")
 
-                    # 验证规划者被调用
-                    mock_planner.assert_called_once()
+            # 验证规划者被调用
+            mock_planner.assert_called_once()
 
-                    # 验证 Worker 池被调用
-                    mock_workers.assert_called_once()
+            # 验证 Worker 池被调用
+            mock_workers.assert_called_once()
 
-                    # 验证任务创建数量
-                    assert result["total_tasks_created"] == 3
-                    assert result["total_tasks_completed"] == 3
+            # 验证任务创建数量
+            assert result["total_tasks_created"] == 3
+            assert result["total_tasks_completed"] == 3
 
     @pytest.mark.asyncio
-    async def test_worker_receives_context_from_planner(
-        self, orchestrator: Orchestrator
-    ) -> None:
+    async def test_worker_receives_context_from_planner(self, orchestrator: Orchestrator) -> None:
         """Worker 接收规划上下文"""
         # 准备带上下文的任务
         mock_plan_result = {
@@ -161,44 +147,40 @@ class TestPlannerWorkerCollaboration:
 
         received_contexts: list[dict] = []
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                    async def capture_context(queue: Any, iteration_id: int) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for task in tasks:
-                            # 记录任务上下文
-                            received_contexts.append({
-                                "task_id": task.id,
-                                "context": task.context,
-                                "target_files": task.target_files,
-                            })
-                            task.complete({"output": "完成"})
+            async def capture_context(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    # 记录任务上下文
+                    received_contexts.append(
+                        {
+                            "task_id": task.id,
+                            "context": task.context,
+                            "target_files": task.target_files,
+                        }
+                    )
+                    task.complete({"output": "完成"})
 
-                    mock_workers.side_effect = capture_context
+            mock_workers.side_effect = capture_context
 
-                    await orchestrator.run("重构数据库连接层")
+            await orchestrator.run("重构数据库连接层")
 
-                    # 验证 Worker 接收到正确的上下文
-                    assert len(received_contexts) == 1
-                    ctx = received_contexts[0]
-                    assert "current_issues" in ctx["context"]
-                    assert "suggested_approach" in ctx["context"]
-                    assert ctx["target_files"] == ["db/connection.py"]
+            # 验证 Worker 接收到正确的上下文
+            assert len(received_contexts) == 1
+            ctx = received_contexts[0]
+            assert "current_issues" in ctx["context"]
+            assert "suggested_approach" in ctx["context"]
+            assert ctx["target_files"] == ["db/connection.py"]
 
     @pytest.mark.asyncio
-    async def test_multiple_workers_parallel_execution(
-        self, orchestrator: Orchestrator
-    ) -> None:
+    async def test_multiple_workers_parallel_execution(self, orchestrator: Orchestrator) -> None:
         """多 Worker 并行执行"""
         # 创建多个任务供并行执行
         mock_plan_result = {
@@ -224,51 +206,43 @@ class TestPlannerWorkerCollaboration:
 
         execution_times: list[float] = []
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                    async def simulate_parallel_execution(
-                        queue: Any, iteration_id: int
-                    ) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        # 验证有足够的任务进行并行处理
-                        assert len(tasks) == 5
+            async def simulate_parallel_execution(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                # 验证有足够的任务进行并行处理
+                assert len(tasks) == 5
 
-                        # 模拟并行执行（记录开始时间）
-                        start_time = asyncio.get_event_loop().time()
+                # 模拟并行执行（记录开始时间）
+                start_time = asyncio.get_event_loop().time()
 
-                        # 模拟每个任务的执行
-                        for task in tasks:
-                            task.start()
-                            execution_times.append(asyncio.get_event_loop().time())
-                            task.complete({"output": "完成", "worker": "test"})
+                # 模拟每个任务的执行
+                for task in tasks:
+                    task.start()
+                    execution_times.append(asyncio.get_event_loop().time())
+                    task.complete({"output": "完成", "worker": "test"})
 
-                        # 记录总执行时间
-                        total_time = asyncio.get_event_loop().time() - start_time
-                        # 并行执行应该很快（因为是模拟）
-                        assert total_time < 1.0
+                # 记录总执行时间
+                total_time = asyncio.get_event_loop().time() - start_time
+                # 并行执行应该很快（因为是模拟）
+                assert total_time < 1.0
 
-                    mock_workers.side_effect = simulate_parallel_execution
+            mock_workers.side_effect = simulate_parallel_execution
 
-                    result = await orchestrator.run("并行执行多任务")
+            result = await orchestrator.run("并行执行多任务")
 
-                    assert result["success"] is True
-                    assert result["total_tasks_created"] == 5
-                    assert result["total_tasks_completed"] == 5
+            assert result["success"] is True
+            assert result["total_tasks_created"] == 5
+            assert result["total_tasks_completed"] == 5
 
     @pytest.mark.asyncio
-    async def test_worker_result_aggregation(
-        self, orchestrator: Orchestrator
-    ) -> None:
+    async def test_worker_result_aggregation(self, orchestrator: Orchestrator) -> None:
         """执行结果聚合"""
         mock_plan_result = {
             "success": True,
@@ -287,43 +261,39 @@ class TestPlannerWorkerCollaboration:
             "summary": "大部分任务完成",
         }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                    async def simulate_mixed_results(
-                        queue: Any, iteration_id: int
-                    ) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for i, task in enumerate(tasks):
-                            if "失败" in task.title:
-                                task.fail("模拟执行失败")
-                            else:
-                                task.complete({
-                                    "output": f"输出 {i}",
-                                    "files_modified": [f"file{i}.py"],
-                                })
+            async def simulate_mixed_results(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for i, task in enumerate(tasks):
+                    if "失败" in task.title:
+                        task.fail("模拟执行失败")
+                    else:
+                        task.complete(
+                            {
+                                "output": f"输出 {i}",
+                                "files_modified": [f"file{i}.py"],
+                            }
+                        )
 
-                    mock_workers.side_effect = simulate_mixed_results
+            mock_workers.side_effect = simulate_mixed_results
 
-                    result = await orchestrator.run("执行多任务并聚合结果")
+            result = await orchestrator.run("执行多任务并聚合结果")
 
-                    # 验证结果聚合
-                    assert result["total_tasks_created"] == 4
-                    assert result["total_tasks_completed"] == 3
-                    assert result["total_tasks_failed"] == 1
+            # 验证结果聚合
+            assert result["total_tasks_created"] == 4
+            assert result["total_tasks_completed"] == 3
+            assert result["total_tasks_failed"] == 1
 
-                    # 验证 worker 统计
-                    worker_stats = result.get("worker_stats", {})
-                    assert worker_stats.get("pool_size") == 3
+            # 验证 worker 统计
+            worker_stats = result.get("worker_stats", {})
+            assert worker_stats.get("pool_size") == 3
 
 
 class TestReviewerFeedbackLoop:
@@ -341,9 +311,7 @@ class TestReviewerFeedbackLoop:
         return Orchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_reviewer_receives_execution_results(
-        self, multi_iteration_orchestrator: Orchestrator
-    ) -> None:
+    async def test_reviewer_receives_execution_results(self, multi_iteration_orchestrator: Orchestrator) -> None:
         """评审者接收执行结果"""
         orchestrator = multi_iteration_orchestrator
 
@@ -367,12 +335,14 @@ class TestReviewerFeedbackLoop:
             tasks_failed: list[dict],
             previous_reviews: list[dict] | None = None,
         ) -> dict:
-            received_review_args.append({
-                "goal": goal,
-                "iteration_id": iteration_id,
-                "tasks_completed": tasks_completed,
-                "tasks_failed": tasks_failed,
-            })
+            received_review_args.append(
+                {
+                    "goal": goal,
+                    "iteration_id": iteration_id,
+                    "tasks_completed": tasks_completed,
+                    "tasks_failed": tasks_failed,
+                }
+            )
             return {
                 "success": True,
                 "decision": ReviewDecision.COMPLETE,
@@ -380,47 +350,46 @@ class TestReviewerFeedbackLoop:
                 "summary": "完成",
             }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration",
-                    side_effect=capture_review_args,
-                ):
-                    mock_planner.return_value = mock_plan_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(
+                orchestrator.reviewer,
+                "review_iteration",
+                side_effect=capture_review_args,
+            ),
+        ):
+            mock_planner.return_value = mock_plan_result
 
-                    async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for task in tasks:
-                            task.complete({
-                                "output": f"{task.title} 执行成功",
-                                "duration": 1.5,
-                            })
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete(
+                        {
+                            "output": f"{task.title} 执行成功",
+                            "duration": 1.5,
+                        }
+                    )
 
-                    mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                    await orchestrator.run("实现并测试功能")
+            await orchestrator.run("实现并测试功能")
 
-                    # 验证评审者接收到执行结果
-                    assert len(received_review_args) == 1
-                    review_call = received_review_args[0]
+            # 验证评审者接收到执行结果
+            assert len(received_review_args) == 1
+            review_call = received_review_args[0]
 
-                    assert review_call["iteration_id"] == 1
-                    assert len(review_call["tasks_completed"]) == 2
-                    assert len(review_call["tasks_failed"]) == 0
+            assert review_call["iteration_id"] == 1
+            assert len(review_call["tasks_completed"]) == 2
+            assert len(review_call["tasks_failed"]) == 0
 
-                    # 验证完成任务的详情
-                    completed_titles = [t["title"] for t in review_call["tasks_completed"]]
-                    assert "功能实现" in completed_titles
-                    assert "测试编写" in completed_titles
+            # 验证完成任务的详情
+            completed_titles = [t["title"] for t in review_call["tasks_completed"]]
+            assert "功能实现" in completed_titles
+            assert "测试编写" in completed_titles
 
     @pytest.mark.asyncio
-    async def test_review_feedback_affects_next_plan(
-        self, multi_iteration_orchestrator: Orchestrator
-    ) -> None:
+    async def test_review_feedback_affects_next_plan(self, multi_iteration_orchestrator: Orchestrator) -> None:
         """评审反馈影响下轮规划"""
         orchestrator = multi_iteration_orchestrator
 
@@ -470,40 +439,34 @@ class TestReviewerFeedbackLoop:
                     "summary": "测试覆盖完善",
                 }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.side_effect = get_plan_result
-                    mock_reviewer.side_effect = get_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.side_effect = get_plan_result
+            mock_reviewer.side_effect = get_review_result
 
-                    async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for task in tasks:
-                            task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                    mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                    result = await orchestrator.run("实现功能并完善测试")
+            result = await orchestrator.run("实现功能并完善测试")
 
-                    # 验证经过两轮迭代
-                    assert result["iterations_completed"] == 2
-                    assert plan_call_count == 2
-                    assert review_call_count == 2
+            # 验证经过两轮迭代
+            assert result["iterations_completed"] == 2
+            assert plan_call_count == 2
+            assert review_call_count == 2
 
-                    # 验证第二轮规划接收到了评审反馈
-                    # 注：第一次规划没有 previous_review，第二次有
-                    assert len(received_contexts) == 2
+            # 验证第二轮规划接收到了评审反馈
+            # 注：第一次规划没有 previous_review，第二次有
+            assert len(received_contexts) == 2
 
     @pytest.mark.asyncio
-    async def test_strict_review_mode(
-        self, multi_iteration_orchestrator: Orchestrator
-    ) -> None:
+    async def test_strict_review_mode(self, multi_iteration_orchestrator: Orchestrator) -> None:
         """严格评审模式测试"""
         # 创建严格模式的 Orchestrator
         config = OrchestratorConfig(
@@ -548,30 +511,26 @@ class TestReviewerFeedbackLoop:
                     "summary": "达到严格模式标准",
                 }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    mock_planner.return_value = mock_plan_result
-                    mock_reviewer.side_effect = strict_review
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.side_effect = strict_review
 
-                    async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                        tasks = queue.get_tasks_by_iteration(iteration_id)
-                        for task in tasks:
-                            task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                    mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                    result = await orchestrator.run("严格模式任务")
+            result = await orchestrator.run("严格模式任务")
 
-                    # 严格模式下需要更多迭代才能通过
-                    assert result["iterations_completed"] == 3
-                    assert review_call_count == 3
+            # 严格模式下需要更多迭代才能通过
+            assert result["iterations_completed"] == 3
+            assert review_call_count == 3
 
 
 class TestCommitterIntegration:
@@ -585,15 +544,13 @@ class TestCommitterIntegration:
             max_iterations=3,
             worker_pool_size=2,
             enable_auto_commit=True,  # 启用自动提交
-            commit_on_complete=True,   # 完成时提交
-            auto_push=False,           # 不自动推送
+            commit_on_complete=True,  # 完成时提交
+            auto_push=False,  # 不自动推送
         )
         return Orchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_committer_after_complete_review(
-        self, orchestrator_with_committer: Orchestrator
-    ) -> None:
+    async def test_committer_after_complete_review(self, orchestrator_with_committer: Orchestrator) -> None:
         """COMPLETE 决策后自动提交"""
         orchestrator = orchestrator_with_committer
 
@@ -621,43 +578,37 @@ class TestCommitterIntegration:
             "tasks_count": 1,
         }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    with patch.object(
-                        orchestrator.committer, "commit_iteration", new_callable=AsyncMock
-                    ) as mock_committer:
-                        mock_planner.return_value = mock_plan_result
-                        mock_reviewer.return_value = mock_review_result
-                        mock_committer.return_value = mock_commit_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+            patch.object(orchestrator.committer, "commit_iteration", new_callable=AsyncMock) as mock_committer,
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
+            mock_committer.return_value = mock_commit_result
 
-                        async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            for task in tasks:
-                                task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                        mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                        result = await orchestrator.run("实现功能")
+            result = await orchestrator.run("实现功能")
 
-                        # 验证 Committer 被调用
-                        mock_committer.assert_called_once()
+            # 验证 Committer 被调用
+            mock_committer.assert_called_once()
 
-                        # 验证调用参数
-                        call_args = mock_committer.call_args
-                        assert call_args.kwargs["iteration_id"] == 1
-                        assert call_args.kwargs["review_decision"] == "complete"
+            # 验证调用参数
+            call_args = mock_committer.call_args
+            assert call_args.kwargs["iteration_id"] == 1
+            assert call_args.kwargs["review_decision"] == "complete"
 
-                        # 验证结果中包含提交信息
-                        assert result["success"] is True
-                        commits = result.get("commits", {})
-                        assert commits.get("successful_commits", 0) >= 0
+            # 验证结果中包含提交信息
+            assert result["success"] is True
+            commits = result.get("commits", {})
+            assert commits.get("successful_commits", 0) >= 0
 
     @pytest.mark.asyncio
     async def test_commit_per_iteration_mode(self) -> None:
@@ -715,43 +666,38 @@ class TestCommitterIntegration:
                 "pushed": False,
             }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    with patch.object(
-                        orchestrator.committer, "commit_iteration",
-                        side_effect=track_commit,
-                    ):
-                        mock_planner.side_effect = get_plan_result
-                        mock_reviewer.side_effect = get_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+            patch.object(
+                orchestrator.committer,
+                "commit_iteration",
+                side_effect=track_commit,
+            ),
+        ):
+            mock_planner.side_effect = get_plan_result
+            mock_reviewer.side_effect = get_review_result
 
-                        async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            for task in tasks:
-                                task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                        mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                        result = await orchestrator.run("每次迭代提交")
+            result = await orchestrator.run("每次迭代提交")
 
-                        # 每次迭代都应该提交
-                        assert result["iterations_completed"] == 2
-                        assert len(commit_calls) == 2
+            # 每次迭代都应该提交
+            assert result["iterations_completed"] == 2
+            assert len(commit_calls) == 2
 
-                        # 验证提交顺序
-                        assert commit_calls[0]["iteration_id"] == 1
-                        assert commit_calls[1]["iteration_id"] == 2
+            # 验证提交顺序
+            assert commit_calls[0]["iteration_id"] == 1
+            assert commit_calls[1]["iteration_id"] == 2
 
     @pytest.mark.asyncio
-    async def test_commit_with_failed_tasks(
-        self, orchestrator_with_committer: Orchestrator
-    ) -> None:
+    async def test_commit_with_failed_tasks(self, orchestrator_with_committer: Orchestrator) -> None:
         """有失败任务时的提交策略"""
         orchestrator = orchestrator_with_committer
 
@@ -784,42 +730,39 @@ class TestCommitterIntegration:
                 "pushed": False,
             }
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.worker_pool, "start", new_callable=AsyncMock
-            ) as mock_workers:
-                with patch.object(
-                    orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                ) as mock_reviewer:
-                    with patch.object(
-                        orchestrator.committer, "commit_iteration",
-                        side_effect=capture_commit,
-                    ):
-                        mock_planner.return_value = mock_plan_result
-                        mock_reviewer.return_value = mock_review_result
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+            patch.object(
+                orchestrator.committer,
+                "commit_iteration",
+                side_effect=capture_commit,
+            ),
+        ):
+            mock_planner.return_value = mock_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                        async def mixed_results(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            for task in tasks:
-                                if "失败" in task.title:
-                                    task.fail("模拟失败")
-                                else:
-                                    task.complete({"output": "成功"})
+            async def mixed_results(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    if "失败" in task.title:
+                        task.fail("模拟失败")
+                    else:
+                        task.complete({"output": "成功"})
 
-                        mock_workers.side_effect = mixed_results
+            mock_workers.side_effect = mixed_results
 
-                        result = await orchestrator.run("包含失败任务的提交")
+            result = await orchestrator.run("包含失败任务的提交")
 
-                        # 验证提交仍然执行
-                        assert len(commit_args) > 0
-                        assert commit_args["iteration_id"] == 1
+            # 验证提交仍然执行
+            assert len(commit_args) > 0
+            assert commit_args["iteration_id"] == 1
 
-                        # 验证只有成功的任务被包含在提交中
-                        tasks_completed = commit_args.get("tasks_completed", [])
-                        assert len(tasks_completed) == 1
-                        assert tasks_completed[0]["title"] == "成功任务"
+            # 验证只有成功的任务被包含在提交中
+            tasks_completed = commit_args.get("tasks_completed", [])
+            assert len(tasks_completed) == 1
+            assert tasks_completed[0]["title"] == "成功任务"
 
 
 class TestSubPlannerCollaboration:
@@ -838,9 +781,7 @@ class TestSubPlannerCollaboration:
         return Orchestrator(config)
 
     @pytest.mark.asyncio
-    async def test_spawn_sub_planner(
-        self, orchestrator_with_sub_planners: Orchestrator
-    ) -> None:
+    async def test_spawn_sub_planner(self, orchestrator_with_sub_planners: Orchestrator) -> None:
         """子规划者派生"""
         orchestrator = orchestrator_with_sub_planners
 
@@ -885,49 +826,55 @@ class TestSubPlannerCollaboration:
             sub_planner = PlannerAgent(sub_config)
 
             # Mock 子规划者的 execute 方法
-            sub_planner.execute = AsyncMock(return_value={
-                "success": True,
-                "tasks": [
-                    {"type": "implement", "title": f"{area}子任务", "instruction": f"执行{area}相关工作", "target_files": []},
-                ],
-            })
+            setattr(
+                sub_planner,
+                "execute",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "tasks": [
+                            {
+                                "type": "implement",
+                                "title": f"{area}子任务",
+                                "instruction": f"执行{area}相关工作",
+                                "target_files": [],
+                            },
+                        ],
+                    }
+                ),
+            )
 
             return sub_planner
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.planner, "spawn_sub_planner",
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(
+                orchestrator.planner,
+                "spawn_sub_planner",
                 side_effect=track_spawn,
-            ):
-                with patch.object(
-                    orchestrator.worker_pool, "start", new_callable=AsyncMock
-                ) as mock_workers:
-                    with patch.object(
-                        orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                    ) as mock_reviewer:
-                        mock_planner.return_value = mock_main_plan_result
-                        mock_reviewer.return_value = mock_review_result
+            ),
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_main_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                        async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            for task in tasks:
-                                task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                        mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                        result = await orchestrator.run("需要子规划者的复杂任务")
+            result = await orchestrator.run("需要子规划者的复杂任务")
 
-                        # 验证子规划者被派生
-                        assert len(spawned_sub_planners) == 2
-                        assert "前端模块" in spawned_sub_planners
-                        assert "后端 API" in spawned_sub_planners
+            # 验证子规划者被派生
+            assert len(spawned_sub_planners) == 2
+            assert "前端模块" in spawned_sub_planners
+            assert "后端 API" in spawned_sub_planners
 
     @pytest.mark.asyncio
-    async def test_sub_planner_task_merging(
-        self, orchestrator_with_sub_planners: Orchestrator
-    ) -> None:
+    async def test_sub_planner_task_merging(self, orchestrator_with_sub_planners: Orchestrator) -> None:
         """子规划任务合并"""
         orchestrator = orchestrator_with_sub_planners
 
@@ -958,56 +905,57 @@ class TestSubPlannerCollaboration:
         async def mock_spawn(area: str, context: dict | None = None) -> PlannerAgent:
             sub_config = PlannerConfig(name=f"sub-{area}", working_directory=".")
             sub_planner = PlannerAgent(sub_config)
-            sub_planner.execute = AsyncMock(return_value={
-                "success": True,
-                "tasks": sub_planner_tasks,
-            })
+            setattr(
+                sub_planner,
+                "execute",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "tasks": sub_planner_tasks,
+                    }
+                ),
+            )
             return sub_planner
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.planner, "spawn_sub_planner",
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(
+                orchestrator.planner,
+                "spawn_sub_planner",
                 side_effect=mock_spawn,
-            ):
-                with patch.object(
-                    orchestrator.worker_pool, "start", new_callable=AsyncMock
-                ) as mock_workers:
-                    with patch.object(
-                        orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                    ) as mock_reviewer:
-                        mock_planner.return_value = mock_main_plan_result
-                        mock_reviewer.return_value = mock_review_result
+            ),
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_main_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                        all_tasks: list[Task] = []
+            all_tasks: list[Task] = []
 
-                        async def capture_and_complete(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            all_tasks.extend(tasks)
-                            for task in tasks:
-                                task.complete({"output": "完成"})
+            async def capture_and_complete(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                all_tasks.extend(tasks)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                        mock_workers.side_effect = capture_and_complete
+            mock_workers.side_effect = capture_and_complete
 
-                        result = await orchestrator.run("合并子规划任务")
+            result = await orchestrator.run("合并子规划任务")
 
-                        # 验证主任务 + 子任务都被合并到队列
-                        # 1 个主任务 + 3 个子任务 = 4 个任务
-                        assert result["total_tasks_created"] == 4
-                        assert result["total_tasks_completed"] == 4
+            # 验证主任务 + 子任务都被合并到队列
+            # 1 个主任务 + 3 个子任务 = 4 个任务
+            assert result["total_tasks_created"] == 4
+            assert result["total_tasks_completed"] == 4
 
-                        # 验证任务来源正确
-                        task_titles = [t.title for t in all_tasks]
-                        assert "主任务" in task_titles
-                        assert "子任务1" in task_titles
-                        assert "子任务2" in task_titles
-                        assert "子任务3" in task_titles
+            # 验证任务来源正确
+            task_titles = [t.title for t in all_tasks]
+            assert "主任务" in task_titles
+            assert "子任务1" in task_titles
+            assert "子任务2" in task_titles
+            assert "子任务3" in task_titles
 
     @pytest.mark.asyncio
-    async def test_max_sub_planners_limit(
-        self, orchestrator_with_sub_planners: Orchestrator
-    ) -> None:
+    async def test_max_sub_planners_limit(self, orchestrator_with_sub_planners: Orchestrator) -> None:
         """最大子规划者数量限制"""
         orchestrator = orchestrator_with_sub_planners
 
@@ -1047,42 +995,45 @@ class TestSubPlannerCollaboration:
                 result = await original_spawn(area, context)
                 spawn_count += 1
                 # Mock 子规划者的 execute
-                result.execute = AsyncMock(return_value={
-                    "success": True,
-                    "tasks": [],
-                })
+                setattr(
+                    result,
+                    "execute",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "tasks": [],
+                        }
+                    ),
+                )
                 return result
             except ValueError as e:
                 spawn_errors.append(str(e))
                 raise
 
-        with patch.object(
-            orchestrator.planner, "execute", new_callable=AsyncMock
-        ) as mock_planner:
-            with patch.object(
-                orchestrator.planner, "spawn_sub_planner",
+        with (
+            patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
+            patch.object(
+                orchestrator.planner,
+                "spawn_sub_planner",
                 side_effect=limited_spawn,
-            ):
-                with patch.object(
-                    orchestrator.worker_pool, "start", new_callable=AsyncMock
-                ) as mock_workers:
-                    with patch.object(
-                        orchestrator.reviewer, "review_iteration", new_callable=AsyncMock
-                    ) as mock_reviewer:
-                        mock_planner.return_value = mock_main_plan_result
-                        mock_reviewer.return_value = mock_review_result
+            ),
+            patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
+            patch.object(orchestrator.reviewer, "review_iteration", new_callable=AsyncMock) as mock_reviewer,
+        ):
+            mock_planner.return_value = mock_main_plan_result
+            mock_reviewer.return_value = mock_review_result
 
-                        async def complete_tasks(queue: Any, iteration_id: int) -> None:
-                            tasks = queue.get_tasks_by_iteration(iteration_id)
-                            for task in tasks:
-                                task.complete({"output": "完成"})
+            async def complete_tasks(queue: Any, iteration_id: int) -> None:
+                tasks = queue.get_tasks_by_iteration(iteration_id)
+                for task in tasks:
+                    task.complete({"output": "完成"})
 
-                        mock_workers.side_effect = complete_tasks
+            mock_workers.side_effect = complete_tasks
 
-                        await orchestrator.run("测试子规划者限制")
+            await orchestrator.run("测试子规划者限制")
 
-                        # 验证只创建了最大数量的子规划者
-                        assert spawn_count == 2
-                        # 验证超出限制的请求被拒绝
-                        assert len(spawn_errors) == 2
-                        assert all("限制" in err or "limit" in err.lower() for err in spawn_errors)
+            # 验证只创建了最大数量的子规划者
+            assert spawn_count == 2
+            # 验证超出限制的请求被拒绝
+            assert len(spawn_errors) == 2
+            assert all("限制" in err or "limit" in err.lower() for err in spawn_errors)

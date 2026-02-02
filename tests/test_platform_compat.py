@@ -8,27 +8,27 @@
 - 信号处理适配
 - pickle 序列化兼容性
 """
+
 import multiprocessing as mp
 import pickle
 import signal
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.platform import (
-    Platform,
     MPStartMethod,
-    get_platform,
+    Platform,
     get_mp_start_method,
+    get_platform,
+    get_platform_info,
     is_fork_start_method,
     is_spawn_start_method,
+    register_signal_handler,
     requires_pickle_serialization,
     supports_signal,
-    register_signal_handler,
-    get_platform_info,
 )
-
 
 # ============================================================================
 # 平台检测测试
@@ -61,7 +61,8 @@ class TestGetPlatform:
         mock_sys.platform = "linux"
         # 需要重新导入以应用 mock
         from core import platform as platform_module
-        with patch.object(platform_module.sys, 'platform', 'linux'):
+
+        with patch.object(platform_module.sys, "platform", "linux"):
             result = platform_module.get_platform()
             assert result == Platform.LINUX
 
@@ -70,7 +71,8 @@ class TestGetPlatform:
         """测试检测 macOS 平台"""
         mock_sys.platform = "darwin"
         from core import platform as platform_module
-        with patch.object(platform_module.sys, 'platform', 'darwin'):
+
+        with patch.object(platform_module.sys, "platform", "darwin"):
             result = platform_module.get_platform()
             assert result == Platform.MACOS
 
@@ -79,7 +81,8 @@ class TestGetPlatform:
         """测试检测 Windows 平台"""
         mock_sys.platform = "win32"
         from core import platform as platform_module
-        with patch.object(platform_module.sys, 'platform', 'win32'):
+
+        with patch.object(platform_module.sys, "platform", "win32"):
             result = platform_module.get_platform()
             assert result == Platform.WINDOWS
 
@@ -88,7 +91,8 @@ class TestGetPlatform:
         """测试检测未知平台"""
         mock_sys.platform = "freebsd"
         from core import platform as platform_module
-        with patch.object(platform_module.sys, 'platform', 'freebsd'):
+
+        with patch.object(platform_module.sys, "platform", "freebsd"):
             result = platform_module.get_platform()
             assert result == Platform.UNKNOWN
 
@@ -155,8 +159,9 @@ class TestMPStartMethod:
         """测试 Linux 默认启动方式"""
         mock_mp.get_start_method.return_value = None
         from core import platform as platform_module
-        with patch.object(platform_module, 'get_platform', return_value=Platform.LINUX):
-            with patch.object(platform_module.mp, 'get_start_method', return_value=None):
+
+        with patch.object(platform_module, "get_platform", return_value=Platform.LINUX):
+            with patch.object(platform_module.mp, "get_start_method", return_value=None):
                 result = platform_module.get_mp_start_method()
                 assert result == MPStartMethod.FORK
 
@@ -165,8 +170,9 @@ class TestMPStartMethod:
         """测试 macOS 默认启动方式"""
         mock_mp.get_start_method.return_value = None
         from core import platform as platform_module
-        with patch.object(platform_module, 'get_platform', return_value=Platform.MACOS):
-            with patch.object(platform_module.mp, 'get_start_method', return_value=None):
+
+        with patch.object(platform_module, "get_platform", return_value=Platform.MACOS):
+            with patch.object(platform_module.mp, "get_start_method", return_value=None):
                 result = platform_module.get_mp_start_method()
                 assert result == MPStartMethod.SPAWN
 
@@ -175,8 +181,9 @@ class TestMPStartMethod:
         """测试 Windows 默认启动方式"""
         mock_mp.get_start_method.return_value = None
         from core import platform as platform_module
-        with patch.object(platform_module, 'get_platform', return_value=Platform.WINDOWS):
-            with patch.object(platform_module.mp, 'get_start_method', return_value=None):
+
+        with patch.object(platform_module, "get_platform", return_value=Platform.WINDOWS):
+            with patch.object(platform_module.mp, "get_start_method", return_value=None):
                 result = platform_module.get_mp_start_method()
                 assert result == MPStartMethod.SPAWN
 
@@ -325,6 +332,7 @@ class TestWorkerProcessCompatibility:
     def test_worker_process_can_be_imported(self):
         """测试 Worker 进程模块可被导入"""
         from process.worker import AgentWorkerProcess
+
         assert AgentWorkerProcess is not None
 
     def test_process_message_pickle(self):

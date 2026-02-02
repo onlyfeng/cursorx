@@ -8,10 +8,12 @@
 5. 重试机制
 6. AgentExecutorFactory 创建正确的 Executor
 """
+
 import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -121,6 +123,7 @@ class TestAuthToken:
             expires_at=datetime.now() + timedelta(hours=1),
         )
         assert token.is_expired is False
+        assert token.expires_in_seconds is not None
         assert token.expires_in_seconds > 0
 
     def test_token_expiring_soon(self):
@@ -296,9 +299,7 @@ class TestCloudAuthManager:
         # Mock CLI 验证
         mock_process = AsyncMock()
         mock_process.returncode = 0
-        mock_process.communicate = AsyncMock(
-            return_value=(b"Logged in as: test@example.com\nPlan: pro", b"")
-        )
+        mock_process.communicate = AsyncMock(return_value=(b"Logged in as: test@example.com\nPlan: pro", b""))
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process):
             with patch.object(manager, "_find_agent_executable", return_value="agent"):
@@ -313,9 +314,7 @@ class TestCloudAuthManager:
         # Mock CLI 验证失败
         mock_process = AsyncMock()
         mock_process.returncode = 1
-        mock_process.communicate = AsyncMock(
-            return_value=(b"", b"Invalid API key")
-        )
+        mock_process.communicate = AsyncMock(return_value=(b"", b"Invalid API key"))
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process):
             with patch.object(manager, "_find_agent_executable", return_value="agent"):
@@ -396,9 +395,7 @@ class TestTaskResult:
         result = TaskResult(task_id="t1", status=TaskStatus.COMPLETED)
         assert result.is_success is True
 
-        result_failed = TaskResult(
-            task_id="t2", status=TaskStatus.COMPLETED, error="error"
-        )
+        result_failed = TaskResult(task_id="t2", status=TaskStatus.COMPLETED, error="error")
         assert result_failed.is_success is False
 
     def test_is_terminal(self):
@@ -473,6 +470,7 @@ class TestCloudTask:
         assert restored.task_id == "task-abc"
         assert restored.status == TaskStatus.RUNNING
         assert restored.prompt == "test prompt"
+        assert restored.options is not None
         assert restored.options.model == "gpt-5"
 
 
@@ -531,7 +529,7 @@ class TestCloudTaskClient:
     @pytest.mark.asyncio
     async def test_poll_task_status_callback(self, cloud_task_client):
         """轮询状态回调"""
-        status_changes = []
+        status_changes: list[TaskStatus] = []
 
         async def mock_query(task_id):
             if len(status_changes) < 2:
@@ -549,9 +547,7 @@ class TestCloudTaskClient:
 
     def test_parse_task_status_output(self, cloud_task_client):
         """解析任务状态输出"""
-        result = cloud_task_client._parse_task_status_output(
-            "task-1", "Task completed successfully"
-        )
+        result = cloud_task_client._parse_task_status_output("task-1", "Task completed successfully")
         assert result.status == TaskStatus.COMPLETED
 
         result = cloud_task_client._parse_task_status_output("task-2", "Task failed with error")
@@ -607,33 +603,35 @@ class TestCursorCloudClient:
     @pytest.mark.asyncio
     async def test_submit_task_success(self, cursor_cloud_client):
         """提交任务成功"""
-        with patch.object(
-            cursor_cloud_client.auth_manager,
-            "authenticate",
-            return_value=AuthStatus(authenticated=True),
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                cursor_cloud_client.auth_manager,
+                "authenticate",
+                return_value=AuthStatus(authenticated=True),
+            ),
+            patch.object(
                 cursor_cloud_client.auth_manager,
                 "get_api_key",
                 return_value="test-key",
-            ):
-                mock_process = AsyncMock()
-                mock_process.returncode = 0
-                mock_process.communicate = AsyncMock(
-                    return_value=(
-                        b'{"task_id": "task-123", "status": "queued"}',
-                        b"",
-                    )
+            ),
+        ):
+            mock_process = AsyncMock()
+            mock_process.returncode = 0
+            mock_process.communicate = AsyncMock(
+                return_value=(
+                    b'{"task_id": "task-123", "status": "queued"}',
+                    b"",
                 )
+            )
 
-                with patch(
-                    "asyncio.create_subprocess_exec",
-                    return_value=mock_process,
-                ):
-                    result = await cursor_cloud_client.submit_task("test prompt")
-                    assert result.success is True
-                    assert result.task is not None
-                    assert result.task.task_id == "task-123"
+            with patch(
+                "asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ):
+                result = await cursor_cloud_client.submit_task("test prompt")
+                assert result.success is True
+                assert result.task is not None
+                assert result.task.task_id == "task-123"
 
     def test_parse_task_id_json(self, cursor_cloud_client):
         """解析 JSON 格式的 task_id"""
@@ -707,10 +705,12 @@ class TestCursorCloudClient:
 
     def test_parse_task_from_json_output_array(self, cursor_cloud_client):
         """从 JSON 数组格式解析任务"""
-        output = json.dumps([
-            {"session_id": "task-123", "status": "completed", "prompt": "test prompt"},
-            {"session_id": "task-456", "status": "running", "prompt": "other prompt"},
-        ])
+        output = json.dumps(
+            [
+                {"session_id": "task-123", "status": "completed", "prompt": "test prompt"},
+                {"session_id": "task-456", "status": "running", "prompt": "other prompt"},
+            ]
+        )
         task = cursor_cloud_client._parse_task_from_json_output("task-123", output)
         assert task is not None
         assert task.task_id == "task-123"
@@ -719,11 +719,13 @@ class TestCursorCloudClient:
 
     def test_parse_task_from_json_output_object(self, cursor_cloud_client):
         """从 JSON 对象格式解析任务"""
-        output = json.dumps({
-            "sessions": [
-                {"task_id": "task-789", "status": "running", "message": "doing work"},
-            ]
-        })
+        output = json.dumps(
+            {
+                "sessions": [
+                    {"task_id": "task-789", "status": "running", "message": "doing work"},
+                ]
+            }
+        )
         task = cursor_cloud_client._parse_task_from_json_output("task-789", output)
         assert task is not None
         assert task.task_id == "task-789"
@@ -905,7 +907,7 @@ class TestAgentExecutorFactory:
     def test_create_invalid_mode(self):
         """无效模式抛出异常"""
         with pytest.raises(ValueError):
-            AgentExecutorFactory.create(mode="invalid")
+            AgentExecutorFactory.create(mode=cast(ExecutionMode, "invalid"))
 
 
 # ========== CLIAgentExecutor 测试 ==========
@@ -977,8 +979,8 @@ class TestCloudAgentExecutor:
     @pytest.mark.asyncio
     async def test_execute_not_authenticated(self):
         """未认证时执行失败"""
-        from cursor.cloud_client import CloudClientFactory
         from cursor.cloud.client import CloudAgentResult
+        from cursor.cloud_client import CloudClientFactory
 
         executor = CloudAgentExecutor()
 
@@ -996,6 +998,7 @@ class TestCloudAgentExecutor:
         ):
             result = await executor.execute(prompt="test")
             assert result.success is False
+            assert result.error is not None
             assert "认证" in result.error or "未认证" in result.error
 
     @pytest.mark.asyncio
@@ -1018,7 +1021,7 @@ class TestCloudAgentExecutor:
         with patch.object(
             executor2._auth_manager,
             "authenticate",
-            return_value=AuthStatus(authenticated=False, error="No API key"),
+            return_value=AuthStatus(authenticated=False, error=AuthError("No API key")),
         ):
             available2 = await executor2.check_available()
             assert available2 is False
@@ -1032,9 +1035,9 @@ class TestCloudAgentExecutor:
         2. 返回结果包含 session_id
         3. 返回结果 files_modified 为空（后台任务尚未完成）
         """
-        from cursor.cloud_client import CloudClientFactory
         from cursor.cloud.client import CloudAgentResult
         from cursor.cloud.task import CloudTask, TaskStatus
+        from cursor.cloud_client import CloudClientFactory
 
         executor = CloudAgentExecutor()
 
@@ -1064,19 +1067,13 @@ class TestCloudAgentExecutor:
             # 验证 CloudClientFactory.execute_task 被调用时 wait=False
             mock_execute.assert_called_once()
             call_kwargs = mock_execute.call_args.kwargs
-            assert call_kwargs.get("wait") is False, (
-                "background=True 时应传递 wait=False"
-            )
+            assert call_kwargs.get("wait") is False, "background=True 时应传递 wait=False"
 
             # 验证返回结果包含 session_id
-            assert result.session_id == "session-background-123", (
-                "返回结果应包含 session_id"
-            )
+            assert result.session_id == "session-background-123", "返回结果应包含 session_id"
 
             # 验证后台模式下 files_modified 为空（任务尚未完成）
-            assert result.files_modified == [], (
-                "后台模式下 files_modified 应为空"
-            )
+            assert result.files_modified == [], "后台模式下 files_modified 应为空"
 
             # 验证 success 表示提交是否成功
             assert result.success is True
@@ -1089,9 +1086,9 @@ class TestCloudAgentExecutor:
         1. CloudClientFactory.execute_task 被调用时 wait=True
         2. 返回完整的执行结果，包含 output 和 files_modified
         """
-        from cursor.cloud_client import CloudClientFactory
         from cursor.cloud.client import CloudAgentResult
         from cursor.cloud.task import CloudTask, TaskStatus
+        from cursor.cloud_client import CloudClientFactory
 
         executor = CloudAgentExecutor()
 
@@ -1122,9 +1119,7 @@ class TestCloudAgentExecutor:
             # 验证 CloudClientFactory.execute_task 被调用时 wait=True
             mock_execute.assert_called_once()
             call_kwargs = mock_execute.call_args.kwargs
-            assert call_kwargs.get("wait") is True, (
-                "background=False 时应传递 wait=True"
-            )
+            assert call_kwargs.get("wait") is True, "background=False 时应传递 wait=True"
 
             # 验证返回完整结果
             assert result.session_id == "session-foreground-456"
@@ -1134,9 +1129,9 @@ class TestCloudAgentExecutor:
     @pytest.mark.asyncio
     async def test_execute_default_background_is_false(self):
         """测试 execute 默认 background=False（前台模式）"""
-        from cursor.cloud_client import CloudClientFactory
         from cursor.cloud.client import CloudAgentResult
         from cursor.cloud.task import CloudTask, TaskStatus
+        from cursor.cloud_client import CloudClientFactory
 
         executor = CloudAgentExecutor()
 
@@ -1162,9 +1157,7 @@ class TestCloudAgentExecutor:
 
             # 验证默认使用前台模式（wait=True）
             call_kwargs = mock_execute.call_args.kwargs
-            assert call_kwargs.get("wait") is True, (
-                "默认应为前台模式（wait=True）"
-            )
+            assert call_kwargs.get("wait") is True, "默认应为前台模式（wait=True）"
 
 
 # ========== PlanAgentExecutor 测试 ==========
@@ -1316,6 +1309,7 @@ class TestAutoAgentExecutor:
         assert executor._enable_cooldown is False
         # 即使设置冷却时间也不生效
         from datetime import datetime, timedelta
+
         executor._cloud_cooldown_until = datetime.now() + timedelta(hours=1)
         assert executor.is_cloud_in_cooldown is False
 
@@ -1335,9 +1329,7 @@ class TestAutoAgentExecutor:
                     output="cli output",
                     exit_code=0,
                 )
-                with patch.object(
-                    executor._cli_executor._client, "execute", return_value=mock_result
-                ):
+                with patch.object(executor._cli_executor._client, "execute", return_value=mock_result):
                     result = await executor.execute(prompt="test")
                     assert result.success is True
                     assert result.executor_type == "cli"
@@ -1352,6 +1344,7 @@ class TestAutoAgentExecutor:
     def test_reset_cooldown(self):
         """重置冷却状态"""
         from datetime import datetime, timedelta
+
         executor = AutoAgentExecutor()
 
         # 设置冷却状态
@@ -1371,6 +1364,7 @@ class TestAutoAgentExecutor:
     def test_cooldown_properties(self):
         """测试冷却相关属性"""
         from datetime import datetime, timedelta
+
         executor = AutoAgentExecutor(cloud_cooldown_seconds=60)
 
         # 初始状态
@@ -1401,25 +1395,18 @@ class TestAutoAgentExecutor:
             executor_type="cli",
         )
 
-        with patch.object(
-            executor._cloud_executor, "check_available",
-            new_callable=AsyncMock, return_value=True
+        with (
+            patch.object(executor._cloud_executor, "check_available", new_callable=AsyncMock, return_value=True),
+            patch.object(executor._cloud_executor, "execute", new_callable=AsyncMock, return_value=cloud_fail_result),
+            patch.object(executor._cli_executor, "execute", new_callable=AsyncMock, return_value=cli_success_result),
         ):
-            with patch.object(
-                executor._cloud_executor, "execute",
-                new_callable=AsyncMock, return_value=cloud_fail_result
-            ):
-                with patch.object(
-                    executor._cli_executor, "execute",
-                    new_callable=AsyncMock, return_value=cli_success_result
-                ):
-                    result = await executor.execute(prompt="测试")
+            result = await executor.execute(prompt="测试")
 
-                    # 验证回退到 CLI
-                    assert result.executor_type == "cli"
-                    # 验证冷却已启动
-                    assert executor.is_cloud_in_cooldown is True
-                    assert executor._cloud_failure_count == 1
+            # 验证回退到 CLI
+            assert result.executor_type == "cli"
+            # 验证冷却已启动
+            assert executor.is_cloud_in_cooldown is True
+            assert executor._cloud_failure_count == 1
 
     @pytest.mark.asyncio
     async def test_cloud_success_resets_cooldown(self):
@@ -1433,19 +1420,87 @@ class TestAutoAgentExecutor:
             executor_type="cloud",
         )
 
-        with patch.object(
-            executor._cloud_executor, "check_available",
-            new_callable=AsyncMock, return_value=True
+        with (
+            patch.object(executor._cloud_executor, "check_available", new_callable=AsyncMock, return_value=True),
+            patch.object(
+                executor._cloud_executor, "execute", new_callable=AsyncMock, return_value=cloud_success_result
+            ),
         ):
-            with patch.object(
-                executor._cloud_executor, "execute",
-                new_callable=AsyncMock, return_value=cloud_success_result
-            ):
-                await executor.execute(prompt="测试")
+            await executor.execute(prompt="测试")
 
-                # 验证冷却已重置
-                assert executor._cloud_failure_count == 0
-                assert executor._cloud_cooldown_until is None
+            # 验证冷却已重置
+            assert executor._cloud_failure_count == 0
+            assert executor._cloud_cooldown_until is None
+
+    @pytest.mark.asyncio
+    async def test_select_executor_auto_mode_no_api_key_selects_cli(self):
+        """测试 _select_executor 在 auto 模式且无 API Key 时选择 CLI
+
+        验证场景：
+        - execution_mode=auto
+        - Cloud check_available 返回 False（模拟无 API Key）
+        - CLI check_available 返回 True
+        - 应该选择 CLI 执行器
+
+        这确保测试不依赖真实网络与真实 key。
+        """
+        executor = AutoAgentExecutor()
+
+        # Mock Cloud 不可用（模拟无 API Key）
+        with patch.object(executor._cloud_executor, "check_available", new_callable=AsyncMock, return_value=False):
+            # Mock CLI 可用
+            with patch.object(executor._cli_executor, "check_available", new_callable=AsyncMock, return_value=True):
+                # 调用 _select_executor
+                selected_executor, skip_reason = await executor._select_executor()
+
+                # 验证选择了 CLI
+                assert selected_executor.executor_type == "cli"
+                # 验证跳过原因
+                assert skip_reason is not None
+                assert "Cloud" in skip_reason or "可用性" in skip_reason
+
+    @pytest.mark.asyncio
+    async def test_select_executor_auto_mode_with_api_key_selects_cloud(self):
+        """测试 _select_executor 在 auto 模式且有 API Key 时选择 Cloud
+
+        验证场景：
+        - execution_mode=auto
+        - Cloud check_available 返回 True（模拟有 API Key 且可用）
+        - 应该选择 Cloud 执行器
+        """
+        executor = AutoAgentExecutor()
+
+        # Mock Cloud 可用（模拟有 API Key）
+        with patch.object(executor._cloud_executor, "check_available", new_callable=AsyncMock, return_value=True):
+            # 调用 _select_executor
+            selected_executor, skip_reason = await executor._select_executor()
+
+            # 验证选择了 Cloud
+            assert selected_executor.executor_type == "cloud"
+            # 无跳过原因
+            assert skip_reason is None
+
+    @pytest.mark.asyncio
+    async def test_select_executor_both_unavailable_falls_back_to_cli(self):
+        """测试 _select_executor 在 Cloud 和 CLI 都不可用时返回 CLI
+
+        验证场景：
+        - Cloud 和 CLI 都不可用
+        - 仍然返回 CLI 执行器（可能会失败）
+        """
+        executor = AutoAgentExecutor()
+
+        # Mock Cloud 不可用
+        with patch.object(executor._cloud_executor, "check_available", new_callable=AsyncMock, return_value=False):
+            # Mock CLI 也不可用
+            with patch.object(executor._cli_executor, "check_available", new_callable=AsyncMock, return_value=False):
+                # 调用 _select_executor
+                selected_executor, skip_reason = await executor._select_executor()
+
+                # 仍然返回 CLI（即使不可用，作为最后手段）
+                assert selected_executor.executor_type == "cli"
+                # 有跳过原因
+                assert skip_reason is not None
 
 
 # ========== 便捷函数测试 ==========
@@ -1482,15 +1537,17 @@ class TestConvenienceFunctions:
         async def test_func():
             return "success"
 
-        with patch(
-            "cursor.cloud_client.CloudAuthManager.authenticate",
-            return_value=AuthStatus(
-                authenticated=False,
-                error=AuthError("未认证", AuthErrorCode.INVALID_API_KEY),
+        with (
+            patch(
+                "cursor.cloud_client.CloudAuthManager.authenticate",
+                return_value=AuthStatus(
+                    authenticated=False,
+                    error=AuthError("未认证", AuthErrorCode.INVALID_API_KEY),
+                ),
             ),
+            pytest.raises(AuthError),
         ):
-            with pytest.raises(AuthError):
-                await test_func()
+            await test_func()
 
 
 # ========== 错误处理测试 ==========
@@ -1506,9 +1563,7 @@ class TestErrorHandling:
 
         mock_process = AsyncMock()
         mock_process.returncode = 1
-        mock_process.communicate = AsyncMock(
-            return_value=(b"", b"Rate limit exceeded")
-        )
+        mock_process.communicate = AsyncMock(return_value=(b"", b"Rate limit exceeded"))
 
         # 需要模拟 API key 存在，否则 authenticate 会先返回 CONFIG_NOT_FOUND
         with patch.object(manager, "get_api_key", return_value="test-key"):
@@ -1591,17 +1646,15 @@ class TestRetryMechanism:
             executor_type="cli",
         )
 
-        with patch.object(executor._cloud_executor, "check_available", return_value=True):
-            with patch.object(
-                executor._cloud_executor, "execute", return_value=cloud_fail_result
-            ):
-                with patch.object(
-                    executor._cli_executor, "execute", return_value=cli_success_result
-                ):
-                    result = await executor.execute(prompt="test")
-                    # 应该回退到 CLI
-                    assert result.success is True
-                    assert result.executor_type == "cli"
+        with (
+            patch.object(executor._cloud_executor, "check_available", return_value=True),
+            patch.object(executor._cloud_executor, "execute", return_value=cloud_fail_result),
+            patch.object(executor._cli_executor, "execute", return_value=cli_success_result),
+        ):
+            result = await executor.execute(prompt="test")
+            # 应该回退到 CLI
+            assert result.success is True
+            assert result.executor_type == "cli"
 
 
 # ========== CloudAgentConfig 解析与注入测试 ==========
@@ -1910,9 +1963,7 @@ class TestCursorCloudApiKeyEnvVar:
             os.environ["CURSOR_CLOUD_API_KEY"] = "cursor-cloud-api-key"
 
             # 显式参数优先级最高
-            api_key = CloudClientFactory.resolve_api_key(
-                explicit_api_key="explicit-api-key"
-            )
+            api_key = CloudClientFactory.resolve_api_key(explicit_api_key="explicit-api-key")
             assert api_key == "explicit-api-key"
 
             # CURSOR_API_KEY 优先于 CURSOR_CLOUD_API_KEY
@@ -1926,7 +1977,7 @@ class TestCursorCloudApiKeyEnvVar:
 
     def test_build_cloud_client_config_cursor_cloud_api_key(self):
         """测试 build_cloud_client_config 支持 CURSOR_CLOUD_API_KEY"""
-        from core.config import build_cloud_client_config, ConfigManager
+        from core.config import ConfigManager, build_cloud_client_config
 
         with patch.dict(os.environ, {}, clear=True):
             # 只设置 CURSOR_CLOUD_API_KEY
@@ -1955,6 +2006,7 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
     def test_cloud_auth_manager_reads_api_key_from_config_yaml(self, tmp_path):
         """测试 CloudAuthManager 从 config.yaml 的 cloud_agent.api_key 读取 API Key"""
         import yaml
+
         from core.config import ConfigManager
 
         # 创建包含 cloud_agent.api_key 的 config.yaml
@@ -1985,9 +2037,7 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
 
             # 注意：get_api_key 会尝试多个路径，包括 config.yaml
             # 由于我们明确指定了 config_file，应该能读取到
-            assert api_key == "yaml-cloud-api-key-12345", (
-                f"应从 config.yaml 读取 api_key，实际值: {api_key}"
-            )
+            assert api_key == "yaml-cloud-api-key-12345", f"应从 config.yaml 读取 api_key，实际值: {api_key}"
 
     def test_cloud_auth_manager_explicit_api_key_priority(self, tmp_path):
         """测试显式传入的 api_key 优先于 config.yaml"""
@@ -2017,9 +2067,7 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
             api_key = manager.get_api_key()
 
             # 显式设置的 api_key 应该优先
-            assert api_key == "explicit-api-key", (
-                f"显式设置的 api_key 应优先，实际值: {api_key}"
-            )
+            assert api_key == "explicit-api-key", f"显式设置的 api_key 应优先，实际值: {api_key}"
 
     def test_cloud_auth_manager_env_priority_over_config_yaml(self, tmp_path):
         """测试环境变量优先于 config.yaml"""
@@ -2045,9 +2093,7 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
             api_key = manager.get_api_key()
 
             # 环境变量应该优先于 config.yaml
-            assert api_key == "env-api-key", (
-                f"环境变量应优先于 config.yaml，实际值: {api_key}"
-            )
+            assert api_key == "env-api-key", f"环境变量应优先于 config.yaml，实际值: {api_key}"
 
     def test_cloud_auth_manager_no_api_key_returns_none(self, tmp_path):
         """测试无任何 api_key 配置时返回 None"""
@@ -2074,6 +2120,220 @@ class TestCloudAuthManagerApiKeyFromConfigYaml:
             api_key = manager.get_api_key()
 
             # 无任何 api_key 配置时应返回 None
-            assert api_key is None, (
-                f"无 api_key 配置时应返回 None，实际值: {api_key}"
-            )
+            assert api_key is None, f"无 api_key 配置时应返回 None，实际值: {api_key}"
+
+
+# ========== AgentResult 结构化错误字段测试 ==========
+
+
+class TestAgentResultStructuredErrorFields:
+    """测试 AgentResult 的结构化错误字段（error_type, retry_after）"""
+
+    def test_from_cloud_result_with_error_type(self):
+        """测试 from_cloud_result 正确传递 error_type"""
+        result = AgentResult.from_cloud_result(
+            success=False,
+            output="",
+            error="认证失败",
+            error_type="auth",
+        )
+        assert result.error_type == "auth"
+        assert result.executor_type == "cloud"
+        assert result.success is False
+
+    def test_from_cloud_result_with_retry_after(self):
+        """测试 from_cloud_result 正确传递 retry_after"""
+        result = AgentResult.from_cloud_result(
+            success=False,
+            output="",
+            error="限流错误",
+            error_type="rate_limit",
+            retry_after=60.0,
+        )
+        assert result.error_type == "rate_limit"
+        assert result.retry_after == 60.0
+        assert result.success is False
+
+    def test_from_cloud_result_without_error_fields(self):
+        """测试 from_cloud_result 不传递错误字段时默认为 None"""
+        result = AgentResult.from_cloud_result(
+            success=True,
+            output="成功",
+        )
+        assert result.error_type is None
+        assert result.retry_after is None
+        assert result.success is True
+
+    def test_from_cloud_result_all_fields(self):
+        """测试 from_cloud_result 正确传递所有字段"""
+        result = AgentResult.from_cloud_result(
+            success=False,
+            output="部分输出",
+            error="请求过于频繁",
+            duration=5.0,
+            session_id="session-123",
+            raw_result={"status": "error"},
+            files_modified=["file.py"],
+            error_type="rate_limit",
+            retry_after=120.5,
+        )
+        assert result.success is False
+        assert result.output == "部分输出"
+        assert result.error == "请求过于频繁"
+        assert result.duration == 5.0
+        assert result.session_id == "session-123"
+        assert result.raw_result == {"status": "error"}
+        assert result.files_modified == ["file.py"]
+        assert result.error_type == "rate_limit"
+        assert result.retry_after == 120.5
+        assert result.executor_type == "cloud"
+
+
+# ========== classify_cloud_failure 错误分类测试 ==========
+
+
+class TestClassifyCloudFailure:
+    """测试 classify_cloud_failure 的错误分类逻辑
+
+    验证：
+    - 认证失败时 kind=AUTH
+    - 限流时 kind=RATE_LIMIT 且 retry_after 可用
+    - 其他错误类型的正确分类
+    """
+
+    def test_classify_auth_error_from_exception(self):
+        """测试从 AuthError 异常分类为 AUTH"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+        from cursor.cloud.exceptions import AuthError, AuthErrorCode
+
+        error = AuthError("API Key 无效", AuthErrorCode.INVALID_API_KEY)
+        result = classify_cloud_failure(error)
+
+        assert result.kind == CloudFailureKind.AUTH
+        assert result.retryable is False
+
+    def test_classify_auth_error_from_string(self):
+        """测试从错误消息字符串分类为 AUTH"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        # 测试 401 错误
+        result = classify_cloud_failure("HTTP 401 Unauthorized")
+        assert result.kind == CloudFailureKind.AUTH
+
+        # 测试 403 错误
+        result = classify_cloud_failure("HTTP 403 Forbidden")
+        assert result.kind == CloudFailureKind.AUTH
+
+        # 测试 Invalid API key
+        result = classify_cloud_failure("Invalid API key provided")
+        assert result.kind == CloudFailureKind.AUTH
+
+    def test_classify_rate_limit_from_exception(self):
+        """测试从 RateLimitError 异常分类为 RATE_LIMIT 且 retry_after 可用"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+        from cursor.cloud.exceptions import RateLimitError
+
+        error = RateLimitError("请求过于频繁", retry_after=90.0)
+        result = classify_cloud_failure(error)
+
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        assert result.retry_after == 90
+        assert result.retryable is True
+
+    def test_classify_rate_limit_from_string(self):
+        """测试从错误消息字符串分类为 RATE_LIMIT"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        # 测试 429 错误
+        result = classify_cloud_failure("HTTP 429 Too Many Requests")
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        assert result.retryable is True
+
+        # 测试 rate limit 文本
+        result = classify_cloud_failure("Rate limit exceeded")
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+
+    def test_classify_rate_limit_extracts_retry_after(self):
+        """测试从错误消息中提取 retry_after"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        # 测试 retry-after: 格式
+        result = classify_cloud_failure("Rate limit exceeded. Retry-after: 45")
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        assert result.retry_after == 45
+
+        # 测试 wait N seconds 格式
+        result = classify_cloud_failure("Too many requests. Please wait 30 seconds")
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        assert result.retry_after == 30
+
+    def test_classify_rate_limit_default_retry_after(self):
+        """测试限流错误无法提取 retry_after 时使用默认值"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        result = classify_cloud_failure("Rate limit exceeded")
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        # 应该使用默认值 60 秒
+        assert result.retry_after == 60
+
+    def test_classify_from_structured_dict(self):
+        """测试从结构化字典分类（优先使用 error_type 字段）"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        # 测试 auth 类型
+        result = classify_cloud_failure(
+            {
+                "error": "认证失败",
+                "error_type": "auth",
+            }
+        )
+        assert result.kind == CloudFailureKind.AUTH
+
+        # 测试 rate_limit 类型带 retry_after
+        result = classify_cloud_failure(
+            {
+                "error": "请求过多",
+                "error_type": "rate_limit",
+                "retry_after": 120,
+            }
+        )
+        assert result.kind == CloudFailureKind.RATE_LIMIT
+        assert result.retry_after == 120
+
+    def test_classify_timeout_error(self):
+        """测试超时错误分类"""
+        import asyncio
+
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        # 从 TimeoutError 异常分类
+        result = classify_cloud_failure(asyncio.TimeoutError())
+        assert result.kind == CloudFailureKind.TIMEOUT
+        assert result.retryable is True
+
+        # 从字符串分类
+        result = classify_cloud_failure("Connection timed out")
+        assert result.kind == CloudFailureKind.TIMEOUT
+
+    def test_classify_network_error(self):
+        """测试网络错误分类"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+        from cursor.cloud.exceptions import NetworkError
+
+        # 从 NetworkError 异常分类
+        error = NetworkError("连接失败", error_type="connection")
+        result = classify_cloud_failure(error)
+        assert result.kind == CloudFailureKind.NETWORK
+        assert result.retryable is True
+
+        # 从字符串分类
+        result = classify_cloud_failure("Connection refused")
+        assert result.kind == CloudFailureKind.NETWORK
+
+    def test_classify_unknown_error(self):
+        """测试未知错误分类"""
+        from core.execution_policy import CloudFailureKind, classify_cloud_failure
+
+        result = classify_cloud_failure("Some random error message")
+        assert result.kind == CloudFailureKind.UNKNOWN
+        assert result.retryable is False

@@ -6,6 +6,7 @@
 3. 存储和检索功能 (KnowledgeStorage)
 4. 知识库管理器完整流程 (KnowledgeManager)
 """
+
 import shutil
 import tempfile
 from datetime import datetime
@@ -35,6 +36,9 @@ from knowledge import (
     KnowledgeManager,
     KnowledgeStorage,
     MarkdownConverter,
+    # URL 安全策略
+    UrlPolicy,
+    UrlPolicyError,
     # 获取器
     WebFetcher,
 )
@@ -42,6 +46,7 @@ from knowledge import (
 # ============================================================
 # 第一部分: URL 获取功能测试
 # ============================================================
+
 
 class TestFetchConfig:
     """测试获取配置"""
@@ -154,7 +159,7 @@ class TestWebFetcher:
         await fetcher.initialize()
 
         # 模拟 curl 响应
-        with patch.object(fetcher, '_fetch_via_curl') as mock_curl:
+        with patch.object(fetcher, "_fetch_via_curl") as mock_curl:
             mock_curl.return_value = FetchResult(
                 url="https://example.com",
                 success=True,
@@ -175,7 +180,7 @@ class TestFetchConvenienceFunctions:
     @pytest.mark.asyncio
     async def test_fetch_url_with_mock(self):
         """测试 fetch_url 便捷函数"""
-        with patch('knowledge.fetcher.WebFetcher.fetch') as mock_fetch:
+        with patch("knowledge.fetcher.WebFetcher.fetch") as mock_fetch:
             mock_fetch.return_value = FetchResult(
                 url="https://example.com",
                 success=True,
@@ -191,6 +196,7 @@ class TestFetchConvenienceFunctions:
 # ============================================================
 # 第二部分: 内容解析功能测试
 # ============================================================
+
 
 class TestHTMLParser:
     """测试 HTML 解析器"""
@@ -473,6 +479,7 @@ This is section 2 content with more text to make it longer.
 # 第三部分: 存储和检索功能测试
 # ============================================================
 
+
 class TestIndexEntry:
     """测试索引条目"""
 
@@ -737,6 +744,7 @@ class TestKnowledgeStorage:
 # 第四部分: 知识库管理器完整流程测试
 # ============================================================
 
+
 class TestDocumentModel:
     """测试文档模型"""
 
@@ -898,13 +906,15 @@ class TestKnowledgeManager:
         # 模拟 fetcher
         manager._fetcher = MagicMock()
         manager._fetcher.check_url_valid = MagicMock(return_value=True)
-        manager._fetcher.fetch = AsyncMock(return_value=FetchResult(
-            url="https://example.com",
-            success=True,
-            content="<html><head><title>Test</title></head><body>Content</body></html>",
-            method_used=FetchMethod.CURL,
-            duration=0.5,
-        ))
+        manager._fetcher.fetch = AsyncMock(
+            return_value=FetchResult(
+                url="https://example.com",
+                success=True,
+                content="<html><head><title>Test</title></head><body>Content</body></html>",
+                method_used=FetchMethod.CURL,
+                duration=0.5,
+            )
+        )
         manager._initialized = True
 
         doc = await manager.add_url("https://example.com")
@@ -945,6 +955,7 @@ class TestKnowledgeManager:
         # 不应该重新获取
         doc = await manager.add_url("https://example.com")
 
+        assert doc is not None
         assert doc.id == "doc-existing"
 
     def test_search(self):
@@ -1161,12 +1172,13 @@ class TestKnowledgeBaseStats:
 # 第五部分: CLI 配置集成测试
 # ============================================================
 
+
 class TestKnowledgeCLIConfigIntegration:
     """测试 knowledge_cli 配置集成"""
 
     def test_search_default_limit_from_config(self):
         """测试 search 命令默认 limit 来自配置"""
-        from core.config import get_config, ConfigManager
+        from core.config import ConfigManager, get_config
         from scripts.knowledge_cli import create_parser
 
         # 重置配置单例以获取最新配置
@@ -1179,9 +1191,7 @@ class TestKnowledgeCLIConfigIntegration:
         args = parser.parse_args(["search", "test query"])
 
         # 验证默认值来自配置
-        assert args.limit == expected_top_k, (
-            f"默认 limit 应为配置值 {expected_top_k}，实际为 {args.limit}"
-        )
+        assert args.limit == expected_top_k, f"默认 limit 应为配置值 {expected_top_k}，实际为 {args.limit}"
 
     def test_search_cli_override_default_limit(self):
         """测试 CLI 参数可以覆盖配置的默认 limit"""
@@ -1203,9 +1213,10 @@ class TestKnowledgeCLIConfigIntegration:
 
     def test_search_help_shows_config_source(self):
         """测试帮助文本显示配置来源"""
-        from scripts.knowledge_cli import create_parser
         import io
         import sys
+
+        from scripts.knowledge_cli import create_parser
 
         parser = create_parser()
 
@@ -1244,13 +1255,15 @@ class TestIntegration:
         # 2. 模拟 fetcher
         manager._fetcher = MagicMock()
         manager._fetcher.check_url_valid = MagicMock(return_value=True)
-        manager._fetcher.fetch = AsyncMock(return_value=FetchResult(
-            url="https://example.com/doc1",
-            success=True,
-            content="<html><head><title>Integration Test</title></head><body><p>Test content for integration.</p></body></html>",
-            method_used=FetchMethod.CURL,
-            duration=0.3,
-        ))
+        manager._fetcher.fetch = AsyncMock(
+            return_value=FetchResult(
+                url="https://example.com/doc1",
+                success=True,
+                content="<html><head><title>Integration Test</title></head><body><p>Test content for integration.</p></body></html>",
+                method_used=FetchMethod.CURL,
+                duration=0.3,
+            )
+        )
         manager._initialized = True
 
         # 3. 添加文档
@@ -1350,3 +1363,1008 @@ class TestIntegration:
         for chunk in chunks:
             assert chunk.source_doc == "doc-workflow"
             assert len(chunk.content) > 0
+
+
+# ============================================================
+# 第八部分: 内容清洗功能测试
+# ============================================================
+
+from knowledge import (
+    CleanedContent,
+    ContentCleanMode,
+    clean_content_unified,
+    compute_content_fingerprint,
+)
+
+
+class TestContentCleanMode:
+    """测试内容清洗模式"""
+
+    def test_clean_mode_values(self):
+        """测试清洗模式枚举值"""
+        assert ContentCleanMode.RAW == "raw"
+        assert ContentCleanMode.MARKDOWN == "markdown"
+        assert ContentCleanMode.TEXT == "text"
+        assert ContentCleanMode.CHANGELOG == "changelog"
+
+
+class TestComputeContentFingerprint:
+    """测试 fingerprint 计算"""
+
+    def test_fingerprint_basic(self):
+        """测试基本 fingerprint 计算"""
+        fp = compute_content_fingerprint("Hello World")
+        assert len(fp) == 16  # SHA256 前16位
+        assert fp.isalnum()  # 应该是字母数字
+
+    def test_fingerprint_consistency(self):
+        """测试 fingerprint 一致性"""
+        content = "Test content for fingerprint"
+        fp1 = compute_content_fingerprint(content)
+        fp2 = compute_content_fingerprint(content)
+        assert fp1 == fp2
+
+    def test_fingerprint_whitespace_normalization(self):
+        """测试空白归一化"""
+        # 多余空白应该被归一化
+        fp1 = compute_content_fingerprint("Hello   World")
+        fp2 = compute_content_fingerprint("Hello World")
+        # 归一化后应该相同
+        assert fp1 == fp2
+
+    def test_fingerprint_different_content(self):
+        """测试不同内容的 fingerprint"""
+        fp1 = compute_content_fingerprint("Content A")
+        fp2 = compute_content_fingerprint("Content B")
+        assert fp1 != fp2
+
+
+class TestCleanContentUnified:
+    """测试统一内容清洗函数"""
+
+    def test_raw_mode(self):
+        """测试 RAW 模式"""
+        content = "<p>Hello <b>World</b></p>"
+        result = clean_content_unified(content, mode=ContentCleanMode.RAW)
+
+        assert isinstance(result, CleanedContent)
+        assert result.content == content  # RAW 保持原样
+        assert result.clean_mode == ContentCleanMode.RAW
+        assert len(result.fingerprint) == 16
+
+    def test_text_mode(self):
+        """测试 TEXT 模式"""
+        content = "<p>Hello <b>World</b></p><script>alert(1)</script>"
+        result = clean_content_unified(content, mode=ContentCleanMode.TEXT)
+
+        assert "Hello" in result.content
+        assert "World" in result.content
+        assert "script" not in result.content
+        assert "<" not in result.content  # HTML 标签应被移除
+        assert result.clean_mode == ContentCleanMode.TEXT
+
+    def test_markdown_mode(self):
+        """测试 MARKDOWN 模式"""
+        content = "<h1>Title</h1><p>Paragraph text.</p>"
+        result = clean_content_unified(content, mode=ContentCleanMode.MARKDOWN)
+
+        assert "Title" in result.content
+        assert "Paragraph" in result.content
+        # Markdown 转换后应该没有 HTML 标签
+        assert "<h1>" not in result.content
+        assert result.clean_mode == ContentCleanMode.MARKDOWN
+
+    def test_changelog_mode(self):
+        """测试 CHANGELOG 模式"""
+        content = "<p>Jan 16, 2026 - New feature added</p>"
+        result = clean_content_unified(content, mode=ContentCleanMode.CHANGELOG)
+
+        assert "New feature" in result.content
+        # 日期应该被标准化
+        assert result.clean_mode == ContentCleanMode.CHANGELOG
+        assert len(result.fingerprint) == 16
+
+    def test_preserve_raw(self):
+        """测试保留原始内容"""
+        content = "<p>Test content</p>"
+        result = clean_content_unified(
+            content,
+            mode=ContentCleanMode.MARKDOWN,
+            preserve_raw=True,
+        )
+
+        assert result.raw_content == content
+        assert result.content != content  # 清洗后应该不同
+
+    def test_no_preserve_raw(self):
+        """测试不保留原始内容"""
+        content = "<p>Test content</p>"
+        result = clean_content_unified(
+            content,
+            mode=ContentCleanMode.MARKDOWN,
+            preserve_raw=False,
+        )
+
+        assert result.raw_content == ""
+
+    def test_empty_content(self):
+        """测试空内容"""
+        result = clean_content_unified("", mode=ContentCleanMode.MARKDOWN)
+        assert result.content == ""
+        assert result.clean_mode == ContentCleanMode.MARKDOWN
+
+    def test_title_extraction(self):
+        """测试标题提取"""
+        content = "<html><head><title>My Title</title></head><body>Content</body></html>"
+        result = clean_content_unified(content, mode=ContentCleanMode.MARKDOWN)
+        assert result.title == "My Title"
+
+
+class TestKnowledgeManagerAddContent:
+    """测试 KnowledgeManager.add_content 方法"""
+
+    @pytest.fixture
+    async def manager(self):
+        """创建测试用的 KnowledgeManager"""
+        manager = KnowledgeManager(name="test-add-content")
+        await manager.initialize()
+        yield manager
+        manager.clear()
+
+    @pytest.mark.asyncio
+    async def test_add_content_basic(self, manager):
+        """测试基本内容添加"""
+        doc = await manager.add_content(
+            url="https://example.com/test",
+            content="<p>Test content</p>",
+            title="Test Doc",
+        )
+
+        assert doc is not None
+        assert doc.title == "Test Doc"
+        assert "Test content" in doc.content
+        assert doc.metadata.get("clean_mode") == "markdown"
+        assert "cleaned_fingerprint" in doc.metadata
+
+    @pytest.mark.asyncio
+    async def test_add_content_changelog_mode(self, manager):
+        """测试 CHANGELOG 清洗模式"""
+        doc = await manager.add_content(
+            url="https://example.com/changelog",
+            content="<p>Jan 16, 2026 - New feature</p>",
+            title="Changelog",
+            clean_mode=ContentCleanMode.CHANGELOG,
+            preserve_raw=True,
+        )
+
+        assert doc is not None
+        assert doc.metadata.get("clean_mode") == "changelog"
+        assert "raw_content" in doc.metadata  # 应该保留原始内容
+
+    @pytest.mark.asyncio
+    async def test_add_content_skip_existing(self, manager):
+        """测试跳过已存在的 URL"""
+        url = "https://example.com/existing"
+        content = "<p>Content</p>"
+
+        # 第一次添加
+        doc1 = await manager.add_content(url=url, content=content, title="Doc1")
+        assert doc1 is not None
+
+        # 第二次添加（应该返回已存在的文档）
+        doc2 = await manager.add_content(url=url, content=content, title="Doc2")
+        assert doc2 is not None
+        assert doc2.id == doc1.id  # 应该是同一个文档
+
+    @pytest.mark.asyncio
+    async def test_add_content_force_refresh(self, manager):
+        """测试强制刷新"""
+        url = "https://example.com/refresh"
+
+        # 第一次添加
+        doc1 = await manager.add_content(
+            url=url,
+            content="<p>Original</p>",
+            title="Original",
+        )
+        assert doc1 is not None
+
+        # 强制刷新
+        doc2 = await manager.add_content(
+            url=url,
+            content="<p>Updated</p>",
+            title="Updated",
+            force_refresh=True,
+        )
+        assert doc2 is not None
+        assert "Updated" in doc2.content
+
+    @pytest.mark.asyncio
+    async def test_add_content_empty(self, manager):
+        """测试空内容"""
+        doc = await manager.add_content(
+            url="https://example.com/empty",
+            content="",
+            title="Empty",
+        )
+        assert doc is None  # 空内容应该返回 None
+
+
+# ============================================================
+# 第九部分: URL 安全策略测试
+# ============================================================
+
+
+class TestUrlPolicy:
+    """测试 URL 安全策略"""
+
+    def test_default_policy(self):
+        """测试默认策略配置"""
+        policy = UrlPolicy()
+
+        # 默认允许 http/https
+        assert policy.allowed_schemes == ["http", "https"]
+        # 默认拒绝私网
+        assert policy.deny_private_networks is True
+        # 默认不限制域名和前缀
+        assert policy.allowed_domains == []
+        assert policy.allowed_url_prefixes == []
+
+    def test_valid_http_url(self):
+        """测试有效的 HTTP URL"""
+        policy = UrlPolicy()
+
+        # 有效的公网 URL
+        policy.validate("https://example.com")
+        policy.validate("http://example.com/path?query=1")
+        policy.validate("https://docs.cursor.com/api/reference")
+
+    def test_invalid_scheme_ftp(self):
+        """测试非法 scheme: FTP"""
+        policy = UrlPolicy()
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("ftp://example.com/file.txt")
+
+        assert exc_info.value.policy_type == "scheme"
+        assert "ftp" in exc_info.value.reason
+
+    def test_invalid_scheme_file(self):
+        """测试非法 scheme: file"""
+        policy = UrlPolicy()
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("file:///etc/passwd")
+
+        assert exc_info.value.policy_type == "scheme"
+        assert "file" in exc_info.value.reason
+
+    def test_invalid_scheme_javascript(self):
+        """测试非法 scheme: javascript"""
+        policy = UrlPolicy()
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("javascript:alert(1)")
+
+        assert exc_info.value.policy_type == "scheme"
+
+    def test_invalid_scheme_data(self):
+        """测试非法 scheme: data"""
+        policy = UrlPolicy()
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("data:text/html,<h1>Hello</h1>")
+
+        assert exc_info.value.policy_type == "scheme"
+
+    def test_localhost_rejected(self):
+        """测试拒绝 localhost"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://localhost/admin")
+
+        assert exc_info.value.policy_type == "private_network"
+        assert "localhost" in exc_info.value.reason.lower()
+
+    def test_localhost_with_port_rejected(self):
+        """测试拒绝 localhost:port"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://localhost:8080/api")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_loopback_ip_rejected(self):
+        """测试拒绝回环 IP 127.0.0.1"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://127.0.0.1/admin")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_loopback_ip_with_port_rejected(self):
+        """测试拒绝回环 IP:port"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://127.0.0.1:3000/api")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_private_network_10_rejected(self):
+        """测试拒绝私网 10.x.x.x"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://10.0.0.1/internal")
+
+        assert exc_info.value.policy_type == "private_network"
+        assert "私有网络" in exc_info.value.reason
+
+    def test_private_network_172_rejected(self):
+        """测试拒绝私网 172.16.x.x"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://172.16.0.1/internal")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_private_network_192_rejected(self):
+        """测试拒绝私网 192.168.x.x"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://192.168.1.1/router")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_zero_ip_rejected(self):
+        """测试拒绝 0.0.0.0"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://0.0.0.0:8000/api")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_link_local_ip_rejected(self):
+        """测试拒绝链路本地地址 169.254.x.x"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://169.254.1.1/metadata")
+
+        assert exc_info.value.policy_type == "private_network"
+
+    def test_private_network_allowed_when_disabled(self):
+        """测试禁用私网检查后允许私网地址"""
+        policy = UrlPolicy(deny_private_networks=False)
+
+        # 应该不抛出异常
+        policy.validate("http://localhost/admin")
+        policy.validate("http://127.0.0.1/api")
+        policy.validate("http://192.168.1.1/router")
+
+    def test_domain_whitelist(self):
+        """测试域名白名单"""
+        policy = UrlPolicy(
+            allowed_domains=["example.com", "docs.cursor.com"],
+            deny_private_networks=True,
+        )
+
+        # 白名单内的域名
+        policy.validate("https://example.com/page")
+        policy.validate("https://docs.cursor.com/api")
+
+        # 白名单外的域名
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("https://evil.com/phishing")
+
+        assert exc_info.value.policy_type == "domain"
+
+    def test_domain_whitelist_wildcard(self):
+        """测试域名白名单通配符"""
+        policy = UrlPolicy(
+            allowed_domains=["*.cursor.com"],
+            deny_private_networks=True,
+        )
+
+        # 子域名匹配
+        policy.validate("https://docs.cursor.com/api")
+        policy.validate("https://api.cursor.com/v1")
+        policy.validate("https://cursor.com/home")
+
+        # 不匹配的域名
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("https://cursorx.com/fake")
+
+        assert exc_info.value.policy_type == "domain"
+
+    def test_url_prefix_whitelist(self):
+        """测试 URL 前缀白名单"""
+        policy = UrlPolicy(
+            allowed_url_prefixes=[
+                "https://docs.cursor.com/",
+                "https://api.cursor.com/v1/",
+            ],
+            deny_private_networks=True,
+        )
+
+        # 前缀匹配
+        policy.validate("https://docs.cursor.com/guide")
+        policy.validate("https://api.cursor.com/v1/users")
+
+        # 前缀不匹配
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("https://api.cursor.com/v2/users")
+
+        assert exc_info.value.policy_type == "url_prefix"
+
+    def test_deny_ip_addresses(self):
+        """测试拒绝纯 IP 地址"""
+        policy = UrlPolicy(
+            deny_ip_addresses=True,
+            deny_private_networks=False,  # 关闭私网检查，专门测试 IP 检查
+        )
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("http://8.8.8.8/dns")
+
+        assert exc_info.value.policy_type == "ip_address"
+
+    def test_is_valid_method(self):
+        """测试 is_valid 方法"""
+        policy = UrlPolicy()
+
+        assert policy.is_valid("https://example.com") is True
+        assert policy.is_valid("ftp://example.com") is False
+        assert policy.is_valid("http://localhost") is False
+
+    def test_get_validation_error_method(self):
+        """测试 get_validation_error 方法"""
+        policy = UrlPolicy()
+
+        # 有效 URL
+        assert policy.get_validation_error("https://example.com") is None
+
+        # 无效 URL
+        error = policy.get_validation_error("ftp://example.com")
+        assert error is not None
+        assert "ftp" in error
+
+    def test_empty_url_rejected(self):
+        """测试空 URL"""
+        policy = UrlPolicy()
+
+        with pytest.raises(UrlPolicyError) as exc_info:
+            policy.validate("")
+
+        assert exc_info.value.policy_type == "empty"
+
+    def test_private_domain_patterns_rejected(self):
+        """测试疑似私有网络域名"""
+        policy = UrlPolicy(deny_private_networks=True)
+
+        # .local 域名
+        with pytest.raises(UrlPolicyError):
+            policy.validate("http://server.local/api")
+
+        # .internal 域名
+        with pytest.raises(UrlPolicyError):
+            policy.validate("http://app.internal/admin")
+
+        # .lan 域名
+        with pytest.raises(UrlPolicyError):
+            policy.validate("http://nas.lan/files")
+
+
+class TestUrlPolicyError:
+    """测试 URL 策略错误"""
+
+    def test_error_attributes(self):
+        """测试错误属性"""
+        error = UrlPolicyError(
+            url="http://localhost/admin",
+            reason="不允许访问 localhost",
+            policy_type="private_network",
+        )
+
+        assert error.url == "http://localhost/admin"
+        assert error.reason == "不允许访问 localhost"
+        assert error.policy_type == "private_network"
+        assert "localhost" in str(error)
+
+
+class TestWebFetcherUrlPolicy:
+    """测试 WebFetcher 的 URL 策略集成"""
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_localhost(self):
+        """测试 fetch 拒绝 localhost"""
+        fetcher = WebFetcher()
+        await fetcher.initialize()
+
+        result = await fetcher.fetch("http://localhost/admin")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "策略" in result.error or "localhost" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_private_ip(self):
+        """测试 fetch 拒绝私网 IP"""
+        fetcher = WebFetcher()
+        await fetcher.initialize()
+
+        result = await fetcher.fetch("http://192.168.1.1/router")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "策略" in result.error or "私有" in result.error
+
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_invalid_scheme(self):
+        """测试 fetch 拒绝非法 scheme"""
+        fetcher = WebFetcher()
+        await fetcher.initialize()
+
+        result = await fetcher.fetch("ftp://files.example.com/data.txt")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "策略" in result.error or "ftp" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_disabled_policy(self):
+        """测试禁用策略后的 fetch"""
+        config = FetchConfig(enforce_url_policy=False)
+        fetcher = WebFetcher(config)
+        await fetcher.initialize()
+
+        # 禁用策略后，localhost URL 不会被策略拒绝
+        # （但可能因为无法连接而失败）
+        result = await fetcher.fetch("http://localhost/admin")
+
+        # 错误不应该是策略拒绝
+        if not result.success:
+            assert result.error is not None
+            assert "策略" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_custom_policy(self):
+        """测试使用自定义策略的 fetch"""
+        # 创建只允许特定域名的策略
+        custom_policy = UrlPolicy(
+            allowed_domains=["example.com"],
+            deny_private_networks=True,
+        )
+        config = FetchConfig(url_policy=custom_policy)
+        fetcher = WebFetcher(config)
+        await fetcher.initialize()
+
+        # 域名不在白名单中
+        result = await fetcher.fetch("https://other-domain.com/page")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "策略" in result.error or "域名" in result.error
+
+
+class TestKnowledgeManagerUrlPolicy:
+    """测试 KnowledgeManager 的 URL 策略集成"""
+
+    @pytest.mark.asyncio
+    async def test_add_url_rejects_localhost(self):
+        """测试 add_url 拒绝 localhost"""
+        manager = KnowledgeManager(name="test-policy")
+        await manager.initialize()
+
+        doc = await manager.add_url("http://localhost/admin")
+
+        assert doc is None
+
+    @pytest.mark.asyncio
+    async def test_add_url_rejects_private_ip(self):
+        """测试 add_url 拒绝私网 IP"""
+        manager = KnowledgeManager(name="test-policy")
+        await manager.initialize()
+
+        doc = await manager.add_url("http://192.168.1.1/router")
+
+        assert doc is None
+
+    @pytest.mark.asyncio
+    async def test_add_url_rejects_invalid_scheme(self):
+        """测试 add_url 拒绝非法 scheme"""
+        manager = KnowledgeManager(name="test-policy")
+        await manager.initialize()
+
+        doc = await manager.add_url("ftp://files.example.com/data.txt")
+
+        assert doc is None
+
+    @pytest.mark.asyncio
+    async def test_add_urls_filters_invalid(self):
+        """测试 add_urls 过滤无效 URL"""
+        manager = KnowledgeManager(name="test-policy")
+
+        # 模拟 fetcher
+        manager._fetcher = MagicMock()
+        manager._fetcher.check_url_valid = MagicMock(return_value=True)
+        manager._fetcher.fetch_many = AsyncMock(
+            return_value=[
+                FetchResult(
+                    url="https://example.com/page1",
+                    success=True,
+                    content="<html><body>Content</body></html>",
+                    method_used=FetchMethod.CURL,
+                ),
+            ]
+        )
+        manager._initialized = True
+
+        urls = [
+            "https://example.com/page1",  # 有效
+            "http://localhost/admin",  # 无效：localhost
+            "ftp://files.example.com",  # 无效：非法 scheme
+            "http://192.168.1.1/router",  # 无效：私网 IP
+        ]
+
+        docs = await manager.add_urls(urls)
+
+        # 只有有效的 URL 被处理
+        assert len(docs) == 1
+        assert docs[0].url == "https://example.com/page1"
+
+    @pytest.mark.asyncio
+    async def test_manager_with_custom_policy(self):
+        """测试 KnowledgeManager 使用自定义策略"""
+        # 创建只允许特定域名的策略
+        custom_policy = UrlPolicy(
+            allowed_domains=["docs.cursor.com"],
+            deny_private_networks=True,
+        )
+        manager = KnowledgeManager(name="test-custom-policy", url_policy=custom_policy)
+        await manager.initialize()
+
+        # 域名不在白名单中
+        doc = await manager.add_url("https://example.com/page")
+
+        assert doc is None
+
+    @pytest.mark.asyncio
+    async def test_manager_url_policy_property(self):
+        """测试 url_policy 属性"""
+        custom_policy = UrlPolicy(allowed_domains=["example.com"])
+        manager = KnowledgeManager(name="test", url_policy=custom_policy)
+
+        assert manager.url_policy == custom_policy
+        assert manager.url_policy.allowed_domains == ["example.com"]
+
+
+# ============================================================
+# 样例数据：HTML 文档内容（供测试复用）
+# ============================================================
+
+SAMPLE_HTML_DOC_SIMPLE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sample Documentation</title>
+    <meta name="description" content="A sample documentation page">
+</head>
+<body>
+    <h1>Getting Started</h1>
+    <p>Welcome to the documentation.</p>
+    <h2>Installation</h2>
+    <p>Install using pip:</p>
+    <code>pip install example-package</code>
+    <h2>Usage</h2>
+    <p>Basic usage example:</p>
+    <pre>import example</pre>
+</body>
+</html>
+"""
+
+SAMPLE_HTML_DOC_WITH_LINKS = """
+<!DOCTYPE html>
+<html>
+<head><title>Doc with Links</title></head>
+<body>
+    <h1>Documentation</h1>
+    <p>See the following resources:</p>
+    <ul>
+        <li><a href="https://docs.example.com/api">API Reference</a></li>
+        <li><a href="https://docs.example.com/guide">User Guide</a></li>
+        <li><a href="https://github.com/example/repo">Source Code</a></li>
+    </ul>
+</body>
+</html>
+"""
+
+SAMPLE_HTML_DOC_WITH_NAV = """
+<!DOCTYPE html>
+<html>
+<head><title>Doc with Navigation</title></head>
+<body>
+    <nav>
+        <ul>
+            <li>Home</li>
+            <li>About</li>
+            <li>Contact</li>
+        </ul>
+    </nav>
+    <main>
+        <h1>Main Content</h1>
+        <p>This is the main content area.</p>
+    </main>
+    <footer>
+        <p>Footer content</p>
+    </footer>
+</body>
+</html>
+"""
+
+SAMPLE_LLMS_TXT_CONTENT = """# Documentation Index
+
+## Overview
+[Getting Started](https://docs.example.com/getting-started)
+[Quick Reference](https://docs.example.com/quick-reference)
+
+## API
+https://docs.example.com/api/v1
+https://docs.example.com/api/v2
+
+## Guides
+- [Tutorial](https://docs.example.com/tutorial)
+- [Best Practices](https://docs.example.com/best-practices)
+"""
+
+
+# ============================================================
+# Test: 样例 HTML 数据复用测试
+# ============================================================
+
+
+class TestSampleHtmlDataReuse:
+    """测试复用样例 HTML 数据，确保不依赖真实网络"""
+
+    def test_parse_simple_html_doc(self):
+        """测试解析简单 HTML 文档"""
+        parser = HTMLParser(parser="html.parser")
+        result = parser.parse(SAMPLE_HTML_DOC_SIMPLE)
+
+        assert result.title == "Sample Documentation"
+        assert "Getting Started" in result.content
+        assert "Installation" in result.content
+
+    def test_parse_html_with_links(self):
+        """测试解析带链接的 HTML 文档"""
+        parser = HTMLParser(parser="html.parser")
+        result = parser.parse(SAMPLE_HTML_DOC_WITH_LINKS)
+
+        assert result.title == "Doc with Links"
+        assert len(result.links) >= 3
+
+        # 验证链接提取
+        hrefs = [link["href"] for link in result.links]
+        assert "https://docs.example.com/api" in hrefs
+        assert "https://github.com/example/repo" in hrefs
+
+    def test_parse_html_extract_headings(self):
+        """测试从 HTML 提取标题层级"""
+        parser = HTMLParser(parser="html.parser")
+        result = parser.parse(SAMPLE_HTML_DOC_SIMPLE)
+
+        # 验证标题提取
+        assert len(result.headings) >= 3
+
+        h1_headings = [h for h in result.headings if h["level"] == 1]
+        h2_headings = [h for h in result.headings if h["level"] == 2]
+
+        assert len(h1_headings) >= 1
+        assert len(h2_headings) >= 2
+
+    def test_clean_html_removes_nav_footer(self):
+        """测试清理 HTML 时移除导航和页脚"""
+        cleaner = ContentCleaner(parser="html.parser")
+        cleaned = cleaner.clean_to_text(SAMPLE_HTML_DOC_WITH_NAV)
+
+        # 主内容应该保留
+        assert "Main Content" in cleaned
+
+        # 导航和页脚应该被移除
+        assert "Home" not in cleaned
+        assert "About" not in cleaned
+        assert "Footer content" not in cleaned
+
+    def test_convert_html_to_markdown(self):
+        """测试将 HTML 转换为 Markdown"""
+        converter = MarkdownConverter()
+        md = converter.convert(SAMPLE_HTML_DOC_SIMPLE)
+
+        # 验证标题转换
+        assert "# Getting Started" in md or "Getting Started" in md
+
+        # 验证段落保留
+        assert "Welcome to the documentation" in md
+
+
+# ============================================================
+# Test: 样例 llms.txt 数据复用测试
+# ============================================================
+
+
+class TestSampleLlmsTxtDataReuse:
+    """测试复用样例 llms.txt 数据"""
+
+    def test_sample_llms_txt_structure(self):
+        """测试样例 llms.txt 结构"""
+        assert "# Documentation Index" in SAMPLE_LLMS_TXT_CONTENT
+        assert "https://docs.example.com" in SAMPLE_LLMS_TXT_CONTENT
+
+    def test_sample_llms_txt_contains_markdown_links(self):
+        """测试样例 llms.txt 包含 Markdown 链接"""
+        assert "[Getting Started]" in SAMPLE_LLMS_TXT_CONTENT
+        assert "(https://docs.example.com/getting-started)" in SAMPLE_LLMS_TXT_CONTENT
+
+    def test_sample_llms_txt_contains_plain_urls(self):
+        """测试样例 llms.txt 包含纯 URL"""
+        assert "https://docs.example.com/api/v1" in SAMPLE_LLMS_TXT_CONTENT
+        assert "https://docs.example.com/api/v2" in SAMPLE_LLMS_TXT_CONTENT
+
+
+# ============================================================
+# Test: 不依赖网络的集成测试
+# ============================================================
+
+
+class TestKnowledgeOfflineIntegration:
+    """不依赖网络的知识库集成测试"""
+
+    @pytest.mark.asyncio
+    async def test_document_lifecycle_offline(self):
+        """测试文档生命周期（离线）"""
+        manager = KnowledgeManager(name="test-offline")
+        manager._initialized = True
+
+        # 使用样例数据创建文档
+        doc = Document(
+            url="https://example.com/test",
+            title="Test Document",
+            content="This is test content from sample data.",
+        )
+
+        # 添加到知识库
+        manager._knowledge_base.add_document(doc)
+        manager._url_to_doc_id[doc.url] = doc.id
+
+        # 验证添加成功
+        assert len(manager) == 1
+
+        # 搜索
+        results = manager.search("test")
+        assert len(results) >= 1
+
+        # 获取文档
+        retrieved = manager.get_document(doc.id)
+        assert retrieved is not None
+        assert retrieved.title == "Test Document"
+
+        # 删除
+        result = manager.remove(doc.id)
+        assert result is True
+        assert len(manager) == 0
+
+    @pytest.mark.asyncio
+    async def test_add_content_with_sample_html(self):
+        """测试使用样例 HTML 添加内容"""
+        manager = KnowledgeManager(name="test-sample-html")
+        await manager.initialize()
+
+        # 使用样例 HTML 添加内容
+        doc = await manager.add_content(
+            url="https://example.com/sample",
+            content=SAMPLE_HTML_DOC_SIMPLE,
+            title="Sample Doc",
+        )
+
+        assert doc is not None
+        assert "Getting Started" in doc.content or "documentation" in doc.content.lower()
+
+        # 清理
+        manager.clear()
+
+    def test_chunk_splitter_with_sample_content(self):
+        """测试使用样例内容进行分块"""
+        # 使用样例 HTML 清理后的文本
+        cleaner = ContentCleaner(parser="html.parser")
+        text = cleaner.clean_to_text(SAMPLE_HTML_DOC_SIMPLE)
+
+        # 分块
+        splitter = ChunkSplitter(chunk_size=100, overlap=10)
+        chunks = splitter.split(text, source_doc="sample-doc")
+
+        # 验证分块结果
+        assert len(chunks) >= 1
+        for chunk in chunks:
+            assert chunk.source_doc == "sample-doc"
+            assert len(chunk.content) > 0
+
+    def test_document_storage_with_sample_data(self, temp_workspace):
+        """测试使用样例数据进行文档存储"""
+        import asyncio
+
+        async def run_test():
+            storage = KnowledgeStorage(workspace_root=temp_workspace)
+            await storage.initialize()
+
+            # 使用样例数据创建文档
+            doc = Document(
+                url="https://example.com/sample-storage",
+                title="Sample Storage Doc",
+                content="Content from sample data for storage testing.",
+            )
+
+            # 保存
+            success, _ = await storage.save_document(doc)
+            assert success is True
+
+            # 加载
+            loaded = await storage.load_document(doc.id)
+            assert loaded is not None
+            assert loaded.title == "Sample Storage Doc"
+
+            # 清理
+            await storage.clear_all()
+
+        asyncio.run(run_test())
+
+
+# ============================================================
+# Test: 样例数据一致性测试
+# ============================================================
+
+
+class TestSampleDataConsistency:
+    """测试样例数据的一致性和完整性"""
+
+    def test_sample_html_valid_structure(self):
+        """测试样例 HTML 结构有效"""
+        # 所有样例 HTML 应包含基本标签
+        for sample in [SAMPLE_HTML_DOC_SIMPLE, SAMPLE_HTML_DOC_WITH_LINKS, SAMPLE_HTML_DOC_WITH_NAV]:
+            assert "<html>" in sample or "<!DOCTYPE html>" in sample
+            assert "<head>" in sample
+            assert "<body>" in sample
+            assert "<title>" in sample
+
+    def test_sample_html_no_real_content(self):
+        """测试样例 HTML 不包含真实敏感内容"""
+        all_samples = SAMPLE_HTML_DOC_SIMPLE + SAMPLE_HTML_DOC_WITH_LINKS + SAMPLE_HTML_DOC_WITH_NAV
+
+        # 应使用 example.com 而非真实域名
+        # 允许 github.com 作为示例外域
+        assert "cursor.com" not in all_samples or "example" in all_samples
+
+    def test_sample_llms_txt_uses_example_domain(self):
+        """测试样例 llms.txt 使用示例域名"""
+        assert "docs.example.com" in SAMPLE_LLMS_TXT_CONTENT
+
+        # 不应包含真实的生产域名
+        # （除非作为明确的示例）
+
+    def test_sample_data_immutability(self):
+        """测试样例数据应被视为不可变"""
+        # 字符串是不可变的，但我们验证不会意外修改
+        original_len = len(SAMPLE_HTML_DOC_SIMPLE)
+
+        # 使用样例数据
+        parser = HTMLParser(parser="html.parser")
+        parser.parse(SAMPLE_HTML_DOC_SIMPLE)
+
+        # 原始数据应保持不变
+        assert len(SAMPLE_HTML_DOC_SIMPLE) == original_len

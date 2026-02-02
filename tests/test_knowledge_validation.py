@@ -13,6 +13,7 @@
     pytest tests/test_knowledge_validation.py -v
     python tests/test_knowledge_validation.py  # 直接运行验证
 """
+
 import asyncio
 import shutil
 import tempfile
@@ -34,6 +35,7 @@ from knowledge.vector import KnowledgeVectorConfig
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture
 def temp_workspace():
@@ -116,6 +118,7 @@ def vector_config(temp_workspace) -> KnowledgeVectorConfig:
 # 第一部分: 知识库初始化验证
 # ============================================================
 
+
 class TestKnowledgeBaseInitialization:
     """测试知识库初始化"""
 
@@ -166,6 +169,7 @@ class TestKnowledgeBaseInitialization:
 # ============================================================
 # 第二部分: 文档添加与存储验证
 # ============================================================
+
 
 class TestDocumentStorage:
     """测试文档添加与存储"""
@@ -257,6 +261,7 @@ class TestDocumentStorage:
         assert success is True
 
         loaded = await storage.load_document("doc-update-test")
+        assert loaded is not None
         assert loaded.title == "新标题"
 
     @pytest.mark.asyncio
@@ -283,6 +288,7 @@ class TestDocumentStorage:
 # ============================================================
 # 第三部分: 搜索功能验证
 # ============================================================
+
 
 class TestSearchFunctionality:
     """测试搜索功能"""
@@ -379,6 +385,7 @@ class TestSearchFunctionality:
 # 第四部分: 向量索引验证
 # ============================================================
 
+
 class TestVectorIndexing:
     """测试向量索引功能"""
 
@@ -453,6 +460,7 @@ class TestVectorIndexing:
 # ============================================================
 # 第五部分: 完整工作流验证
 # ============================================================
+
 
 class TestCompleteWorkflow:
     """测试完整工作流"""
@@ -544,14 +552,17 @@ class TestCompleteWorkflow:
 
         # 创建测试文件
         test_file = Path(temp_workspace) / "test_doc.md"
-        test_file.write_text("""# 测试文档
+        test_file.write_text(
+            """# 测试文档
 
 这是一个测试 Markdown 文件。
 
 ## 内容
 
 包含一些测试内容。
-""", encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
 
         # 添加文件
         doc = await manager.add_file(test_file)
@@ -566,6 +577,7 @@ class TestCompleteWorkflow:
 # 验证报告生成
 # ============================================================
 
+
 class KnowledgeValidationReport:
     """知识库验证报告生成器"""
 
@@ -576,12 +588,14 @@ class KnowledgeValidationReport:
 
     def add_result(self, name: str, passed: bool, message: str = ""):
         """添加验证结果"""
-        self.results.append({
-            "name": name,
-            "passed": passed,
-            "message": message,
-            "timestamp": datetime.now().isoformat(),
-        })
+        self.results.append(
+            {
+                "name": name,
+                "passed": passed,
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
     def generate_report(self) -> str:
         """生成验证报告"""
@@ -633,6 +647,7 @@ async def run_validation():
             KnowledgeManager,
             KnowledgeStorage,
         )
+
         report.add_result("模块导入", True, "所有核心模块导入成功")
         print("✓ 模块导入正常")
     except ImportError as e:
@@ -693,6 +708,7 @@ async def run_validation():
     # 6. 验证向量配置
     try:
         from knowledge.vector import KnowledgeVectorConfig
+
         config = KnowledgeVectorConfig(enabled=True, chunk_size=256)
         data = config.to_dict()
         restored = KnowledgeVectorConfig.from_dict(data)

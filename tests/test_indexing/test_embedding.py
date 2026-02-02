@@ -2,6 +2,7 @@
 
 使用 mock 替代真实的 SentenceTransformers 模型，加快测试速度
 """
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 # numpy 是可选依赖，用于测试中的 mock
 try:
     import numpy as np
+
     HAS_NUMPY = True
 except ImportError:
     np = None  # type: ignore
@@ -125,9 +127,10 @@ class TestSentenceTransformerEmbedding:
     @pytest.fixture
     def mock_sentence_transformer(self):
         """Mock SentenceTransformer 模型"""
-        with patch('indexing.embedding.SentenceTransformer') as mock_st, \
-             patch('indexing.embedding.torch') as mock_torch:
-
+        with (
+            patch("indexing.embedding.SentenceTransformer") as mock_st,
+            patch("indexing.embedding.torch") as mock_torch,
+        ):
             mock_torch.cuda.is_available.return_value = False
 
             # 创建 mock 模型
@@ -228,8 +231,8 @@ class TestSentenceTransformerEmbedding:
 class TestEmbeddingFactory:
     """测试嵌入模型工厂函数"""
 
-    @patch('indexing.embedding.SentenceTransformer')
-    @patch('indexing.embedding.torch')
+    @patch("indexing.embedding.SentenceTransformer")
+    @patch("indexing.embedding.torch")
     def test_create_sentence_transformer_model(self, mock_torch, mock_st):
         """测试创建 SentenceTransformer 模型"""
         mock_torch.cuda.is_available.return_value = False

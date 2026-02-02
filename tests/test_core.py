@@ -6,7 +6,6 @@
 - core/state.py: IterationStatus, AgentState, IterationState, SystemState
 """
 
-import uuid
 from datetime import datetime
 from typing import Any, Optional
 
@@ -15,7 +14,6 @@ import pytest
 from core.base import AgentConfig, AgentRole, AgentStatus, BaseAgent
 from core.message import Message, MessageType
 from core.state import AgentState, IterationState, IterationStatus, SystemState
-
 
 # ============================================================================
 # BaseAgent 的具体实现（用于测试）
@@ -30,9 +28,7 @@ class ConcreteAgent(BaseAgent):
         self.execute_called = False
         self.reset_called = False
 
-    async def execute(
-        self, instruction: str, context: Optional[dict] = None
-    ) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
         self.execute_called = True
         self._context["last_instruction"] = instruction
         return {"status": "success", "instruction": instruction}
@@ -747,7 +743,7 @@ class TestMultiProcessAgentRegistration:
         system.register_agent("reviewer-001", AgentRole.REVIEWER)
 
         # 统计各角色数量
-        role_counts = {}
+        role_counts: dict[AgentRole, int] = {}
         for agent in system.agents.values():
             role_counts[agent.role] = role_counts.get(agent.role, 0) + 1
 

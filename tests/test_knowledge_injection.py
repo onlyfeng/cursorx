@@ -5,19 +5,13 @@
 2. WorkerAgentProcess._build_execution_prompt 正确渲染知识库章节
 3. KnowledgeStorage.search 路径的隔离测试
 """
-import asyncio
-import json
-import shutil
-import tempfile
-from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agents.worker_process import (
     MAX_CHARS_PER_DOC,
-    MAX_CLI_ASK_DOCS,
     MAX_KNOWLEDGE_DOCS,
     MAX_TOTAL_KNOWLEDGE_CHARS,
     WorkerAgentProcess,
@@ -25,9 +19,8 @@ from agents.worker_process import (
 )
 from core.knowledge import is_cursor_related
 from knowledge.models import Document
-from knowledge.storage import KnowledgeStorage, SearchResult, StorageConfig
-from tasks.task import Task, TaskStatus, TaskType
-
+from knowledge.storage import KnowledgeStorage, StorageConfig
+from tasks.task import Task, TaskType
 
 # ============================================================================
 # Fixtures
@@ -187,9 +180,7 @@ class TestBuildExecutionPrompt:
         )
         return worker
 
-    def test_prompt_with_knowledge_docs(
-        self, mock_worker_process, sample_knowledge_docs
-    ):
+    def test_prompt_with_knowledge_docs(self, mock_worker_process, sample_knowledge_docs):
         """给定 task_data 含 knowledge_docs，输出 prompt 含相应章节"""
         task_data = {
             "instruction": "实现 cursor CLI 封装",
@@ -207,9 +198,7 @@ class TestBuildExecutionPrompt:
         assert "MCP 服务器配置" in prompt
         assert "cursor.com/docs" in prompt
 
-    def test_prompt_with_cli_ask_docs(
-        self, mock_worker_process, sample_cli_ask_docs
-    ):
+    def test_prompt_with_cli_ask_docs(self, mock_worker_process, sample_cli_ask_docs):
         """CLI Ask 文档优先展示"""
         task_data = {
             "instruction": "测试任务",
@@ -224,9 +213,7 @@ class TestBuildExecutionPrompt:
         assert "知识库智能回答" in prompt or "CLI Ask" in prompt
         assert "如何使用 cursor agent?" in prompt
 
-    def test_prompt_with_mixed_docs(
-        self, mock_worker_process, sample_knowledge_docs, sample_cli_ask_docs
-    ):
+    def test_prompt_with_mixed_docs(self, mock_worker_process, sample_knowledge_docs, sample_cli_ask_docs):
         """混合文档类型的渲染"""
         task_data = {
             "instruction": "测试任务",
@@ -338,9 +325,7 @@ class TestOrchestratorKnowledgeInjection:
         assert not is_cursor_related("优化数据库查询")
 
     @pytest.mark.asyncio
-    async def test_knowledge_injection_payload_structure(
-        self, mock_orchestrator_config, sample_knowledge_docs
-    ):
+    async def test_knowledge_injection_payload_structure(self, mock_orchestrator_config, sample_knowledge_docs):
         """测试知识库注入后的 payload 结构"""
         from coordinator.orchestrator_mp import MultiProcessOrchestrator
 
@@ -355,8 +340,10 @@ class TestOrchestratorKnowledgeInjection:
             "total_chars": 500,
             "keywords_matched": ["cursor", "agent"],
         }
-        orchestrator._search_knowledge_for_task = AsyncMock(
-            return_value=(sample_knowledge_docs, mock_metrics)
+        setattr(
+            orchestrator,
+            "_search_knowledge_for_task",
+            AsyncMock(return_value=(sample_knowledge_docs, mock_metrics)),
         )
 
         # 创建 Cursor 相关任务
@@ -430,9 +417,7 @@ class TestOrchestratorKnowledgeInjection:
         assert total_chars <= MAX_TOTAL_KNOWLEDGE_CHARS
 
     @pytest.mark.asyncio
-    async def test_non_cursor_task_no_injection(
-        self, mock_orchestrator_config, non_cursor_task
-    ):
+    async def test_non_cursor_task_no_injection(self, mock_orchestrator_config, non_cursor_task):
         """非 Cursor 相关任务不注入知识库"""
         from coordinator.orchestrator_mp import MultiProcessOrchestrator
 
@@ -654,15 +639,17 @@ class TestKnowledgeInjectionE2E:
 
         # Mock _search_knowledge_for_task 返回从 storage 构建的文档
         async def mock_search(task):
-            return [{
-                "title": loaded_doc.title,
-                "url": loaded_doc.url,
-                "content": loaded_doc.content[:500],
-                "score": 0.9,
-                "source": "cursor-docs",
-            }]
+            return [
+                {
+                    "title": loaded_doc.title,
+                    "url": loaded_doc.url,
+                    "content": loaded_doc.content[:500],
+                    "score": 0.9,
+                    "source": "cursor-docs",
+                }
+            ]
 
-        orchestrator._search_knowledge_for_task = mock_search
+        setattr(orchestrator, "_search_knowledge_for_task", mock_search)
 
         # 6. 创建任务并搜索
         task = Task(
@@ -676,6 +663,7 @@ class TestKnowledgeInjectionE2E:
         docs = await orchestrator._search_knowledge_for_task(task)
 
         # 7. 验证结果
+        assert isinstance(docs, list)
         assert len(docs) >= 1
         assert any("cursor" in d.get("title", "").lower() for d in docs)
 
@@ -685,8 +673,8 @@ class TestKnowledgeInjectionE2E:
         # 创建 mock worker
         from multiprocessing import Queue
 
-        inbox = Queue()
-        outbox = Queue()
+        inbox: Queue = Queue()
+        outbox: Queue = Queue()
 
         worker = WorkerAgentProcess(
             agent_id="e2e-worker",

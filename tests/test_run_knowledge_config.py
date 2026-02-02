@@ -7,8 +7,7 @@
 4. stream-json 配置通过 resolve_stream_log_config 正确注入
 5. 最终传入 OrchestratorConfig 的字段能覆盖默认常量
 """
-import argparse
-import os
+
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -19,8 +18,7 @@ import yaml
 # 将项目根目录添加到 sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.config import ConfigManager, get_config, resolve_stream_log_config
-
+from core.config import ConfigManager, resolve_stream_log_config
 
 # ============================================================
 # 测试配置内容常量
@@ -467,11 +465,7 @@ class TestRunKnowledgeTriStateOptions:
 
         # 模拟 CLI 未指定 (None)
         cli_enable_sub_planners = None
-        resolved = (
-            cli_enable_sub_planners
-            if cli_enable_sub_planners is not None
-            else config.system.enable_sub_planners
-        )
+        resolved = cli_enable_sub_planners if cli_enable_sub_planners is not None else config.system.enable_sub_planners
 
         # config.yaml 中 enable_sub_planners=False
         assert resolved is False
@@ -491,11 +485,7 @@ class TestRunKnowledgeTriStateOptions:
 
         # 模拟 CLI 指定 --sub-planners (True)
         cli_enable_sub_planners = True
-        resolved = (
-            cli_enable_sub_planners
-            if cli_enable_sub_planners is not None
-            else config.system.enable_sub_planners
-        )
+        resolved = cli_enable_sub_planners if cli_enable_sub_planners is not None else config.system.enable_sub_planners
 
         # CLI True 应覆盖 config.yaml 的 False
         assert resolved is True
@@ -508,7 +498,7 @@ class TestRunKnowledgeTriStateOptions:
 
 class TestRunKnowledgeOrchestratorConfigInjection:
     """测试 run_knowledge.py 最终注入到 OrchestratorConfig 的配置
-    
+
     验证配置优先级: CLI > config.yaml > DEFAULT_*
     """
 
@@ -613,13 +603,13 @@ class TestRunKnowledgeDefaultsWhenNoConfig:
         """测试无配置文件时使用 DEFAULT_* 常量"""
         from core.config import (
             DEFAULT_MAX_ITERATIONS,
-            DEFAULT_WORKER_POOL_SIZE,
             DEFAULT_PLANNER_MODEL,
-            DEFAULT_WORKER_MODEL,
-            DEFAULT_REVIEWER_MODEL,
             DEFAULT_PLANNING_TIMEOUT,
-            DEFAULT_WORKER_TIMEOUT,
             DEFAULT_REVIEW_TIMEOUT,
+            DEFAULT_REVIEWER_MODEL,
+            DEFAULT_WORKER_MODEL,
+            DEFAULT_WORKER_POOL_SIZE,
+            DEFAULT_WORKER_TIMEOUT,
         )
 
         # 空目录（无 config.yaml）
@@ -650,7 +640,7 @@ class TestRunKnowledgeDefaultsWhenNoConfig:
 
 class TestRunKnowledgeParseArgsIntegration:
     """测试 run_knowledge.py parse_args() 与 ConfigManager 的集成
-    
+
     验证 parse_args 能正确读取 config.yaml 并设置默认值。
     """
 
@@ -719,7 +709,7 @@ class TestRunKnowledgeParseArgsIntegration:
 
 class TestRunKnowledgeConfigPriorityOrder:
     """测试 run_knowledge.py 配置优先级顺序
-    
+
     优先级: CLI > config.yaml > DEFAULT_*
     """
 
@@ -757,8 +747,8 @@ class TestRunKnowledgeConfigPriorityOrder:
     ) -> None:
         """测试 config.yaml 优先级高于 DEFAULT_* 常量"""
         from core.config import (
-            DEFAULT_WORKER_POOL_SIZE,
             DEFAULT_MAX_ITERATIONS,
+            DEFAULT_WORKER_POOL_SIZE,
         )
 
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
@@ -862,9 +852,11 @@ class TestRunKnowledgeCloudConfigCLIOverride:
         assert settings_default["execution_mode"] == "auto"
 
         # CLI 参数覆盖 config.yaml
-        settings_cli = resolve_orchestrator_settings(overrides={
-            "execution_mode": "cloud",
-        })
+        settings_cli = resolve_orchestrator_settings(
+            overrides={
+                "execution_mode": "cloud",
+            }
+        )
         assert settings_cli["execution_mode"] == "cloud"
 
     def test_cli_cloud_timeout_overrides_config(
@@ -885,9 +877,11 @@ class TestRunKnowledgeCloudConfigCLIOverride:
         assert settings_default["cloud_timeout"] == 900
 
         # CLI 参数覆盖 config.yaml
-        settings_cli = resolve_orchestrator_settings(overrides={
-            "cloud_timeout": 1200,
-        })
+        settings_cli = resolve_orchestrator_settings(
+            overrides={
+                "cloud_timeout": 1200,
+            }
+        )
         assert settings_cli["cloud_timeout"] == 1200
 
     def test_cli_cloud_auth_timeout_overrides_config(
@@ -908,9 +902,11 @@ class TestRunKnowledgeCloudConfigCLIOverride:
         assert settings_default["cloud_auth_timeout"] == 60
 
         # CLI 参数覆盖 config.yaml
-        settings_cli = resolve_orchestrator_settings(overrides={
-            "cloud_auth_timeout": 90,
-        })
+        settings_cli = resolve_orchestrator_settings(
+            overrides={
+                "cloud_auth_timeout": 90,
+            }
+        )
         assert settings_cli["cloud_auth_timeout"] == 90
 
 
@@ -935,8 +931,8 @@ class TestRunKnowledgeCloudAuthConfigBuild:
         monkeypatch,
     ) -> None:
         """测试未配置 API Key 时返回 None"""
-        from scripts.run_knowledge import _build_cloud_auth_config
         from core.config import resolve_orchestrator_settings
+        from scripts.run_knowledge import _build_cloud_auth_config
 
         # 创建无 cloud_agent.api_key 的配置
         config_content = {
@@ -973,8 +969,8 @@ class TestRunKnowledgeCloudAuthConfigBuild:
         monkeypatch,
     ) -> None:
         """测试 CLI --cloud-api-key 优先级最高"""
-        from scripts.run_knowledge import _build_cloud_auth_config
         from core.config import resolve_orchestrator_settings
+        from scripts.run_knowledge import _build_cloud_auth_config
 
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
         # 设置环境变量（应被 CLI 覆盖）
@@ -999,8 +995,8 @@ class TestRunKnowledgeCloudAuthConfigBuild:
         monkeypatch,
     ) -> None:
         """测试环境变量 CURSOR_API_KEY 优先级高于 config.yaml"""
-        from scripts.run_knowledge import _build_cloud_auth_config
         from core.config import resolve_orchestrator_settings
+        from scripts.run_knowledge import _build_cloud_auth_config
 
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
         # 设置环境变量

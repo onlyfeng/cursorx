@@ -2,6 +2,7 @@
 
 验证各 Agent 类能正确初始化，检查配置类的默认值和必填项
 """
+
 import pytest
 
 from agents.planner import PlannerAgent, PlannerConfig

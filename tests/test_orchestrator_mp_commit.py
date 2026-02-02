@@ -8,20 +8,19 @@
 
 使用 Mock 替代真实子进程和 Cursor CLI 调用
 """
-import asyncio
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.committer import CommitterAgent
 from agents.reviewer_process import ReviewDecision
 from coordinator.orchestrator_mp import (
     MultiProcessOrchestrator,
     MultiProcessOrchestratorConfig,
 )
 from core.state import IterationStatus
-from tasks.task import Task, TaskStatus
+from tasks.task import Task, TaskStatus, TaskType
 
 
 class TestMultiProcessOrchestratorCommitPhase:
@@ -41,27 +40,19 @@ class TestMultiProcessOrchestratorCommitPhase:
         )
 
     @pytest.fixture
-    def mp_orchestrator(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> MultiProcessOrchestrator:
+    def mp_orchestrator(self, mp_config: MultiProcessOrchestratorConfig) -> MultiProcessOrchestrator:
         """创建 MultiProcessOrchestrator 实例（不启动真实进程）"""
         orchestrator = MultiProcessOrchestrator(mp_config)
         return orchestrator
 
-    def _mock_spawn_and_ready(
-        self, orchestrator: MultiProcessOrchestrator
-    ) -> tuple[MagicMock, MagicMock]:
+    def _mock_spawn_and_ready(self, orchestrator: MultiProcessOrchestrator) -> tuple[Any, Any]:
         """Mock _spawn_agents 和 wait_all_ready，避免启动真实子进程
 
         Returns:
             (mock_spawn, mock_wait_ready) 元组
         """
-        mock_spawn = patch.object(
-            orchestrator, "_spawn_agents", return_value=None
-        )
-        mock_wait_ready = patch.object(
-            orchestrator.process_manager, "wait_all_ready", return_value=True
-        )
+        mock_spawn = patch.object(orchestrator, "_spawn_agents", return_value=None)
+        mock_wait_ready = patch.object(orchestrator.process_manager, "wait_all_ready", return_value=True)
         return mock_spawn, mock_wait_ready
 
     async def _inject_tasks_to_queue(
@@ -110,9 +101,7 @@ class TestMultiProcessOrchestratorCommitPhase:
     # 测试 _should_commit 决策逻辑
     # =========================================================================
 
-    def test_should_commit_disabled(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    def test_should_commit_disabled(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试禁用自动提交时 _should_commit 返回 False"""
         mp_config.enable_auto_commit = False
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -121,9 +110,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         assert orchestrator._should_commit(ReviewDecision.CONTINUE) is False
         assert orchestrator._should_commit(ReviewDecision.ABORT) is False
 
-    def test_should_commit_on_complete_only(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    def test_should_commit_on_complete_only(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试仅在 COMPLETE 时提交（commit_on_complete=True, commit_per_iteration=False）"""
         # 默认配置：commit_on_complete=True, commit_per_iteration=False
         assert mp_orchestrator._should_commit(ReviewDecision.COMPLETE) is True
@@ -131,9 +118,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         assert mp_orchestrator._should_commit(ReviewDecision.ADJUST) is False
         assert mp_orchestrator._should_commit(ReviewDecision.ABORT) is False
 
-    def test_should_commit_per_iteration(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    def test_should_commit_per_iteration(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试每次迭代都提交（commit_per_iteration=True）"""
         mp_config.commit_per_iteration = True
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -144,9 +129,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         assert orchestrator._should_commit(ReviewDecision.ADJUST) is True
         assert orchestrator._should_commit(ReviewDecision.ABORT) is True
 
-    def test_should_commit_no_committer(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    def test_should_commit_no_committer(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试没有 Committer 时 _should_commit 返回 False"""
         mp_config.enable_auto_commit = False
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -159,9 +142,7 @@ class TestMultiProcessOrchestratorCommitPhase:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_commit_phase_success(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_commit_phase_success(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试提交阶段成功场景"""
         # 开始新迭代
         iteration = mp_orchestrator.state.start_new_iteration()
@@ -194,9 +175,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             new_callable=AsyncMock,
             return_value=mock_commit_result,
         ) as mock_commit:
-            result = await mp_orchestrator._commit_phase(
-                iteration_id, ReviewDecision.COMPLETE
-            )
+            result = await mp_orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
             # 验证 commit_iteration 被调用
             mock_commit.assert_called_once()
@@ -214,15 +193,14 @@ class TestMultiProcessOrchestratorCommitPhase:
 
             # 验证 IterationState 填充
             assert iteration.commit_hash == "abc123def456"
+            assert iteration.commit_message is not None
             assert "feat(iter-1)" in iteration.commit_message
             assert iteration.pushed is False
             assert "a.py" in iteration.commit_files
             assert "b.py" in iteration.commit_files
 
     @pytest.mark.asyncio
-    async def test_commit_phase_no_changes(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_commit_phase_no_changes(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试无变更时的提交场景"""
         iteration = mp_orchestrator.state.start_new_iteration()
         iteration_id = iteration.iteration_id
@@ -247,9 +225,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             new_callable=AsyncMock,
             return_value=mock_commit_result,
         ) as mock_commit:
-            result = await mp_orchestrator._commit_phase(
-                iteration_id, ReviewDecision.COMPLETE
-            )
+            result = await mp_orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
             mock_commit.assert_called_once()
             assert result["success"] is False
@@ -260,9 +236,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             assert iteration.pushed is False
 
     @pytest.mark.asyncio
-    async def test_commit_phase_commit_failed(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_commit_phase_commit_failed(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试提交失败场景"""
         iteration = mp_orchestrator.state.start_new_iteration()
         iteration_id = iteration.iteration_id
@@ -290,9 +264,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             new_callable=AsyncMock,
             return_value=mock_commit_result,
         ) as mock_commit:
-            result = await mp_orchestrator._commit_phase(
-                iteration_id, ReviewDecision.COMPLETE
-            )
+            result = await mp_orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
             mock_commit.assert_called_once()
             assert result["success"] is False
@@ -304,9 +276,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             assert iteration.pushed is False
 
     @pytest.mark.asyncio
-    async def test_commit_phase_push_failed(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_commit_phase_push_failed(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试推送失败场景（提交成功但推送失败）"""
         mp_config.auto_push = True
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -338,9 +308,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             new_callable=AsyncMock,
             return_value=mock_commit_result,
         ) as mock_commit:
-            result = await orchestrator._commit_phase(
-                iteration_id, ReviewDecision.COMPLETE
-            )
+            result = await orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
             mock_commit.assert_called_once()
 
@@ -360,9 +328,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             assert iteration.pushed is False  # 推送失败
 
     @pytest.mark.asyncio
-    async def test_commit_phase_push_success(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_commit_phase_push_success(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试推送成功场景"""
         mp_config.auto_push = True
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -393,9 +359,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             new_callable=AsyncMock,
             return_value=mock_commit_result,
         ) as mock_commit:
-            result = await orchestrator._commit_phase(
-                iteration_id, ReviewDecision.COMPLETE
-            )
+            result = await orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
             mock_commit.assert_called_once()
             assert result["success"] is True
@@ -406,9 +370,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             assert iteration.pushed is True
 
     @pytest.mark.asyncio
-    async def test_commit_phase_no_committer(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_commit_phase_no_committer(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试没有 Committer 时的提交阶段"""
         mp_config.enable_auto_commit = False
         orchestrator = MultiProcessOrchestrator(mp_config)
@@ -416,9 +378,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         iteration = orchestrator.state.start_new_iteration()
         iteration_id = iteration.iteration_id
 
-        result = await orchestrator._commit_phase(
-            iteration_id, ReviewDecision.COMPLETE
-        )
+        result = await orchestrator._commit_phase(iteration_id, ReviewDecision.COMPLETE)
 
         assert result["success"] is False
         assert "Committer not initialized" in result.get("error", "")
@@ -444,7 +404,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             task = Task(
                 id=f"task-{iteration_id}-{i}",
                 iteration_id=iteration_id,
-                type="implement",
+                type=TaskType.IMPLEMENT,
                 title=f"任务{i}",
                 description="",
                 instruction="执行任务",
@@ -454,9 +414,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             orchestrator.state.total_tasks_created += 1
 
     @pytest.mark.asyncio
-    async def test_full_run_with_commit_on_complete(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_full_run_with_commit_on_complete(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试完整运行流程：COMPLETE 决策时触发提交"""
         mock_spawn, mock_wait_ready = self._mock_spawn_and_ready(mp_orchestrator)
 
@@ -465,6 +423,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             # 注入 PENDING 状态的任务（通过 pending 检查）
             await self._inject_pending_tasks(mp_orchestrator, iteration_id, 2)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_created = 2
 
         async def mock_execution(iteration_id: int) -> None:
@@ -475,11 +434,13 @@ class TestMultiProcessOrchestratorCommitPhase:
                 task.result = {"success": True}
                 mp_orchestrator.task_queue.update_task(task)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_completed = len(tasks)
             mp_orchestrator.state.total_tasks_completed += len(tasks)
 
         async def mock_review(goal: str, iteration_id: int) -> ReviewDecision:
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.review_passed = True
             return ReviewDecision.COMPLETE
 
@@ -491,44 +452,39 @@ class TestMultiProcessOrchestratorCommitPhase:
             "pushed": False,
         }
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                mp_orchestrator, "_planning_phase", side_effect=mock_planning
-            ):
-                with patch.object(
-                    mp_orchestrator, "_execution_phase", side_effect=mock_execution
-                ):
-                    with patch.object(
-                        mp_orchestrator, "_review_phase", side_effect=mock_review
-                    ):
-                        with patch.object(
-                            mp_orchestrator.committer,
-                            "commit_iteration",
-                            new_callable=AsyncMock,
-                            return_value=mock_commit_result,
-                        ) as mock_commit:
-                            with patch.object(
-                                mp_orchestrator.committer,
-                                "get_commit_summary",
-                                return_value={
-                                    "total_commits": 1,
-                                    "pushed_commits": 0,
-                                },
-                            ):
-                                result = await mp_orchestrator.run("测试目标")
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(mp_orchestrator, "_planning_phase", side_effect=mock_planning),
+            patch.object(mp_orchestrator, "_execution_phase", side_effect=mock_execution),
+            patch.object(mp_orchestrator, "_review_phase", side_effect=mock_review),
+            patch.object(
+                mp_orchestrator.committer,
+                "commit_iteration",
+                new_callable=AsyncMock,
+                return_value=mock_commit_result,
+            ) as mock_commit,
+            patch.object(
+                mp_orchestrator.committer,
+                "get_commit_summary",
+                return_value={
+                    "total_commits": 1,
+                    "pushed_commits": 0,
+                },
+            ),
+        ):
+            result = await mp_orchestrator.run("测试目标")
 
-                                # 验证 commit_iteration 被调用
-                                mock_commit.assert_called_once()
+            # 验证 commit_iteration 被调用
+            mock_commit.assert_called_once()
 
-                                # 验证最终结果包含 commits 信息
-                                assert result["success"] is True
-                                assert "commits" in result
-                                assert result["pushed"] is False
+            # 验证最终结果包含 commits 信息
+            assert result["success"] is True
+            assert "commits" in result
+            assert result["pushed"] is False
 
     @pytest.mark.asyncio
-    async def test_full_run_continue_decision_no_commit(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_full_run_continue_decision_no_commit(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试完整运行流程：CONTINUE 决策时不触发提交（commit_on_complete=True）"""
         # 更新 config 和 state 的 max_iterations
         mp_orchestrator.config.max_iterations = 2
@@ -540,6 +496,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         async def mock_planning(goal: str, iteration_id: int) -> None:
             await self._inject_pending_tasks(mp_orchestrator, iteration_id, 1)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_created = 1
 
         async def mock_execution(iteration_id: int) -> None:
@@ -549,6 +506,7 @@ class TestMultiProcessOrchestratorCommitPhase:
                 task.result = {"success": True}
                 mp_orchestrator.task_queue.update_task(task)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_completed = len(tasks)
             mp_orchestrator.state.total_tasks_completed += len(tasks)
 
@@ -568,43 +526,38 @@ class TestMultiProcessOrchestratorCommitPhase:
             "pushed": False,
         }
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                mp_orchestrator, "_planning_phase", side_effect=mock_planning
-            ):
-                with patch.object(
-                    mp_orchestrator, "_execution_phase", side_effect=mock_execution
-                ):
-                    with patch.object(
-                        mp_orchestrator, "_review_phase", side_effect=mock_review
-                    ):
-                        with patch.object(
-                            mp_orchestrator.committer,
-                            "commit_iteration",
-                            new_callable=AsyncMock,
-                            return_value=mock_commit_result,
-                        ) as mock_commit:
-                            with patch.object(
-                                mp_orchestrator.committer,
-                                "get_commit_summary",
-                                return_value={
-                                    "total_commits": 1,
-                                    "pushed_commits": 0,
-                                },
-                            ):
-                                result = await mp_orchestrator.run("测试目标")
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(mp_orchestrator, "_planning_phase", side_effect=mock_planning),
+            patch.object(mp_orchestrator, "_execution_phase", side_effect=mock_execution),
+            patch.object(mp_orchestrator, "_review_phase", side_effect=mock_review),
+            patch.object(
+                mp_orchestrator.committer,
+                "commit_iteration",
+                new_callable=AsyncMock,
+                return_value=mock_commit_result,
+            ) as mock_commit,
+            patch.object(
+                mp_orchestrator.committer,
+                "get_commit_summary",
+                return_value={
+                    "total_commits": 1,
+                    "pushed_commits": 0,
+                },
+            ),
+        ):
+            result = await mp_orchestrator.run("测试目标")
 
-                                # commit_iteration 应该只被调用一次（COMPLETE 时）
-                                assert mock_commit.call_count == 1
+            # commit_iteration 应该只被调用一次（COMPLETE 时）
+            assert mock_commit.call_count == 1
 
-                                # 验证是在第二次迭代（COMPLETE）时调用
-                                call_args = mock_commit.call_args.kwargs
-                                assert call_args["review_decision"] == "complete"
+            # 验证是在第二次迭代（COMPLETE）时调用
+            call_args = mock_commit.call_args.kwargs
+            assert call_args["review_decision"] == "complete"
 
     @pytest.mark.asyncio
-    async def test_full_run_commit_per_iteration(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_full_run_commit_per_iteration(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试完整运行流程：commit_per_iteration=True 时每次迭代都提交"""
         mp_config.max_iterations = 2
         mp_config.commit_per_iteration = True
@@ -618,6 +571,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         async def mock_planning(goal: str, iteration_id: int) -> None:
             await self._inject_pending_tasks(orchestrator, iteration_id, 1)
             iteration = orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_created = 1
 
         async def mock_execution(iteration_id: int) -> None:
@@ -627,6 +581,7 @@ class TestMultiProcessOrchestratorCommitPhase:
                 task.result = {"success": True}
                 orchestrator.task_queue.update_task(task)
             iteration = orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_completed = len(tasks)
             orchestrator.state.total_tasks_completed += len(tasks)
 
@@ -653,46 +608,41 @@ class TestMultiProcessOrchestratorCommitPhase:
             commit_calls.append(kwargs)
             return make_commit_result(kwargs["iteration_id"])
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                orchestrator, "_planning_phase", side_effect=mock_planning
-            ):
-                with patch.object(
-                    orchestrator, "_execution_phase", side_effect=mock_execution
-                ):
-                    with patch.object(
-                        orchestrator, "_review_phase", side_effect=mock_review
-                    ):
-                        with patch.object(
-                            orchestrator.committer,
-                            "commit_iteration",
-                            side_effect=mock_commit_iteration,
-                        ):
-                            with patch.object(
-                                orchestrator.committer,
-                                "get_commit_summary",
-                                return_value={
-                                    "total_commits": 2,
-                                    "pushed_commits": 0,
-                                },
-                            ):
-                                result = await orchestrator.run("测试目标")
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(orchestrator, "_planning_phase", side_effect=mock_planning),
+            patch.object(orchestrator, "_execution_phase", side_effect=mock_execution),
+            patch.object(orchestrator, "_review_phase", side_effect=mock_review),
+            patch.object(
+                orchestrator.committer,
+                "commit_iteration",
+                side_effect=mock_commit_iteration,
+            ),
+            patch.object(
+                orchestrator.committer,
+                "get_commit_summary",
+                return_value={
+                    "total_commits": 2,
+                    "pushed_commits": 0,
+                },
+            ),
+        ):
+            result = await orchestrator.run("测试目标")
 
-                                # commit_iteration 应该被调用两次（每次迭代）
-                                assert len(commit_calls) == 2
+            # commit_iteration 应该被调用两次（每次迭代）
+            assert len(commit_calls) == 2
 
-                                # 验证两次调用的迭代 ID
-                                assert commit_calls[0]["iteration_id"] == 1
-                                assert commit_calls[1]["iteration_id"] == 2
+            # 验证两次调用的迭代 ID
+            assert commit_calls[0]["iteration_id"] == 1
+            assert commit_calls[1]["iteration_id"] == 2
 
-                                # 验证第一次是 CONTINUE，第二次是 COMPLETE
-                                assert commit_calls[0]["review_decision"] == "continue"
-                                assert commit_calls[1]["review_decision"] == "complete"
+            # 验证第一次是 CONTINUE，第二次是 COMPLETE
+            assert commit_calls[0]["review_decision"] == "continue"
+            assert commit_calls[1]["review_decision"] == "complete"
 
     @pytest.mark.asyncio
-    async def test_commit_per_iteration_with_abort(
-        self, mp_config: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_commit_per_iteration_with_abort(self, mp_config: MultiProcessOrchestratorConfig) -> None:
         """测试 commit_per_iteration=True 时 ABORT 决策也触发提交"""
         mp_config.max_iterations = 1
         mp_config.commit_per_iteration = True
@@ -703,6 +653,7 @@ class TestMultiProcessOrchestratorCommitPhase:
         async def mock_planning(goal: str, iteration_id: int) -> None:
             await self._inject_pending_tasks(orchestrator, iteration_id, 1)
             iteration = orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_created = 1
 
         async def mock_execution(iteration_id: int) -> None:
@@ -713,6 +664,7 @@ class TestMultiProcessOrchestratorCommitPhase:
                 task.error = "执行失败"
                 orchestrator.task_queue.update_task(task)
             iteration = orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_failed = len(tasks)
             orchestrator.state.total_tasks_failed += len(tasks)
 
@@ -727,51 +679,47 @@ class TestMultiProcessOrchestratorCommitPhase:
             "pushed": False,
         }
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                orchestrator, "_planning_phase", side_effect=mock_planning
-            ):
-                with patch.object(
-                    orchestrator, "_execution_phase", side_effect=mock_execution
-                ):
-                    with patch.object(
-                        orchestrator, "_review_phase", side_effect=mock_review
-                    ):
-                        with patch.object(
-                            orchestrator.committer,
-                            "commit_iteration",
-                            new_callable=AsyncMock,
-                            return_value=mock_commit_result,
-                        ) as mock_commit:
-                            with patch.object(
-                                orchestrator.committer,
-                                "get_commit_summary",
-                                return_value={
-                                    "total_commits": 1,
-                                    "pushed_commits": 0,
-                                },
-                            ):
-                                result = await orchestrator.run("测试目标")
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(orchestrator, "_planning_phase", side_effect=mock_planning),
+            patch.object(orchestrator, "_execution_phase", side_effect=mock_execution),
+            patch.object(orchestrator, "_review_phase", side_effect=mock_review),
+            patch.object(
+                orchestrator.committer,
+                "commit_iteration",
+                new_callable=AsyncMock,
+                return_value=mock_commit_result,
+            ) as mock_commit,
+            patch.object(
+                orchestrator.committer,
+                "get_commit_summary",
+                return_value={
+                    "total_commits": 1,
+                    "pushed_commits": 0,
+                },
+            ),
+        ):
+            result = await orchestrator.run("测试目标")
 
-                                # commit_per_iteration=True 时，即使 ABORT 也应提交
-                                mock_commit.assert_called_once()
-                                call_kwargs = mock_commit.call_args.kwargs
-                                assert call_kwargs["review_decision"] == "abort"
+            # commit_per_iteration=True 时，即使 ABORT 也应提交
+            mock_commit.assert_called_once()
+            call_kwargs = mock_commit.call_args.kwargs
+            assert call_kwargs["review_decision"] == "abort"
 
     # =========================================================================
     # 测试 _generate_final_result 包含提交信息
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_final_result_contains_commits(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_final_result_contains_commits(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试最终结果包含 commits 和 pushed 信息"""
         mock_spawn, mock_wait_ready = self._mock_spawn_and_ready(mp_orchestrator)
 
         async def mock_planning(goal: str, iteration_id: int) -> None:
             await self._inject_pending_tasks(mp_orchestrator, iteration_id, 1)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_created = 1
 
         async def mock_execution(iteration_id: int) -> None:
@@ -781,6 +729,7 @@ class TestMultiProcessOrchestratorCommitPhase:
                 task.result = {"success": True}
                 mp_orchestrator.task_queue.update_task(task)
             iteration = mp_orchestrator.state.get_current_iteration()
+            assert iteration is not None
             iteration.tasks_completed = len(tasks)
             mp_orchestrator.state.total_tasks_completed += len(tasks)
 
@@ -804,50 +753,45 @@ class TestMultiProcessOrchestratorCommitPhase:
             "files_changed": ["done.py"],
         }
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                mp_orchestrator, "_planning_phase", side_effect=mock_planning
-            ):
-                with patch.object(
-                    mp_orchestrator, "_execution_phase", side_effect=mock_execution
-                ):
-                    with patch.object(
-                        mp_orchestrator, "_review_phase", side_effect=mock_review
-                    ):
-                        with patch.object(
-                            mp_orchestrator.committer,
-                            "commit_iteration",
-                            new_callable=AsyncMock,
-                            return_value=mock_commit_result,
-                        ):
-                            with patch.object(
-                                mp_orchestrator.committer,
-                                "get_commit_summary",
-                                return_value=mock_summary,
-                            ):
-                                result = await mp_orchestrator.run("测试目标")
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(mp_orchestrator, "_planning_phase", side_effect=mock_planning),
+            patch.object(mp_orchestrator, "_execution_phase", side_effect=mock_execution),
+            patch.object(mp_orchestrator, "_review_phase", side_effect=mock_review),
+            patch.object(
+                mp_orchestrator.committer,
+                "commit_iteration",
+                new_callable=AsyncMock,
+                return_value=mock_commit_result,
+            ),
+            patch.object(
+                mp_orchestrator.committer,
+                "get_commit_summary",
+                return_value=mock_summary,
+            ),
+        ):
+            result = await mp_orchestrator.run("测试目标")
 
-                                # 验证最终结果结构
-                                assert result["success"] is True
-                                assert "commits" in result
-                                assert result["commits"]["total_commits"] == 1
-                                assert result["commits"]["pushed_commits"] == 1
-                                assert result["pushed"] is True
+            # 验证最终结果结构
+            assert result["success"] is True
+            assert "commits" in result
+            assert result["commits"]["total_commits"] == 1
+            assert result["commits"]["pushed_commits"] == 1
+            assert result["pushed"] is True
 
-                                # 验证迭代信息包含提交详情
-                                assert len(result["iterations"]) == 1
-                                iter_info = result["iterations"][0]
-                                assert iter_info["commit_hash"] == "final_hash"
-                                assert iter_info["commit_pushed"] is True
+            # 验证迭代信息包含提交详情
+            assert len(result["iterations"]) == 1
+            iter_info = result["iterations"][0]
+            assert iter_info["commit_hash"] == "final_hash"
+            assert iter_info["commit_pushed"] is True
 
     # =========================================================================
     # 测试迭代状态填充
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_iteration_state_population(
-        self, mp_orchestrator: MultiProcessOrchestrator
-    ) -> None:
+    async def test_iteration_state_population(self, mp_orchestrator: MultiProcessOrchestrator) -> None:
         """测试提交后 IterationState 正确填充所有字段"""
         iteration = mp_orchestrator.state.start_new_iteration()
         iteration_id = iteration.iteration_id
@@ -877,6 +821,7 @@ class TestMultiProcessOrchestratorCommitPhase:
             # 验证所有 IterationState 字段
             assert iteration.status == IterationStatus.COMMITTING
             assert iteration.commit_hash == "state_test_hash"
+            assert iteration.commit_message is not None
             assert "feat(iter-1)" in iteration.commit_message
             assert iteration.pushed is True
             assert len(iteration.commit_files) == 3
@@ -979,7 +924,6 @@ class TestHealthCheckWarningCooldown:
         self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
     ) -> None:
         """测试 cooldown 机制防止重复告警"""
-        import time
 
         orchestrator = MultiProcessOrchestrator(mp_config_for_cooldown)
         orchestrator.planner_id = "planner-1"
@@ -1053,21 +997,18 @@ class TestHealthCheckWarningCooldown:
                 return ["task-123"]  # worker-1 有任务
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                    # worker-1 应该被视为健康（assumed_busy）
-                    assert "worker-1" in result.healthy
-                    assert result.details["worker-1"]["reason"] == "assumed_busy"
-                    # 不应该触发 cooldown 机制（因为不输出 warning）
-                    assert "worker-1" not in orchestrator._health_warning_cooldown
+            # worker-1 应该被视为健康（assumed_busy）
+            assert "worker-1" in result.healthy
+            assert result.details["worker-1"]["reason"] == "assumed_busy"
+            # 不应该触发 cooldown 机制（因为不输出 warning）
+            assert "worker-1" not in orchestrator._health_warning_cooldown
 
     @pytest.mark.asyncio
     async def test_non_busy_worker_no_heartbeat_triggers_cooldown(
@@ -1094,39 +1035,34 @@ class TestHealthCheckWarningCooldown:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []  # 没有任务
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    # 执行多次健康检查直到达到阈值
-                    threshold = orchestrator.config.consecutive_unresponsive_threshold
-                    for i in range(threshold):
-                        # 预填充心跳响应：worker-1 无响应
-                        current_time = time.time()
-                        orchestrator._heartbeat_responses["planner-1"] = current_time + 0.1
-                        orchestrator._heartbeat_responses["worker-0"] = current_time + 0.1
-                        orchestrator._heartbeat_responses["reviewer-1"] = current_time + 0.1
-                        # worker-1 不响应
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            # 执行多次健康检查直到达到阈值
+            threshold = orchestrator.config.consecutive_unresponsive_threshold
+            for i in range(threshold):
+                # 预填充心跳响应：worker-1 无响应
+                current_time = time.time()
+                orchestrator._heartbeat_responses["planner-1"] = current_time + 0.1
+                orchestrator._heartbeat_responses["worker-0"] = current_time + 0.1
+                orchestrator._heartbeat_responses["reviewer-1"] = current_time + 0.1
+                # worker-1 不响应
 
-                        result = await orchestrator._perform_health_check()
+                result = await orchestrator._perform_health_check()
 
-                    # worker-1 应该被视为不健康
-                    assert "worker-1" in result.unhealthy
-                    assert result.details["worker-1"]["reason"] == "no_heartbeat_response"
-                    assert result.details["worker-1"]["is_alive"] is True
-                    # 连续未响应次数应达到阈值
-                    assert result.details["worker-1"]["consecutive_unresponsive"] == threshold
-                    # 达到阈值后应该触发 cooldown
-                    assert "worker-1" in orchestrator._health_warning_cooldown
+            # worker-1 应该被视为不健康
+            assert "worker-1" in result.unhealthy
+            assert result.details["worker-1"]["reason"] == "no_heartbeat_response"
+            assert result.details["worker-1"]["is_alive"] is True
+            # 连续未响应次数应达到阈值
+            assert result.details["worker-1"]["consecutive_unresponsive"] == threshold
+            # 达到阈值后应该触发 cooldown
+            assert "worker-1" in orchestrator._health_warning_cooldown
 
     @pytest.mark.asyncio
-    async def test_process_dead_always_logs_error(
-        self, mp_config_for_cooldown: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_process_dead_always_logs_error(self, mp_config_for_cooldown: MultiProcessOrchestratorConfig) -> None:
         """测试进程死亡时始终记录 ERROR（不受 cooldown 限制）"""
         import time
 
@@ -1147,16 +1083,16 @@ class TestHealthCheckWarningCooldown:
                 return False
             return True
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                # worker-1 应该被视为不健康且进程死亡
-                assert "worker-1" in result.unhealthy
-                assert result.details["worker-1"]["reason"] == "process_dead"
-                assert result.details["worker-1"]["is_alive"] is False
+            # worker-1 应该被视为不健康且进程死亡
+            assert "worker-1" in result.unhealthy
+            assert result.details["worker-1"]["reason"] == "process_dead"
+            assert result.details["worker-1"]["is_alive"] is False
 
 
 class TestHealthCheckInOrchestrator:
@@ -1177,22 +1113,14 @@ class TestHealthCheckInOrchestrator:
             fallback_on_critical_failure=True,
         )
 
-    def _mock_spawn_and_ready(
-        self, orchestrator: MultiProcessOrchestrator
-    ) -> tuple:
+    def _mock_spawn_and_ready(self, orchestrator: MultiProcessOrchestrator) -> tuple:
         """Mock spawn 和 ready"""
-        mock_spawn = patch.object(
-            orchestrator, "_spawn_agents", return_value=None
-        )
-        mock_wait_ready = patch.object(
-            orchestrator.process_manager, "wait_all_ready", return_value=True
-        )
+        mock_spawn = patch.object(orchestrator, "_spawn_agents", return_value=None)
+        mock_wait_ready = patch.object(orchestrator.process_manager, "wait_all_ready", return_value=True)
         return mock_spawn, mock_wait_ready
 
     @pytest.mark.asyncio
-    async def test_health_check_all_healthy(
-        self, mp_config_with_health_check: MultiProcessOrchestratorConfig
-    ) -> None:
+    async def test_health_check_all_healthy(self, mp_config_with_health_check: MultiProcessOrchestratorConfig) -> None:
         """测试所有进程健康时的行为（方案 A：心跳收集架构）"""
         import time
 
@@ -1208,15 +1136,15 @@ class TestHealthCheckInOrchestrator:
             orchestrator._heartbeat_responses[agent_id] = current_time + 0.1
 
         # Mock broadcast 和 is_alive
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", return_value=True
-            ):
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", return_value=True),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                assert result.all_healthy is True
-                assert orchestrator._degraded is False
-                assert orchestrator._unhealthy_worker_count == 0
+            assert result.all_healthy is True
+            assert orchestrator._degraded is False
+            assert orchestrator._unhealthy_worker_count == 0
 
     @pytest.mark.asyncio
     async def test_health_check_partial_worker_unhealthy_within_threshold(
@@ -1244,27 +1172,22 @@ class TestHealthCheckInOrchestrator:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []  # 没有任务分配给 worker-1（所以不是因为忙碌）
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    with patch.object(
-                        orchestrator, "_handle_unhealthy_workers", new_callable=AsyncMock
-                    ) as mock_handle:
-                        result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+            patch.object(orchestrator, "_handle_unhealthy_workers", new_callable=AsyncMock) as mock_handle,
+        ):
+            result = await orchestrator._perform_health_check()
 
-                        # 新逻辑：进程存活但无心跳响应，标记为 unhealthy
-                        assert result.all_healthy is False
-                        assert orchestrator._degraded is False  # 未触发降级
-                        # 新逻辑：_unhealthy_worker_count 只统计已死亡的 Worker（is_alive=False）
-                        # worker-1 进程存活，所以不计入 dead_workers
-                        assert orchestrator._unhealthy_worker_count == 0
-                        # 不调用 _handle_unhealthy_workers（只处理 dead workers）
-                        mock_handle.assert_not_called()
+            # 新逻辑：进程存活但无心跳响应，标记为 unhealthy
+            assert result.all_healthy is False
+            assert orchestrator._degraded is False  # 未触发降级
+            # 新逻辑：_unhealthy_worker_count 只统计已死亡的 Worker（is_alive=False）
+            # worker-1 进程存活，所以不计入 dead_workers
+            assert orchestrator._unhealthy_worker_count == 0
+            # 不调用 _handle_unhealthy_workers（只处理 dead workers）
+            mock_handle.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_check_worker_unhealthy_exceeds_threshold(
@@ -1301,20 +1224,19 @@ class TestHealthCheckInOrchestrator:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                    assert orchestrator._degraded is True
-                    assert "阈值" in orchestrator._degradation_reason
-                    # 只统计已死亡的 Worker
-                    assert orchestrator._unhealthy_worker_count == 2
+            assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
+            assert orchestrator._degradation_reason is not None
+            assert "阈值" in orchestrator._degradation_reason
+            # 只统计已死亡的 Worker
+            assert orchestrator._unhealthy_worker_count == 2
 
     @pytest.mark.asyncio
     async def test_health_check_planner_unhealthy_triggers_degradation(
@@ -1341,14 +1263,15 @@ class TestHealthCheckInOrchestrator:
                 return False  # process_dead
             return True
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                assert orchestrator._degraded is True
-                assert "Planner" in orchestrator._degradation_reason
+            assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
+            assert "Planner" in orchestrator._degradation_reason
 
     @pytest.mark.asyncio
     async def test_health_check_reviewer_unhealthy_triggers_degradation(
@@ -1378,14 +1301,16 @@ class TestHealthCheckInOrchestrator:
                 return False  # Reviewer 进程已死亡
             return True
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                result = await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+        ):
+            result = await orchestrator._perform_health_check()
 
-                assert orchestrator._degraded is True
-                assert "Reviewer" in orchestrator._degradation_reason
+            assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
+            assert orchestrator._degradation_reason is not None
+            assert "Reviewer" in orchestrator._degradation_reason
 
     @pytest.mark.asyncio
     async def test_handle_unhealthy_workers_requeue(
@@ -1399,7 +1324,7 @@ class TestHealthCheckInOrchestrator:
         task = Task(
             id="task-requeue-1",
             iteration_id=1,
-            type="implement",
+            type=TaskType.IMPLEMENT,
             title="测试任务",
             description="",
             instruction="执行",
@@ -1420,6 +1345,7 @@ class TestHealthCheckInOrchestrator:
 
         # 验证任务被重新入队（状态变为 QUEUED）
         updated_task = orchestrator.task_queue.get_task("task-requeue-1")
+        assert updated_task is not None
         assert updated_task.status == TaskStatus.QUEUED
 
     @pytest.mark.asyncio
@@ -1441,7 +1367,7 @@ class TestHealthCheckInOrchestrator:
         task = Task(
             id="task-fail-1",
             iteration_id=1,
-            type="implement",
+            type=TaskType.IMPLEMENT,
             title="测试任务",
             description="",
             instruction="执行",
@@ -1462,7 +1388,9 @@ class TestHealthCheckInOrchestrator:
 
         # 验证任务被标记为 FAILED
         updated_task = orchestrator.task_queue.get_task("task-fail-1")
+        assert updated_task is not None
         assert updated_task.status == TaskStatus.FAILED
+        assert updated_task.error is not None
         assert "worker-dead" in updated_task.error.lower()
 
     @pytest.mark.asyncio
@@ -1485,7 +1413,6 @@ class TestHealthCheckInOrchestrator:
         self, mp_config_with_health_check: MultiProcessOrchestratorConfig
     ) -> None:
         """测试最终结果包含降级信息"""
-        from process.manager import HealthCheckResult
 
         orchestrator = MultiProcessOrchestrator(mp_config_with_health_check)
         mock_spawn, mock_wait_ready = self._mock_spawn_and_ready(orchestrator)
@@ -1494,14 +1421,11 @@ class TestHealthCheckInOrchestrator:
         orchestrator._degraded = True
         orchestrator._degradation_reason = "Worker 全部死亡"
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(
-                orchestrator.process_manager, "shutdown_all", return_value=None
-            ):
-                result = orchestrator._generate_final_result()
+        with mock_spawn, mock_wait_ready, patch.object(orchestrator.process_manager, "shutdown_all", return_value=None):
+            result = orchestrator._generate_final_result()
 
-                assert result["degraded"] is True
-                assert result["degradation_reason"] == "Worker 全部死亡"
+            assert result["degraded"] is True
+            assert result["degradation_reason"] == "Worker 全部死亡"
 
     @pytest.mark.asyncio
     @pytest.mark.skip(reason="集成测试需要更复杂的 mock 设置，单元测试已覆盖核心逻辑")
@@ -1531,27 +1455,24 @@ class TestHealthCheckInOrchestrator:
                 return False  # process_dead
             return True
 
-        with mock_spawn, mock_wait_ready:
-            with patch.object(orchestrator.process_manager, "broadcast"):
-                with patch.object(
-                    orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-                ):
-                    with patch.object(
-                        orchestrator.process_manager, "shutdown_all", return_value=None
-                    ):
-                        # Mock receive_message 返回 None 以避免 _message_loop 挂起
-                        with patch.object(
-                            orchestrator.process_manager, "receive_message", return_value=None
-                        ):
-                            # 强制 _should_run_health_check 返回 True
-                            orchestrator._last_health_check_time = 0
+        with (
+            mock_spawn,
+            mock_wait_ready,
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "shutdown_all", return_value=None),
+        ):
+            # Mock receive_message 返回 None 以避免 _message_loop 挂起
+            with patch.object(orchestrator.process_manager, "receive_message", return_value=None):
+                # 强制 _should_run_health_check 返回 True
+                orchestrator._last_health_check_time = 0
 
-                            result = await orchestrator.run("测试降级")
+                result = await orchestrator.run("测试降级")
 
-                            # 应该因降级而终止
-                            assert result["success"] is False
-                            assert result["degraded"] is True
-                            assert "Planner" in result["degradation_reason"]
+                # 应该因降级而终止
+                assert result["success"] is False
+                assert result["degraded"] is True
+                assert "Planner" in result["degradation_reason"]
 
 
 class TestDegradationStrategyBOrchestrator:
@@ -1581,16 +1502,10 @@ class TestDegradationStrategyBOrchestrator:
             fallback_on_critical_failure=True,
         )
 
-    def _mock_spawn_and_ready(
-        self, orchestrator: MultiProcessOrchestrator
-    ) -> tuple:
+    def _mock_spawn_and_ready(self, orchestrator: MultiProcessOrchestrator) -> tuple:
         """Mock spawn 和 ready"""
-        mock_spawn = patch.object(
-            orchestrator, "_spawn_agents", return_value=None
-        )
-        mock_wait_ready = patch.object(
-            orchestrator.process_manager, "wait_all_ready", return_value=True
-        )
+        mock_spawn = patch.object(orchestrator, "_spawn_agents", return_value=None)
+        mock_wait_ready = patch.object(orchestrator.process_manager, "wait_all_ready", return_value=True)
         return mock_spawn, mock_wait_ready
 
     @pytest.mark.asyncio
@@ -1651,13 +1566,12 @@ class TestDegradationStrategyBOrchestrator:
             details={"planner-1": {"healthy": False, "reason": "process_dead"}},
         )
 
-        with patch.object(
-            orchestrator.process_manager, "health_check", return_value=mock_result
-        ):
+        with patch.object(orchestrator.process_manager, "health_check", return_value=mock_result):
             await orchestrator._perform_health_check()
 
             # 验证降级触发
             assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
             assert "Planner" in orchestrator._degradation_reason
 
             # 生成结果验证
@@ -1693,14 +1607,15 @@ class TestDegradationStrategyBOrchestrator:
                 return False  # Reviewer 进程已死亡
             return True
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+        ):
+            await orchestrator._perform_health_check()
 
-                assert orchestrator._degraded is True
-                assert "Reviewer" in orchestrator._degradation_reason
+            assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
+            assert "Reviewer" in orchestrator._degradation_reason
 
     @pytest.mark.asyncio
     async def test_degraded_triggered_by_workers_exceed_threshold(
@@ -1737,18 +1652,16 @@ class TestDegradationStrategyBOrchestrator:
         def mock_get_tasks_by_agent(agent_id: str) -> list:
             return []
 
-        with patch.object(orchestrator.process_manager, "broadcast"):
-            with patch.object(
-                orchestrator.process_manager, "is_alive", side_effect=mock_is_alive
-            ):
-                with patch.object(
-                    orchestrator.process_manager, "get_tasks_by_agent",
-                    side_effect=mock_get_tasks_by_agent
-                ):
-                    await orchestrator._perform_health_check()
+        with (
+            patch.object(orchestrator.process_manager, "broadcast"),
+            patch.object(orchestrator.process_manager, "is_alive", side_effect=mock_is_alive),
+            patch.object(orchestrator.process_manager, "get_tasks_by_agent", side_effect=mock_get_tasks_by_agent),
+        ):
+            await orchestrator._perform_health_check()
 
-                    assert orchestrator._degraded is True
-                    assert "阈值" in orchestrator._degradation_reason
+            assert orchestrator._degraded is True
+            assert orchestrator._degradation_reason is not None
+            assert "阈值" in orchestrator._degradation_reason
 
     @pytest.mark.asyncio
     async def test_degraded_stops_iteration_loop(
@@ -1838,8 +1751,7 @@ class TestAutoCommitDefaultDisabled:
     def test_default_config_auto_commit_disabled(self) -> None:
         """测试默认配置 enable_auto_commit=False"""
         config = MultiProcessOrchestratorConfig()
-        assert config.enable_auto_commit is False, \
-            "默认配置应禁用 auto_commit"
+        assert config.enable_auto_commit is False, "默认配置应禁用 auto_commit"
 
     def test_committer_not_initialized_when_disabled(self) -> None:
         """测试禁用 auto_commit 时 Committer 不被初始化"""
@@ -1849,8 +1761,7 @@ class TestAutoCommitDefaultDisabled:
         )
         orchestrator = MultiProcessOrchestrator(config)
 
-        assert orchestrator.committer is None, \
-            "禁用 auto_commit 时不应初始化 Committer"
+        assert orchestrator.committer is None, "禁用 auto_commit 时不应初始化 Committer"
 
     def test_committer_initialized_when_enabled(self) -> None:
         """测试启用 auto_commit 时 Committer 被初始化"""
@@ -1860,8 +1771,7 @@ class TestAutoCommitDefaultDisabled:
         )
         orchestrator = MultiProcessOrchestrator(config)
 
-        assert orchestrator.committer is not None, \
-            "启用 auto_commit 时应初始化 Committer"
+        assert orchestrator.committer is not None, "启用 auto_commit 时应初始化 Committer"
 
     @pytest.mark.asyncio
     async def test_should_commit_false_when_disabled(self) -> None:
@@ -1895,10 +1805,8 @@ class TestAutoCommitDefaultDisabled:
         result = orchestrator._generate_final_result()
 
         # 验证 commits 为空
-        assert result["commits"] == {}, \
-            "禁用 auto_commit 时 commits 应为空字典"
-        assert result["pushed"] is False, \
-            "禁用 auto_commit 时 pushed 应为 False"
+        assert result["commits"] == {}, "禁用 auto_commit 时 commits 应为空字典"
+        assert result["pushed"] is False, "禁用 auto_commit 时 pushed 应为 False"
 
     @pytest.mark.asyncio
     async def test_commit_phase_returns_error_when_no_committer(self) -> None:

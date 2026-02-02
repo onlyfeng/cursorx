@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """端到端测试 - 验证 run.py 和 orchestrator 的集成"""
+
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ def test_run_py_imports():
         MODE_ALIASES,
         RunMode,
     )
+
     print("✓ run.py 和 coordinator 模块导入成功")
 
     # 验证模式定义
@@ -271,9 +273,7 @@ def test_all_modules_import():
             return
 
         # 递归导入子模块
-        for importer, modname, ispkg in pkgutil.walk_packages(
-            package.__path__, prefix=package_name + "."
-        ):
+        for importer, modname, ispkg in pkgutil.walk_packages(package.__path__, prefix=package_name + "."):
             try:
                 importlib.import_module(modname)
                 imported_modules.append(modname)
@@ -295,6 +295,7 @@ def test_all_modules_import():
             print(f"  - {mod}: {err}")
         # 在 CI 环境中，某些依赖可能未安装，仅报告但不失败
         import os
+
         if os.environ.get("CI"):
             print("  (CI 环境，跳过导入失败的断言)")
         else:
@@ -312,7 +313,7 @@ def test_interface_consistency():
     # run.py 中 IterateArgs 定义的属性列表
     # 参考 run.py _run_iterate 方法中的 IterateArgs 类
     run_py_iterate_args_attrs = {
-        "requirement",       # goal 映射
+        "requirement",  # goal 映射
         "skip_online",
         "changelog_url",
         "dry_run",
@@ -367,6 +368,7 @@ def test_interface_consistency():
     # 动态验证：创建 IterateArgs 实例并检查属性
     class IterateArgs:
         """run.py 中定义的 IterateArgs 类副本"""
+
         def __init__(self, goal: str, opts: dict):
             self.requirement = goal
             self.skip_online = opts.get("skip_online", False)
@@ -420,13 +422,33 @@ def test_orchestrator_user_set_override_protection():
             self._orchestrator_user_set = opts.get("_orchestrator_user_set", False)
             self.directory = opts.get("directory", ".")
             self._directory_user_set = opts.get("_directory_user_set", False)
+            # 文档源配置属性
+            self.max_fetch_urls = opts.get("max_fetch_urls")
+            self.fallback_core_docs_count = opts.get("fallback_core_docs_count")
+            self.llms_txt_url = opts.get("llms_txt_url")
+            self.llms_cache_path = opts.get("llms_cache_path")
+            # 执行模式属性
+            self.execution_mode = opts.get("execution_mode", "cli")
+            self.cloud_api_key = opts.get("cloud_api_key")
+            self.cloud_auth_timeout = opts.get("cloud_auth_timeout", 30)
+            # 流式控制台渲染参数
+            self.stream_console_renderer = opts.get("stream_console_renderer", False)
+            self.stream_advanced_renderer = opts.get("stream_advanced_renderer", False)
+            self.stream_typing_effect = opts.get("stream_typing_effect", False)
+            self.stream_typing_delay = opts.get("stream_typing_delay", 0.02)
+            self.stream_word_mode = opts.get("stream_word_mode", True)
+            self.stream_color_enabled = opts.get("stream_color_enabled", True)
+            self.stream_show_word_diff = opts.get("stream_show_word_diff", False)
 
     # 场景1：用户显式设置 --orchestrator mp，requirement 包含非并行关键词
     # 期望：用户设置优先，使用 mp 编排器
-    args_explicit_mp = IterateArgs("使用协程模式完成任务", {
-        "_orchestrator_user_set": True,
-        "orchestrator": "mp",
-    })
+    args_explicit_mp = IterateArgs(
+        "使用协程模式完成任务",
+        {
+            "_orchestrator_user_set": True,
+            "orchestrator": "mp",
+        },
+    )
     iterator = SelfIterator(args_explicit_mp)
     result = iterator._get_orchestrator_type()
     assert result == "mp", f"用户显式设置 mp 应优先，实际: {result}"
@@ -434,10 +456,13 @@ def test_orchestrator_user_set_override_protection():
 
     # 场景2：用户未显式设置，requirement 包含非并行关键词
     # 期望：被关键词覆盖为 basic
-    args_auto = IterateArgs("使用协程模式完成任务", {
-        "_orchestrator_user_set": False,
-        "orchestrator": "mp",
-    })
+    args_auto = IterateArgs(
+        "使用协程模式完成任务",
+        {
+            "_orchestrator_user_set": False,
+            "orchestrator": "mp",
+        },
+    )
     iterator = SelfIterator(args_auto)
     result = iterator._get_orchestrator_type()
     assert result == "basic", f"未显式设置应被关键词覆盖为 basic，实际: {result}"
@@ -445,10 +470,13 @@ def test_orchestrator_user_set_override_protection():
 
     # 场景3：用户显式设置 --no-mp
     # 期望：使用 basic 编排器
-    args_no_mp = IterateArgs("完成任务", {
-        "_orchestrator_user_set": True,
-        "no_mp": True,
-    })
+    args_no_mp = IterateArgs(
+        "完成任务",
+        {
+            "_orchestrator_user_set": True,
+            "no_mp": True,
+        },
+    )
     iterator = SelfIterator(args_no_mp)
     result = iterator._get_orchestrator_type()
     assert result == "basic", f"显式 --no-mp 应使用 basic，实际: {result}"
@@ -456,10 +484,13 @@ def test_orchestrator_user_set_override_protection():
 
     # 场景4：用户显式设置 --orchestrator basic
     # 期望：使用 basic 编排器
-    args_basic = IterateArgs("完成任务", {
-        "_orchestrator_user_set": True,
-        "orchestrator": "basic",
-    })
+    args_basic = IterateArgs(
+        "完成任务",
+        {
+            "_orchestrator_user_set": True,
+            "orchestrator": "basic",
+        },
+    )
     iterator = SelfIterator(args_basic)
     result = iterator._get_orchestrator_type()
     assert result == "basic", f"显式 --orchestrator basic 应使用 basic，实际: {result}"
@@ -489,7 +520,7 @@ def test_requirements_installed():
                 continue
             # 提取包名（去除版本号）
             # 处理格式: package>=version, package==version, package[extra]>=version
-            match = re.match(r'^([a-zA-Z0-9_-]+)(?:\[[^\]]+\])?', line)
+            match = re.match(r"^([a-zA-Z0-9_-]+)(?:\[[^\]]+\])?", line)
             if match:
                 packages.append(match.group(1))
 
@@ -527,6 +558,7 @@ def test_requirements_installed():
 
         # 在 CI 环境中，某些可选依赖可能未安装
         import os
+
         if os.environ.get("CI"):
             print("  (CI 环境，某些可选依赖可能未安装)")
         else:

@@ -1,7 +1,6 @@
 """测试编排器（Orchestrator）初始化和配置"""
-from unittest.mock import MagicMock
 
-import pytest
+from unittest.mock import MagicMock
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from core.base import AgentRole
@@ -146,10 +145,7 @@ class TestAgentRegistration:
         orchestrator = Orchestrator(config)
 
         # 验证 worker 数量
-        worker_agents = [
-            agent for agent in orchestrator.state.agents.values()
-            if agent.role == AgentRole.WORKER
-        ]
+        worker_agents = [agent for agent in orchestrator.state.agents.values() if agent.role == AgentRole.WORKER]
         assert len(worker_agents) == 3
 
         # 验证每个 worker 都已注册
@@ -214,13 +210,8 @@ class TestModelConfigPerRole:
             log_content = log_output.getvalue()
 
             # 验证日志包含模型配置信息
-            expected_log = (
-                "各角色模型配置 - Planner: gpt-5.2-high, "
-                "Worker: opus-4.5-thinking, Reviewer: gpt-5.2-codex"
-            )
-            assert expected_log in log_content, (
-                f"未找到预期日志: {expected_log}\n实际日志: {log_content}"
-            )
+            expected_log = "各角色模型配置 - Planner: gpt-5.2-high, Worker: opus-4.5-thinking, Reviewer: gpt-5.2-codex"
+            assert expected_log in log_content, f"未找到预期日志: {expected_log}\n实际日志: {log_content}"
         finally:
             logger.remove(handler_id)
 
@@ -320,8 +311,9 @@ class TestWorkerForceWriteConfig:
 
         # 验证每个 worker 的 cursor_config.force_write=True
         for worker in orchestrator.worker_pool.workers:
-            assert worker.worker_config.cursor_config.force_write is True, \
+            assert worker.worker_config.cursor_config.force_write is True, (
                 f"Worker {worker.id} 的 force_write 应为 True，实际为 {worker.worker_config.cursor_config.force_write}"
+            )
 
     def test_workers_stream_agent_id_unique(self) -> None:
         """测试每个 Worker 的 stream_agent_id 唯一"""
@@ -332,13 +324,11 @@ class TestWorkerForceWriteConfig:
         stream_agent_ids = []
         for worker in orchestrator.worker_pool.workers:
             stream_agent_id = worker.worker_config.cursor_config.stream_agent_id
-            assert stream_agent_id is not None, \
-                f"Worker {worker.id} 的 stream_agent_id 不应为 None"
+            assert stream_agent_id is not None, f"Worker {worker.id} 的 stream_agent_id 不应为 None"
             stream_agent_ids.append(stream_agent_id)
 
         # 验证唯一性
-        assert len(stream_agent_ids) == len(set(stream_agent_ids)), \
-            f"Worker stream_agent_id 不唯一: {stream_agent_ids}"
+        assert len(stream_agent_ids) == len(set(stream_agent_ids)), f"Worker stream_agent_id 不唯一: {stream_agent_ids}"
 
     def test_planner_force_write_disabled(self) -> None:
         """测试 Planner 的 force_write=False"""
@@ -346,8 +336,9 @@ class TestWorkerForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         # Planner 不应该修改文件
-        assert orchestrator.planner.planner_config.cursor_config.force_write is False, \
+        assert orchestrator.planner.planner_config.cursor_config.force_write is False, (
             "Planner 的 force_write 应为 False（只读角色）"
+        )
 
     def test_reviewer_force_write_disabled(self) -> None:
         """测试 Reviewer 的 force_write=False"""
@@ -355,8 +346,9 @@ class TestWorkerForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         # Reviewer 不应该修改文件
-        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, \
+        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, (
             "Reviewer 的 force_write 应为 False（只读角色）"
+        )
 
     def test_workers_force_write_with_custom_config(self) -> None:
         """测试使用自定义 cursor_config 时 Worker 的 force_write 仍为 True"""
@@ -376,8 +368,9 @@ class TestWorkerForceWriteConfig:
 
         # 即使传入的 cursor_config.force_write=False，Worker 也应该被覆盖为 True
         for worker in orchestrator.worker_pool.workers:
-            assert worker.worker_config.cursor_config.force_write is True, \
+            assert worker.worker_config.cursor_config.force_write is True, (
                 f"Worker {worker.id} 的 force_write 应被强制设置为 True"
+            )
 
 
 class TestAgentModeAndForceWriteConfig:
@@ -396,8 +389,9 @@ class TestAgentModeAndForceWriteConfig:
 
         # 验证所有 Worker 的 force_write=True
         for worker in orchestrator.worker_pool.workers:
-            assert worker.worker_config.cursor_config.force_write is True, \
+            assert worker.worker_config.cursor_config.force_write is True, (
                 f"Worker {worker.id} 的 force_write 应为 True"
+            )
 
     def test_worker_agent_mode(self) -> None:
         """验证 Worker 的 mode='agent' 配置"""
@@ -406,16 +400,16 @@ class TestAgentModeAndForceWriteConfig:
 
         # 验证所有 Worker 的 mode='agent'
         for worker in orchestrator.worker_pool.workers:
-            assert worker.worker_config.cursor_config.mode == 'agent', \
-                f"Worker {worker.id} 的 mode 应为 'agent'"
+            assert worker.worker_config.cursor_config.mode == "agent", f"Worker {worker.id} 的 mode 应为 'agent'"
 
     def test_planner_force_write_disabled(self) -> None:
         """验证 Planner 的 force_write=False 配置"""
         config = OrchestratorConfig()
         orchestrator = Orchestrator(config)
 
-        assert orchestrator.planner.planner_config.cursor_config.force_write is False, \
+        assert orchestrator.planner.planner_config.cursor_config.force_write is False, (
             "Planner 的 force_write 应为 False（只读）"
+        )
 
     def test_planner_plan_mode(self) -> None:
         """验证 Planner 的 mode='plan' 配置（由 PlannerAgent 内部设置）"""
@@ -423,16 +417,16 @@ class TestAgentModeAndForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         # Planner 默认使用 plan 模式（在 PlannerAgent._apply_plan_mode_config 中设置）
-        assert orchestrator.planner.planner_config.cursor_config.mode == 'plan', \
-            "Planner 的 mode 应为 'plan'"
+        assert orchestrator.planner.planner_config.cursor_config.mode == "plan", "Planner 的 mode 应为 'plan'"
 
     def test_reviewer_force_write_disabled(self) -> None:
         """验证 Reviewer 的 force_write=False 配置"""
         config = OrchestratorConfig()
         orchestrator = Orchestrator(config)
 
-        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, \
+        assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False, (
             "Reviewer 的 force_write 应为 False（只读）"
+        )
 
     def test_reviewer_ask_mode(self) -> None:
         """验证 Reviewer 的 mode='ask' 配置"""
@@ -440,8 +434,7 @@ class TestAgentModeAndForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         # Reviewer 使用 ask 模式（在 ReviewerAgent._apply_ask_mode_config 中设置）
-        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == 'ask', \
-            "Reviewer 的 mode 应为 'ask'"
+        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == "ask", "Reviewer 的 mode 应为 'ask'"
 
     def test_worker_force_write_affects_cursor_client(self) -> None:
         """验证 Worker 的 force_write=True 能传递到 CursorAgentClient
@@ -453,8 +446,9 @@ class TestAgentModeAndForceWriteConfig:
 
         for worker in orchestrator.worker_pool.workers:
             # 验证 cursor_client 的配置也有 force_write=True
-            assert worker.cursor_client.config.force_write is True, \
+            assert worker.cursor_client.config.force_write is True, (
                 f"Worker {worker.id} 的 cursor_client.config.force_write 应为 True"
+            )
 
     def test_planner_readonly_guarantee(self) -> None:
         """验证 Planner 只读保证（mode='plan' + force_write=False）"""
@@ -462,7 +456,7 @@ class TestAgentModeAndForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         planner_config = orchestrator.planner.planner_config.cursor_config
-        assert planner_config.mode == 'plan', "Planner 应使用 plan 模式"
+        assert planner_config.mode == "plan", "Planner 应使用 plan 模式"
         assert planner_config.force_write is False, "Planner 不应允许写入"
 
     def test_reviewer_readonly_guarantee(self) -> None:
@@ -471,7 +465,7 @@ class TestAgentModeAndForceWriteConfig:
         orchestrator = Orchestrator(config)
 
         reviewer_config = orchestrator.reviewer.reviewer_config.cursor_config
-        assert reviewer_config.mode == 'ask', "Reviewer 应使用 ask 模式"
+        assert reviewer_config.mode == "ask", "Reviewer 应使用 ask 模式"
         assert reviewer_config.force_write is False, "Reviewer 不应允许写入"
 
 
@@ -532,7 +526,7 @@ class TestRoleBasedExecutionMode:
 
         # Planner 应保持只读语义
         assert orchestrator.planner.planner_config.cursor_config.force_write is False
-        assert orchestrator.planner.planner_config.cursor_config.mode == 'plan'
+        assert orchestrator.planner.planner_config.cursor_config.mode == "plan"
 
     def test_reviewer_readonly_with_custom_execution_mode(self) -> None:
         """测试 Reviewer 使用自定义执行模式时仍保持只读语义"""
@@ -545,7 +539,7 @@ class TestRoleBasedExecutionMode:
 
         # Reviewer 应保持只读语义
         assert orchestrator.reviewer.reviewer_config.cursor_config.force_write is False
-        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == 'ask'
+        assert orchestrator.reviewer.reviewer_config.cursor_config.mode == "ask"
 
     def test_worker_force_write_with_custom_execution_mode(self) -> None:
         """测试 Worker 使用自定义执行模式时保持写入权限"""
@@ -559,7 +553,7 @@ class TestRoleBasedExecutionMode:
         # Worker 应保持写入权限
         for worker in orchestrator.worker_pool.workers:
             assert worker.worker_config.cursor_config.force_write is True
-            assert worker.worker_config.cursor_config.mode == 'agent'
+            assert worker.worker_config.cursor_config.mode == "agent"
 
     def test_role_execution_mode_propagation_to_agent_config(self) -> None:
         """测试角色级执行模式正确传递到 Agent 配置"""
@@ -592,8 +586,7 @@ class TestAutoCommitDefaultDisabled:
     def test_default_config_auto_commit_disabled(self) -> None:
         """测试默认配置 enable_auto_commit=False"""
         config = OrchestratorConfig()
-        assert config.enable_auto_commit is False, \
-            "默认配置应禁用 auto_commit"
+        assert config.enable_auto_commit is False, "默认配置应禁用 auto_commit"
 
     def test_committer_not_initialized_when_disabled(self) -> None:
         """测试禁用 auto_commit 时 Committer 不被初始化"""
@@ -603,8 +596,7 @@ class TestAutoCommitDefaultDisabled:
         )
         orchestrator = Orchestrator(config)
 
-        assert orchestrator.committer is None, \
-            "禁用 auto_commit 时不应初始化 Committer"
+        assert orchestrator.committer is None, "禁用 auto_commit 时不应初始化 Committer"
 
     def test_committer_initialized_when_enabled(self) -> None:
         """测试启用 auto_commit 时 Committer 被初始化"""
@@ -614,8 +606,7 @@ class TestAutoCommitDefaultDisabled:
         )
         orchestrator = Orchestrator(config)
 
-        assert orchestrator.committer is not None, \
-            "启用 auto_commit 时应初始化 Committer"
+        assert orchestrator.committer is not None, "启用 auto_commit 时应初始化 Committer"
 
     def test_committer_registered_when_enabled(self) -> None:
         """测试启用 auto_commit 时 Committer 注册到 SystemState"""
@@ -626,12 +617,8 @@ class TestAutoCommitDefaultDisabled:
         orchestrator = Orchestrator(config)
 
         # 验证 committer 注册到 agents
-        committer_agents = [
-            agent for agent in orchestrator.state.agents.values()
-            if agent.role == AgentRole.COMMITTER
-        ]
-        assert len(committer_agents) == 1, \
-            "启用 auto_commit 时应注册 Committer"
+        committer_agents = [agent for agent in orchestrator.state.agents.values() if agent.role == AgentRole.COMMITTER]
+        assert len(committer_agents) == 1, "启用 auto_commit 时应注册 Committer"
 
     def test_committer_not_registered_when_disabled(self) -> None:
         """测试禁用 auto_commit 时 Committer 不注册到 SystemState"""
@@ -642,9 +629,5 @@ class TestAutoCommitDefaultDisabled:
         orchestrator = Orchestrator(config)
 
         # 验证没有 committer 注册
-        committer_agents = [
-            agent for agent in orchestrator.state.agents.values()
-            if agent.role == AgentRole.COMMITTER
-        ]
-        assert len(committer_agents) == 0, \
-            "禁用 auto_commit 时不应注册 Committer"
+        committer_agents = [agent for agent in orchestrator.state.agents.values() if agent.role == AgentRole.COMMITTER]
+        assert len(committer_agents) == 0, "禁用 auto_commit 时不应注册 Committer"

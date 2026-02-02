@@ -7,6 +7,7 @@
 
 使用 mock 模拟 Cursor CLI 调用，避免实际执行 CLI 命令
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,8 @@ from agents.worker import WorkerAgent, WorkerConfig
 from core.base import AgentStatus
 from cursor.executor import AgentResult
 
-
 # ========== 测试辅助函数 ==========
+
 
 def create_mock_agent_result(
     success: bool = True,
@@ -95,6 +96,7 @@ def create_reviewer_json_output(decision: str = "continue", score: int = 75) -> 
 
 
 # ========== PlannerAgent 测试 ==========
+
 
 class TestPlannerAgentExecute:
     """测试 PlannerAgent.execute() 方法"""
@@ -263,6 +265,7 @@ class TestPlannerAgentExecute:
 
 
 # ========== WorkerAgent 测试 ==========
+
 
 class TestWorkerAgentExecute:
     """测试 WorkerAgent.execute() 方法"""
@@ -580,6 +583,7 @@ class TestWorkerAgentExecute:
 
 # ========== ReviewerAgent 测试 ==========
 
+
 class TestReviewerAgentExecute:
     """测试 ReviewerAgent.execute() 方法"""
 
@@ -832,6 +836,7 @@ class TestReviewerAgentStrict:
 
 # ========== 集成场景测试 ==========
 
+
 class TestAgentBehaviorIntegration:
     """测试多个 Agent 协作场景"""
 
@@ -861,10 +866,11 @@ class TestAgentBehaviorIntegration:
             output=create_reviewer_json_output(decision="complete", score=90),
         )
 
-        with patch.object(planner._executor, "execute", new_callable=AsyncMock) as mock_planner_exec, \
-             patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_worker_exec, \
-             patch.object(reviewer._executor, "execute", new_callable=AsyncMock) as mock_reviewer_exec:
-
+        with (
+            patch.object(planner._executor, "execute", new_callable=AsyncMock) as mock_planner_exec,
+            patch.object(worker._executor, "execute", new_callable=AsyncMock) as mock_worker_exec,
+            patch.object(reviewer._executor, "execute", new_callable=AsyncMock) as mock_reviewer_exec,
+        ):
             mock_planner_exec.return_value = planner_result
             mock_worker_exec.return_value = worker_result
             mock_reviewer_exec.return_value = reviewer_result

@@ -23,156 +23,15 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# 从统一契约模块导入
+from core.check_all_contract import (  # noqa: E402
+    VALID_STATUSES,
+    get_expected_schema,
+    validate_json_against_schema,
+)
+
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 CHECK_ALL_SCRIPT = SCRIPTS_DIR / "check_all.sh"
-
-
-# ==================== JSON Schema 定义 ====================
-
-
-def get_expected_schema() -> dict[str, Any]:
-    """返回 check_all.sh --json 输出的预期 schema。
-
-    这是 output_json_result 函数输出的契约定义。
-    """
-    return {
-        # 顶层必需字段
-        "required_fields": {
-            "success": bool,
-            "exit_code": int,
-            "summary": dict,
-            "checks": list,
-        },
-        # 顶层可选字段
-        "optional_fields": {
-            "ci_mode": bool,
-            "fail_fast": bool,
-            "full_check": bool,
-            "diagnose_hang": bool,
-            "timeout_backend": str,
-            "log_dir": str,
-            "project_root": str,
-            "timestamp": str,
-            "durations": list,
-        },
-        # summary 子结构
-        "summary_fields": {
-            "passed": int,
-            "failed": int,
-            "warnings": int,
-            "skipped": int,
-            "total": int,
-        },
-        # check 项必需字段
-        "check_required_fields": {
-            "section": str,
-            "name": str,
-            "status": str,
-        },
-        # check 项可选字段
-        "check_optional_fields": {
-            "message": str,
-            "duration_ms": int,
-            "log_file": str,
-            "command": str,
-            "last_test": str,
-        },
-        # status 允许的值
-        "valid_statuses": ["pass", "fail", "warn", "skip", "info"],
-        # duration 项结构
-        "duration_fields": {
-            "name": str,
-            "duration_ms": int,
-        },
-    }
-
-
-# ==================== 验证函数 ====================
-
-
-def validate_json_against_schema(data: dict[str, Any], schema: dict[str, Any]) -> list[str]:
-    """验证 JSON 数据是否符合 schema。
-
-    Args:
-        data: 要验证的 JSON 数据
-        schema: 预期的 schema 定义
-
-    Returns:
-        错误消息列表，空列表表示验证通过
-    """
-    errors = []
-
-    # 验证顶层必需字段
-    for field, expected_type in schema["required_fields"].items():
-        if field not in data:
-            errors.append(f"缺少必需字段: {field}")
-        elif not isinstance(data[field], expected_type):
-            errors.append(f"字段 {field} 类型错误: 期望 {expected_type.__name__}, 实际 {type(data[field]).__name__}")
-
-    # 验证顶层可选字段类型（如果存在）
-    for field, expected_type in schema["optional_fields"].items():
-        if field in data and data[field] is not None and not isinstance(data[field], expected_type):
-            errors.append(
-                f"可选字段 {field} 类型错误: 期望 {expected_type.__name__}, 实际 {type(data[field]).__name__}"
-            )
-
-    # 验证 summary 结构
-    if "summary" in data and isinstance(data["summary"], dict):
-        summary = data["summary"]
-        for field, expected_type in schema["summary_fields"].items():
-            if field not in summary:
-                errors.append(f"summary 缺少字段: {field}")
-            elif not isinstance(summary[field], expected_type):
-                errors.append(
-                    f"summary.{field} 类型错误: 期望 {expected_type.__name__}, 实际 {type(summary[field]).__name__}"
-                )
-
-    # 验证 checks 数组
-    if "checks" in data and isinstance(data["checks"], list):
-        for i, check in enumerate(data["checks"]):
-            if not isinstance(check, dict):
-                errors.append(f"checks[{i}] 应为 dict，实际为 {type(check).__name__}")
-                continue
-
-            # 验证必需字段
-            for field, expected_type in schema["check_required_fields"].items():
-                if field not in check:
-                    errors.append(f"checks[{i}] 缺少必需字段: {field}")
-                elif not isinstance(check[field], expected_type):
-                    errors.append(
-                        f"checks[{i}].{field} 类型错误: 期望 {expected_type.__name__}, "
-                        f"实际 {type(check[field]).__name__}"
-                    )
-
-            # 验证 status 值
-            if "status" in check and check["status"] not in schema["valid_statuses"]:
-                errors.append(f"checks[{i}].status 值无效: {check['status']}, 允许值: {schema['valid_statuses']}")
-
-            # 验证可选字段类型（如果存在）
-            for field, expected_type in schema["check_optional_fields"].items():
-                if field in check and check[field] is not None and not isinstance(check[field], expected_type):
-                    errors.append(
-                        f"checks[{i}].{field} 类型错误: 期望 {expected_type.__name__}, "
-                        f"实际 {type(check[field]).__name__}"
-                    )
-
-    # 验证 durations 数组
-    if "durations" in data and isinstance(data["durations"], list):
-        for i, duration in enumerate(data["durations"]):
-            if not isinstance(duration, dict):
-                errors.append(f"durations[{i}] 应为 dict，实际为 {type(duration).__name__}")
-                continue
-
-            for field, expected_type in schema["duration_fields"].items():
-                if field not in duration:
-                    errors.append(f"durations[{i}] 缺少字段: {field}")
-                elif not isinstance(duration[field], expected_type):
-                    errors.append(
-                        f"durations[{i}].{field} 类型错误: 期望 {expected_type.__name__}, "
-                        f"实际 {type(duration[field]).__name__}"
-                    )
-
-    return errors
 
 
 # ==================== 测试 Fixtures ====================
@@ -421,54 +280,102 @@ class TestHelpMessage:
         assert "JSON" in result.stdout, "帮助信息中应说明 JSON 输出"
 
 
-# ==================== 最小 JSON 输出测试（可选，需要实际运行脚本）====================
+# ==================== 轻量 JSON 契约测试（CI 必跑，防止 PR 解析失败）====================
 
 
-@pytest.mark.slow
 @pytest.mark.skipif(not CHECK_ALL_SCRIPT.exists(), reason="check_all.sh 脚本不存在")
-class TestMinimalJsonOutput:
-    """最小 JSON 输出测试。
+class TestMinimalJsonContract:
+    """轻量 JSON 契约测试（非 slow，CI 必跑）。
 
-    这些测试需要实际运行 check_all.sh 脚本，可能较慢。
-    使用 --mode mode1 限制只运行一个快速检查。
+    使用 --mode minimal 运行最轻量的检查（仅 Python 版本 + 基础验证）。
+    直接使用 json.loads(stdout) 验证输出是纯 JSON，不使用宽松的 find('{') 策略。
+    这确保 PR workflow 能够正确解析 JSON 输出。
+
+    耗时约 2-3 秒，无额外依赖要求。
     """
 
-    def test_json_output_is_valid_json(self):
-        """测试 --json 输出是有效的 JSON"""
-        # 使用 --mode import 作为最快的检查模式
+    def test_json_output_is_pure_json(self):
+        """测试 --json --mode minimal 输出是纯 JSON（严格解析）
+
+        关键点：
+        1. 直接 json.loads(stdout)，不使用 find('{') 宽松策略
+        2. 确保输出无前缀杂质（echo/debug 输出等）
+        3. 验证 schema 符合契约定义
+        """
         result = subprocess.run(
             [
                 "bash",
                 str(CHECK_ALL_SCRIPT),
                 "--json",
                 "--mode",
-                "import",  # 最快的检查模式
+                "minimal",  # 最轻量的检查模式（仅 Python 版本 + 基础验证）
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=30,  # minimal 模式通常 2-3 秒完成
             cwd=str(PROJECT_ROOT),
         )
 
-        # 尝试解析 JSON
+        # 严格解析：直接 json.loads(stdout)，不使用 find('{') 宽松策略
+        # 如果输出有任何前缀杂质，这里会失败并暴露问题
         try:
-            # 输出应该是完整的 JSON
-            output = result.stdout.strip()
-            # 从第一个 { 开始找 JSON
-            json_start = output.find("{")
-            if json_start >= 0:
-                json_str = output[json_start:]
-                data = json.loads(json_str)
-
-                # 验证基本结构
-                schema = get_expected_schema()
-                errors = validate_json_against_schema(data, schema)
-                assert errors == [], f"JSON schema 验证错误: {errors}"
-            else:
-                # 如果没有 JSON 输出，检查是否有错误
-                pytest.skip(f"脚本未产生 JSON 输出: {result.stderr}")
+            data = json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            pytest.fail(f"无效的 JSON 输出: {e}\n输出: {result.stdout}")
+            # 提供详细的错误信息帮助调试
+            stdout_preview = result.stdout[:500] if len(result.stdout) > 500 else result.stdout
+            pytest.fail(
+                f"JSON 解析失败（stdout 应为纯 JSON，无前缀杂质）:\n"
+                f"错误: {e}\n"
+                f"stdout 前 500 字符: {stdout_preview}\n"
+                f"stderr: {result.stderr}"
+            )
+
+        # 验证 schema 符合契约定义
+        schema = get_expected_schema()
+        errors = validate_json_against_schema(data, schema)
+        assert errors == [], f"JSON schema 验证错误: {errors}"
+
+        # 验证 minimal 模式的基本结构
+        assert "success" in data, "缺少 success 字段"
+        assert "exit_code" in data, "缺少 exit_code 字段"
+        assert isinstance(data["checks"], list), "checks 应为列表"
+        assert isinstance(data["summary"], dict), "summary 应为字典"
+
+        # 验证 status 枚举值（使用统一常量）
+        for check in data["checks"]:
+            assert check.get("status") in VALID_STATUSES, (
+                f"无效的 status 值: {check.get('status')}，允许值: {VALID_STATUSES}"
+            )
+
+    def test_json_output_exit_code_consistency(self):
+        """测试 JSON 输出的 exit_code 与实际退出码一致"""
+        result = subprocess.run(
+            [
+                "bash",
+                str(CHECK_ALL_SCRIPT),
+                "--json",
+                "--mode",
+                "minimal",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(PROJECT_ROOT),
+        )
+
+        # 严格解析
+        data = json.loads(result.stdout)
+
+        # exit_code 应与实际退出码一致
+        assert data["exit_code"] == result.returncode, (
+            f"exit_code 不一致: JSON 中为 {data['exit_code']}，实际退出码为 {result.returncode}"
+        )
+
+        # success 字段应与 exit_code 一致
+        if data["exit_code"] == 0:
+            assert data["success"] is True, "exit_code=0 时 success 应为 True"
+        else:
+            assert data["success"] is False, "exit_code!=0 时 success 应为 False"
 
 
 # ==================== 契约一致性测试 ====================

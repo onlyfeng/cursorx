@@ -20,14 +20,20 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 导入被测模块的函数（需要先修改 sys.path）
+# 从统一契约模块导入常量
+from core.check_all_contract import (  # noqa: E402
+    STATUS_EMOJI_MAP,
+    VALID_STATUSES,
+    status_emoji,
+)
+
+# 导入被测模块的函数
 from scripts.render_check_all_summary import (  # noqa: E402
     group_checks_by_section,
     group_checks_by_status,
     render_check_item,
     render_markdown,
     render_summary_table,
-    status_emoji,
 )
 
 # ==================== 测试 Fixtures ====================
@@ -185,28 +191,51 @@ class TestStatusEmoji:
 
     def test_pass_emoji(self):
         """测试 pass 状态的 emoji"""
-        assert status_emoji("pass") == "✅"
+        assert status_emoji("pass") == STATUS_EMOJI_MAP["pass"]
 
     def test_fail_emoji(self):
         """测试 fail 状态的 emoji"""
-        assert status_emoji("fail") == "❌"
+        assert status_emoji("fail") == STATUS_EMOJI_MAP["fail"]
 
     def test_warn_emoji(self):
         """测试 warn 状态的 emoji"""
-        assert status_emoji("warn") == "⚠️"
+        assert status_emoji("warn") == STATUS_EMOJI_MAP["warn"]
 
     def test_skip_emoji(self):
         """测试 skip 状态的 emoji"""
-        assert status_emoji("skip") == "⏭️"
+        assert status_emoji("skip") == STATUS_EMOJI_MAP["skip"]
 
     def test_info_emoji(self):
         """测试 info 状态的 emoji"""
-        assert status_emoji("info") == "ℹ️"
+        assert status_emoji("info") == STATUS_EMOJI_MAP["info"]
 
     def test_unknown_status(self):
         """测试未知状态的 emoji"""
         assert status_emoji("unknown") == "❓"
         assert status_emoji("") == "❓"
+
+    def test_all_valid_statuses_have_emoji(self):
+        """测试所有有效状态都有对应的 emoji"""
+        for status in VALID_STATUSES:
+            assert status in STATUS_EMOJI_MAP, f"状态 {status} 缺少 emoji 定义"
+            assert status_emoji(status) == STATUS_EMOJI_MAP[status]
+
+    def test_various_unknown_statuses(self):
+        """测试各种未知状态都回退到 ❓"""
+        unknown_values = [
+            "error",  # 常见但不在枚举中
+            "pending",
+            "running",
+            "cancelled",
+            "timeout",
+            "PASS",  # 大写
+            "Fail",  # 混合大小写
+            "123",
+            "?",
+            "❌",  # emoji 本身作为状态值
+        ]
+        for status in unknown_values:
+            assert status_emoji(status) == "❓", f"status={status!r} 应返回 ❓"
 
 
 # ==================== group_checks_by_section 测试 ====================
@@ -297,7 +326,7 @@ class TestRenderCheckItem:
         lines = render_check_item(check)
 
         assert len(lines) >= 1
-        assert "✅" in lines[0]
+        assert STATUS_EMOJI_MAP["pass"] in lines[0]
         assert "**测试项**" in lines[0]
         assert "通过" in lines[0]
 
@@ -506,6 +535,210 @@ class TestRenderMarkdown:
         output = render_markdown(sample_json_data)
 
         assert "本地运行 `bash scripts/check_all.sh --full` 复现问题" in output
+
+
+# ==================== 边缘情况测试 ====================
+
+
+class TestEdgeCases:
+    """边缘情况测试（字段缺失、未知值等）"""
+
+    def test_durations_missing(self):
+        """测试 durations 字段缺失时渲染不抛异常"""
+        data = {
+            "success": True,
+            "exit_code": 0,
+            "summary": {"passed": 2, "failed": 0, "warnings": 0, "skipped": 0, "total": 2},
+            "checks": [
+                {"section": "测试", "name": "test1", "status": "pass"},
+                {"section": "测试", "name": "test2", "status": "pass"},
+            ],
+            # durations 字段完全缺失
+        }
+        output = render_markdown(data)
+
+        # 不应抛异常，应包含基本结构
+        assert "## ✅ 项目健康检查通过" in output
+        assert "| 类型 | 数量 |" in output
+        # 不应包含耗时统计折叠块
+        assert "⏱️ 耗时统计" not in output
+
+    def test_summary_total_missing_inferred_from_counts(self):
+        """测试 summary.total 缺失时由 passed/failed/... 推导"""
+        data = {
+            "success": False,
+            "exit_code": 1,
+            "summary": {
+                "passed": 3,
+                "failed": 1,
+                "warnings": 2,
+                "skipped": 1,
+                # total 字段缺失，应由 3+1+2+1=7 推导
+            },
+            "checks": [
+                {"section": "测试", "name": "test1", "status": "pass"},
+                {"section": "测试", "name": "test2", "status": "pass"},
+                {"section": "测试", "name": "test3", "status": "pass"},
+                {"section": "测试", "name": "test4", "status": "fail"},
+                {"section": "安全", "name": "sec1", "status": "warn"},
+                {"section": "安全", "name": "sec2", "status": "warn"},
+                {"section": "其他", "name": "other1", "status": "skip"},
+            ],
+            "durations": [],
+        }
+        output = render_markdown(data)
+
+        # 不应抛异常
+        assert "## ❌ 项目健康检查失败" in output
+        # total 应被推导为 7
+        assert "| **总计** | **7** |" in output
+
+    def test_checks_with_extra_unknown_fields(self):
+        """测试 checks 中存在额外未知字段时渲染正常"""
+        data = {
+            "success": True,
+            "exit_code": 0,
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0, "total": 1},
+            "checks": [
+                {
+                    "section": "测试",
+                    "name": "test1",
+                    "status": "pass",
+                    "message": "通过",
+                    # 额外未知字段
+                    "unknown_field_1": "some_value",
+                    "unknown_field_2": 12345,
+                    "extra_metadata": {"nested": "data"},
+                    "legacy_code": None,
+                },
+            ],
+            "durations": [],
+        }
+        output = render_markdown(data)
+
+        # 不应抛异常，应正常渲染
+        assert "## ✅ 项目健康检查通过" in output
+        assert "test1" in output
+        assert "通过" in output
+
+    def test_unknown_status_renders_question_mark(self):
+        """测试未知 status 值时 render_check_item 使用 ❓ emoji"""
+        # 注意：render_by_section 只渲染 pass/fail/warn/skip 状态的检查项
+        # 未知状态的检查项不会出现在 render_markdown 的输出中
+        # 但 render_check_item 函数本身能正确处理未知状态
+
+        # 测试 render_check_item 对未知状态的处理
+        unknown_checks = [
+            {"section": "测试", "name": "invalid_status", "status": "invalid_value"},
+            {"section": "测试", "name": "empty_status", "status": ""},
+            {"section": "测试", "name": "error_status", "status": "error"},
+        ]
+
+        for check in unknown_checks:
+            lines = render_check_item(check)
+            output = "\n".join(lines)
+
+            # 不应抛异常
+            assert check["name"] in output, f"检查项名称应在输出中: {check['name']}"
+            # 应使用 ❓ emoji
+            assert "❓" in output, f"未知状态应使用 ❓ emoji: {check['status']}"
+
+    def test_render_markdown_with_unknown_status_no_exception(self):
+        """测试 render_markdown 处理未知状态时不抛异常"""
+        data = {
+            "success": True,
+            "exit_code": 0,
+            "summary": {"passed": 0, "failed": 0, "warnings": 0, "skipped": 0, "total": 2},
+            "checks": [
+                {
+                    "section": "测试",
+                    "name": "unknown_status_test",
+                    "status": "invalid_status_value",  # 未知状态
+                    "message": "测试未知状态",
+                },
+                {
+                    "section": "测试",
+                    "name": "empty_status_test",
+                    "status": "",  # 空状态
+                },
+            ],
+            "durations": [],
+        }
+
+        # 不应抛异常，应正常渲染基本结构
+        output = render_markdown(data)
+
+        # 基本结构应存在
+        assert "## ✅ 项目健康检查通过" in output
+        assert "| 类型 | 数量 |" in output
+        # 注意：未知状态的检查项不会出现在 pass/fail/warn/skip 分类中
+        # 这是 render_by_section 的预期行为
+
+    def test_render_with_all_optional_fields_missing(self):
+        """测试所有可选字段都缺失时渲染正常"""
+        data = {
+            "success": True,
+            "exit_code": 0,
+            "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0, "total": 1},
+            "checks": [
+                {
+                    "section": "测试",
+                    "name": "minimal_check",
+                    "status": "pass",
+                    # message, duration_ms, log_file, command, last_test 都缺失
+                },
+            ],
+            # timestamp, log_dir, ci_mode 等都缺失
+        }
+        output = render_markdown(data)
+
+        # 不应抛异常
+        assert "## ✅ 项目健康检查通过" in output
+        assert "minimal_check" in output
+
+    def test_render_markdown_basic_structure_always_present(self):
+        """测试 render_markdown 输出始终包含基本标题/表格结构"""
+        test_cases = [
+            # 成功场景
+            {
+                "success": True,
+                "exit_code": 0,
+                "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0, "total": 1},
+                "checks": [{"section": "测试", "name": "t", "status": "pass"}],
+            },
+            # 失败场景
+            {
+                "success": False,
+                "exit_code": 1,
+                "summary": {"passed": 0, "failed": 1, "warnings": 0, "skipped": 0, "total": 1},
+                "checks": [{"section": "测试", "name": "t", "status": "fail"}],
+            },
+            # 空检查
+            {
+                "success": True,
+                "exit_code": 0,
+                "summary": {"passed": 0, "failed": 0, "warnings": 0, "skipped": 0, "total": 0},
+                "checks": [],
+            },
+            # durations 缺失
+            {
+                "success": True,
+                "exit_code": 0,
+                "summary": {"passed": 1, "failed": 0, "warnings": 0, "skipped": 0},
+                "checks": [{"section": "测试", "name": "t", "status": "pass"}],
+            },
+        ]
+
+        for i, data in enumerate(test_cases):
+            output = render_markdown(data)
+
+            # 基本结构检查
+            assert "| 类型 | 数量 |" in output, f"用例 {i}: 缺少表格头"
+            assert "|------|------|" in output, f"用例 {i}: 缺少表格分隔符"
+            # 标题（成功或失败）
+            assert "## ✅" in output or "## ❌" in output, f"用例 {i}: 缺少标题"
+            # 提示章节
+            assert "### 💡 提示" in output, f"用例 {i}: 缺少提示章节"
 
 
 # ==================== 集成测试 ====================

@@ -10,6 +10,7 @@
 - orchestrator_factory: Orchestrator 工厂 fixture
 - 断言助手函数
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 from unittest.mock import patch
 
 import pytest
@@ -25,30 +26,29 @@ from pydantic import BaseModel, Field
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from cursor.executor import AgentResult, ExecutionMode
+from knowledge.manager import KnowledgeManager
 from knowledge.models import Document
 from knowledge.storage import SearchResult
 from tasks.task import Task, TaskPriority, TaskStatus, TaskType
 
-
 # ==================== pytest 标记定义 ====================
+
 
 def pytest_configure(config):
     """配置 pytest 标记"""
-    config.addinivalue_line(
-        "markers", "e2e: 标记为端到端测试（可能较慢且需要完整环境）"
-    )
-    config.addinivalue_line(
-        "markers", "slow: 标记为慢速测试（执行时间较长）"
-    )
-    config.addinivalue_line(
-        "markers", "integration: 标记为集成测试"
-    )
+    config.addinivalue_line("markers", "e2e: 标记为端到端测试（可能较慢且需要完整环境）")
+    config.addinivalue_line("markers", "slow: 标记为慢速测试（执行时间较长）")
+    config.addinivalue_line("markers", "integration: 标记为集成测试")
+    config.addinivalue_line("markers", "allow_network: 允许网络访问（绕过 CURSORX_BLOCK_NETWORK 阻断，最高优先级）")
+    config.addinivalue_line("markers", "block_network: 显式阻断网络访问（无需依赖 CURSORX_BLOCK_NETWORK 环境变量）")
 
 
 # ==================== Mock 执行器 ====================
 
+
 class MockAgentResult(BaseModel):
     """Mock Agent 执行结果"""
+
     success: bool = True
     output: str = ""
     error: Optional[str] = None
@@ -64,6 +64,7 @@ class ExecutionTrace(BaseModel):
 
     记录单次执行的详细信息，用于断言和验证。
     """
+
     execution_id: str
     prompt: str
     context: Optional[dict[str, Any]] = None
@@ -198,13 +199,15 @@ class MockAgentExecutor:
             files_modified: 修改的文件列表
             duration: 执行时长
         """
-        self._responses.append({
-            "success": success,
-            "output": output,
-            "error": error,
-            "files_modified": files_modified or [],
-            "duration": duration,
-        })
+        self._responses.append(
+            {
+                "success": success,
+                "output": output,
+                "error": error,
+                "files_modified": files_modified or [],
+                "duration": duration,
+            }
+        )
 
     def configure_responses(self, responses: list[dict[str, Any]]) -> None:
         """配置多个响应（按顺序返回）
@@ -310,14 +313,16 @@ class MockAgentExecutor:
         self._execution_traces.append(trace)
 
         # 记录执行历史（向后兼容）
-        self._execution_history.append({
-            "prompt": prompt,
-            "context": context,
-            "working_directory": working_directory,
-            "timeout": timeout,
-            "timestamp": started_at.isoformat(),
-            "execution_id": execution_id,
-        })
+        self._execution_history.append(
+            {
+                "prompt": prompt,
+                "context": context,
+                "working_directory": working_directory,
+                "timeout": timeout,
+                "timestamp": started_at.isoformat(),
+                "execution_id": execution_id,
+            }
+        )
 
         # 模拟延迟
         if self._default_delay > 0:
@@ -359,6 +364,7 @@ class MockAgentExecutor:
 
 
 # ==================== Mock 任务队列 ====================
+
 
 class MockTaskQueue:
     """模拟任务队列
@@ -446,32 +452,28 @@ class MockTaskQueue:
     def get_pending_count(self, iteration_id: int) -> int:
         """获取待处理任务数量"""
         return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id
-            and t.status in (TaskStatus.PENDING, TaskStatus.QUEUED)
+            1
+            for t in self._tasks.values()
+            if t.iteration_id == iteration_id and t.status in (TaskStatus.PENDING, TaskStatus.QUEUED)
         )
 
     def get_in_progress_count(self, iteration_id: int) -> int:
         """获取执行中任务数量"""
         return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id
-            and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            1
+            for t in self._tasks.values()
+            if t.iteration_id == iteration_id and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         )
 
     def get_completed_count(self, iteration_id: int) -> int:
         """获取已完成任务数量"""
         return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id and t.status == TaskStatus.COMPLETED
+            1 for t in self._tasks.values() if t.iteration_id == iteration_id and t.status == TaskStatus.COMPLETED
         )
 
     def get_failed_count(self, iteration_id: int) -> int:
         """获取失败任务数量"""
-        return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id and t.status == TaskStatus.FAILED
-        )
+        return sum(1 for t in self._tasks.values() if t.iteration_id == iteration_id and t.status == TaskStatus.FAILED)
 
     def is_iteration_complete(self, iteration_id: int) -> bool:
         """检查迭代是否完成"""
@@ -513,6 +515,7 @@ class MockTaskQueue:
 
 
 # ==================== Mock 知识库管理器 ====================
+
 
 class MockKnowledgeManager:
     """模拟知识库管理器
@@ -694,6 +697,7 @@ class MockKnowledgeManager:
 
 # ==================== Fixtures ====================
 
+
 @pytest.fixture
 def temp_workspace(tmp_path: Path):
     """临时工作空间 fixture
@@ -867,11 +871,11 @@ def orchestrator_factory(
         )
 
         # 使用 mock 替换实际的执行器
-        with patch('agents.worker.WorkerAgent._create_executor') as mock_create:
+        with patch("agents.worker.WorkerAgent._create_executor") as mock_create:
             mock_create.return_value = mock_executor
             orchestrator = Orchestrator(
                 config=config,
-                knowledge_manager=mock_knowledge_manager,
+                knowledge_manager=cast(KnowledgeManager, mock_knowledge_manager),
             )
             created_orchestrators.append(orchestrator)
             return orchestrator
@@ -880,11 +884,13 @@ def orchestrator_factory(
 
     # 清理
     for orchestrator in created_orchestrators:
-        if hasattr(orchestrator, 'worker_pool'):
-            orchestrator.worker_pool.shutdown()
+        worker_pool = getattr(orchestrator, "worker_pool", None)
+        if worker_pool is not None:
+            cast(Any, worker_pool).shutdown()
 
 
 # ==================== 断言助手 ====================
+
 
 def assert_iteration_success(
     result: dict[str, Any],
@@ -905,9 +911,7 @@ def assert_iteration_success(
 
     if expected_iterations is not None:
         actual = result.get("iterations_completed", 0)
-        assert actual == expected_iterations, (
-            f"预期 {expected_iterations} 次迭代，实际 {actual} 次"
-        )
+        assert actual == expected_iterations, f"预期 {expected_iterations} 次迭代，实际 {actual} 次"
 
     tasks_completed = result.get("total_tasks_completed", 0)
     assert tasks_completed >= min_tasks_completed, (
@@ -932,9 +936,7 @@ def assert_iteration_failed(
 
     if expected_error_contains:
         error = result.get("error", "")
-        assert expected_error_contains in error, (
-            f"错误信息应包含 '{expected_error_contains}'，实际: '{error}'"
-        )
+        assert expected_error_contains in error, f"错误信息应包含 '{expected_error_contains}'，实际: '{error}'"
 
 
 def assert_task_completed(
@@ -950,9 +952,7 @@ def assert_task_completed(
     Raises:
         AssertionError: 如果断言失败
     """
-    assert task.status == TaskStatus.COMPLETED, (
-        f"任务应为完成状态，实际: {task.status.value}"
-    )
+    assert task.status == TaskStatus.COMPLETED, f"任务应为完成状态，实际: {task.status.value}"
     assert task.completed_at is not None, "任务完成时间应该被设置"
 
     if expected_result_contains and task.result:
@@ -975,15 +975,11 @@ def assert_task_failed(
     Raises:
         AssertionError: 如果断言失败
     """
-    assert task.status == TaskStatus.FAILED, (
-        f"任务应为失败状态，实际: {task.status.value}"
-    )
+    assert task.status == TaskStatus.FAILED, f"任务应为失败状态，实际: {task.status.value}"
 
     if expected_error_contains:
         error = task.error or ""
-        assert expected_error_contains in error, (
-            f"错误信息应包含 '{expected_error_contains}'，实际: '{error}'"
-        )
+        assert expected_error_contains in error, f"错误信息应包含 '{expected_error_contains}'，实际: '{error}'"
 
 
 def assert_tasks_in_order(
@@ -999,16 +995,11 @@ def assert_tasks_in_order(
     Raises:
         AssertionError: 如果断言失败
     """
-    completed_tasks = [
-        t for t in tasks
-        if t.status == TaskStatus.COMPLETED and t.completed_at
-    ]
-    completed_tasks.sort(key=lambda t: t.completed_at)
+    completed_tasks = [t for t in tasks if t.status == TaskStatus.COMPLETED and t.completed_at]
+    completed_tasks.sort(key=lambda t: t.completed_at or datetime.min)
 
     actual_order = [t.title for t in completed_tasks]
-    assert actual_order == expected_order, (
-        f"任务顺序不匹配\n预期: {expected_order}\n实际: {actual_order}"
-    )
+    assert actual_order == expected_order, f"任务顺序不匹配\n预期: {expected_order}\n实际: {actual_order}"
 
 
 def assert_executor_called_with(
@@ -1026,14 +1017,10 @@ def assert_executor_called_with(
     Raises:
         AssertionError: 如果断言失败
     """
-    matching_calls = [
-        call for call in executor.execution_history
-        if prompt_contains in call.get("prompt", "")
-    ]
+    matching_calls = [call for call in executor.execution_history if prompt_contains in call.get("prompt", "")]
 
     assert len(matching_calls) == times, (
-        f"预期包含 '{prompt_contains}' 的调用 {times} 次，"
-        f"实际 {len(matching_calls)} 次"
+        f"预期包含 '{prompt_contains}' 的调用 {times} 次，实际 {len(matching_calls)} 次"
     )
 
 
@@ -1048,8 +1035,7 @@ def assert_no_file_modified(executor: MockAgentExecutor) -> None:
     """
     for trace in executor.execution_traces:
         assert len(trace.files_modified) == 0, (
-            f"执行 {trace.execution_id} 不应修改文件，"
-            f"但修改了: {trace.files_modified}"
+            f"执行 {trace.execution_id} 不应修改文件，但修改了: {trace.files_modified}"
         )
 
 
@@ -1067,9 +1053,7 @@ def assert_execution_trace_count(
         AssertionError: 如果数量不匹配
     """
     actual_count = len(executor.execution_traces)
-    assert actual_count == expected_count, (
-        f"预期执行追踪记录 {expected_count} 条，实际 {actual_count} 条"
-    )
+    assert actual_count == expected_count, f"预期执行追踪记录 {expected_count} 条，实际 {actual_count} 条"
 
 
 def assert_all_executions_completed(executor: MockAgentExecutor) -> None:
@@ -1083,12 +1067,9 @@ def assert_all_executions_completed(executor: MockAgentExecutor) -> None:
     """
     for trace in executor.execution_traces:
         assert trace.status in ("completed", "failed"), (
-            f"执行 {trace.execution_id} 状态应为 completed 或 failed，"
-            f"实际: {trace.status}"
+            f"执行 {trace.execution_id} 状态应为 completed 或 failed，实际: {trace.status}"
         )
-        assert trace.completed_at is not None, (
-            f"执行 {trace.execution_id} 的完成时间未设置"
-        )
+        assert trace.completed_at is not None, f"执行 {trace.execution_id} 的完成时间未设置"
 
 
 def assert_execution_status_transitions(
@@ -1113,9 +1094,7 @@ def assert_execution_status_transitions(
 
     for i, trace in enumerate(traces):
         # 验证开始时间已设置
-        assert trace.started_at is not None, (
-            f"执行 {trace.execution_id} 的开始时间未设置"
-        )
+        assert trace.started_at is not None, f"执行 {trace.execution_id} 的开始时间未设置"
 
         # 验证最终状态合法
         assert trace.status in ("in_progress", "completed", "failed"), (
@@ -1124,23 +1103,14 @@ def assert_execution_status_transitions(
 
         # 如果已完成，验证完成时间和时长
         if trace.status in ("completed", "failed"):
-            assert trace.completed_at is not None, (
-                f"执行 {trace.execution_id} 已完成但未设置完成时间"
-            )
-            assert trace.completed_at >= trace.started_at, (
-                f"执行 {trace.execution_id} 完成时间早于开始时间"
-            )
-            assert trace.duration >= 0, (
-                f"执行 {trace.execution_id} 时长为负数: {trace.duration}"
-            )
+            assert trace.completed_at is not None, f"执行 {trace.execution_id} 已完成但未设置完成时间"
+            assert trace.completed_at >= trace.started_at, f"执行 {trace.execution_id} 完成时间早于开始时间"
+            assert trace.duration >= 0, f"执行 {trace.execution_id} 时长为负数: {trace.duration}"
 
         # 验证期望的最终状态
         if expected_final_statuses and i < len(expected_final_statuses):
             expected = expected_final_statuses[i]
-            assert trace.status == expected, (
-                f"执行 {trace.execution_id} 状态应为 {expected}，"
-                f"实际: {trace.status}"
-            )
+            assert trace.status == expected, f"执行 {trace.execution_id} 状态应为 {expected}，实际: {trace.status}"
 
 
 def assert_execution_success_rate(
@@ -1164,8 +1134,7 @@ def assert_execution_success_rate(
     actual_rate = success_count / len(traces)
 
     assert actual_rate >= min_success_rate, (
-        f"执行成功率应至少为 {min_success_rate:.1%}，"
-        f"实际: {actual_rate:.1%} ({success_count}/{len(traces)})"
+        f"执行成功率应至少为 {min_success_rate:.1%}，实际: {actual_rate:.1%} ({success_count}/{len(traces)})"
     )
 
 
@@ -1190,14 +1159,12 @@ def assert_execution_durations(
 
         if max_duration is not None:
             assert trace.duration <= max_duration, (
-                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s "
-                f"超过最大限制 {max_duration}s"
+                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s 超过最大限制 {max_duration}s"
             )
 
         if min_duration is not None:
             assert trace.duration >= min_duration, (
-                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s "
-                f"低于最小限制 {min_duration}s"
+                f"执行 {trace.execution_id} 时长 {trace.duration:.3f}s 低于最小限制 {min_duration}s"
             )
 
 
@@ -1216,18 +1183,16 @@ def assert_execution_prompts_contain(
     """
     traces = executor.execution_traces
 
-    assert len(traces) >= len(patterns), (
-        f"执行追踪记录 ({len(traces)}) 少于预期模式数 ({len(patterns)})"
-    )
+    assert len(traces) >= len(patterns), f"执行追踪记录 ({len(traces)}) 少于预期模式数 ({len(patterns)})"
 
     for i, pattern in enumerate(patterns):
         assert pattern in traces[i].prompt, (
-            f"执行 {traces[i].execution_id} 的 prompt 应包含 '{pattern}'，"
-            f"实际 prompt: '{traces[i].prompt[:100]}...'"
+            f"执行 {traces[i].execution_id} 的 prompt 应包含 '{pattern}'，实际 prompt: '{traces[i].prompt[:100]}...'"
         )
 
 
 # ==================== 辅助工具函数 ====================
+
 
 def create_test_task(
     title: str = "测试任务",

@@ -10,13 +10,12 @@
 
 使用 Mock 替代真实 Cursor CLI 调用
 """
+
 import argparse
-import asyncio
 import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,7 +28,6 @@ from run import (
     TaskAnalyzer,
     parse_max_iterations,
 )
-
 
 # ==================== TestBasicMode ====================
 
@@ -179,8 +177,7 @@ class TestBasicMode:
                 config_call = MockConfig.call_args
                 assert config_call is not None
                 # 验证 worker_pool_size 参数
-                assert config_call[1].get("worker_pool_size") == 5 or \
-                       config_call.kwargs.get("worker_pool_size") == 5
+                assert config_call[1].get("worker_pool_size") == 5 or config_call.kwargs.get("worker_pool_size") == 5
 
 
 # ==================== TestMPMode ====================
@@ -320,13 +317,10 @@ class TestMPMode:
                 config_call = MockConfig.call_args
                 assert config_call is not None
                 # worker_count 应该为 8
-                assert config_call[1].get("worker_count") == 8 or \
-                       config_call.kwargs.get("worker_count") == 8
+                assert config_call[1].get("worker_count") == 8 or config_call.kwargs.get("worker_count") == 8
 
     @pytest.mark.asyncio
-    async def test_mp_mode_commit_config_passthrough(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_mp_mode_commit_config_passthrough(self, mock_args: argparse.Namespace) -> None:
         """测试 MP 模式提交配置透传"""
         # 设置提交相关参数
         mock_args.auto_commit = True
@@ -368,25 +362,21 @@ class TestMPMode:
                 assert config_call is not None
 
                 # 验证 enable_auto_commit 透传
-                assert config_call.kwargs.get("enable_auto_commit") is True, \
-                    "enable_auto_commit 应该透传为 True"
+                assert config_call.kwargs.get("enable_auto_commit") is True, "enable_auto_commit 应该透传为 True"
 
                 # 验证 auto_push 透传
-                assert config_call.kwargs.get("auto_push") is True, \
-                    "auto_push 应该透传为 True"
+                assert config_call.kwargs.get("auto_push") is True, "auto_push 应该透传为 True"
 
                 # 验证 commit_per_iteration 透传
-                assert config_call.kwargs.get("commit_per_iteration") is True, \
-                    "commit_per_iteration 应该透传为 True"
+                assert config_call.kwargs.get("commit_per_iteration") is True, "commit_per_iteration 应该透传为 True"
 
                 # 验证 commit_on_complete 语义（当 commit_per_iteration=True 时为 False）
-                assert config_call.kwargs.get("commit_on_complete") is False, \
+                assert config_call.kwargs.get("commit_on_complete") is False, (
                     "commit_on_complete 应该为 False（因为 commit_per_iteration=True）"
+                )
 
     @pytest.mark.asyncio
-    async def test_mp_mode_commit_config_defaults(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_mp_mode_commit_config_defaults(self, mock_args: argparse.Namespace) -> None:
         """测试 MP 模式提交配置默认值"""
         # 使用默认提交参数
         mock_args.auto_commit = False
@@ -423,20 +413,20 @@ class TestMPMode:
                 assert config_call is not None
 
                 # 验证 enable_auto_commit 默认值（从 CLI 传递 False）
-                assert config_call.kwargs.get("enable_auto_commit") is False, \
+                assert config_call.kwargs.get("enable_auto_commit") is False, (
                     "enable_auto_commit 应该透传 CLI 的 False 值"
+                )
 
                 # 验证 auto_push 默认值
-                assert config_call.kwargs.get("auto_push") is False, \
-                    "auto_push 应该为 False"
+                assert config_call.kwargs.get("auto_push") is False, "auto_push 应该为 False"
 
                 # 验证 commit_per_iteration 默认值
-                assert config_call.kwargs.get("commit_per_iteration") is False, \
-                    "commit_per_iteration 应该为 False"
+                assert config_call.kwargs.get("commit_per_iteration") is False, "commit_per_iteration 应该为 False"
 
                 # 验证 commit_on_complete 语义（当 commit_per_iteration=False 时为 True）
-                assert config_call.kwargs.get("commit_on_complete") is True, \
+                assert config_call.kwargs.get("commit_on_complete") is True, (
                     "commit_on_complete 应该为 True（因为 commit_per_iteration=False）"
+                )
 
 
 # ==================== TestKnowledgeMode ====================
@@ -508,9 +498,7 @@ class TestKnowledgeMode:
         )
 
     @pytest.mark.asyncio
-    async def test_knowledge_mode_with_manager(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_knowledge_mode_with_manager(self, mock_args: argparse.Namespace) -> None:
         """测试知识库增强模式与 KnowledgeManager"""
         runner = Runner(mock_args)
         analysis = TaskAnalysis(
@@ -528,38 +516,35 @@ class TestKnowledgeMode:
             "total_tasks_failed": 0,
         }
 
-        with patch("knowledge.KnowledgeManager") as MockKM:
-            with patch("knowledge.KnowledgeStorage") as MockKS:
-                with patch("coordinator.Orchestrator") as MockOrchestrator:
-                    # Mock KnowledgeManager
-                    mock_km_instance = MagicMock()
-                    mock_km_instance.initialize = AsyncMock()
-                    MockKM.return_value = mock_km_instance
+        with patch("knowledge.KnowledgeManager") as MockKM, patch("knowledge.KnowledgeStorage") as MockKS:
+            with patch("coordinator.Orchestrator") as MockOrchestrator:
+                # Mock KnowledgeManager
+                mock_km_instance = MagicMock()
+                mock_km_instance.initialize = AsyncMock()
+                MockKM.return_value = mock_km_instance
 
-                    # Mock KnowledgeStorage
-                    mock_ks_instance = MagicMock()
-                    mock_ks_instance.initialize = AsyncMock()
-                    mock_ks_instance.search = AsyncMock(return_value=[])
-                    MockKS.return_value = mock_ks_instance
+                # Mock KnowledgeStorage
+                mock_ks_instance = MagicMock()
+                mock_ks_instance.initialize = AsyncMock()
+                mock_ks_instance.search = AsyncMock(return_value=[])
+                MockKS.return_value = mock_ks_instance
 
-                    # Mock Orchestrator
-                    mock_orch_instance = MagicMock()
-                    mock_orch_instance.run = AsyncMock(return_value=mock_result)
-                    MockOrchestrator.return_value = mock_orch_instance
+                # Mock Orchestrator
+                mock_orch_instance = MagicMock()
+                mock_orch_instance.run = AsyncMock(return_value=mock_result)
+                MockOrchestrator.return_value = mock_orch_instance
 
-                    result = await runner.run(analysis)
+                result = await runner.run(analysis)
 
-                    # 验证 KnowledgeManager 被初始化
-                    MockKM.assert_called_once()
-                    mock_km_instance.initialize.assert_called_once()
+                # 验证 KnowledgeManager 被初始化
+                MockKM.assert_called_once()
+                mock_km_instance.initialize.assert_called_once()
 
-                    # 验证结果
-                    assert result["success"] is True
+                # 验证结果
+                assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_knowledge_search_integration(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_knowledge_search_integration(self, mock_args: argparse.Namespace) -> None:
         """测试知识搜索集成"""
         mock_args.search_knowledge = "CLI 参数处理"
 
@@ -589,33 +574,32 @@ class TestKnowledgeMode:
             "total_tasks_failed": 0,
         }
 
-        with patch("knowledge.KnowledgeManager") as MockKM:
-            with patch("knowledge.KnowledgeStorage") as MockKS:
-                with patch("coordinator.Orchestrator") as MockOrchestrator:
-                    # Mock KnowledgeManager
-                    mock_km_instance = MagicMock()
-                    mock_km_instance.initialize = AsyncMock()
-                    MockKM.return_value = mock_km_instance
+        with patch("knowledge.KnowledgeManager") as MockKM, patch("knowledge.KnowledgeStorage") as MockKS:
+            with patch("coordinator.Orchestrator") as MockOrchestrator:
+                # Mock KnowledgeManager
+                mock_km_instance = MagicMock()
+                mock_km_instance.initialize = AsyncMock()
+                MockKM.return_value = mock_km_instance
 
-                    # Mock KnowledgeStorage - 返回搜索结果
-                    mock_ks_instance = MagicMock()
-                    mock_ks_instance.initialize = AsyncMock()
-                    mock_ks_instance.search = AsyncMock(return_value=[mock_search_result])
-                    mock_ks_instance.load_document = AsyncMock(return_value=mock_doc)
-                    MockKS.return_value = mock_ks_instance
+                # Mock KnowledgeStorage - 返回搜索结果
+                mock_ks_instance = MagicMock()
+                mock_ks_instance.initialize = AsyncMock()
+                mock_ks_instance.search = AsyncMock(return_value=[mock_search_result])
+                mock_ks_instance.load_document = AsyncMock(return_value=mock_doc)
+                MockKS.return_value = mock_ks_instance
 
-                    # Mock Orchestrator
-                    mock_orch_instance = MagicMock()
-                    mock_orch_instance.run = AsyncMock(return_value=mock_result)
-                    MockOrchestrator.return_value = mock_orch_instance
+                # Mock Orchestrator
+                mock_orch_instance = MagicMock()
+                mock_orch_instance.run = AsyncMock(return_value=mock_result)
+                MockOrchestrator.return_value = mock_orch_instance
 
-                    result = await runner.run(analysis)
+                result = await runner.run(analysis)
 
-                    # 验证搜索被调用
-                    mock_ks_instance.search.assert_called()
+                # 验证搜索被调用
+                mock_ks_instance.search.assert_called()
 
-                    # 验证结果
-                    assert result["success"] is True
+                # 验证结果
+                assert result["success"] is True
 
 
 # ==================== TestIterateMode ====================
@@ -760,9 +744,7 @@ class TestIterateMode:
             assert iterate_args.force_update is True
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_commit_options(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_commit_options(self, mock_args: argparse.Namespace) -> None:
         """测试提交选项"""
         mock_args.auto_commit = True
         mock_args.auto_push = True
@@ -804,9 +786,7 @@ class TestIterateMode:
             assert iterate_args.auto_push is True
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_mp_orchestrator_called(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_mp_orchestrator_called(self, mock_args: argparse.Namespace) -> None:
         """测试 iterate 模式内部调用 MultiProcessOrchestrator"""
         from scripts.run_iterate import SelfIterator
 
@@ -826,6 +806,26 @@ class TestIterateMode:
                 self.auto_push = False
                 self.commit_per_iteration = False
                 self.commit_message = ""
+                # 文档源配置属性（tri-state：None=使用 config.yaml 默认值）
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式和编排器属性
+                self.orchestrator = "mp"
+                self.no_mp = False
+                self._orchestrator_user_set = False
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -862,9 +862,7 @@ class TestIterateMode:
                     assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_commits_written_to_result(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_commits_written_to_result(self, mock_args: argparse.Namespace) -> None:
         """测试 iterate 模式 auto_commit=True 时 commits 写入结果"""
         from scripts.run_iterate import SelfIterator
 
@@ -883,6 +881,26 @@ class TestIterateMode:
                 self.auto_push = False
                 self.commit_per_iteration = False
                 self.commit_message = ""
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式和编排器属性
+                self.orchestrator = "mp"
+                self.no_mp = False
+                self._orchestrator_user_set = False
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -917,9 +935,7 @@ class TestIterateMode:
                     MockMP.return_value = mock_orch
 
                     # Mock _run_commit_phase
-                    with patch.object(
-                        iterator, "_run_commit_phase", new_callable=AsyncMock
-                    ) as mock_commit:
+                    with patch.object(iterator, "_run_commit_phase", new_callable=AsyncMock) as mock_commit:
                         mock_commit.return_value = mock_commits
 
                         result = await iterator._run_agent_system()
@@ -933,9 +949,7 @@ class TestIterateMode:
                         assert result["commits"]["commit_hashes"] == ["deadbeef123"]
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_committer_agent_integration(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_committer_agent_integration(self, mock_args: argparse.Namespace) -> None:
         """测试 iterate 模式 CommitterAgent 集成"""
         from scripts.run_iterate import SelfIterator
 
@@ -954,6 +968,26 @@ class TestIterateMode:
                 self.auto_push = True  # 也测试推送
                 self.commit_per_iteration = False
                 self.commit_message = "自定义提交信息"
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式和编排器属性
+                self.orchestrator = "mp"
+                self.no_mp = False
+                self._orchestrator_user_set = False
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -1034,6 +1068,24 @@ class TestIterateMode:
                 self.commit_message = ""
                 self.orchestrator = "mp"
                 self.no_mp = False
+                self._orchestrator_user_set = False
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式属性
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -1075,9 +1127,7 @@ class TestIterateMode:
                     MockMP.return_value = mock_orch
 
                     # Mock _run_commit_phase - 不应该被调用
-                    with patch.object(
-                        iterator, "_run_commit_phase", new_callable=AsyncMock
-                    ) as mock_commit:
+                    with patch.object(iterator, "_run_commit_phase", new_callable=AsyncMock) as mock_commit:
                         result = await iterator._run_agent_system()
 
                         # 关键断言：_run_commit_phase 不应该被调用
@@ -1089,9 +1139,7 @@ class TestIterateMode:
                         assert result["commits"]["commit_hashes"] == ["orchestrator_commit_abc123"]
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_commit_when_orchestrator_not_committed(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_commit_when_orchestrator_not_committed(self, mock_args: argparse.Namespace) -> None:
         """测试当编排器未提交时，SelfIterator 会执行提交"""
         from scripts.run_iterate import SelfIterator
 
@@ -1112,6 +1160,24 @@ class TestIterateMode:
                 self.commit_message = ""
                 self.orchestrator = "mp"
                 self.no_mp = False
+                self._orchestrator_user_set = False
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式属性
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -1160,9 +1226,7 @@ class TestIterateMode:
                     MockMP.return_value = mock_orch
 
                     # Mock _run_commit_phase - 应该被调用
-                    with patch.object(
-                        iterator, "_run_commit_phase", new_callable=AsyncMock
-                    ) as mock_commit:
+                    with patch.object(iterator, "_run_commit_phase", new_callable=AsyncMock) as mock_commit:
                         mock_commit.return_value = mock_commit_result
 
                         result = await iterator._run_agent_system()
@@ -1175,9 +1239,7 @@ class TestIterateMode:
                         assert result["commits"]["total_commits"] == 1
                         assert result["commits"]["commit_hashes"] == ["selfiterator_commit_xyz789"]
 
-    def test_has_orchestrator_committed_detection(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    def test_has_orchestrator_committed_detection(self, mock_args: argparse.Namespace) -> None:
         """测试 _has_orchestrator_committed 检测逻辑"""
         from scripts.run_iterate import SelfIterator
 
@@ -1196,6 +1258,26 @@ class TestIterateMode:
                 self.auto_push = False
                 self.commit_per_iteration = False
                 self.commit_message = ""
+                self.orchestrator = "mp"
+                self.no_mp = False
+                self._orchestrator_user_set = False
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式属性
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterator = SelfIterator(IterateArgs())
 
@@ -1243,9 +1325,7 @@ class TestIterateMode:
         assert iterator._has_orchestrator_committed(result7) is False
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_no_commit_without_auto_commit_flag(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_no_commit_without_auto_commit_flag(self, mock_args: argparse.Namespace) -> None:
         """测试 iterate 模式默认不带 --auto-commit 时不触发提交
 
         这个测试验证了默认提交策略：默认不自动提交，需显式开启。
@@ -1271,6 +1351,24 @@ class TestIterateMode:
                 self.commit_message = ""
                 self.orchestrator = "mp"
                 self.no_mp = False
+                self._orchestrator_user_set = False
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式属性
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -1297,9 +1395,7 @@ class TestIterateMode:
                     MockMP.return_value = mock_orch
 
                     # Mock _run_commit_phase - 不应该被调用
-                    with patch.object(
-                        iterator, "_run_commit_phase", new_callable=AsyncMock
-                    ) as mock_commit:
+                    with patch.object(iterator, "_run_commit_phase", new_callable=AsyncMock) as mock_commit:
                         result = await iterator._run_agent_system()
 
                         # 关键断言：_run_commit_phase 不应该被调用
@@ -1313,9 +1409,7 @@ class TestIterateMode:
                         assert result["success"] is True
 
     @pytest.mark.asyncio
-    async def test_iterate_mode_commit_only_with_explicit_auto_commit(
-        self, mock_args: argparse.Namespace
-    ) -> None:
+    async def test_iterate_mode_commit_only_with_explicit_auto_commit(self, mock_args: argparse.Namespace) -> None:
         """测试 iterate 模式仅在显式指定 --auto-commit 时才触发提交
 
         这个测试验证了默认提交策略：只有显式开启 auto_commit 时才会提交。
@@ -1340,6 +1434,24 @@ class TestIterateMode:
                 self.commit_message = ""
                 self.orchestrator = "mp"
                 self.no_mp = False
+                self._orchestrator_user_set = False
+                # 文档源配置属性
+                self.max_fetch_urls = None
+                self.fallback_core_docs_count = None
+                self.llms_txt_url = None
+                self.llms_cache_path = None
+                # 执行模式属性
+                self.execution_mode = "cli"
+                self.cloud_api_key = None
+                self.cloud_auth_timeout = 30
+                # 流式控制台渲染参数
+                self.stream_console_renderer = False
+                self.stream_advanced_renderer = False
+                self.stream_typing_effect = False
+                self.stream_typing_delay = 0.02
+                self.stream_word_mode = True
+                self.stream_color_enabled = True
+                self.stream_show_word_diff = False
 
         iterate_args = IterateArgs()
         iterator = SelfIterator(iterate_args)
@@ -1373,9 +1485,7 @@ class TestIterateMode:
                     MockMP.return_value = mock_orch
 
                     # Mock _run_commit_phase - 应该被调用
-                    with patch.object(
-                        iterator, "_run_commit_phase", new_callable=AsyncMock
-                    ) as mock_commit:
+                    with patch.object(iterator, "_run_commit_phase", new_callable=AsyncMock) as mock_commit:
                         mock_commit.return_value = mock_commit_result
 
                         result = await iterator._run_agent_system()
@@ -1550,8 +1660,7 @@ class TestTaskAnalyzer:
         for task_desc, expected_mode in test_cases:
             analysis = analyzer.analyze(task_desc, mock_args)
             assert analysis.mode == expected_mode, (
-                f"任务 '{task_desc}' 期望模式 {expected_mode.value}，"
-                f"实际 {analysis.mode.value}"
+                f"任务 '{task_desc}' 期望模式 {expected_mode.value}，实际 {analysis.mode.value}"
             )
 
     def test_empty_task_analysis(self, mock_args: argparse.Namespace) -> None:
@@ -1569,10 +1678,7 @@ class TestTaskAnalyzer:
         analyzer = TaskAnalyzer(use_agent=False)
 
         # 测试多个选项同时存在
-        analysis = analyzer._rule_based_analysis(
-            "跳过在线检查，启用严格模式，使用 3 个 worker 无限迭代",
-            mock_args
-        )
+        analysis = analyzer._rule_based_analysis("跳过在线检查，启用严格模式，使用 3 个 worker 无限迭代", mock_args)
 
         assert analysis.options.get("skip_online") is True
         assert analysis.options.get("strict") is True
@@ -1584,10 +1690,7 @@ class TestTaskAnalyzer:
         analyzer = TaskAnalyzer(use_agent=False)
 
         # 组合模式和选项
-        analysis = analyzer.analyze(
-            "使用多进程并行，5 个 worker，无限迭代重构代码",
-            mock_args
-        )
+        analysis = analyzer.analyze("使用多进程并行，5 个 worker，无限迭代重构代码", mock_args)
 
         assert analysis.mode == RunMode.MP
         assert analysis.options.get("workers") == 5

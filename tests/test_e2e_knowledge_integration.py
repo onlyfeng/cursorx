@@ -6,10 +6,9 @@
 2. Cursor 关键字检测与知识库搜索触发
 3. 语义搜索与 Agent 集成
 """
+
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,19 +17,17 @@ from agents.planner import PlannerAgent, PlannerConfig
 from agents.worker import WorkerAgent, WorkerConfig
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from core.knowledge import CURSOR_KEYWORDS
-from knowledge.models import Document
 from knowledge.storage import SearchResult
-from tasks.task import Task, TaskPriority, TaskStatus, TaskType
+from tasks.task import TaskStatus
 
 from .conftest import (
     MockAgentExecutor,
-    MockKnowledgeManager,
     create_test_document,
     create_test_task,
 )
 
-
 # ==================== TestKnowledgeManagerIntegration ====================
+
 
 class TestKnowledgeManagerIntegration:
     """知识库管理器集成测试类"""
@@ -45,10 +42,11 @@ class TestKnowledgeManagerIntegration:
         )
 
         # 使用 mock 替换实际执行器
-        with patch('agents.planner.AgentExecutorFactory.create') as mock_planner_exec, \
-             patch('agents.reviewer.AgentExecutorFactory.create') as mock_reviewer_exec, \
-             patch('agents.worker.AgentExecutorFactory.create') as mock_worker_exec:
-
+        with (
+            patch("agents.planner.AgentExecutorFactory.create") as mock_planner_exec,
+            patch("agents.reviewer.AgentExecutorFactory.create") as mock_reviewer_exec,
+            patch("agents.worker.AgentExecutorFactory.create") as mock_worker_exec,
+        ):
             mock_executor = MockAgentExecutor()
             mock_planner_exec.return_value = mock_executor
             mock_reviewer_exec.return_value = mock_executor
@@ -75,10 +73,11 @@ class TestKnowledgeManagerIntegration:
             worker_pool_size=1,
         )
 
-        with patch('agents.planner.AgentExecutorFactory.create') as mock_planner_exec, \
-             patch('agents.reviewer.AgentExecutorFactory.create') as mock_reviewer_exec, \
-             patch('agents.worker.AgentExecutorFactory.create') as mock_worker_exec:
-
+        with (
+            patch("agents.planner.AgentExecutorFactory.create") as mock_planner_exec,
+            patch("agents.reviewer.AgentExecutorFactory.create") as mock_reviewer_exec,
+            patch("agents.worker.AgentExecutorFactory.create") as mock_worker_exec,
+        ):
             mock_executor = MockAgentExecutor()
             mock_planner_exec.return_value = mock_executor
             mock_reviewer_exec.return_value = mock_executor
@@ -106,16 +105,18 @@ class TestKnowledgeManagerIntegration:
         mock_knowledge_manager.add_document(doc)
 
         # 配置搜索结果
-        mock_knowledge_manager.configure_search_results([
-            SearchResult(
-                doc_id=doc.id,
-                url=doc.url,
-                title=doc.title,
-                score=0.85,
-                snippet="Cursor CLI 使用...",
-                match_type="keyword",
-            )
-        ])
+        mock_knowledge_manager.configure_search_results(
+            [
+                SearchResult(
+                    doc_id=doc.id,
+                    url=doc.url,
+                    title=doc.title,
+                    score=0.85,
+                    snippet="Cursor CLI 使用...",
+                    match_type="keyword",
+                )
+            ]
+        )
 
         # 创建 Worker 配置，启用知识库搜索
         worker_config = WorkerConfig(
@@ -125,7 +126,7 @@ class TestKnowledgeManagerIntegration:
             knowledge_search_top_k=5,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_executor = MockAgentExecutor()
             mock_executor.configure_response(success=True, output="任务完成")
             mock_exec.return_value = mock_executor
@@ -165,16 +166,18 @@ class TestKnowledgeManagerIntegration:
         )
         mock_knowledge_manager.add_document(doc)
 
-        mock_knowledge_manager.configure_search_results([
-            SearchResult(
-                doc_id=doc.id,
-                url=doc.url,
-                title=doc.title,
-                score=0.9,
-                snippet="Hooks 允许通过自定义脚本...",
-                match_type="keyword",
-            )
-        ])
+        mock_knowledge_manager.configure_search_results(
+            [
+                SearchResult(
+                    doc_id=doc.id,
+                    url=doc.url,
+                    title=doc.title,
+                    score=0.9,
+                    snippet="Hooks 允许通过自定义脚本...",
+                    match_type="keyword",
+                )
+            ]
+        )
 
         worker_config = WorkerConfig(
             name="test-worker",
@@ -182,7 +185,7 @@ class TestKnowledgeManagerIntegration:
             enable_knowledge_search=True,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_executor = MockAgentExecutor()
             mock_executor.configure_response(success=True, output="Hook 配置完成")
             mock_exec.return_value = mock_executor
@@ -215,6 +218,7 @@ class TestKnowledgeManagerIntegration:
 
 # ==================== TestCursorKeywordDetection ====================
 
+
 class TestCursorKeywordDetection:
     """Cursor 关键字检测测试类"""
 
@@ -227,8 +231,7 @@ class TestCursorKeywordDetection:
         # 验证关键字列表包含预期的关键字
         expected_keywords = ["cursor", "agent", "cli", "mcp", "hook"]
         for keyword in expected_keywords:
-            assert any(keyword in kw.lower() for kw in CURSOR_KEYWORDS), \
-                f"关键字列表应包含 '{keyword}'"
+            assert any(keyword in kw.lower() for kw in CURSOR_KEYWORDS), f"关键字列表应包含 '{keyword}'"
         print("✓ CURSOR_KEYWORDS 包含所有预期关键字")
 
     def test_worker_is_cursor_related_method(self, temp_workspace):
@@ -238,7 +241,7 @@ class TestCursorKeywordDetection:
             working_directory=str(temp_workspace),
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_exec.return_value = MockAgentExecutor()
 
             worker = WorkerAgent(config=worker_config)
@@ -280,16 +283,18 @@ class TestCursorKeywordDetection:
             content="Cursor Agent 支持多种模式...",
         )
         mock_knowledge_manager.add_document(doc)
-        mock_knowledge_manager.configure_search_results([
-            SearchResult(
-                doc_id=doc.id,
-                url=doc.url,
-                title=doc.title,
-                score=0.8,
-                snippet="Agent 支持...",
-                match_type="keyword",
-            )
-        ])
+        mock_knowledge_manager.configure_search_results(
+            [
+                SearchResult(
+                    doc_id=doc.id,
+                    url=doc.url,
+                    title=doc.title,
+                    score=0.8,
+                    snippet="Agent 支持...",
+                    match_type="keyword",
+                )
+            ]
+        )
 
         worker_config = WorkerConfig(
             name="test-worker",
@@ -297,7 +302,7 @@ class TestCursorKeywordDetection:
             enable_knowledge_search=True,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_executor = MockAgentExecutor()
             mock_executor.configure_response(success=True, output="完成")
             mock_exec.return_value = mock_executor
@@ -390,6 +395,7 @@ class TestCursorKeywordDetection:
 
 # ==================== TestSemanticSearchIntegration ====================
 
+
 class TestSemanticSearchIntegration:
     """语义搜索集成测试类"""
 
@@ -422,7 +428,7 @@ class TestSemanticSearchIntegration:
             context_search_min_score=0.4,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_executor = MockAgentExecutor()
             mock_executor.configure_response(success=True, output="完成")
             mock_exec.return_value = mock_executor
@@ -481,11 +487,10 @@ class TestSemanticSearchIntegration:
             semantic_search_min_score=0.3,
         )
 
-        with patch('agents.planner.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.planner.AgentExecutorFactory.create") as mock_exec:
             mock_executor = MockAgentExecutor()
             mock_executor.configure_response(
-                success=True,
-                output='{"analysis": "分析完成", "tasks": [], "sub_planners_needed": []}'
+                success=True, output='{"analysis": "分析完成", "tasks": [], "sub_planners_needed": []}'
             )
             mock_exec.return_value = mock_executor
 
@@ -498,9 +503,7 @@ class TestSemanticSearchIntegration:
             assert planner._semantic_search is mock_semantic_search
 
             # 执行语义搜索探索
-            search_context = await planner._explore_with_semantic_search(
-                "分析 PlannerAgent 的实现"
-            )
+            search_context = await planner._explore_with_semantic_search("分析 PlannerAgent 的实现")
 
             # 验证搜索结果
             assert len(search_context.get("related_code", [])) > 0
@@ -545,7 +548,7 @@ class TestSemanticSearchIntegration:
             context_search_min_score=0.4,  # 设置阈值为 0.4
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_exec.return_value = MockAgentExecutor()
 
             worker = WorkerAgent(config=worker_config)
@@ -581,7 +584,7 @@ class TestSemanticSearchIntegration:
             enable_context_search=False,  # 禁用上下文搜索
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_exec.return_value = MockAgentExecutor()
 
             worker = WorkerAgent(config=worker_config)
@@ -605,6 +608,7 @@ class TestSemanticSearchIntegration:
 
 # ==================== 辅助测试 ====================
 
+
 class TestKnowledgeManagerSetup:
     """知识库管理器设置测试"""
 
@@ -616,7 +620,7 @@ class TestKnowledgeManagerSetup:
             enable_knowledge_search=True,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_exec.return_value = MockAgentExecutor()
 
             # 创建 Worker 时不传入知识库
@@ -644,7 +648,7 @@ class TestKnowledgeManagerSetup:
             enable_context_search=True,
         )
 
-        with patch('agents.worker.AgentExecutorFactory.create') as mock_exec:
+        with patch("agents.worker.AgentExecutorFactory.create") as mock_exec:
             mock_exec.return_value = MockAgentExecutor()
 
             worker = WorkerAgent(
@@ -664,6 +668,7 @@ class TestKnowledgeManagerSetup:
 
 
 # ==================== 主函数 ====================
+
 
 def main():
     """运行所有测试"""

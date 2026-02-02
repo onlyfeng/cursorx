@@ -3,6 +3,7 @@
 测试 TaskQueue 的 enqueue/dequeue 方法，
 验证 get_pending_count 和 get_statistics 返回正确的统计信息
 """
+
 import pytest
 
 from tasks.queue import TaskQueue
@@ -257,9 +258,9 @@ class TestTaskQueue:
         stats = queue.get_statistics(iteration_id=1)
 
         assert stats["total"] == 4
-        assert stats["pending"] == 2      # 2个还在队列中
+        assert stats["pending"] == 2  # 2个还在队列中
         assert stats["in_progress"] == 1  # 1个执行中
-        assert stats["completed"] == 1    # 1个完成
+        assert stats["completed"] == 1  # 1个完成
         assert stats["failed"] == 0
 
     @pytest.mark.asyncio

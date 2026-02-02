@@ -9,6 +9,7 @@
 6. 无结果情况处理
 7. 增量索引更新
 """
+
 import shutil
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +29,7 @@ from knowledge.vector_store import KnowledgeVectorStore, VectorSearchResult
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture
 def sample_documents() -> list[Document]:
@@ -100,6 +102,7 @@ def mock_embedding_model():
     def generate_mock_embedding(text: str) -> list[float]:
         """根据文本生成确定性的模拟向量"""
         import hashlib
+
         text_hash = hashlib.md5(text.encode()).hexdigest()
         vector = []
         for i in range(0, min(len(text_hash) * 2, 384), 1):
@@ -118,11 +121,13 @@ def mock_embedding_model():
 
     mock_model.embed_text = mock_embed_text
     mock_model.embed_batch = mock_embed_batch
-    mock_model.get_model_info = MagicMock(return_value={
-        "model_name": "all-MiniLM-L6-v2",
-        "dimension": 384,
-        "cache_stats": {"hits": 0, "misses": 0},
-    })
+    mock_model.get_model_info = MagicMock(
+        return_value={
+            "model_name": "all-MiniLM-L6-v2",
+            "dimension": 384,
+            "cache_stats": {"hits": 0, "misses": 0},
+        }
+    )
 
     return mock_model
 
@@ -155,6 +160,7 @@ def temp_vector_path():
 # ============================================================
 # 测试类: TestKnowledgeVectorSearch
 # ============================================================
+
 
 class TestKnowledgeVectorSearch:
     """知识库向量搜索测试类
@@ -321,9 +327,9 @@ class TestKnowledgeVectorSearch:
         store = KnowledgeVectorStore(vector_config)
 
         # 模拟初始化
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore') as MockChroma:
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore") as MockChroma:
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     MockChroma.return_value = mock_chroma_instance
@@ -351,9 +357,9 @@ class TestKnowledgeVectorSearch:
 
         # 创建模拟的搜索结果
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore') as MockChroma:
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore") as MockChroma:
                     from indexing.base import ChunkType, CodeChunk
 
                     mock_chroma_instance = MagicMock()
@@ -396,9 +402,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore') as MockChroma:
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore") as MockChroma:
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -429,9 +435,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore') as MockChroma:
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore") as MockChroma:
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -462,9 +468,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore') as MockChroma:
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore") as MockChroma:
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     MockChroma.return_value = mock_chroma_instance
@@ -490,9 +496,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     from indexing.base import ChunkType, CodeChunk
 
                     mock_chroma_instance = MagicMock()
@@ -532,9 +538,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     from indexing.base import ChunkType, CodeChunk
 
                     mock_chroma_instance = MagicMock()
@@ -580,9 +586,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     from indexing.base import ChunkType, CodeChunk
 
                     mock_chroma_instance = MagicMock()
@@ -625,9 +631,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.search = AsyncMock(return_value=[])
                     store._vector_store = mock_chroma_instance
@@ -661,9 +667,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.search = AsyncMock(return_value=[])
                     store._vector_store = mock_chroma_instance
@@ -700,9 +706,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.search = AsyncMock(return_value=[])
                     store._vector_store = mock_chroma_instance
@@ -733,9 +739,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.search = AsyncMock(return_value=[])
                     store._vector_store = mock_chroma_instance
@@ -756,9 +762,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     # 返回空结果模拟不相关查询
                     mock_chroma_instance.search = AsyncMock(return_value=[])
@@ -803,8 +809,8 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
                 search_engine = KnowledgeSemanticSearch(store, vector_config)
                 docs_dict = {doc.id: doc for doc in sample_documents}
 
@@ -831,9 +837,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -863,9 +869,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -897,9 +903,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -931,9 +937,9 @@ class TestKnowledgeVectorSearch:
         vector_config.vector_storage_path = temp_vector_path
         store = KnowledgeVectorStore(vector_config)
 
-        with patch.object(store, '_embedding_model', mock_embedding_model):
-            with patch.object(store, '_initialized', True):
-                with patch('knowledge.vector_store.ChromaVectorStore'):
+        with patch.object(store, "_embedding_model", mock_embedding_model):
+            with patch.object(store, "_initialized", True):
+                with patch("knowledge.vector_store.ChromaVectorStore"):
                     mock_chroma_instance = MagicMock()
                     mock_chroma_instance.upsert = AsyncMock()
                     mock_chroma_instance.delete = AsyncMock()
@@ -954,6 +960,7 @@ class TestKnowledgeVectorSearch:
 # ============================================================
 # 额外的辅助测试
 # ============================================================
+
 
 class TestVectorSearchConfig:
     """测试向量搜索配置"""

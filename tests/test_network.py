@@ -7,6 +7,7 @@
 4. 缓存机制
 5. 使用 respx 进行 HTTP mock 测试
 """
+
 import json
 import time
 from pathlib import Path
@@ -31,7 +32,6 @@ from cursor.network import (
     get_manager,
     is_allowed_ip,
 )
-
 
 # ==================== Fixtures ====================
 
@@ -323,16 +323,12 @@ class TestFirewallExport:
 
     def test_export_iptables_with_port(self, egress_config):
         """导出 iptables 规则带端口"""
-        rules = egress_config.export_firewall_rules(
-            FirewallFormat.IPTABLES, port=443
-        )
+        rules = egress_config.export_firewall_rules(FirewallFormat.IPTABLES, port=443)
         assert "--dport 443" in rules
 
     def test_export_iptables_custom_chain(self, egress_config):
         """导出 iptables 规则自定义链"""
-        rules = egress_config.export_firewall_rules(
-            FirewallFormat.IPTABLES, chain="FORWARD"
-        )
+        rules = egress_config.export_firewall_rules(FirewallFormat.IPTABLES, chain="FORWARD")
         assert "iptables -A FORWARD" in rules
 
     def test_export_nginx(self, egress_config):
@@ -357,9 +353,7 @@ class TestFirewallExport:
 
     def test_export_ufw_with_port(self, egress_config):
         """导出 UFW 规则带端口"""
-        rules = egress_config.export_firewall_rules(
-            FirewallFormat.UFW, port=8080
-        )
+        rules = egress_config.export_firewall_rules(FirewallFormat.UFW, port=8080)
         assert "to any port 8080" in rules
 
     def test_export_cloudflare(self, egress_config):
@@ -428,9 +422,7 @@ class TestEgressIPManagerNetwork:
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
         # Mock API 响应
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -445,13 +437,9 @@ class TestEgressIPManagerNetwork:
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
         # 主 URL 返回 500
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(500)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(500))
         # 备用 URL 返回成功
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -463,12 +451,8 @@ class TestEgressIPManagerNetwork:
         """所有 URL 都失败（HTTP 错误码）"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(500)
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            return_value=httpx.Response(404)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(500))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(return_value=httpx.Response(404))
 
         config = await manager._fetch_from_api()
         # 所有 URL 返回错误状态码时，应返回 None
@@ -481,12 +465,8 @@ class TestEgressIPManagerNetwork:
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
         # 模拟超时
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            side_effect=httpx.TimeoutException("timeout")
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            side_effect=httpx.TimeoutException("timeout")
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(side_effect=httpx.TimeoutException("timeout"))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(side_effect=httpx.TimeoutException("timeout"))
 
         config = await manager._fetch_from_api()
         assert config is None
@@ -499,12 +479,8 @@ class TestEgressIPManagerNetwork:
         """网络错误处理"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            side_effect=httpx.ConnectError("connection refused")
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            side_effect=httpx.ConnectError("connection refused")
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(side_effect=httpx.ConnectError("connection refused"))
 
         config = await manager._fetch_from_api()
         assert config is None
@@ -515,9 +491,7 @@ class TestEgressIPManagerNetwork:
         """完整获取流程 - 从 API"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager.fetch_egress_ip_ranges()
         assert config is not None
@@ -548,9 +522,7 @@ class TestEgressIPManagerNetwork:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_fetch_egress_ip_ranges_force_refresh(
-        self, temp_cache_dir, sample_ip_ranges, api_response_data
-    ):
+    async def test_fetch_egress_ip_ranges_force_refresh(self, temp_cache_dir, sample_ip_ranges, api_response_data):
         """强制刷新绕过缓存"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
@@ -565,9 +537,7 @@ class TestEgressIPManagerNetwork:
             json.dump(cache_data, f)
 
         # Mock API
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager.fetch_egress_ip_ranges(force_refresh=True)
         assert config is not None
@@ -579,12 +549,8 @@ class TestEgressIPManagerNetwork:
         """所有方式失败时使用备用配置"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(500)
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            return_value=httpx.Response(500)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(500))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(return_value=httpx.Response(500))
 
         config = await manager.fetch_egress_ip_ranges()
         assert config is not None
@@ -604,9 +570,7 @@ class TestEgressIPManagerRetry:
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
         # 第一个 URL 返回错误
-        route1 = respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(503)
-        )
+        route1 = respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(503))
         # 第二个 URL 成功
         route2 = respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
             return_value=httpx.Response(200, json=api_response_data)
@@ -623,12 +587,8 @@ class TestEgressIPManagerRetry:
         """连接错误时重试备用 URL"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            side_effect=httpx.ConnectError("connection failed")
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(side_effect=httpx.ConnectError("connection failed"))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -640,12 +600,8 @@ class TestEgressIPManagerRetry:
         """读取超时时重试备用 URL"""
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            side_effect=httpx.ReadTimeout("read timeout")
-        )
-        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(side_effect=httpx.ReadTimeout("read timeout"))
+        respx.get(EgressIPManager.CURSOR_FALLBACK_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -662,7 +618,7 @@ class TestEgressIPManagerConfig:
 
     def test_ttl_from_core_config(self, temp_cache_dir, monkeypatch):
         """TTL 默认从 core.config.get_config() 获取"""
-        from core.config import ConfigManager, CloudAgentConfig
+        from core.config import CloudAgentConfig, ConfigManager
 
         # 重置 ConfigManager 单例
         ConfigManager.reset_instance()
@@ -675,6 +631,7 @@ class TestEgressIPManagerConfig:
         def mock_get_config():
             class MockConfig:
                 cloud_agent = mock_cloud_config
+
             return MockConfig()
 
         monkeypatch.setattr("cursor.network.get_config", mock_get_config)
@@ -693,10 +650,7 @@ class TestEgressIPManagerConfig:
         custom_ttl = 7200
         cloud_config = CloudAgentConfig(egress_ip_cache_ttl=custom_ttl)
 
-        manager = EgressIPManager(
-            cache_dir=temp_cache_dir,
-            cloud_config=cloud_config
-        )
+        manager = EgressIPManager(cache_dir=temp_cache_dir, cloud_config=cloud_config)
         assert manager.cache_ttl == custom_ttl
 
     def test_ttl_explicit_override(self, temp_cache_dir):
@@ -707,16 +661,12 @@ class TestEgressIPManagerConfig:
         cloud_config = CloudAgentConfig(egress_ip_cache_ttl=3600)
         explicit_ttl = 9000
 
-        manager = EgressIPManager(
-            cache_dir=temp_cache_dir,
-            cache_ttl=explicit_ttl,
-            cloud_config=cloud_config
-        )
+        manager = EgressIPManager(cache_dir=temp_cache_dir, cache_ttl=explicit_ttl, cloud_config=cloud_config)
         assert manager.cache_ttl == explicit_ttl
 
     def test_ttl_priority_order(self, temp_cache_dir, monkeypatch):
         """验证 TTL 配置优先级: 显式参数 > cloud_config > get_config()"""
-        from core.config import ConfigManager, CloudAgentConfig
+        from core.config import CloudAgentConfig, ConfigManager
 
         ConfigManager.reset_instance()
 
@@ -724,7 +674,9 @@ class TestEgressIPManagerConfig:
         def mock_get_config():
             class MockConfig:
                 cloud_agent = CloudAgentConfig(egress_ip_cache_ttl=1000)
+
             return MockConfig()
+
         monkeypatch.setattr("cursor.network.get_config", mock_get_config)
 
         # 场景 1: 仅使用 get_config() 默认值
@@ -737,18 +689,15 @@ class TestEgressIPManagerConfig:
         assert manager2.cache_ttl == 2000
 
         # 场景 3: 显式 cache_ttl 参数最高优先
-        manager3 = EgressIPManager(
-            cache_dir=temp_cache_dir,
-            cache_ttl=3000,
-            cloud_config=cloud_config
-        )
+        manager3 = EgressIPManager(cache_dir=temp_cache_dir, cache_ttl=3000, cloud_config=cloud_config)
         assert manager3.cache_ttl == 3000
 
         ConfigManager.reset_instance()
 
     def test_ttl_consistency_with_config_yaml(self, temp_cache_dir, monkeypatch):
         """确保 TTL 来源与 config.yaml 中 cloud_agent.egress_ip_cache_ttl 一致"""
-        from core.config import ConfigManager, get_config as real_get_config
+        from core.config import ConfigManager
+        from core.config import get_config as real_get_config
 
         # 重置并获取真实配置
         ConfigManager.reset_instance()
@@ -780,6 +729,7 @@ class TestModuleFunctions:
         """get_manager 返回单例"""
         # 重置全局管理器
         import cursor.network as network_module
+
         network_module._manager = None
 
         manager1 = get_manager()
@@ -794,12 +744,11 @@ class TestModuleFunctions:
     async def test_fetch_egress_ip_ranges_function(self):
         """fetch_egress_ip_ranges 便捷函数"""
         import cursor.network as network_module
+
         network_module._manager = None
 
         api_response = {"ip_ranges": ["10.0.0.0/8"], "version": "1.0.0"}
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response))
 
         config = await fetch_egress_ip_ranges()
         assert config is not None
@@ -810,6 +759,7 @@ class TestModuleFunctions:
     def test_is_allowed_ip_function(self):
         """is_allowed_ip 便捷函数"""
         import cursor.network as network_module
+
         network_module._manager = None
 
         # 使用备用配置
@@ -825,6 +775,7 @@ class TestModuleFunctions:
     def test_export_firewall_rules_function(self):
         """export_firewall_rules 便捷函数"""
         import cursor.network as network_module
+
         network_module._manager = None
 
         rules = export_firewall_rules(NGINX)
@@ -862,9 +813,7 @@ class TestEdgeCases:
 
     def test_mixed_ipv4_ipv6(self):
         """混合 IPv4 和 IPv6"""
-        config = EgressIPConfig(
-            ip_ranges=["192.168.1.0/24", "2001:db8::/32"]
-        )
+        config = EgressIPConfig(ip_ranges=["192.168.1.0/24", "2001:db8::/32"])
         assert config.is_allowed_ip("192.168.1.50") is True
         assert config.is_allowed_ip("2001:db8::1") is True
         assert config.is_allowed_ip("10.0.0.1") is False
@@ -877,9 +826,7 @@ class TestEdgeCases:
 
         # 某些 API 可能使用 ranges 键
         api_response = {"ranges": ["192.168.0.0/16"], "version": "1.0.0"}
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -892,9 +839,7 @@ class TestEdgeCases:
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
         api_response = {"ip_ranges": [], "version": "1.0.0"}
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response))
 
         config = await manager._fetch_from_api()
         assert config is not None
@@ -915,9 +860,7 @@ class TestConcurrency:
 
         manager = EgressIPManager(cache_dir=temp_cache_dir)
 
-        respx.get(EgressIPManager.CURSOR_API_URL).mock(
-            return_value=httpx.Response(200, json=api_response_data)
-        )
+        respx.get(EgressIPManager.CURSOR_API_URL).mock(return_value=httpx.Response(200, json=api_response_data))
 
         # 同时发起多个请求
         tasks = [manager.fetch_egress_ip_ranges() for _ in range(5)]

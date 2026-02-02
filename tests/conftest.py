@@ -10,12 +10,24 @@ E2E 测试相关配置请参见 conftest_e2e.py。
 - skip_on_linux: 跳过 Linux 平台
 - requires_fork: 需要 fork 启动方式的测试
 - requires_spawn: 需要 spawn 启动方式的测试
+
+网络阻断说明（优先级从高到低）：
+1. @pytest.mark.allow_network - 始终放行（最高优先级）
+2. @pytest.mark.integration + 有 API Key - 放行
+3. @pytest.mark.block_network - 显式阻断（无需依赖环境变量）
+4. 环境变量 CURSORX_BLOCK_NETWORK=1 - 阻断（运行时读取）
+5. 默认 - 放行
 """
+
 from __future__ import annotations
 
+import argparse
 import multiprocessing as mp
+import os
+import socket
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -26,20 +38,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # 导入 E2E 测试配置
 from tests.conftest_e2e import (
-    # pytest 配置
-    pytest_configure,
     # Mock 类
     MockAgentExecutor,
     MockAgentResult,
     MockKnowledgeManager,
     MockTaskQueue,
-    # Fixtures
-    mock_executor,
-    mock_knowledge_manager,
-    mock_task_queue,
-    orchestrator_factory,
-    sample_tasks,
-    temp_workspace,
     # 断言助手
     assert_executor_called_with,
     assert_iteration_failed,
@@ -51,11 +54,110 @@ from tests.conftest_e2e import (
     # 辅助函数
     create_test_document,
     create_test_task,
+    # Fixtures
+    mock_executor,
+    mock_knowledge_manager,
+    mock_task_queue,
+    orchestrator_factory,
+    # pytest 配置
+    pytest_configure,
+    sample_tasks,
+    temp_workspace,
     wait_for_condition,
 )
 
+# ==================== 网络阻断 Fixture ====================
+
+# 原始 socket 类，用于恢复
+_original_socket = socket.socket
+
+
+def _is_network_blocked() -> bool:
+    """运行时检查是否启用网络阻断
+
+    由环境变量 CURSORX_BLOCK_NETWORK 控制，每次调用时重新读取环境变量，
+    支持在 fixture 中动态修改环境变量。
+
+    Returns:
+        True 表示启用网络阻断，False 表示不阻断
+    """
+    return os.environ.get("CURSORX_BLOCK_NETWORK", "").lower() in ("1", "true", "yes")
+
+
+class BlockedNetworkError(AssertionError):
+    """网络请求被阻断时抛出的异常
+
+    当 CURSORX_BLOCK_NETWORK=1 或测试标记 @pytest.mark.block_network 时，
+    任何网络请求都会触发此异常，防止单元测试意外发起真实网络请求。
+    """
+
+    pass
+
+
+def _blocked_socket(*args, **kwargs):
+    """阻断的 socket 创建函数"""
+    raise BlockedNetworkError(
+        "网络请求被阻断！测试环境禁止真实网络请求。\n"
+        "如果此测试确实需要网络访问，请添加 @pytest.mark.allow_network 标记，\n"
+        "或确保使用 mock 替代真实网络调用。\n"
+        "提示：可通过环境变量 CURSORX_BLOCK_NETWORK=1 或 @pytest.mark.block_network 标记阻断网络"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _block_network_requests(request):
+    """自动应用的网络阻断 fixture
+
+    网络阻断的优先级规则（从高到低）：
+    1. @pytest.mark.allow_network - 始终放行（最高优先级）
+    2. @pytest.mark.integration + 有 API Key - 放行
+    3. @pytest.mark.block_network - 阻断
+    4. 环境变量 CURSORX_BLOCK_NETWORK=1 - 阻断
+    5. 默认 - 放行
+
+    用法:
+        # 在 CI 中通过环境变量启用网络阻断
+        CURSORX_BLOCK_NETWORK=1 pytest tests/
+
+        # 标记允许网络访问的测试（最高优先级，始终放行）
+        @pytest.mark.allow_network
+        def test_needs_network():
+            ...
+
+        # 显式标记阻断网络的测试（无需依赖环境变量）
+        @pytest.mark.block_network
+        def test_must_block_network():
+            ...
+    """
+    # 优先级 1: allow_network 标记始终放行（最高优先级）
+    if request.node.get_closest_marker("allow_network"):
+        yield
+        return
+
+    # 优先级 2: 集成测试且有 API Key 放行
+    if request.node.get_closest_marker("integration"):
+        if os.environ.get("CURSOR_API_KEY") or os.environ.get("CURSOR_CLOUD_API_KEY"):
+            yield
+            return
+
+    # 优先级 3: block_network 标记阻断
+    has_block_marker = request.node.get_closest_marker("block_network") is not None
+
+    # 优先级 4: 环境变量阻断（运行时读取）
+    env_block = _is_network_blocked()
+
+    # 如果没有阻断条件，直接放行
+    if not has_block_marker and not env_block:
+        yield
+        return
+
+    # 应用网络阻断
+    with patch.object(socket, "socket", _blocked_socket):
+        yield
+
 
 # ==================== 平台特定 Fixtures 和标记 ====================
+
 
 @pytest.fixture
 def skip_on_windows():
@@ -170,7 +272,35 @@ def mp_start_method() -> str:
     return method
 
 
+# ==================== pytest hooks ====================
+
+
+def pytest_runtest_setup(item):
+    """在每个测试开始前重置 ConfigManager
+
+    确保每个测试以干净的 ConfigManager 状态开始，
+    避免前一个测试的状态污染。
+    """
+    from core.config import ConfigManager
+
+    ConfigManager.reset_instance()
+
+
+def pytest_runtest_teardown(item, nextitem):
+    """在每个测试结束后重置 ConfigManager
+
+    这个 hook 在所有 fixture teardown 之后运行，确保 monkeypatch 等 fixture
+    已经恢复了工作目录，然后再重置 ConfigManager。
+
+    这样可以确保测试之间的隔离，防止 ConfigManager 状态污染。
+    """
+    from core.config import ConfigManager
+
+    ConfigManager.reset_instance()
+
+
 # ==================== 通用 Fixtures ====================
+
 
 @pytest.fixture(scope="session")
 def project_root() -> Path:
@@ -212,6 +342,87 @@ def clean_env(monkeypatch):
     yield
 
 
+@pytest.fixture
+def no_api_key_and_block_network(monkeypatch):
+    """组合 fixture：无 API Key + 网络阻断
+
+    用于测试无 API Key 场景时确保不发起真实网络请求。
+
+    效果：
+    - 清除 CURSOR_API_KEY 和 CURSOR_CLOUD_API_KEY 环境变量
+    - 设置 CURSORX_BLOCK_NETWORK=1 触发网络阻断
+
+    使用方式：
+    1. 在测试函数/方法参数中引入：
+       def test_something(self, no_api_key_and_block_network):
+           ...
+
+    2. 在测试类中通过 pytestmark 使用：
+       pytestmark = pytest.mark.usefixtures("no_api_key_and_block_network")
+
+    3. 或在测试类中使用 autouse fixture：
+       @pytest.fixture(autouse=True)
+       def setup_no_key_env(self, no_api_key_and_block_network):
+           pass
+
+    Args:
+        monkeypatch: pytest 的 monkeypatch fixture
+    """
+    # 清除 API Key 环境变量
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.delenv("CURSOR_CLOUD_API_KEY", raising=False)
+    # 启用网络阻断
+    monkeypatch.setenv("CURSORX_BLOCK_NETWORK", "1")
+    yield
+    # monkeypatch 会自动清理
+
+
+@pytest.fixture
+def mock_cloud_api_key():
+    """Mock Cloud API Key 存在，用于测试 Cloud 执行模式
+
+    这是一个共享 fixture，供需要 mock Cloud API Key 的测试类使用。
+    测试类可以通过 autouse=True 的方式在类级别自动应用此 fixture。
+
+    Example:
+        class TestCloudMode:
+            @pytest.fixture(autouse=True)
+            def setup_mock_api_key(self, mock_cloud_api_key):
+                pass  # 自动应用 mock_cloud_api_key
+    """
+    from cursor.cloud_client import CloudClientFactory
+
+    with patch.object(CloudClientFactory, "resolve_api_key", return_value="mock-api-key"):
+        yield
+
+
+@pytest.fixture
+def mock_cloud_api_key_and_enabled(mock_cloud_api_key):
+    """Mock Cloud API Key 存在且 cloud_enabled=True
+
+    用于测试 '&' 前缀触发 Cloud 模式的场景。
+    Policy 要求 cloud_enabled=True 才会路由 & 前缀到 Cloud 模式。
+
+    注意：此 fixture 依赖 mock_cloud_api_key fixture，
+    并额外设置 config.cloud_agent.enabled=True。
+    """
+    from core.config import get_config
+
+    config = get_config()
+    original_enabled = config.cloud_agent.enabled
+    original_execution_mode = config.cloud_agent.execution_mode
+
+    # 临时设置 cloud_enabled=True 和 execution_mode=cli
+    config.cloud_agent.enabled = True
+    config.cloud_agent.execution_mode = "cli"
+    try:
+        yield
+    finally:
+        # 恢复原始值
+        config.cloud_agent.enabled = original_enabled
+        config.cloud_agent.execution_mode = original_execution_mode
+
+
 @pytest.fixture(scope="session")
 def event_loop_policy():
     """事件循环策略 fixture
@@ -219,7 +430,91 @@ def event_loop_policy():
     确保测试使用正确的事件循环策略。
     """
     import asyncio
+
     return asyncio.DefaultEventLoopPolicy()
+
+
+# ==================== SelfIterator 测试相关 Fixtures ====================
+
+
+def make_iterate_args(**kwargs) -> argparse.Namespace:
+    """创建完整的 iterate_args 对象
+
+    提供 SelfIterator 所需的所有必需属性的默认值，
+    可通过 kwargs 覆盖任意属性。
+
+    Example:
+        args = make_iterate_args(requirement="自定义任务", auto_commit=True)
+    """
+    import argparse
+
+    defaults = {
+        # 基础参数
+        "requirement": "测试任务",
+        "directory": ".",
+        "skip_online": True,
+        "changelog_url": "https://cursor.com/cn/changelog",
+        "dry_run": False,
+        "max_iterations": "2",
+        "workers": 2,
+        "force_update": False,
+        "verbose": False,
+        "quiet": False,
+        "log_level": None,
+        # 提交参数
+        "auto_commit": False,
+        "auto_push": False,
+        "commit_message": "",
+        "commit_per_iteration": False,
+        # 编排器参数
+        "orchestrator": "basic",
+        "no_mp": True,
+        "_orchestrator_user_set": True,
+        # 执行模式参数
+        "execution_mode": "cli",
+        "cloud_api_key": None,
+        "cloud_auth_timeout": 30,
+        "cloud_timeout": 300,
+        # 心跳和诊断参数
+        "heartbeat_debug": False,
+        "stall_diagnostics_enabled": None,
+        "stall_diagnostics_level": None,
+        "stall_recovery_interval": 30.0,
+        "execution_health_check_interval": 30.0,
+        "health_warning_cooldown": 60.0,
+        # 角色执行模式参数
+        "planner_execution_mode": None,
+        "worker_execution_mode": None,
+        "reviewer_execution_mode": None,
+        # 流式渲染参数
+        "stream_console_renderer": False,
+        "stream_advanced_renderer": False,
+        "stream_typing_effect": False,
+        "stream_typing_delay": 0.02,
+        "stream_word_mode": True,
+        "stream_color_enabled": True,
+        "stream_show_word_diff": False,
+        # docs source config 所需参数
+        "max_fetch_urls": None,
+        "fallback_core_docs_count": None,
+        "llms_txt_url": None,
+        "llms_cache_path": None,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+@pytest.fixture
+def base_iterate_args() -> argparse.Namespace:
+    """提供完整的 SelfIterator 所需参数
+
+    这个 fixture 包含所有 SelfIterator.__init__ 所需的属性，
+    避免在每个测试中重复定义。
+
+    Returns:
+        argparse.Namespace: 完整的 iterate 参数对象
+    """
+    return make_iterate_args()
 
 
 # ==================== 导出 ====================
@@ -232,6 +527,8 @@ __all__ = [
     "MockAgentResult",
     "MockKnowledgeManager",
     "MockTaskQueue",
+    # 网络阻断
+    "BlockedNetworkError",
     # Fixtures
     "mock_executor",
     "mock_knowledge_manager",
@@ -242,7 +539,12 @@ __all__ = [
     "project_root",
     "env_with_api_key",
     "clean_env",
+    "no_api_key_and_block_network",
+    "mock_cloud_api_key",
+    "mock_cloud_api_key_and_enabled",
     "event_loop_policy",
+    "base_iterate_args",
+    "make_iterate_args",
     # 平台特定 Fixtures
     "skip_on_windows",
     "skip_on_macos",

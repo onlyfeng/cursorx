@@ -2,7 +2,9 @@
 
 使用 mock 替代真实的 ChromaDB，加快测试速度
 """
+
 import tempfile
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,7 +24,7 @@ class MockChromaCollection:
     def __init__(self, name="test", metadata=None):
         self.name = name
         self.metadata = metadata or {}
-        self._data = {
+        self._data: dict[str, list[Any]] = {
             "ids": [],
             "embeddings": [],
             "documents": [],
@@ -46,7 +48,7 @@ class MockChromaCollection:
         }
 
     def get(self, ids=None, include=None):
-        result = {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
+        result: dict[str, list[Any]] = {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
         for i, id_ in enumerate(self._data["ids"]):
             if ids is None or id_ in ids:
                 result["ids"].append(id_)
@@ -113,7 +115,7 @@ class MockChromaClient:
 @pytest.fixture
 def mock_chromadb():
     """Mock ChromaDB"""
-    with patch('indexing.vector_store.chromadb') as mock_chroma:
+    with patch("indexing.vector_store.chromadb") as mock_chroma:
         mock_client = MockChromaClient()
         mock_chroma.Client.return_value = mock_client
         mock_chroma.PersistentClient.return_value = mock_client
@@ -127,7 +129,7 @@ def mock_chromadb():
 def create_test_chunk(
     content: str = "def test(): pass",
     file_path: str = "test.py",
-    embedding: list = None,
+    embedding: list[float] | None = None,
 ) -> CodeChunk:
     """创建测试用的 CodeChunk"""
     chunk = CodeChunk(

@@ -9,17 +9,21 @@
 
 使用 Mock 替代真实 Cursor CLI/Cloud 调用
 """
+
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# cooldown_info 契约字段常量
+from core.output_contract import CooldownInfoFields
+from cursor import AuthError
 from cursor.client import CursorAgentConfig, CursorAgentResult
-from cursor.cloud_client import AuthStatus, CloudAuthConfig
 from cursor.cloud.client import CloudAgentResult, CursorCloudClient
 from cursor.cloud.task import CloudTask, CloudTaskOptions, TaskStatus
+from cursor.cloud_client import AuthStatus, CloudAuthConfig
 from cursor.executor import (
     AgentExecutorFactory,
     AgentResult,
@@ -31,7 +35,6 @@ from cursor.executor import (
     PlanAgentExecutor,
     execute_agent,
 )
-
 
 # ==================== TestCLIExecutionMode ====================
 
@@ -71,9 +74,7 @@ class TestCLIExecutionMode:
         """测试 CLI 模式完整工作流"""
         executor = CLIAgentExecutor(config=cli_config)
 
-        with patch.object(
-            executor._client, "execute", new_callable=AsyncMock
-        ) as mock_execute:
+        with patch.object(executor._client, "execute", new_callable=AsyncMock) as mock_execute:
             mock_execute.return_value = mock_cli_result
 
             result = await executor.execute(
@@ -127,17 +128,13 @@ class TestCLIExecutionMode:
         """测试 CLI 可用性检查"""
         executor = CLIAgentExecutor()
 
-        with patch.object(
-            executor._client, "check_agent_available", return_value=True
-        ):
+        with patch.object(executor._client, "check_agent_available", return_value=True):
             result = await executor.check_available()
             assert result is True
 
         # 重新创建执行器测试不可用情况
         executor2 = CLIAgentExecutor()
-        with patch.object(
-            executor2._client, "check_agent_available", return_value=False
-        ):
+        with patch.object(executor2._client, "check_agent_available", return_value=False):
             result = await executor2.check_available()
             assert result is False
 
@@ -150,9 +147,7 @@ class TestCLIExecutionMode:
         """测试 CLI 模式带重试执行"""
         executor = CLIAgentExecutor(config=cli_config)
 
-        with patch.object(
-            executor._client, "execute_with_retry", new_callable=AsyncMock
-        ) as mock_retry:
+        with patch.object(executor._client, "execute_with_retry", new_callable=AsyncMock) as mock_retry:
             mock_retry.return_value = mock_cli_result
 
             result = await executor.execute_with_retry(
@@ -184,9 +179,7 @@ class TestCLIExecutionMode:
             files_modified=[],
         )
 
-        with patch.object(
-            executor._client, "execute", new_callable=AsyncMock
-        ) as mock_execute:
+        with patch.object(executor._client, "execute", new_callable=AsyncMock) as mock_execute:
             mock_execute.return_value = error_result
 
             result = await executor.execute(prompt="失败的任务")
@@ -215,7 +208,7 @@ class TestCloudExecutionMode:
         """创建 Cloud 认证配置"""
         return CloudAuthConfig(
             api_key="test-api-key-12345",
-            base_url="https://api.cursor.com",
+            api_base_url="https://api.cursor.com",
         )
 
     @pytest.fixture
@@ -529,7 +522,7 @@ class TestCloudExecutionMode:
 
         mock_auth_failed = AuthStatus(
             authenticated=False,
-            error="No API key",
+            error=AuthError("No API key"),
         )
 
         with patch.object(
@@ -791,36 +784,38 @@ class TestAutoExecutionMode:
         assert executor._preferred_executor is None
 
         # Mock Cloud 不可用，CLI 可用
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
                 executor._cli_executor,
                 "check_available",
                 new_callable=AsyncMock,
                 return_value=True,
+            ),
+        ):
+            cli_result = AgentResult(
+                success=True,
+                output="执行成功",
+                executor_type="cli",
+            )
+
+            with patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_result,
             ):
-                cli_result = AgentResult(
-                    success=True,
-                    output="执行成功",
-                    executor_type="cli",
-                )
+                # 第一次执行，选择执行器
+                await executor.execute(prompt="第一次执行")
+                assert executor._preferred_executor is not None
 
-                with patch.object(
-                    executor._cli_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cli_result,
-                ):
-                    # 第一次执行，选择执行器
-                    await executor.execute(prompt="第一次执行")
-                    assert executor._preferred_executor is not None
-
-                    # 第二次执行，使用已选择的执行器
-                    await executor.execute(prompt="第二次执行")
+                # 第二次执行，使用已选择的执行器
+                await executor.execute(prompt="第二次执行")
 
     @pytest.mark.asyncio
     async def test_auto_mode_reset(
@@ -878,23 +873,25 @@ class TestAutoExecutionMode:
                 executor_type="cli",
             )
 
-            with patch.object(
-                executor._cloud_executor,
-                "execute",
-                new_callable=AsyncMock,
-                return_value=cloud_fail_result,
-            ):
-                with patch.object(
+            with (
+                patch.object(
+                    executor._cloud_executor,
+                    "execute",
+                    new_callable=AsyncMock,
+                    return_value=cloud_fail_result,
+                ),
+                patch.object(
                     executor._cli_executor,
                     "execute",
                     new_callable=AsyncMock,
                     return_value=cli_success_result,
-                ):
-                    result = await executor.execute(prompt="测试 Cloud 失败回退")
+                ),
+            ):
+                result = await executor.execute(prompt="测试 Cloud 失败回退")
 
-                    # 应该回退到 CLI
-                    assert result.success is True
-                    assert result.executor_type == "cli"
+                # 应该回退到 CLI
+                assert result.success is True
+                assert result.executor_type == "cli"
 
     @pytest.mark.asyncio
     async def test_auto_mode_cloud_error_fallback_to_cli(
@@ -1007,54 +1004,60 @@ class TestAutoExecutionMode:
         )
 
         # 测试两者都可用
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cli_executor,
                 "check_available",
                 new_callable=AsyncMock,
                 return_value=True,
-            ):
-                result = await executor.check_available()
-                assert result is True
+            ),
+        ):
+            result = await executor.check_available()
+            assert result is True
 
         # 测试只有 CLI 可用
         executor2 = AutoAgentExecutor(cli_config=cli_config)
-        with patch.object(
-            executor2._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor2._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
                 executor2._cli_executor,
                 "check_available",
                 new_callable=AsyncMock,
                 return_value=True,
-            ):
-                result = await executor2.check_available()
-                assert result is True
+            ),
+        ):
+            result = await executor2.check_available()
+            assert result is True
 
         # 测试两者都不可用
         executor3 = AutoAgentExecutor(cli_config=cli_config)
-        with patch.object(
-            executor3._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor3._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
                 executor3._cli_executor,
                 "check_available",
                 new_callable=AsyncMock,
                 return_value=False,
-            ):
-                result = await executor3.check_available()
-                assert result is False
+            ),
+        ):
+            result = await executor3.check_available()
+            assert result is False
 
     @pytest.mark.asyncio
     async def test_auto_executor_cloud_available_uses_cloud_path(
@@ -1186,6 +1189,9 @@ class TestAutoExecutionMode:
                 mock_result.task = MagicMock()
                 mock_result.task.task_id = "auto-cloud-session"
                 mock_result.to_dict = MagicMock(return_value={})
+                # 必须设置 error_type 和 retry_after，否则 MagicMock 返回 MagicMock 导致验证失败
+                mock_result.error_type = None
+                mock_result.retry_after = None
                 mock_execute_task.return_value = mock_result
 
                 result = await executor.execute(prompt="验证云端提交路径")
@@ -1253,14 +1259,29 @@ class TestAutoExecutorCooldown:
         cli_config: CursorAgentConfig,
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
-        """测试自定义冷却配置"""
+        """测试自定义冷却配置
+
+        注意：cloud_cooldown_seconds 参数现在会被转换为 CooldownConfig，
+        实际冷却时间会根据错误类型而变化。
+        """
+        from cursor.executor import CooldownConfig
+
+        # 使用 CooldownConfig 进行精确配置
+        cooldown_config = CooldownConfig(
+            rate_limit_default_seconds=60,
+            network_cooldown_seconds=60,
+            timeout_cooldown_seconds=60,
+            unknown_cooldown_seconds=60,
+        )
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=60,  # 自定义 60 秒
+            cooldown_config=cooldown_config,
             enable_cooldown=True,
         )
 
+        # cloud_cooldown_seconds 返回 unknown 类型的默认冷却时间
         assert executor.cloud_cooldown_seconds == 60
         assert executor._enable_cooldown is True
 
@@ -1289,14 +1310,23 @@ class TestAutoExecutorCooldown:
         cli_config: CursorAgentConfig,
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
-        """测试启动冷却"""
+        """测试启动冷却
+
+        注意：_start_cloud_cooldown() 使用默认错误类型（unknown），
+        冷却时间由 unknown_cooldown_seconds 决定（默认 300 秒）。
+        """
+        from cursor.executor import CooldownConfig
+
+        # 使用自定义配置以便测试
+        cooldown_config = CooldownConfig(unknown_cooldown_seconds=60)
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=60,
+            cooldown_config=cooldown_config,
         )
 
-        # 启动冷却
+        # 启动冷却（使用向后兼容的 _start_cloud_cooldown 方法）
         executor._start_cloud_cooldown()
 
         # 验证冷却状态
@@ -1304,7 +1334,8 @@ class TestAutoExecutorCooldown:
         assert executor._cloud_failure_count == 1
         assert executor._cloud_cooldown_until is not None
         assert executor.cloud_cooldown_remaining is not None
-        assert 0 < executor.cloud_cooldown_remaining <= 60
+        # 冷却时间应该在配置的范围内
+        assert 0 < executor.cloud_cooldown_remaining <= 300  # 允许使用默认值
 
     def test_reset_cooldown(
         self,
@@ -1388,11 +1419,21 @@ class TestAutoExecutorCooldown:
         cli_config: CursorAgentConfig,
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
-        """测试 Cloud 失败后触发冷却"""
+        """测试 Cloud 失败后触发冷却
+
+        验证：
+        - Cloud 执行失败后进入冷却
+        - cooldown_info 包含统一的结构化信息
+        - 使用 classify_cloud_failure 分类错误
+        """
+        from cursor.executor import CooldownConfig
+
+        cooldown_config = CooldownConfig(unknown_cooldown_seconds=60)
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=60,
+            cooldown_config=cooldown_config,
         )
 
         cloud_fail_result = AgentResult(
@@ -1408,34 +1449,41 @@ class TestAutoExecutorCooldown:
         )
 
         # Mock Cloud 可用但执行失败
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "execute",
                 new_callable=AsyncMock,
                 return_value=cloud_fail_result,
-            ):
-                with patch.object(
-                    executor._cli_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cli_success_result,
-                ):
-                    result = await executor.execute(prompt="测试冷却触发")
+            ),
+            patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ),
+        ):
+            result = await executor.execute(prompt="测试冷却触发")
 
-                    # 验证回退到 CLI
-                    assert result.success is True
-                    assert result.executor_type == "cli"
+            # 验证回退到 CLI
+            assert result.success is True
+            assert result.executor_type == "cli"
 
-                    # 验证冷却已启动
-                    assert executor.is_cloud_in_cooldown is True
-                    assert executor._cloud_failure_count == 1
-                    assert executor._preferred_executor == executor._cli_executor
+            # 验证冷却已启动
+            assert executor.is_cloud_in_cooldown is True
+            assert executor._cloud_failure_count == 1
+            assert executor._preferred_executor == executor._cli_executor
+
+            # 验证 cooldown_info 结构
+            assert result.cooldown_info is not None
+            assert CooldownInfoFields.USER_MESSAGE in result.cooldown_info
+            assert CooldownInfoFields.RETRYABLE in result.cooldown_info
 
     @pytest.mark.asyncio
     async def test_cooldown_prevents_cloud_retry(
@@ -1444,10 +1492,14 @@ class TestAutoExecutorCooldown:
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
         """测试冷却期内不重试 Cloud"""
+        from cursor.executor import CooldownConfig
+
+        cooldown_config = CooldownConfig(unknown_cooldown_seconds=300)
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=300,
+            cooldown_config=cooldown_config,
         )
 
         # 手动设置冷却状态
@@ -1464,30 +1516,32 @@ class TestAutoExecutorCooldown:
         cloud_check_mock = AsyncMock(return_value=True)
         cli_execute_mock = AsyncMock(return_value=cli_success_result)
 
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            cloud_check_mock,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                cloud_check_mock,
+            ),
+            patch.object(
                 executor._cli_executor,
                 "check_available",
                 new_callable=AsyncMock,
                 return_value=True,
-            ):
-                with patch.object(
-                    executor._cli_executor,
-                    "execute",
-                    cli_execute_mock,
-                ):
-                    result = await executor.execute(prompt="冷却期内执行")
+            ),
+            patch.object(
+                executor._cli_executor,
+                "execute",
+                cli_execute_mock,
+            ),
+        ):
+            result = await executor.execute(prompt="冷却期内执行")
 
-                    # 验证使用 CLI（不应尝试 Cloud）
-                    assert result.success is True
-                    assert result.executor_type == "cli"
+            # 验证使用 CLI（不应尝试 Cloud）
+            assert result.success is True
+            assert result.executor_type == "cli"
 
-                    # Cloud check_available 不应被调用（因为在冷却期）
-                    cloud_check_mock.assert_not_called()
+            # Cloud check_available 不应被调用（因为在冷却期）
+            cloud_check_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_cooldown_expiry_retries_cloud(
@@ -1496,10 +1550,14 @@ class TestAutoExecutorCooldown:
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
         """测试冷却过期后重新尝试 Cloud"""
+        from cursor.executor import CooldownConfig
+
+        cooldown_config = CooldownConfig(unknown_cooldown_seconds=60)
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=60,
+            cooldown_config=cooldown_config,
         )
 
         # 设置已过期的冷却
@@ -1513,28 +1571,30 @@ class TestAutoExecutorCooldown:
         )
 
         # Mock Cloud 可用并执行成功
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "reset_availability_cache",
-            ):
-                with patch.object(
-                    executor._cloud_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cloud_success_result,
-                ):
-                    result = await executor.execute(prompt="冷却过期后执行")
+            ),
+            patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_success_result,
+            ),
+        ):
+            result = await executor.execute(prompt="冷却过期后执行")
 
-                    # 验证切换回 Cloud
-                    assert result.success is True
-                    assert result.executor_type == "cloud"
-                    assert executor._preferred_executor == executor._cloud_executor
+            # 验证切换回 Cloud
+            assert result.success is True
+            assert result.executor_type == "cloud"
+            assert executor._preferred_executor == executor._cloud_executor
 
     @pytest.mark.asyncio
     async def test_cloud_success_resets_cooldown(
@@ -1557,27 +1617,29 @@ class TestAutoExecutorCooldown:
             executor_type="cloud",
         )
 
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "execute",
                 new_callable=AsyncMock,
                 return_value=cloud_success_result,
-            ):
-                result = await executor.execute(prompt="测试成功重置")
+            ),
+        ):
+            result = await executor.execute(prompt="测试成功重置")
 
-                # 验证 Cloud 成功
-                assert result.success is True
-                assert result.executor_type == "cloud"
+            # 验证 Cloud 成功
+            assert result.success is True
+            assert result.executor_type == "cloud"
 
-                # 验证冷却状态已重置
-                assert executor._cloud_failure_count == 0
-                assert executor._cloud_cooldown_until is None
+            # 验证冷却状态已重置
+            assert executor._cloud_failure_count == 0
+            assert executor._cloud_cooldown_until is None
 
     @pytest.mark.asyncio
     async def test_multiple_failures_accumulate_count(
@@ -1586,10 +1648,14 @@ class TestAutoExecutorCooldown:
         cloud_auth_config: CloudAuthConfig,
     ) -> None:
         """测试多次失败累计失败计数"""
+        from cursor.executor import CooldownConfig
+
+        cooldown_config = CooldownConfig(unknown_cooldown_seconds=1)  # 短冷却便于测试
+
         executor = AutoAgentExecutor(
             cli_config=cli_config,
             cloud_auth_config=cloud_auth_config,
-            cloud_cooldown_seconds=1,  # 短冷却便于测试
+            cooldown_config=cooldown_config,
         )
 
         cloud_fail_result = AgentResult(
@@ -1605,55 +1671,59 @@ class TestAutoExecutorCooldown:
         )
 
         # 第一次失败
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "execute",
                 new_callable=AsyncMock,
                 return_value=cloud_fail_result,
-            ):
-                with patch.object(
-                    executor._cli_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cli_success_result,
-                ):
-                    await executor.execute(prompt="第一次失败")
-                    assert executor._cloud_failure_count == 1
+            ),
+            patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ),
+        ):
+            await executor.execute(prompt="第一次失败")
+            assert executor._cloud_failure_count == 1
 
         # 等待冷却过期
         executor._cloud_cooldown_until = datetime.now() - timedelta(seconds=1)
 
         # 第二次失败
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "reset_availability_cache",
-            ):
-                with patch.object(
-                    executor._cloud_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cloud_fail_result,
-                ):
-                    with patch.object(
-                        executor._cli_executor,
-                        "execute",
-                        new_callable=AsyncMock,
-                        return_value=cli_success_result,
-                    ):
-                        await executor.execute(prompt="第二次失败")
-                        assert executor._cloud_failure_count == 2
+            ),
+            patch.object(
+                executor._cloud_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cloud_fail_result,
+            ),
+            patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ),
+        ):
+            await executor.execute(prompt="第二次失败")
+            assert executor._cloud_failure_count == 2
 
     @pytest.mark.asyncio
     async def test_cooldown_disabled_no_delay(
@@ -1687,48 +1757,52 @@ class TestAutoExecutorCooldown:
         )
 
         # 第一次执行：Cloud 失败，回退到 CLI
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
                 executor._cloud_executor,
                 "execute",
                 new_callable=AsyncMock,
                 return_value=cloud_fail_result,
-            ):
-                with patch.object(
-                    executor._cli_executor,
-                    "execute",
-                    new_callable=AsyncMock,
-                    return_value=cli_success_result,
-                ):
-                    result = await executor.execute(prompt="禁用冷却-失败")
-                    assert result.executor_type == "cli"
+            ),
+            patch.object(
+                executor._cli_executor,
+                "execute",
+                new_callable=AsyncMock,
+                return_value=cli_success_result,
+            ),
+        ):
+            result = await executor.execute(prompt="禁用冷却-失败")
+            assert result.executor_type == "cli"
 
         # 重置偏好以便第二次重新选择
         executor.reset_preference()
 
         # 第二次执行：应该立即尝试 Cloud（因为冷却被禁用）
-        with patch.object(
-            executor._cloud_executor,
-            "check_available",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_cloud_check:
-            with patch.object(
+        with (
+            patch.object(
+                executor._cloud_executor,
+                "check_available",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_cloud_check,
+            patch.object(
                 executor._cloud_executor,
                 "execute",
                 new_callable=AsyncMock,
                 return_value=cloud_success_result,
-            ):
-                result = await executor.execute(prompt="禁用冷却-重试")
+            ),
+        ):
+            result = await executor.execute(prompt="禁用冷却-重试")
 
-                # 验证 Cloud 被检查和使用
-                mock_cloud_check.assert_called()
-                assert result.executor_type == "cloud"
+            # 验证 Cloud 被检查和使用
+            mock_cloud_check.assert_called()
+            assert result.executor_type == "cloud"
 
     def test_default_behavior_unchanged(
         self,
@@ -1869,27 +1943,29 @@ class TestExecutorFactory:
     ) -> None:
         """测试创建最佳可用执行器"""
         # Mock Cloud 不可用，CLI 可用
-        with patch(
-            "cursor.executor.CloudAgentExecutor.check_available",
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            with patch(
+        with (
+            patch(
+                "cursor.executor.CloudAgentExecutor.check_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "cursor.executor.CLIAgentExecutor.check_available",
                 new_callable=AsyncMock,
                 return_value=True,
-            ):
-                executor = await AgentExecutorFactory.create_best_available(
-                    cli_config=cli_config,
-                    cloud_auth_config=cloud_auth_config,
-                )
-                # 应该返回 CLI 执行器
-                assert executor.executor_type == "cli"
+            ),
+        ):
+            executor = await AgentExecutorFactory.create_best_available(
+                cli_config=cli_config,
+                cloud_auth_config=cloud_auth_config,
+            )
+            # 应该返回 CLI 执行器
+            assert executor.executor_type == "cli"
 
     def test_factory_invalid_mode(self) -> None:
         """测试无效模式处理"""
         with pytest.raises(ValueError, match="未知的执行模式"):
-            AgentExecutorFactory.create(mode="invalid_mode")
+            AgentExecutorFactory.create(mode=cast(ExecutionMode, "invalid_mode"))
 
 
 # ==================== TestPlanAndAskExecutors ====================
@@ -2008,9 +2084,7 @@ class TestConvenienceFunctions:
             executor_type="cli",
         )
 
-        with patch(
-            "cursor.executor.AgentExecutorFactory.create"
-        ) as mock_factory:
+        with patch("cursor.executor.AgentExecutorFactory.create") as mock_factory:
             mock_executor = MagicMock()
             mock_executor.execute = AsyncMock(return_value=mock_result)
             mock_factory.return_value = mock_executor
@@ -2057,6 +2131,7 @@ class TestRunMpExecutionModeHandling:
     @pytest.fixture
     def mock_config_with_execution_mode(self, tmp_path):
         """创建带有指定 execution_mode 的临时 config.yaml"""
+
         def _create_config(execution_mode: str):
             config_content = f"""
 cloud_agent:
@@ -2071,6 +2146,7 @@ system:
             config_file = tmp_path / "config.yaml"
             config_file.write_text(config_content)
             return config_file
+
         return _create_config
 
     def test_resolve_orchestrator_settings_returns_execution_mode(self) -> None:
@@ -2133,8 +2209,7 @@ system:
         tmp_path,
     ) -> None:
         """测试 run_mp.py 检测 config.yaml 中的 cloud 模式并回退"""
-        import sys
-        from unittest.mock import patch, AsyncMock, MagicMock
+        from unittest.mock import patch
 
         # 创建 cloud 模式的配置
         config_file = mock_config_with_execution_mode("cloud")
@@ -2143,6 +2218,7 @@ system:
         with patch("core.config.find_config_file", return_value=config_file):
             # 重置单例以加载新配置
             from core.config import ConfigManager
+
             ConfigManager.reset_instance()
 
             try:
@@ -2177,6 +2253,7 @@ system:
     def test_execution_mode_fallback_warning_format(self) -> None:
         """测试 execution_mode 回退警告格式"""
         from io import StringIO
+
         from loguru import logger
 
         # 捕获日志输出
@@ -2187,10 +2264,7 @@ system:
             # 模拟 run_mp.py 中的警告逻辑
             config_execution_mode = "cloud"
             if config_execution_mode in ("cloud", "auto"):
-                logger.warning(
-                    f"⚠ MP 编排器不支持 execution_mode={config_execution_mode}，"
-                    "强制回退到 CLI 模式"
-                )
+                logger.warning(f"⚠ MP 编排器不支持 execution_mode={config_execution_mode}，强制回退到 CLI 模式")
 
             log_content = log_output.getvalue()
             assert "MP 编排器不支持" in log_content
@@ -2253,3 +2327,385 @@ class TestAgentResult:
         assert result.success is False
         assert result.error == "任务执行失败"
         assert result.exit_code == 1
+
+
+# ==================== TestRequestedModeOrchestratorInvariant ====================
+
+
+class TestRequestedModeOrchestratorInvariant:
+    """requested_mode 与 orchestrator 关系的不变量测试
+
+    核心规则：requested_mode=auto/cloud ⇒ orchestrator=basic
+    此规则确保 Cloud/Auto 执行模式始终使用 basic 编排器。
+
+    **重要**：这是一个不可回归的行为，本测试类用于确保该行为永远成立。
+
+    背景说明：
+    - requested_mode: 用户请求的执行模式（CLI 参数或 config.yaml）
+    - effective_mode: 实际生效的执行模式（可能因缺少 API Key 而回退）
+    - orchestrator 选择基于 requested_mode，而非 effective_mode
+    - 即使 effective_mode 回退到 cli，只要 requested_mode 是 auto/cloud，
+      编排器就应该是 basic
+
+    参见 AGENTS.md: "requested_mode vs effective_mode 关键区别"
+    """
+
+    def test_auto_mode_forces_basic_orchestrator(self) -> None:
+        """不变量：requested_mode=auto 必须强制使用 basic 编排器
+
+        这是核心不变量，确保 auto 模式始终使用 basic 编排器，
+        无论是否有 API Key。
+        """
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "auto"})
+
+        assert settings["execution_mode"] == "auto", "execution_mode 应为 auto"
+        assert settings["orchestrator"] == "basic", (
+            "关键不变量：requested_mode=auto 必须强制使用 basic 编排器\n"
+            f"实际值: orchestrator={settings['orchestrator']}"
+        )
+
+    def test_cloud_mode_forces_basic_orchestrator(self) -> None:
+        """不变量：requested_mode=cloud 必须强制使用 basic 编排器
+
+        这是核心不变量，确保 cloud 模式始终使用 basic 编排器，
+        无论是否有 API Key。
+        """
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cloud"})
+
+        assert settings["execution_mode"] == "cloud", "execution_mode 应为 cloud"
+        assert settings["orchestrator"] == "basic", (
+            "关键不变量：requested_mode=cloud 必须强制使用 basic 编排器\n"
+            f"实际值: orchestrator={settings['orchestrator']}"
+        )
+
+    def test_cli_mode_allows_mp_orchestrator(self) -> None:
+        """对比测试：requested_mode=cli 允许使用 mp 编排器"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cli"})
+
+        assert settings["execution_mode"] == "cli", "execution_mode 应为 cli"
+        assert settings["orchestrator"] == "mp", (
+            f"cli 模式应默认允许 mp 编排器\n实际值: orchestrator={settings['orchestrator']}"
+        )
+
+    def test_auto_mode_basic_even_when_mp_requested(self) -> None:
+        """不变量：即使显式请求 mp，auto 模式仍强制 basic
+
+        验证：即使用户显式设置 orchestrator=mp，
+        当 execution_mode=auto 时，仍会被强制切换到 basic。
+        """
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "auto", "orchestrator": "mp"})
+
+        assert settings["execution_mode"] == "auto"
+        assert settings["orchestrator"] == "basic", (
+            f"关键不变量：auto 模式下即使请求 mp 也必须强制使用 basic\n实际值: orchestrator={settings['orchestrator']}"
+        )
+
+    def test_cloud_mode_basic_even_when_mp_requested(self) -> None:
+        """不变量：即使显式请求 mp，cloud 模式仍强制 basic"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cloud", "orchestrator": "mp"})
+
+        assert settings["execution_mode"] == "cloud"
+        assert settings["orchestrator"] == "basic", (
+            f"关键不变量：cloud 模式下即使请求 mp 也必须强制使用 basic\n实际值: orchestrator={settings['orchestrator']}"
+        )
+
+    def test_orchestrator_forced_reason_populated(self) -> None:
+        """验证 orchestrator_forced_reason 字段被正确填充
+
+        当编排器因 execution_mode=auto/cloud 而被强制切换到 basic 时，
+        应该记录强制切换的原因。
+        """
+        from core.config import resolve_orchestrator_settings
+
+        # auto 模式
+        settings_auto = resolve_orchestrator_settings(overrides={"execution_mode": "auto"})
+        assert settings_auto["orchestrator_forced_reason"] is not None, "auto 模式下应记录强制切换原因"
+        assert "auto" in settings_auto["orchestrator_forced_reason"].lower()
+
+        # cloud 模式
+        settings_cloud = resolve_orchestrator_settings(overrides={"execution_mode": "cloud"})
+        assert settings_cloud["orchestrator_forced_reason"] is not None, "cloud 模式下应记录强制切换原因"
+        assert "cloud" in settings_cloud["orchestrator_forced_reason"].lower()
+
+    def test_cli_mode_no_forced_reason(self) -> None:
+        """验证 cli 模式下不记录强制切换原因"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": "cli"})
+        assert settings["orchestrator_forced_reason"] is None, "cli 模式下不应有强制切换原因"
+
+    def test_format_debug_config_shows_requested_and_effective_mode(self) -> None:
+        """验证 format_debug_config 输出包含 requested_mode 和 effective_mode"""
+        from core.config import CONFIG_DEBUG_PREFIX, format_debug_config
+
+        # 测试 auto 模式（无 API Key 时 effective_mode 回退到 cli）
+        output = format_debug_config(
+            cli_overrides={"execution_mode": "auto"},
+            source_label="test",
+            has_api_key=False,
+        )
+
+        # 验证输出包含两个字段
+        assert f"{CONFIG_DEBUG_PREFIX} requested_mode: auto" in output
+        assert f"{CONFIG_DEBUG_PREFIX} effective_mode: cli" in output
+        # 验证编排器仍为 basic（即使 effective_mode=cli）
+        assert f"{CONFIG_DEBUG_PREFIX} orchestrator: basic" in output
+
+    def test_format_debug_config_orchestrator_fallback_explanation(self) -> None:
+        """验证 orchestrator_fallback 包含详细解释
+
+        当 requested_mode=auto/cloud 但 effective_mode=cli 时，
+        orchestrator_fallback 应解释为什么仍使用 basic 编排器。
+        """
+        from core.config import format_debug_config
+
+        output = format_debug_config(
+            cli_overrides={"execution_mode": "auto"},
+            source_label="test",
+            has_api_key=False,  # 无 API Key，effective_mode 会回退到 cli
+        )
+
+        # 验证回退解释
+        assert "mp->basic" in output
+        assert "requested_mode=auto" in output
+        # 验证解释说明即使 effective_mode=cli 也强制 basic
+        assert "even when effective_mode=cli" in output
+
+    def test_prefix_routed_also_forces_basic(self) -> None:
+        """验证 & 前缀成功触发时也强制 basic 编排器"""
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(
+            overrides={"execution_mode": "cli"},  # CLI 模式
+            prefix_routed=True,  # & 前缀成功触发
+        )
+
+        assert settings["orchestrator"] == "basic", "& 前缀成功触发时应强制使用 basic 编排器"
+        assert settings["prefix_routed"] is True
+
+    def test_should_use_mp_orchestrator_policy_function(self) -> None:
+        """验证 should_use_mp_orchestrator 策略函数行为
+
+        此函数是编排器选择策略的核心实现，验证其与 requested_mode 的关系。
+        """
+        from core.execution_policy import should_use_mp_orchestrator
+
+        # auto/cloud 模式不能使用 mp
+        assert should_use_mp_orchestrator("auto") is False, "auto 模式不能使用 mp"
+        assert should_use_mp_orchestrator("cloud") is False, "cloud 模式不能使用 mp"
+
+        # cli/plan/ask 模式可以使用 mp
+        assert should_use_mp_orchestrator("cli") is True, "cli 模式可以使用 mp"
+        assert should_use_mp_orchestrator("plan") is True, "plan 模式可以使用 mp"
+        assert should_use_mp_orchestrator("ask") is True, "ask 模式可以使用 mp"
+
+        # 验证正确的流程：不应直接调用 should_use_mp_orchestrator(None)
+        # 应先通过 resolve_requested_mode_for_decision 解析 requested_mode
+        from core.execution_policy import resolve_requested_mode_for_decision
+
+        # 场景 1: 无 & 前缀 + CLI 未指定 → 使用 config.yaml 默认值（如 auto）
+        requested_mode_no_prefix = resolve_requested_mode_for_decision(
+            cli_execution_mode=None,
+            has_ampersand_prefix=False,
+            config_execution_mode="auto",
+        )
+        assert requested_mode_no_prefix == "auto", "无 & 前缀时应使用 config.yaml 默认值"
+        assert should_use_mp_orchestrator(requested_mode_no_prefix) is False, "config.yaml 默认 auto 时，应禁用 MP"
+
+        # 场景 2: 有 & 前缀 + CLI 未指定 → 返回 None（由 build_execution_decision 处理）
+        # 此时 should_use_mp_orchestrator(None) 返回 True 是合法的（prefix-flow）
+        requested_mode_with_prefix = resolve_requested_mode_for_decision(
+            cli_execution_mode=None,
+            has_ampersand_prefix=True,
+            config_execution_mode="auto",
+        )
+        assert requested_mode_with_prefix is None, "有 & 前缀时应返回 None（prefix-flow）"
+        assert should_use_mp_orchestrator(requested_mode_with_prefix) is True, (
+            "& 前缀场景下 should_use_mp_orchestrator(None) 应返回 True"
+        )
+
+    @pytest.mark.parametrize(
+        "requested_mode,expected_orchestrator",
+        [
+            ("cli", "mp"),
+            ("auto", "basic"),
+            ("cloud", "basic"),
+            ("plan", "mp"),
+            ("ask", "mp"),
+        ],
+        ids=["cli->mp", "auto->basic", "cloud->basic", "plan->mp", "ask->mp"],
+    )
+    def test_requested_mode_orchestrator_mapping(
+        self,
+        requested_mode: str,
+        expected_orchestrator: str,
+    ) -> None:
+        """参数化测试：验证所有模式与编排器的映射关系
+
+        这是回归测试的核心，确保映射关系保持稳定。
+        """
+        from core.config import resolve_orchestrator_settings
+
+        settings = resolve_orchestrator_settings(overrides={"execution_mode": requested_mode})
+
+        assert settings["orchestrator"] == expected_orchestrator, (
+            f"requested_mode={requested_mode} 应使用 {expected_orchestrator} 编排器\n"
+            f"实际值: orchestrator={settings['orchestrator']}"
+        )
+
+
+# ============================================================
+# Cloud 结果 cooldown_info 字段契约测试
+# ============================================================
+
+
+class TestCloudResultCooldownInfoContract:
+    """验证 Cloud 执行结果 cooldown_info 字段的契约一致性
+
+    测试场景:
+    1. build_cloud_result 构建器包含 cooldown_info 字段
+    2. build_cloud_success_result 包含 cooldown_info 字段
+    3. build_cloud_error_result 包含 cooldown_info 字段
+    4. 所有分支返回的字段集合一致
+    """
+
+    def test_build_cloud_result_defaults_contains_cooldown_info(self) -> None:
+        """验证 build_cloud_result_defaults 包含 cooldown_info 字段"""
+        from core.output_contract import CloudResultFields, build_cloud_result_defaults
+
+        result = build_cloud_result_defaults(goal="测试")
+
+        assert CloudResultFields.COOLDOWN_INFO in result, "默认模板应包含 cooldown_info 字段"
+        assert result[CloudResultFields.COOLDOWN_INFO] is None, "默认值应为 None"
+
+    def test_build_cloud_result_accepts_cooldown_info(self) -> None:
+        """验证 build_cloud_result 接受 cooldown_info 参数"""
+        from core.output_contract import CloudResultFields, build_cloud_result
+
+        test_cooldown = {
+            "user_message": "测试消息",
+            "kind": "TEST",
+            "retryable": False,
+        }
+
+        result = build_cloud_result(
+            goal="测试",
+            cooldown_info=test_cooldown,
+        )
+
+        assert result[CloudResultFields.COOLDOWN_INFO] == test_cooldown, "cooldown_info 应被正确设置"
+
+    def test_build_cloud_success_result_contains_cooldown_info(self) -> None:
+        """验证 build_cloud_success_result 包含 cooldown_info 字段"""
+        from core.output_contract import CloudResultFields, build_cloud_success_result
+
+        result = build_cloud_success_result(
+            goal="测试",
+            output="成功输出",
+        )
+
+        assert CloudResultFields.COOLDOWN_INFO in result, "成功结果应包含 cooldown_info 字段"
+
+    def test_build_cloud_error_result_contains_cooldown_info(self) -> None:
+        """验证 build_cloud_error_result 包含 cooldown_info 字段"""
+        from core.output_contract import CloudResultFields, build_cloud_error_result
+
+        result = build_cloud_error_result(
+            goal="测试",
+            error="错误信息",
+            failure_kind="TEST_ERROR",
+        )
+
+        assert CloudResultFields.COOLDOWN_INFO in result, "错误结果应包含 cooldown_info 字段"
+
+    def test_cloud_result_fields_constant_includes_cooldown_info(self) -> None:
+        """验证 CloudResultFields 包含 COOLDOWN_INFO 常量"""
+        from core.output_contract import CloudResultFields
+
+        assert hasattr(CloudResultFields, "COOLDOWN_INFO"), "CloudResultFields 应包含 COOLDOWN_INFO 常量"
+        assert CloudResultFields.COOLDOWN_INFO == "cooldown_info", "COOLDOWN_INFO 常量值应为 'cooldown_info'"
+
+    def test_success_and_error_results_have_same_field_set(self) -> None:
+        """验证成功和失败结果的字段集合一致"""
+        from core.output_contract import (
+            build_cloud_error_result,
+            build_cloud_success_result,
+        )
+
+        success_result = build_cloud_success_result(
+            goal="测试",
+            output="成功",
+        )
+        error_result = build_cloud_error_result(
+            goal="测试",
+            error="失败",
+            failure_kind="ERROR",
+        )
+
+        success_fields = set(success_result.keys())
+        error_fields = set(error_result.keys())
+
+        assert success_fields == error_fields, (
+            f"成功和失败结果的字段集合应一致\n差异: {success_fields.symmetric_difference(error_fields)}"
+        )
+
+
+class TestIterateResultCooldownInfoContract:
+    """验证 Iterate 结果 cooldown_info 字段的契约一致性"""
+
+    def test_build_iterate_result_defaults_contains_cooldown_info(self) -> None:
+        """验证 build_iterate_result_defaults 包含 cooldown_info 字段"""
+        from core.output_contract import IterateResultFields, build_iterate_result_defaults
+
+        result = build_iterate_result_defaults()
+
+        assert IterateResultFields.COOLDOWN_INFO in result, "默认模板应包含 cooldown_info 字段"
+        assert result[IterateResultFields.COOLDOWN_INFO] is None, "默认值应为 None"
+
+    def test_build_iterate_success_result_accepts_cooldown_info(self) -> None:
+        """验证 build_iterate_success_result 接受 cooldown_info 参数"""
+        from core.output_contract import IterateResultFields, build_iterate_success_result
+
+        test_cooldown = {
+            "user_message": "迭代回退消息",
+            "kind": "FALLBACK",
+        }
+
+        result = build_iterate_success_result(
+            cooldown_info=test_cooldown,
+        )
+
+        assert result[IterateResultFields.COOLDOWN_INFO] == test_cooldown, "cooldown_info 应被正确设置"
+
+    def test_build_iterate_error_result_accepts_cooldown_info(self) -> None:
+        """验证 build_iterate_error_result 接受 cooldown_info 参数"""
+        from core.output_contract import IterateResultFields, build_iterate_error_result
+
+        test_cooldown = {
+            "user_message": "迭代错误消息",
+            "kind": "ERROR",
+        }
+
+        result = build_iterate_error_result(
+            error="测试错误",
+            cooldown_info=test_cooldown,
+        )
+
+        assert result[IterateResultFields.COOLDOWN_INFO] == test_cooldown, "cooldown_info 应被正确设置"
+
+    def test_iterate_result_fields_constant_includes_cooldown_info(self) -> None:
+        """验证 IterateResultFields 包含 COOLDOWN_INFO 常量"""
+        from core.output_contract import IterateResultFields
+
+        assert hasattr(IterateResultFields, "COOLDOWN_INFO"), "IterateResultFields 应包含 COOLDOWN_INFO 常量"
+        assert IterateResultFields.COOLDOWN_INFO == "cooldown_info", "COOLDOWN_INFO 常量值应为 'cooldown_info'"

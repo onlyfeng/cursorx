@@ -2,11 +2,12 @@
 
 测试 process/manager.py、process/message_queue.py、process/worker.py 的功能
 """
+
 import multiprocessing as mp
-import os
 import pickle
 import time
 from datetime import datetime
+from multiprocessing import Queue
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +15,6 @@ import pytest
 from process.manager import AgentProcessManager, HealthCheckResult
 from process.message_queue import MessageQueue, ProcessMessage, ProcessMessageType
 from process.worker import AgentWorkerProcess
-
 
 # ============================================================================
 # ProcessMessage 测试
@@ -82,10 +82,7 @@ class TestProcessMessage:
             receiver="worker-1",
         )
 
-        reply = original.create_reply(
-            ProcessMessageType.TASK_RESULT,
-            {"status": "completed"}
-        )
+        reply = original.create_reply(ProcessMessageType.TASK_RESULT, {"status": "completed"})
 
         assert reply.type == ProcessMessageType.TASK_RESULT
         assert reply.sender == "worker-1"  # 原来的 receiver
@@ -328,8 +325,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_initialization(self):
         """测试 Worker 初始化"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-001",
@@ -352,8 +349,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_start_and_ready(self):
         """测试 Worker 启动并发送就绪消息"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-002",
@@ -381,8 +378,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_heartbeat_response(self):
         """测试 Worker 心跳响应"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-003",
@@ -399,10 +396,12 @@ class TestAgentWorkerProcess:
             outbox.get(timeout=5.0)
 
             # 发送心跳
-            inbox.put(ProcessMessage(
-                type=ProcessMessageType.HEARTBEAT,
-                sender="coordinator",
-            ))
+            inbox.put(
+                ProcessMessage(
+                    type=ProcessMessageType.HEARTBEAT,
+                    sender="coordinator",
+                )
+            )
 
             # 等待心跳响应
             response = outbox.get(timeout=5.0)
@@ -416,8 +415,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_status_request(self):
         """测试 Worker 状态请求响应"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-004",
@@ -434,10 +433,12 @@ class TestAgentWorkerProcess:
             outbox.get(timeout=5.0)
 
             # 发送状态请求
-            inbox.put(ProcessMessage(
-                type=ProcessMessageType.STATUS_REQUEST,
-                sender="coordinator",
-            ))
+            inbox.put(
+                ProcessMessage(
+                    type=ProcessMessageType.STATUS_REQUEST,
+                    sender="coordinator",
+                )
+            )
 
             # 等待状态响应
             response = outbox.get(timeout=5.0)
@@ -452,8 +453,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_task_handling(self):
         """测试 Worker 任务处理"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-005",
@@ -491,8 +492,8 @@ class TestAgentWorkerProcess:
 
     def test_worker_graceful_shutdown(self):
         """测试 Worker 优雅关闭"""
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="test-worker-006",
@@ -618,10 +619,12 @@ class TestAgentProcessManager:
             manager.wait_all_ready(timeout=10.0)
 
             # 广播心跳
-            manager.broadcast(ProcessMessage(
-                type=ProcessMessageType.HEARTBEAT,
-                sender="manager",
-            ))
+            manager.broadcast(
+                ProcessMessage(
+                    type=ProcessMessageType.HEARTBEAT,
+                    sender="manager",
+                )
+            )
 
             # 收集响应
             responses = []
@@ -887,11 +890,14 @@ class TestProcessIntegration:
 
             # 3. 发送任务给各个 Worker
             for i in range(2):
-                manager.send_to_agent(f"workflow-{i}", ProcessMessage(
-                    type=ProcessMessageType.TASK_ASSIGN,
-                    sender="coordinator",
-                    payload={"task_id": f"task-{i}", "content": f"task content {i}"},
-                ))
+                manager.send_to_agent(
+                    f"workflow-{i}",
+                    ProcessMessage(
+                        type=ProcessMessageType.TASK_ASSIGN,
+                        sender="coordinator",
+                        payload={"task_id": f"task-{i}", "content": f"task content {i}"},
+                    ),
+                )
 
             # 4. 收集任务结果
             results = []
@@ -1234,9 +1240,15 @@ class TestMessageToTaskIndex:
         manager.track_task_assignment("task-3", "worker-1", "msg-3")
 
         # 验证所有索引
-        assert manager.get_task_by_message_id("msg-1")[0] == "task-1"
-        assert manager.get_task_by_message_id("msg-2")[0] == "task-2"
-        assert manager.get_task_by_message_id("msg-3")[0] == "task-3"
+        msg_task_1 = manager.get_task_by_message_id("msg-1")
+        msg_task_2 = manager.get_task_by_message_id("msg-2")
+        msg_task_3 = manager.get_task_by_message_id("msg-3")
+        assert msg_task_1 is not None
+        assert msg_task_2 is not None
+        assert msg_task_3 is not None
+        assert msg_task_1[0] == "task-1"
+        assert msg_task_2[0] == "task-2"
+        assert msg_task_3[0] == "task-3"
 
         # 取消其中一个
         manager.untrack_task("task-2")
@@ -1254,7 +1266,7 @@ class TestHealthCheckMocking:
         manager = AgentProcessManager()
 
         # 不实际创建进程，直接 Mock health_check
-        with patch.object(manager, 'health_check') as mock_hc:
+        with patch.object(manager, "health_check") as mock_hc:
             # 模拟部分 Worker 不健康
             mock_result = HealthCheckResult(
                 healthy=["planner-1", "worker-0", "reviewer-1"],
@@ -1281,7 +1293,7 @@ class TestHealthCheckMocking:
         """测试 Mock 关键进程（planner/reviewer）不健康"""
         manager = AgentProcessManager()
 
-        with patch.object(manager, 'health_check') as mock_hc:
+        with patch.object(manager, "health_check") as mock_hc:
             # 模拟 Planner 不健康
             mock_result = HealthCheckResult(
                 healthy=["worker-0", "worker-1", "reviewer-1"],
@@ -1307,7 +1319,7 @@ class TestHealthCheckMocking:
         """测试 Mock 所有 Worker 不健康的极端情况"""
         manager = AgentProcessManager()
 
-        with patch.object(manager, 'health_check') as mock_hc:
+        with patch.object(manager, "health_check") as mock_hc:
             mock_result = HealthCheckResult(
                 healthy=["planner-1", "reviewer-1"],
                 unhealthy=["worker-0", "worker-1", "worker-2"],
@@ -1349,8 +1361,6 @@ class TestLateResultHandling:
             MultiProcessOrchestrator,
             MultiProcessOrchestratorConfig,
         )
-        from tasks.queue import TaskQueue
-        from tasks.task import Task, TaskStatus, TaskType
 
         config = MultiProcessOrchestratorConfig(
             working_directory=".",
@@ -1659,9 +1669,15 @@ class TestLateResultIntegration:
         manager.track_task_assignment("task-3", "worker-1", "msg-300")
 
         # 验证反向索引
-        assert manager.get_task_by_message_id("msg-100")[0] == "task-1"
-        assert manager.get_task_by_message_id("msg-200")[0] == "task-2"
-        assert manager.get_task_by_message_id("msg-300")[0] == "task-3"
+        msg_task_100 = manager.get_task_by_message_id("msg-100")
+        msg_task_200 = manager.get_task_by_message_id("msg-200")
+        msg_task_300 = manager.get_task_by_message_id("msg-300")
+        assert msg_task_100 is not None
+        assert msg_task_200 is not None
+        assert msg_task_300 is not None
+        assert msg_task_100[0] == "task-1"
+        assert msg_task_200[0] == "task-2"
+        assert msg_task_300[0] == "task-3"
 
         # 任务完成，取消跟踪
         manager.untrack_task("task-1")
@@ -1724,8 +1740,8 @@ class TestWorkerPickleSerializable:
         这是 macOS spawn 兼容性的关键：threading.Lock 无法被 pickle，
         必须在 run() 方法中（子进程内）初始化。
         """
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         try:
             worker = SimpleTestWorker(
@@ -1748,8 +1764,8 @@ class TestWorkerPickleSerializable:
 
         ThreadPoolExecutor 无法被 pickle，必须在 run() 方法中初始化。
         """
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         try:
             worker = SimpleTestWorker(
@@ -1810,8 +1826,8 @@ class TestAgentProcessPickleSerializable:
         """测试 WorkerAgentProcess 在 __init__ 后无不可序列化属性"""
         from agents.worker_process import WorkerAgentProcess
 
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         try:
             worker = WorkerAgentProcess(
@@ -1834,8 +1850,8 @@ class TestAgentProcessPickleSerializable:
         """测试 PlannerAgentProcess 在 __init__ 后无不可序列化属性"""
         from agents.planner_process import PlannerAgentProcess
 
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         try:
             planner = PlannerAgentProcess(
@@ -1858,8 +1874,8 @@ class TestAgentProcessPickleSerializable:
         """测试 ReviewerAgentProcess 在 __init__ 后无不可序列化属性"""
         from agents.reviewer_process import ReviewerAgentProcess
 
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         try:
             reviewer = ReviewerAgentProcess(
@@ -1892,8 +1908,8 @@ class TestSpawnStartMethod:
         此测试在所有平台上运行，验证进程启动的基本功能。
         macOS/Windows 使用 spawn，Linux 使用 fork。
         """
-        inbox = mp.Queue()
-        outbox = mp.Queue()
+        inbox: Queue = mp.Queue()
+        outbox: Queue = mp.Queue()
 
         worker = SimpleTestWorker(
             agent_id="spawn-start-test",
@@ -1924,9 +1940,9 @@ class TestSpawnStartMethod:
         验证所有进程类型在 __init__ 后没有不可序列化的对象。
         这确保了在 macOS/Windows 的 spawn 启动方式下能正常工作。
         """
-        from agents.worker_process import WorkerAgentProcess
         from agents.planner_process import PlannerAgentProcess
         from agents.reviewer_process import ReviewerAgentProcess
+        from agents.worker_process import WorkerAgentProcess
 
         process_classes = [
             (WorkerAgentProcess, "worker"),
@@ -1935,8 +1951,8 @@ class TestSpawnStartMethod:
         ]
 
         for process_class, agent_type in process_classes:
-            inbox = mp.Queue()
-            outbox = mp.Queue()
+            inbox: Queue = mp.Queue()
+            outbox: Queue = mp.Queue()
 
             try:
                 process = process_class(
@@ -1948,12 +1964,8 @@ class TestSpawnStartMethod:
                 )
 
                 # 验证关键属性在 __init__ 后为 None（确保 spawn 兼容）
-                assert process._task_lock is None, (
-                    f"{process_class.__name__}._task_lock 应在 run() 中初始化"
-                )
-                assert process._executor is None, (
-                    f"{process_class.__name__}._executor 应在 run() 中初始化"
-                )
+                assert process._task_lock is None, f"{process_class.__name__}._task_lock 应在 run() 中初始化"
+                assert process._executor is None, f"{process_class.__name__}._executor 应在 run() 中初始化"
             finally:
                 inbox.close()
                 outbox.close()

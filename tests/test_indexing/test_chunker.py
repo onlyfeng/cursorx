@@ -2,6 +2,7 @@
 
 测试 SemanticCodeChunker 的各种分块策略
 """
+
 import pytest
 
 from indexing.base import ChunkType
@@ -134,16 +135,17 @@ async def fetch_data(url: str) -> dict:
 
         func_chunks = [c for c in chunks if c.chunk_type == ChunkType.FUNCTION]
         assert len(func_chunks) >= 1
+        assert func_chunks[0].signature is not None
         assert "async" in func_chunks[0].signature
 
     @pytest.mark.asyncio
     async def test_chunk_syntax_error_fallback(self):
         """测试语法错误时的回退处理"""
         # 故意的语法错误
-        code = '''
+        code = """
 def incomplete_function(
     # 缺少参数和冒号
-'''
+"""
         chunker = SemanticCodeChunker()
         # 不应该抛出异常，而是使用启发式分块
         chunks = await chunker.chunk_text(code, "test.py", "python")
@@ -240,12 +242,12 @@ def calculate(a: int, b: int) -> int:
     @pytest.mark.asyncio
     async def test_chunk_location_info(self):
         """测试分块位置信息"""
-        code = '''# 第一行
+        code = """# 第一行
 # 第二行
 def my_function():
     pass
 # 最后一行
-'''
+"""
         chunker = SemanticCodeChunker()
         chunks = await chunker.chunk_text(code, "test.py", "python")
 
@@ -258,11 +260,11 @@ def my_function():
     @pytest.mark.asyncio
     async def test_method_parent_name(self):
         """测试方法的父级名称"""
-        code = '''
+        code = """
 class Calculator:
     def add(self, a, b):
         return a + b
-'''
+"""
         config = ChunkConfig(split_functions=True)
         chunker = SemanticCodeChunker(config)
         chunks = await chunker.chunk_text(code, "test.py", "python")
@@ -278,11 +280,11 @@ class TestJavaScriptChunking:
     @pytest.mark.asyncio
     async def test_chunk_js_function(self):
         """测试分块 JS 函数"""
-        code = '''
+        code = """
 function greet(name) {
     console.log("Hello, " + name);
 }
-'''
+"""
         chunker = SemanticCodeChunker()
         chunks = await chunker.chunk_text(code, "test.js", "javascript")
 
@@ -291,11 +293,11 @@ function greet(name) {
     @pytest.mark.asyncio
     async def test_chunk_arrow_function(self):
         """测试分块箭头函数"""
-        code = '''
+        code = """
 const multiply = (a, b) => {
     return a * b;
 };
-'''
+"""
         chunker = SemanticCodeChunker()
         chunks = await chunker.chunk_text(code, "test.js", "javascript")
 
@@ -304,7 +306,7 @@ const multiply = (a, b) => {
     @pytest.mark.asyncio
     async def test_chunk_js_class(self):
         """测试分块 JS 类"""
-        code = '''
+        code = """
 class Animal {
     constructor(name) {
         this.name = name;
@@ -314,7 +316,7 @@ class Animal {
         console.log(this.name + " makes a sound");
     }
 }
-'''
+"""
         chunker = SemanticCodeChunker()
         chunks = await chunker.chunk_text(code, "test.js", "javascript")
 
@@ -328,12 +330,12 @@ class TestHeuristicChunking:
     @pytest.mark.asyncio
     async def test_unknown_language_chunking(self):
         """测试未知语言的分块"""
-        code = '''
+        code = """
 module Main where
 
 main :: IO ()
 main = putStrLn "Hello, World!"
-'''
+"""
         chunker = SemanticCodeChunker()
         chunks = await chunker.chunk_text(code, "test.hs", "unknown")
 

@@ -9,6 +9,7 @@
 3. 循环导入检测
 4. 可选依赖的跳过处理
 """
+
 import importlib
 import subprocess
 import sys
@@ -309,10 +310,7 @@ class TestExportExistence:
                 missing.append(export_name)
 
         if missing:
-            pytest.fail(
-                f"模块 {module_name} 缺少导出: {missing}\n"
-                f"可用导出: {getattr(module, '__all__', [])}"
-            )
+            pytest.fail(f"模块 {module_name} 缺少导出: {missing}\n可用导出: {getattr(module, '__all__', [])}")
 
 
 # 为每个模块生成单独的导出测试用例
@@ -354,9 +352,7 @@ class TestIndividualExports:
         if error:
             pytest.fail(f"模块 {module_name} 导入失败: {error}")
 
-        assert hasattr(module, export_name), (
-            f"{module_name}.{export_name} 不存在"
-        )
+        assert hasattr(module, export_name), f"{module_name}.{export_name} 不存在"
 
         # 验证导出项是否在 __all__ 中
         all_exports = getattr(module, "__all__", [])
@@ -496,16 +492,8 @@ class TestSubmoduleImports:
 
     @pytest.mark.parametrize(
         "parent,submodule",
-        [
-            (parent, sub)
-            for parent, subs in SUBMODULES.items()
-            for sub in subs
-        ],
-        ids=[
-            f"{parent}.{sub}"
-            for parent, subs in SUBMODULES.items()
-            for sub in subs
-        ],
+        [(parent, sub) for parent, subs in SUBMODULES.items() for sub in subs],
+        ids=[f"{parent}.{sub}" for parent, subs in SUBMODULES.items() for sub in subs],
     )
     def test_submodule_import(self, parent: str, submodule: str):
         """测试子模块可以正确导入
@@ -652,9 +640,7 @@ class TestExportTypes:
                 pytest.skip(f"{class_name} 不存在于 {module_name}")
 
             obj = getattr(module, class_name)
-            assert isinstance(obj, type), (
-                f"{module_name}.{class_name} 应该是类，实际是 {type(obj)}"
-            )
+            assert isinstance(obj, type), f"{module_name}.{class_name} 应该是类，实际是 {type(obj)}"
 
     @pytest.mark.parametrize(
         "module_name,func_names",
@@ -681,9 +667,7 @@ class TestExportTypes:
                 pytest.skip(f"{func_name} 不存在于 {module_name}")
 
             obj = getattr(module, func_name)
-            assert callable(obj), (
-                f"{module_name}.{func_name} 应该是可调用对象，实际是 {type(obj)}"
-            )
+            assert callable(obj), f"{module_name}.{func_name} 应该是可调用对象，实际是 {type(obj)}"
 
 
 # ============================================================
@@ -697,11 +681,13 @@ def main():
     print("模块导入测试")
     print("=" * 60 + "\n")
 
-    exit_code = pytest.main([
-        __file__,
-        "-v",
-        "--tb=short",
-    ])
+    exit_code = pytest.main(
+        [
+            __file__,
+            "-v",
+            "--tb=short",
+        ]
+    )
 
     return exit_code
 

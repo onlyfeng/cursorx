@@ -1,9 +1,9 @@
-import json
 import io
-import sys
+import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from typing import Any
+from unittest.mock import Mock
 
 from cursor.streaming import (
     AdvancedTerminalRenderer,
@@ -118,6 +118,68 @@ def test_parse_stream_event_result_duration() -> None:
     assert event.duration_ms == 456
 
 
+def test_parse_stream_event_result_minimal() -> None:
+    """测试仅包含 type 字段的 result 事件不抛异常"""
+    line = json.dumps({"type": "result"})
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.RESULT
+    # duration_ms 默认为 0
+    assert event.duration_ms == 0
+
+
+def test_parse_stream_event_result_with_duration() -> None:
+    """测试包含 duration_ms 的 result 事件"""
+    line = json.dumps({"type": "result", "duration_ms": 123})
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.RESULT
+    assert event.duration_ms == 123
+
+
+def test_parse_stream_event_result_with_extra_fields() -> None:
+    """测试包含额外字段的 result 事件不抛异常
+
+    验证 parse_stream_event 能宽容处理未知字段，
+    不依赖 result.result 字段。
+    """
+    line = json.dumps({"type": "result", "duration_ms": 123, "is_error": False, "extra": "x"})
+    event = parse_stream_event(line)
+    assert event is not None
+    assert event.type == StreamEventType.RESULT
+    assert event.duration_ms == 123
+    # 额外字段应该保存在 data 中
+    assert event.data.get("is_error") is False
+    assert event.data.get("extra") == "x"
+
+
+def test_parse_stream_event_result_no_result_field() -> None:
+    """验证 result 事件不依赖 result.result 字段
+
+    确保即使 result 事件缺少 result 字段也能正常解析。
+    """
+    # 场景 1: 完全没有 result 字段
+    line1 = json.dumps({"type": "result", "duration_ms": 100})
+    event1 = parse_stream_event(line1)
+    assert event1 is not None
+    assert event1.type == StreamEventType.RESULT
+    assert event1.duration_ms == 100
+
+    # 场景 2: result 字段为空字符串
+    line2 = json.dumps({"type": "result", "duration_ms": 200, "result": ""})
+    event2 = parse_stream_event(line2)
+    assert event2 is not None
+    assert event2.type == StreamEventType.RESULT
+    assert event2.duration_ms == 200
+
+    # 场景 3: result 字段为 null
+    line3 = json.dumps({"type": "result", "duration_ms": 300, "result": None})
+    event3 = parse_stream_event(line3)
+    assert event3 is not None
+    assert event3.type == StreamEventType.RESULT
+    assert event3.duration_ms == 300
+
+
 def test_parse_stream_event_unknown_type() -> None:
     line = json.dumps({"type": "custom", "value": 1})
     event = parse_stream_event(line)
@@ -195,7 +257,7 @@ def test_resolve_stream_log_config_cli_overrides() -> None:
         stream_log_detail_dir="/tmp/detail",
         stream_log_raw_dir="/tmp/raw",
     )
-    config_data = {
+    config_data: dict[str, Any] = {
         "logging": {
             "stream_json": {
                 "enabled": False,
@@ -206,7 +268,13 @@ def test_resolve_stream_log_config_cli_overrides() -> None:
         }
     }
 
-    resolved = resolve_stream_log_config_single(args, config_data)
+    resolved = resolve_stream_log_config_single(
+        cli_enabled=args.stream_log_enabled,
+        cli_console=args.stream_log_console,
+        cli_detail_dir=args.stream_log_detail_dir,
+        cli_raw_dir=args.stream_log_raw_dir,
+        config_data=config_data,
+    )
     assert resolved["enabled"] is True
     assert resolved["console"] is False
     assert resolved["detail_dir"] == "/tmp/detail"
@@ -220,8 +288,14 @@ def test_resolve_stream_log_config_defaults() -> None:
         stream_log_detail_dir=None,
         stream_log_raw_dir=None,
     )
-    config_data = {}
-    resolved = resolve_stream_log_config_multi(args, config_data)
+    config_data: dict[str, Any] = {}
+    resolved = resolve_stream_log_config_multi(
+        cli_enabled=args.stream_log_enabled,
+        cli_console=args.stream_log_console,
+        cli_detail_dir=args.stream_log_detail_dir,
+        cli_raw_dir=args.stream_log_raw_dir,
+        config_data=config_data,
+    )
     assert resolved["enabled"] is False
     assert resolved["console"] is True
     assert resolved["detail_dir"] == "logs/stream_json/detail/"
@@ -803,7 +877,7 @@ def test_format_word_diff_line_ansi() -> None:
     # 应该包含 ANSI 颜色码（删除用红色，插入用绿色）
     assert "\033[31m" in result  # 红色（删除）
     assert "\033[32m" in result  # 绿色（插入）
-    assert "\033[0m" in result   # 重置
+    assert "\033[0m" in result  # 重置
 
 
 def test_format_word_diff_line_no_change() -> None:
@@ -1124,14 +1198,14 @@ def test_advanced_terminal_renderer_interface_signature() -> None:
     stream_renderer_methods = {
         name: method
         for name, method in inspect.getmembers(StreamRenderer, predicate=inspect.isfunction)
-        if not name.startswith('_')
+        if not name.startswith("_")
     }
 
     # 获取 AdvancedTerminalRenderer 的方法
     advanced_methods = {
         name: method
         for name, method in inspect.getmembers(AdvancedTerminalRenderer, predicate=inspect.isfunction)
-        if not name.startswith('_')
+        if not name.startswith("_")
     }
 
     # 验证所有抽象方法都被实现
@@ -1389,9 +1463,9 @@ def test_build_terminal_renderer_basic() -> None:
     from cursor.client import CursorAgentClient, CursorAgentConfig
 
     config = CursorAgentConfig(
-        stream_console_renderer=True,   # 启用控制台渲染器
+        stream_console_renderer=True,  # 启用控制台渲染器
         stream_advanced_renderer=False,  # 使用基础渲染器
-        stream_console_verbose=True,     # 详细模式
+        stream_console_verbose=True,  # 详细模式
     )
     client = CursorAgentClient(config=config)
 
@@ -1406,11 +1480,11 @@ def test_build_terminal_renderer_advanced() -> None:
     from cursor.client import CursorAgentClient, CursorAgentConfig
 
     config = CursorAgentConfig(
-        stream_console_renderer=True,    # 启用控制台渲染器
-        stream_advanced_renderer=True,   # 使用高级渲染器
-        stream_color_enabled=False,      # 禁用颜色
-        stream_typing_effect=True,       # 启用打字效果
-        stream_show_status_bar=False,    # 禁用状态栏
+        stream_console_renderer=True,  # 启用控制台渲染器
+        stream_advanced_renderer=True,  # 使用高级渲染器
+        stream_color_enabled=False,  # 禁用颜色
+        stream_typing_effect=True,  # 启用打字效果
+        stream_show_status_bar=False,  # 禁用状态栏
     )
     client = CursorAgentClient(config=config)
 
@@ -1729,9 +1803,7 @@ def test_stream_event_logger_aggregation_error_event_flushes(tmp_path: Path) -> 
     )
 
     logger.handle_event(StreamEvent(type=StreamEventType.ASSISTANT, content="Before error"))
-    logger.handle_event(
-        StreamEvent(type=StreamEventType.ERROR, data={"error": "Something went wrong"})
-    )
+    logger.handle_event(StreamEvent(type=StreamEventType.ERROR, data={"error": "Something went wrong"}))
     logger.handle_event(StreamEvent(type=StreamEventType.ASSISTANT, content="After error"))
 
     logger.close()
@@ -1749,8 +1821,7 @@ def test_stream_event_logger_aggregation_error_event_flushes(tmp_path: Path) -> 
 # ============== StreamingClient 超长行处理测试 ==============
 
 import asyncio
-import logging
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import MagicMock
 
 from cursor.streaming import StreamingClient
 
@@ -1767,6 +1838,7 @@ class TestReadLinesLongLineHandling:
 
     def test_read_lines_long_line_handling(self) -> None:
         """测试超过默认缓冲区大小的行能被正确读取"""
+
         async def run_test():
             client = StreamingClient()
             mock_stream = self._create_mock_stream_reader()
@@ -1802,6 +1874,7 @@ class TestReadLinesLongLineHandling:
 
     def test_read_lines_limit_overrun_error(self) -> None:
         """模拟 LimitOverrunError 异常并验证恢复机制"""
+
         async def run_test():
             client = StreamingClient()
             mock_stream = self._create_mock_stream_reader()
@@ -1816,8 +1889,7 @@ class TestReadLinesLongLineHandling:
                 if readline_call_count == 1:
                     # 第一次调用抛出 LimitOverrunError
                     raise asyncio.LimitOverrunError(
-                        "Separator is found, but chunk is longer than limit",
-                        consumed=100 * 1024
+                        "Separator is found, but chunk is longer than limit", consumed=100 * 1024
                     )
                 else:
                     # 后续调用返回空（流结束）
@@ -1846,21 +1918,21 @@ class TestReadLinesLongLineHandling:
 
     def test_read_lines_limit_overrun_with_chunked_fallback(self) -> None:
         """测试 LimitOverrunError 后 readuntil 也失败时的分块读取后备"""
+
         async def run_test():
             client = StreamingClient()
             mock_stream = self._create_mock_stream_reader()
 
             readline_call_count = 0
             readuntil_call_count = 0
-            read_chunks = []
+            read_chunks: list[bool] = []
 
             async def mock_readline():
                 nonlocal readline_call_count
                 readline_call_count += 1
                 if readline_call_count == 1:
                     raise asyncio.LimitOverrunError(
-                        "Separator is found, but chunk is longer than limit",
-                        consumed=100 * 1024
+                        "Separator is found, but chunk is longer than limit", consumed=100 * 1024
                     )
                 return b""
 
@@ -1868,10 +1940,7 @@ class TestReadLinesLongLineHandling:
                 nonlocal readuntil_call_count
                 readuntil_call_count += 1
                 # readuntil 也抛出 LimitOverrunError
-                raise asyncio.LimitOverrunError(
-                    "Still too long",
-                    consumed=50 * 1024
-                )
+                raise asyncio.LimitOverrunError("Still too long", consumed=50 * 1024)
 
             chunk_content = b"chunked_content_part1_part2\n"
 
@@ -1902,12 +1971,9 @@ class TestReadLinesLongLineHandling:
 
 def test_parse_stream_event_system_init_with_session_id() -> None:
     """测试从 system/init 事件中提取 session_id"""
-    line = json.dumps({
-        "type": "system",
-        "subtype": "init",
-        "model": "opus-4.5-thinking",
-        "session_id": "test-session-uuid-12345"
-    })
+    line = json.dumps(
+        {"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "test-session-uuid-12345"}
+    )
     event = parse_stream_event(line)
     assert event is not None
     assert event.type == StreamEventType.SYSTEM_INIT
@@ -1917,16 +1983,15 @@ def test_parse_stream_event_system_init_with_session_id() -> None:
 
 def test_parse_stream_event_tool_call_with_path() -> None:
     """测试 tool_call 事件能正确提取 path"""
-    line = json.dumps({
-        "type": "tool_call",
-        "subtype": "completed",
-        "tool_call": {
-            "writeToolCall": {
-                "args": {"path": "/src/main.py"},
-                "result": {"success": {"linesCreated": 10}}
-            }
+    line = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "tool_call": {
+                "writeToolCall": {"args": {"path": "/src/main.py"}, "result": {"success": {"linesCreated": 10}}}
+            },
         }
-    })
+    )
     event = parse_stream_event(line)
     assert event is not None
     assert event.type == StreamEventType.TOOL_COMPLETED
@@ -1937,12 +2002,7 @@ def test_parse_stream_event_tool_call_with_path() -> None:
 
 def test_parse_stream_event_diff_with_path() -> None:
     """测试 diff 事件能正确提取 path"""
-    line = json.dumps({
-        "type": "diff",
-        "path": "/src/utils.py",
-        "old_string": "old code",
-        "new_string": "new code"
-    })
+    line = json.dumps({"type": "diff", "path": "/src/utils.py", "old_string": "old code", "new_string": "new code"})
     event = parse_stream_event(line)
     assert event is not None
     assert event.type == StreamEventType.DIFF
@@ -1952,20 +2012,18 @@ def test_parse_stream_event_diff_with_path() -> None:
 
 def test_parse_stream_event_str_replace_tool_call() -> None:
     """测试 strReplaceToolCall 能正确提取编辑信息"""
-    line = json.dumps({
-        "type": "tool_call",
-        "subtype": "completed",
-        "tool_call": {
-            "strReplaceToolCall": {
-                "args": {
-                    "path": "/src/config.py",
-                    "old_string": "DEBUG = False",
-                    "new_string": "DEBUG = True"
-                },
-                "result": {"success": {}}
-            }
+    line = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "tool_call": {
+                "strReplaceToolCall": {
+                    "args": {"path": "/src/config.py", "old_string": "DEBUG = False", "new_string": "DEBUG = True"},
+                    "result": {"success": {}},
+                }
+            },
         }
-    })
+    )
     event = parse_stream_event(line)
     assert event is not None
     assert event.type == StreamEventType.DIFF_COMPLETED
@@ -2038,10 +2096,7 @@ def test_read_stream_lines_long_line_logging() -> None:
             nonlocal readline_call_count
             readline_call_count += 1
             if readline_call_count == 1:
-                raise asyncio.LimitOverrunError(
-                    "Separator is found, but chunk is longer than limit",
-                    consumed=65536
-                )
+                raise asyncio.LimitOverrunError("Separator is found, but chunk is longer than limit", consumed=65536)
             return b""
 
         async def mock_readuntil(separator):
@@ -2072,9 +2127,7 @@ def test_read_stream_lines_long_line_logging() -> None:
     )
 
     # 验证成功恢复的 debug 日志
-    assert "超长行读取成功" in log_content, (
-        f"应该记录恢复成功的日志，实际日志: {log_content}"
-    )
+    assert "超长行读取成功" in log_content, f"应该记录恢复成功的日志，实际日志: {log_content}"
 
     # 验证行被正确读取
     assert len(lines) == 1

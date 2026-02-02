@@ -3,6 +3,7 @@
 测试 cursor/mcp.py 中的 MCP 服务器管理、工具调用等功能。
 使用 mock 模拟外部 MCP 服务器响应。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cursor.mcp import MCPManager, MCPServer, MCPTool, ensure_mcp_servers_enabled
-
 
 # ==================== MCPServer 数据类测试 ====================
 
@@ -512,6 +512,7 @@ class TestMCPManagerCheckAvailable:
         manager = MCPManager()
 
         import subprocess
+
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 10)):
             result = manager.check_available()
 

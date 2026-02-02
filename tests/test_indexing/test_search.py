@@ -2,6 +2,9 @@
 
 使用 mock 替代真实的嵌入模型和向量存储
 """
+
+from typing import Any
+
 import pytest
 import pytest_asyncio
 
@@ -53,8 +56,8 @@ class MockVectorStore(VectorStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
-        filter_dict: dict = None,
-        threshold: float = None,
+        filter_dict: dict[str, Any] | None = None,
+        threshold: float | None = None,
     ) -> list[SearchResult]:
         results = []
         for i, (chunk_id, chunk) in enumerate(list(self._data.items())[:top_k]):
@@ -71,11 +74,13 @@ class MockVectorStore(VectorStore):
                             break
                 if not match:
                     continue
-            results.append(SearchResult(
-                chunk=chunk,
-                score=score,
-                rank=i,
-            ))
+            results.append(
+                SearchResult(
+                    chunk=chunk,
+                    score=score,
+                    rank=i,
+                )
+            )
         return results
 
     async def delete(self, chunk_ids: list[str]) -> int:
