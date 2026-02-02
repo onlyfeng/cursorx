@@ -14,7 +14,7 @@ name = "cursorx"
 version = "0.1.0"
 description = "规划者-执行者模式的多 Agent 系统"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "CursorX Team"}
@@ -25,7 +25,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -130,7 +129,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<4.0"
+python = ">=3.10,<4.0"
 # 核心依赖
 asyncio-pool = ">=0.6.0"
 aiofiles = ">=23.2.1"

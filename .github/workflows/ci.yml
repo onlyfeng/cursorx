@@ -323,14 +323,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
-        exclude:
-          # Windows + Python 3.9 可选排除（减少运行时间）
-          - os: windows-latest
-            python-version: '3.9'
-          # macOS + Python 3.9 可选排除（减少运行时间）
-          - os: macos-latest
-            python-version: '3.9'
+        python-version: ['3.10', '3.11', '3.12']
 
     steps:
       - name: 检出代码
