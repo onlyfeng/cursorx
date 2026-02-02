@@ -33,6 +33,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from packaging.version import InvalidVersion, Version
+except Exception:  # pragma: no cover - 可选依赖
+    InvalidVersion = Exception
+    Version = None
+
 # ============================================================
 # 常量定义
 # ============================================================
@@ -219,33 +225,57 @@ def _is_optional_source(source: str) -> bool:
 
 
 def parse_version(version: str) -> tuple:
-    """解析版本号为可比较的元组"""
+    """解析版本号为可比较的元组（兜底方案）"""
     # 移除前导 v
     version = version.lstrip("v")
     # 分割版本号
     parts = re.split(r"[.\-]", version)
-    result: list[int | str] = []
+    result: list[tuple[int, int | str]] = []
     for part in parts:
-        # 尝试转换为数字
-        try:
-            result.append(int(part))
-        except ValueError:
-            result.append(part)
+        if not part:
+            continue
+        if part.isdigit():
+            # 数字段优先级更高，避免与字符串比较时报错
+            result.append((1, int(part)))
+        else:
+            # 字符串段（如 rc, alpha 等）排在数字段之前
+            result.append((0, part))
     return tuple(result)
 
 
 def compare_versions(v1: str, v2: str) -> int:
     """比较两个版本号，返回 -1, 0, 1"""
+    if Version is not None:
+        try:
+            pv1 = Version(v1)
+            pv2 = Version(v2)
+            if pv1 < pv2:
+                return -1
+            if pv1 > pv2:
+                return 1
+            return 0
+        except InvalidVersion:
+            # 回退到简易解析逻辑
+            pass
+
     p1, p2 = parse_version(v1), parse_version(v2)
     if p1 < p2:
         return -1
-    elif p1 > p2:
+    if p1 > p2:
         return 1
     return 0
 
 
+def _strip_env_markers(spec: str) -> str:
+    """移除环境标记（如 '; python_version >= \"3.10\"'）"""
+    if ";" in spec:
+        return spec.split(";", 1)[0].strip()
+    return spec.strip()
+
+
 def version_satisfies(installed: str, spec: str) -> bool:
     """检查已安装版本是否满足规范"""
+    spec = _strip_env_markers(spec)
     if not spec or spec == "*":
         return True
 
