@@ -13,12 +13,6 @@
     建议使用 python scripts/run_iterate.py 作为主要入口。
     此兼容入口将在未来版本中移除。
 """
-import sys
-from pathlib import Path
-
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 # 发出弃用警告（可选，当前仅记录日志）
 # warnings.warn(

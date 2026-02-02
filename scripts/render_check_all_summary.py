@@ -20,7 +20,17 @@ check_all.sh JSON 输出渲染器
 import json
 import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
+
+# 确保项目根目录在 Python 路径中（支持直接运行脚本）
+_SCRIPT_DIR = Path(__file__).parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+# 从统一契约模块导入 status_emoji
+from core.check_all_contract import status_emoji  # noqa: E402
 
 
 def load_json(source: str) -> dict[str, Any]:
@@ -29,17 +39,6 @@ def load_json(source: str) -> dict[str, Any]:
         return json.load(sys.stdin)
     with open(source, encoding="utf-8") as f:
         return json.load(f)
-
-
-def status_emoji(status: str) -> str:
-    """状态对应的 emoji"""
-    return {
-        "pass": "✅",
-        "fail": "❌",
-        "warn": "⚠️",
-        "skip": "⏭️",
-        "info": "ℹ️",
-    }.get(status, "❓")
 
 
 def render_check_item(check: dict[str, Any], show_details: bool = True) -> list[str]:
@@ -119,7 +118,7 @@ def render_summary_table(data: dict[str, Any]) -> list[str]:
     total = summary.get("total", passed + failed + warnings + skipped)
 
     success = data.get("success", failed == 0)
-    exit_code = data.get("exit_code", 0 if success else 1)
+    data.get("exit_code", 0 if success else 1)
 
     # 标题
     if success:
@@ -249,7 +248,7 @@ def render_by_section(data: dict[str, Any]) -> list[str]:
 
 def render_durations(data: dict[str, Any]) -> list[str]:
     """渲染耗时统计"""
-    lines = []
+    lines: list[str] = []
     durations = data.get("durations", [])
 
     if not durations:
@@ -272,10 +271,7 @@ def render_durations(data: dict[str, Any]) -> list[str]:
     for d in top_n:
         name = d.get("name", "未知")
         ms = d.get("duration_ms", 0)
-        if ms < 1000:
-            time_str = f"{ms}ms"
-        else:
-            time_str = f"{ms / 1000:.2f}s"
+        time_str = f"{ms}ms" if ms < 1000 else f"{ms / 1000:.2f}s"
         lines.append(f"| {name} | {time_str} |")
 
     lines.append("")

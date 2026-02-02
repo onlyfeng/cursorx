@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """规划者-执行者 多Agent系统 主入口"""
+
 import argparse
 import asyncio
 import sys
@@ -87,7 +88,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-d", "--directory",
+        "-d",
+        "--directory",
         type=str,
         default=".",
         help="工作目录 (默认: 当前目录)",
@@ -95,7 +97,8 @@ def parse_args() -> argparse.Namespace:
 
     # workers 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
-        "-w", "--workers",
+        "-w",
+        "--workers",
         type=int,
         default=None,
         help=f"Worker 池大小 (默认: {cfg_worker_pool_size}，来自 config.yaml)",
@@ -103,7 +106,8 @@ def parse_args() -> argparse.Namespace:
 
     # max_iterations 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
-        "-m", "--max-iterations",
+        "-m",
+        "--max-iterations",
         type=str,
         default=None,
         help=f"最大迭代次数 (默认: {cfg_max_iterations}，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
@@ -142,7 +146,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="详细输出",
     )
@@ -368,13 +373,13 @@ def print_result(result: dict) -> None:
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
 
-    if result.get('final_score'):
+    if result.get("final_score"):
         print(f"\n最终评分: {result['final_score']:.1f}")
 
-    if result.get('iterations'):
+    if result.get("iterations"):
         print("\n迭代详情:")
-        for it in result['iterations']:
-            status_emoji = "✓" if it.get('review_passed') else "→"
+        for it in result["iterations"]:
+            status_emoji = "✓" if it.get("review_passed") else "→"
             print(f"  {status_emoji} 迭代 {it['id']}: {it['tasks_completed']}/{it['tasks_created']} 任务完成")
 
     print("=" * 60)

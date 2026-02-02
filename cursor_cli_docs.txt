@@ -12,6 +12,12 @@ https://cursor.com/cn/docs/cli/mcp
 https://cursor.com/cn/docs/cli/headless
 https://cursor.com/cn/docs/cli/github-actions
 
+# CLI 运行模式
+https://cursor.com/cn/docs/cli/modes
+https://cursor.com/cn/docs/cli/modes/agent
+https://cursor.com/cn/docs/cli/modes/plan
+https://cursor.com/cn/docs/cli/modes/ask
+
 # ========== CLI 参考文档 ==========
 # 详细的参数、命令、权限等说明
 https://cursor.com/cn/docs/cli/reference/slash-commands

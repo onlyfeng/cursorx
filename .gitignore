@@ -68,6 +68,10 @@ yarn.lock
 .specstory/
 
 # CursorX local caches / generated data
+.cursor/cache/
 .cursor/knowledge/
 .cursor/vector_index/
 .mypy_cache/
+
+# Accidental pip version specifier files (e.g., pip install pkg=version typo)
+=7.3.0

@@ -8,6 +8,13 @@
 #       with:
 #         python-version: '3.11'
 #         requirements-file: 'requirements.txt'
+#
+# 统一检查脚本 (check_all.sh):
+#   环境设置完成后，可使用以下命令运行检查:
+#     bash scripts/check_all.sh --mode import --ci   # 导入检查
+#     bash scripts/check_all.sh --mode lint --ci     # Lint 检查
+#     bash scripts/check_all.sh --mode test --ci     # 测试检查
+#     bash scripts/check_all.sh --full --ci          # 完整检查
 
 name: Python Setup
 
@@ -66,8 +73,8 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             ${{ inputs.requirements-file }}
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
       - name: 安装 pip-tools
         run: |

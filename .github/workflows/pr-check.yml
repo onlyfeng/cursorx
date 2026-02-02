@@ -1,5 +1,6 @@
 # PR 检查工作流
-# 仅在 Pull Request 事件时运行全面检查
+# PR 事件的统一入口，通过 workflow_call 调用 ci.yml/lint.yml/import-test.yml
+# 避免这些工作流同时被 push 和 pull_request 直接触发导致重复运行
 
 name: PR Check
 
@@ -13,6 +14,7 @@ on:
       - synchronize
       - reopened
       - edited
+      - labeled  # 支持标签触发（如 run-ml-tests）
 
 jobs:
   # 重用 CI 工作流的测试结果
@@ -44,37 +46,94 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装依赖
+      - name: "安装依赖（使用 pip-sync: core+dev+test）"
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 ruff mypy pytest
+          python -m pip install --upgrade pip pip-tools
+          pip-sync requirements.txt requirements-dev.txt requirements-test.txt
 
-      - name: 运行 check_all.sh --full
+      - name: 运行 check_all.sh --full --json --cov-fail-under 80
         id: check_all
         run: |
           chmod +x scripts/check_all.sh
-          # 捕获输出用于摘要
+          
+          # 运行 JSON 模式检查
+          # --cov-fail-under 80: PR gating 使用 80% 覆盖率阈值
+          # （CI matrix 单测使用 --cov-fail-under=0 仅收集覆盖率，不做阈值检查）
+          # stdout → JSON 文件，stderr → 单独文件（保留诊断信息）
           set +e
-          OUTPUT=$(bash scripts/check_all.sh --full 2>&1)
+          bash scripts/check_all.sh --full --ci --json --cov-fail-under 80 > /tmp/check_all.json 2>/tmp/check_all.stderr
           EXIT_CODE=$?
           set -e
           
-          echo "$OUTPUT"
+          # 渲染 Markdown 到 Step Summary
+          RENDER_ERROR=""
+          if [ -f /tmp/check_all.json ]; then
+            RENDER_ERROR=$(python scripts/render_check_all_summary.py /tmp/check_all.json 2>&1 > /tmp/render_output.md) || true
+            if [ -z "$RENDER_ERROR" ] && [ -s /tmp/render_output.md ]; then
+              cat /tmp/render_output.md >> $GITHUB_STEP_SUMMARY
+            else
+              # 渲染失败：优先展示渲染器错误 + stderr，再展示 JSON
+              echo "## ⚠️ 渲染失败" >> $GITHUB_STEP_SUMMARY
+              if [ -n "$RENDER_ERROR" ]; then
+                echo "### 渲染器错误" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                echo "$RENDER_ERROR" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+              fi
+              if [ -s /tmp/check_all.stderr ]; then
+                echo "### check_all.sh stderr" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                cat /tmp/check_all.stderr >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+              fi
+              echo "### 原始 JSON 输出" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              cat /tmp/check_all.json >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
           
-          # 保存输出到文件供后续使用
-          echo "$OUTPUT" > /tmp/check_all_output.txt
-          
-          # 提取统计信息
-          PASS_COUNT=$(echo "$OUTPUT" | grep -oP '✓ 通过:\s*\K\d+' || echo "0")
-          FAIL_COUNT=$(echo "$OUTPUT" | grep -oP '✗ 失败:\s*\K\d+' || echo "0")
-          WARN_COUNT=$(echo "$OUTPUT" | grep -oP '⚠ 警告:\s*\K\d+' || echo "0")
+          # 提取统计信息（从 JSON）
+          # 注意：JSON 解析失败时设置 FAIL_COUNT=1，避免误报通过
+          JSON_PARSE_OK=true
+          if [ -f /tmp/check_all.json ]; then
+            PASS_COUNT=$(python3 -c "import json; d=json.load(open('/tmp/check_all.json')); print(d.get('summary',{}).get('passed',0))" 2>/dev/null) || JSON_PARSE_OK=false
+            FAIL_COUNT=$(python3 -c "import json; d=json.load(open('/tmp/check_all.json')); print(d.get('summary',{}).get('failed',0))" 2>/dev/null) || JSON_PARSE_OK=false
+            WARN_COUNT=$(python3 -c "import json; d=json.load(open('/tmp/check_all.json')); print(d.get('summary',{}).get('warnings',0))" 2>/dev/null) || JSON_PARSE_OK=false
+            
+            if [ "$JSON_PARSE_OK" = "false" ]; then
+              echo "::warning::JSON 解析失败，统计信息可能不准确"
+              PASS_COUNT=0
+              FAIL_COUNT=1
+              WARN_COUNT=0
+            fi
+          else
+            PASS_COUNT=0
+            FAIL_COUNT=1
+            WARN_COUNT=0
+          fi
           
           echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
           echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
           echo "warn_count=$WARN_COUNT" >> $GITHUB_OUTPUT
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # 失败时输出原始内容便于排查
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::group::check_all.sh 原始 JSON 输出"
+            cat /tmp/check_all.json 2>/dev/null || echo "无 JSON 输出文件"
+            echo "::endgroup::"
+            if [ -s /tmp/check_all.stderr ]; then
+              echo "::group::check_all.sh stderr 输出"
+              cat /tmp/check_all.stderr
+              echo "::endgroup::"
+            fi
+          fi
           
           exit $EXIT_CODE
 
@@ -91,10 +150,15 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装格式化工具
+      - name: "安装依赖（使用 pip-sync: core+dev）"
         run: |
-          pip install ruff black isort
+          python -m pip install --upgrade pip pip-tools
+          pip-sync requirements.txt requirements-dev.txt
 
       - name: 检查 ruff 格式
         id: ruff_format
@@ -223,11 +287,50 @@ jobs:
             exit 1
           fi
 
+  # 无 API Key Smoke 测试（复用 CI 工作流）
+  no-api-key-smoke:
+    name: 无 API Key Smoke 测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
+
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: "安装依赖（使用 pip-sync: core only）"
+        run: pip-sync requirements.txt
+
+      - name: 无 API Key Smoke 测试
+        env:
+          CURSOR_API_KEY: ""
+          CURSOR_CLOUD_API_KEY: ""
+        run: |
+          echo "## 无 API Key Smoke 测试 (PR)" >> $GITHUB_STEP_SUMMARY
+          
+          # 基础验证
+          python run.py --help > /dev/null 2>&1 && echo "✅ run.py --help" >> $GITHUB_STEP_SUMMARY || exit 1
+          python run.py --print-config 2>&1 | grep -qE "(requested_mode|effective_mode|config_path)" && echo "✅ --print-config" >> $GITHUB_STEP_SUMMARY || exit 1
+          python scripts/run_iterate.py --help > /dev/null 2>&1 && echo "✅ scripts/run_iterate.py --help" >> $GITHUB_STEP_SUMMARY || exit 1
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **无 API Key Smoke 测试通过**" >> $GITHUB_STEP_SUMMARY
+
   # 检查摘要
   summary:
     name: 检查摘要
     runs-on: ubuntu-latest
-    needs: [import-tests, full-check, format-check, pr-description]
+    needs: [import-tests, full-check, format-check, pr-description, no-api-key-smoke]
     if: always()
     steps:
       - name: 生成检查摘要
@@ -236,6 +339,8 @@ jobs:
           FULL_CHECK_RESULT: ${{ needs.full-check.result }}
           FORMAT_CHECK_RESULT: ${{ needs.format-check.result }}
           PR_DESC_RESULT: ${{ needs.pr-description.result }}
+          NO_API_KEY_SMOKE_RESULT: ${{ needs.no-api-key-smoke.result }}
+          HAS_ML_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'run-ml-tests') }}
         run: |
           echo "# PR 检查摘要" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -278,12 +383,28 @@ jobs:
             echo "| PR 描述格式 | ⚠️ $PR_DESC_RESULT |" >> $GITHUB_STEP_SUMMARY
           fi
           
+          # 无 API Key Smoke 测试结果
+          if [ "$NO_API_KEY_SMOKE_RESULT" = "success" ]; then
+            echo "| 无 API Key Smoke | ✅ 通过 |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$NO_API_KEY_SMOKE_RESULT" = "failure" ]; then
+            echo "| 无 API Key Smoke | ❌ 失败 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| 无 API Key Smoke | ⚠️ $NO_API_KEY_SMOKE_RESULT |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # ML 测试提示
+          if [ "$HAS_ML_LABEL" = "true" ]; then
+            echo "| ML 测试 (知识库/向量) | 🏃 已通过标签触发，见 CI 工作流 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| ML 测试 (知识库/向量) | ⏭️ 未触发 (添加 \`run-ml-tests\` 标签启用) |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # 总体结果
-          if [ "$IMPORT_TESTS_RESULT" = "success" ] && [ "$FULL_CHECK_RESULT" = "success" ] && [ "$PR_DESC_RESULT" = "success" ]; then
+          if [ "$IMPORT_TESTS_RESULT" = "success" ] && [ "$FULL_CHECK_RESULT" = "success" ] && [ "$PR_DESC_RESULT" = "success" ] && [ "$NO_API_KEY_SMOKE_RESULT" = "success" ]; then
             echo "## ✅ 所有必要检查通过" >> $GITHUB_STEP_SUMMARY
           else
             echo "## ❌ 部分检查未通过，请查看详情" >> $GITHUB_STEP_SUMMARY
@@ -295,15 +416,17 @@ jobs:
           echo "- 运行 \`python scripts/pre_commit_check.py --quick\` 检查模块导入" >> $GITHUB_STEP_SUMMARY
           echo "- 运行 \`ruff format .\` 自动格式化代码" >> $GITHUB_STEP_SUMMARY
           echo "- 运行 \`isort .\` 自动排序 imports" >> $GITHUB_STEP_SUMMARY
+          echo "- 添加 \`run-ml-tests\` 标签运行 ML 测试 (知识库/向量索引)" >> $GITHUB_STEP_SUMMARY
 
       - name: 检查是否应该失败
         env:
           IMPORT_TESTS_RESULT: ${{ needs.import-tests.result }}
           FULL_CHECK_RESULT: ${{ needs.full-check.result }}
           PR_DESC_RESULT: ${{ needs.pr-description.result }}
+          NO_API_KEY_SMOKE_RESULT: ${{ needs.no-api-key-smoke.result }}
         run: |
-          # 导入测试、完整检查和 PR 描述是必须通过的
-          if [ "$IMPORT_TESTS_RESULT" = "failure" ] || [ "$FULL_CHECK_RESULT" = "failure" ] || [ "$PR_DESC_RESULT" = "failure" ]; then
+          # 导入测试、完整检查、PR 描述和无 API Key Smoke 是必须通过的
+          if [ "$IMPORT_TESTS_RESULT" = "failure" ] || [ "$FULL_CHECK_RESULT" = "failure" ] || [ "$PR_DESC_RESULT" = "failure" ] || [ "$NO_API_KEY_SMOKE_RESULT" = "failure" ]; then
             echo "必要检查未通过"
             exit 1
           fi

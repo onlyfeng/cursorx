@@ -28,6 +28,7 @@
     python knowledge_cli.py index build
     python knowledge_cli.py refresh doc-abc123
 """
+
 import argparse
 import asyncio
 import sys
@@ -83,12 +84,12 @@ class ProgressBar:
         else:
             time_str = "计算中..."
 
-        status = f"\r{self.description} |{bar}| {self.current}/{self.total} ({percent*100:.1f}%) {time_str}"
+        status = f"\r{self.description} |{bar}| {self.current}/{self.total} ({percent * 100:.1f}%) {time_str}"
         if message:
             # 截断过长的消息
             max_msg_len = 40
             if len(message) > max_msg_len:
-                message = message[:max_msg_len-3] + "..."
+                message = message[: max_msg_len - 3] + "..."
             status += f" - {message}"
 
         # 清除行尾并打印
@@ -99,7 +100,9 @@ class ProgressBar:
         """完成进度条"""
         self.current = self.total
         elapsed = time.time() - self.start_time
-        print(f"\r{self.description} |{'█' * self.width}| {self.total}/{self.total} (100.0%) 用时: {elapsed:.1f}s - {message}")
+        print(
+            f"\r{self.description} |{'█' * self.width}| {self.total}/{self.total} (100.0%) 用时: {elapsed:.1f}s - {message}"
+        )
 
 
 class KnowledgeCLI:
@@ -320,16 +323,19 @@ class KnowledgeCLI:
             results = []
             for vr in vector_results:
                 from knowledge import SearchResult
+
                 entry = self.storage._index.get(vr.doc_id)
                 if entry:
-                    results.append(SearchResult(
-                        doc_id=vr.doc_id,
-                        url=entry.url,
-                        title=entry.title,
-                        score=vr.score,
-                        snippet=vr.content[:100] + "..." if len(vr.content) > 100 else vr.content,
-                        match_type="semantic",
-                    ))
+                    results.append(
+                        SearchResult(
+                            doc_id=vr.doc_id,
+                            url=entry.url,
+                            title=entry.title,
+                            score=vr.score,
+                            snippet=vr.content[:100] + "..." if len(vr.content) > 100 else vr.content,
+                            match_type="semantic",
+                        )
+                    )
         elif mode == "hybrid":
             # 使用混合搜索
             results = await self.storage.search(query, limit=limit, mode="hybrid")
@@ -619,6 +625,8 @@ class KnowledgeCLI:
         index_progress = ProgressBar(len(documents), "重建索引")
 
         # 清空现有索引
+        await self.storage._vector_store.initialize()
+        assert self.storage._vector_store._vector_store is not None
         await self.storage._vector_store._vector_store.clear()
         self.storage._vector_store._doc_chunk_mapping.clear()
 
@@ -677,18 +685,18 @@ class KnowledgeCLI:
             print(f"  相似度度量: {stats.get('metric', 'N/A')}")
 
             # 显示缓存统计
-            cache_stats = stats.get('cache_stats', {})
+            cache_stats = stats.get("cache_stats", {})
             if cache_stats:
                 print("\n  嵌入缓存统计:")
                 print(f"    缓存大小: {cache_stats.get('memory_cache_size', 0)}")
                 print(f"    命中次数: {cache_stats.get('hits', 0)}")
                 print(f"    未命中次数: {cache_stats.get('misses', 0)}")
-                hit_rate = cache_stats.get('hit_rate', 0)
+                hit_rate = cache_stats.get("hit_rate", 0)
                 print(f"    命中率: {hit_rate:.1%}")
 
             # 与存储文档对比
             storage_count = len(self.storage._index)
-            indexed_count = stats.get('document_count', 0)
+            indexed_count = stats.get("document_count", 0)
             if storage_count != indexed_count:
                 print(f"\n  ⚠️ 索引不同步: 存储 {storage_count} 个文档，已索引 {indexed_count} 个")
                 print("     建议运行: python knowledge_cli.py index build")
@@ -747,11 +755,7 @@ def create_parser() -> argparse.ArgumentParser:
     # add-file 命令
     add_file_parser = subparsers.add_parser("add-file", help="添加本地文件")
     add_file_parser.add_argument("file", help="本地文件路径（支持 .txt, .md, .rst 等）")
-    add_file_parser.add_argument(
-        "--encoding",
-        default="utf-8",
-        help="文件编码 (默认: utf-8)"
-    )
+    add_file_parser.add_argument("--encoding", default="utf-8", help="文件编码 (默认: utf-8)")
 
     # import 命令
     import_parser = subparsers.add_parser("import", help="批量导入 URL")
@@ -767,29 +771,23 @@ def create_parser() -> argparse.ArgumentParser:
     search_parser = subparsers.add_parser("search", help="搜索文档")
     search_parser.add_argument("query", help="搜索关键词")
     search_parser.add_argument(
-        "-n", "--limit", "--top-k",
+        "-n",
+        "--limit",
+        "--top-k",
         type=int,
         default=default_top_k,
         dest="limit",
-        help=f"返回结果数量 (默认: {default_top_k}，来自 config.yaml indexing.search.top_k)"
+        help=f"返回结果数量 (默认: {default_top_k}，来自 config.yaml indexing.search.top_k)",
     )
     search_parser.add_argument(
         "--mode",
         choices=["keyword", "semantic", "hybrid"],
         default="keyword",
-        help="搜索模式: keyword(关键词), semantic(语义), hybrid(混合) (默认: keyword)"
+        help="搜索模式: keyword(关键词), semantic(语义), hybrid(混合) (默认: keyword)",
     )
+    search_parser.add_argument("--min-score", type=float, default=0.0, help="最低相似度阈值 (0.0-1.0, 默认: 0.0)")
     search_parser.add_argument(
-        "--min-score",
-        type=float,
-        default=0.0,
-        help="最低相似度阈值 (0.0-1.0, 默认: 0.0)"
-    )
-    search_parser.add_argument(
-        "--semantic-weight",
-        type=float,
-        default=0.7,
-        help="混合搜索中语义权重 (0.0-1.0, 默认: 0.7)"
+        "--semantic-weight", type=float, default=0.7, help="混合搜索中语义权重 (0.0-1.0, 默认: 0.7)"
     )
 
     # remove 命令
@@ -879,7 +877,7 @@ async def main():
 
         elif args.command == "index":
             # 处理 index 子命令
-            if not hasattr(args, 'index_command') or not args.index_command:
+            if not hasattr(args, "index_command") or not args.index_command:
                 # 没有指定子命令，显示帮助
                 print("用法: knowledge_cli.py index {build,rebuild,stats}")
                 print("\n可用的索引子命令:")
@@ -914,6 +912,7 @@ async def main():
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

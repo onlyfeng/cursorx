@@ -10,6 +10,7 @@
   - [验证层次对比](#验证层次对比)
 - [运行时验证 vs 静态分析](#运行时验证-vs-静态分析)
 - [预提交检查流程](#预提交检查流程)
+- [CI 失败快速诊断](#ci-失败快速诊断)
 - [常见问题和解决方案](#常见问题和解决方案)
 - [异步代码最佳实践](#异步代码最佳实践)
 - [模块依赖关系图](#模块依赖关系图)
@@ -31,13 +32,14 @@
 git clone <repository-url>
 cd cursorx
 
-# 2. 创建虚拟环境（推荐）
-python3 -m venv venv
+# 2. 创建虚拟环境（推荐 Python 3.11，与锁文件生成基准一致）
+python3.11 -m venv venv
 source venv/bin/activate  # Linux/macOS
 # 或 venv\Scripts\activate  # Windows
 
-# 3. 安装依赖
-pip install -r requirements.txt
+# 3. 安装 pip-tools 并同步完整开发环境
+pip install --upgrade pip pip-tools>=7.3.0
+pip-sync requirements.txt requirements-dev.txt requirements-test.txt
 
 # 4. 验证安装
 python -c "from core import BaseAgent; print('核心模块加载成功')"
@@ -48,31 +50,40 @@ python -c "from agents import PlannerAgent; print('Agent 模块加载成功')"
 
 项目依赖分为**核心依赖**和**可选依赖**两类：
 
+- **`requirements.txt` = 核心运行时锁定文件**：仅包含运行 Agent 系统必需的最小依赖
+- **全量能力通过 extras 或 optional requirements 安装**
+
 #### 依赖文件说明
 
-| 文件 | 说明 | 用途 |
-|------|------|------|
-| `requirements.txt` | 完整依赖列表 | 包含所有功能的依赖 |
-| `requirements.in` | 核心依赖源文件 | pip-compile 输入 |
-| `requirements-optional.txt` | 可选依赖 | ML/向量搜索、浏览器自动化 |
-| `requirements-dev.in` | 开发依赖源文件 | 代码检查、类型验证 |
-| `requirements-test.in` | 测试依赖源文件 | 测试框架、Mock |
+| 文件 | 说明 | 生成方式 |
+|------|------|----------|
+| `requirements.txt` | 核心依赖锁定文件 | `sync-deps.sh compile` 自动生成 |
+| `requirements-dev.txt` | 开发依赖锁定文件 | `sync-deps.sh compile` 自动生成 |
+| `requirements-test.txt` | 测试依赖锁定文件 | `sync-deps.sh compile` 自动生成 |
+| `requirements-test-ml.txt` | ML 测试依赖锁定文件 | `sync-deps.sh compile` 自动生成 |
+| `requirements-optional.txt` | 可选依赖（ML/浏览器等） | 手动维护 |
+| `requirements*.in` | 源文件（版本约束） | 手动维护 |
 
-#### 按需安装
+#### 推荐安装命令
+
+| 场景 | 推荐命令 |
+|------|----------|
+| **CI 构建** | `pip install -r requirements.txt` |
+| **CI 测试** | `pip-sync requirements.txt requirements-test.txt` |
+| **本地开发** | `pip-sync requirements.txt requirements-dev.txt requirements-test.txt` |
+| **ML 测试** | `pip-sync requirements.txt requirements-test.txt requirements-test-ml.txt` |
 
 ```bash
-# 方式 1: 使用 requirements 文件
-pip install -r requirements.txt                  # 全部依赖
-pip install -r requirements-optional.txt         # 仅可选依赖（ML/浏览器）
+# 本地开发完整环境（推荐）
+pip-sync requirements.txt requirements-dev.txt requirements-test.txt
 
-# 方式 2: 使用 pyproject.toml 分组安装（推荐）
-pip install -e .              # 仅核心依赖（最小安装）
-pip install -e ".[web]"       # 核心 + 网页处理
-pip install -e ".[ml]"        # 核心 + ML/向量搜索
-pip install -e ".[dev]"       # 核心 + 开发工具
-pip install -e ".[test]"      # 核心 + 测试框架
-pip install -e ".[all]"       # 所有依赖
+# 或使用 pyproject.toml extras（备选方式）
+pip install -e ".[dev,test]"      # 开发 + 测试
+pip install -e ".[ml]"            # ML/向量功能
+pip install -e ".[all]"           # 完整安装
 ```
+
+> 详细说明参见 [DEPENDENCY_MANAGEMENT.md](DEPENDENCY_MANAGEMENT.md)
 
 #### 可选依赖列表
 
@@ -108,6 +119,9 @@ agent status
 ```bash
 # 代码检查工具
 pip install flake8 mypy ruff
+
+# 代码格式化工具
+pip install black isort
 
 # 测试工具
 pip install pytest pytest-asyncio
@@ -433,7 +447,7 @@ python scripts/run_iterate.py --auto-commit --commit-per-iteration "分步完成
 
 **执行模式与编排器**（iterate 模式）:
 
-`--execution-mode` 控制任务的执行方式，影响编排器选择。
+`--execution-mode` 控制任务的执行方式，影响编排器选择。**系统默认使用 `auto` 模式**（配置于 `config.yaml` 的 `cloud_agent.execution_mode`）。
 
 **Cloud 执行模式语义对比**:
 
@@ -441,12 +455,29 @@ python scripts/run_iterate.py --auto-commit --commit-per-iteration "分步完成
 |------|------|------|
 | `&` 前缀 | **Cloud Relay**：把这条消息/会话推到云端继续跑 | 交互式提交单条任务 |
 | `--execution-mode cloud` | **强制云端**：本系统强制使用云端执行器（无需 `&`） | 脚本/自动化确保使用云端 |
-| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | 推荐默认选择 |
+| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | **系统默认**（来自 config.yaml） |
 
 ```bash
-# 默认：本地 CLI 执行，支持多进程编排器（推荐）
+# ===== 推荐用法（默认 auto 模式）=====
+
+# 直接运行，使用 config.yaml 中的默认 execution_mode=auto
+# - 有 API Key: 使用 Cloud 执行
+# - 无 API Key: 自动回退到本地 CLI，编排器仍为 basic（requested_mode 语义）
 python scripts/run_iterate.py "任务描述"
+
+# 显式指定（效果相同，但更清晰）
+python scripts/run_iterate.py --execution-mode auto --orchestrator basic "任务描述"
+
+# ===== 无 API Key 时的行为 =====
+# - 系统检测到未配置 CURSOR_API_KEY，自动回退到本地 CLI 执行
+# - 编排器仍保持 basic（不会恢复到 mp）—— 这是 requested_mode 语义
+# - 如需 MP 编排器，请显式指定 --execution-mode cli
+
+# ===== 如需使用 MP 编排器 =====
 python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
+
+# 或使用 scripts/run_mp.py（默认 CLI 模式 + MP 编排器）
+python scripts/run_mp.py "任务描述" --workers 5
 
 # ===== Cloud 执行模式 =====
 
@@ -456,8 +487,8 @@ python scripts/run_iterate.py "& 后台分析代码架构"
 # 方式 2: --execution-mode cloud - 强制使用云端执行器
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 
-# 方式 3: --execution-mode auto - 云端优先，失败回退本地
-python scripts/run_iterate.py --execution-mode auto "任务描述"
+# 方式 3: --execution-mode auto（默认）- 云端优先，失败回退本地
+python scripts/run_iterate.py "任务描述"  # 等效于 --execution-mode auto
 
 # ===== 恢复云端会话 =====
 # 查看历史会话
@@ -557,10 +588,70 @@ python scripts/run_iterate.py --log-level ERROR "任务描述"
 - 即使显式指定 `--orchestrator mp` 也会自动切换到 basic 编排器
 - 原因：Cloud API 不支持多进程编排
 
+**requested_mode vs effective_mode（关键概念）**:
+
+| 概念 | 含义 | 决定因素 |
+|------|------|----------|
+| `requested_mode` | 用户请求的执行模式 | CLI 参数 `--execution-mode` |
+| `effective_mode` | 实际生效的执行模式 | 可能因回退而变化 |
+
+**核心规则**：编排器选择基于 **requested_mode**（用户请求的模式），而非 effective_mode（实际生效的模式）：
+
+| 场景 | requested_mode | effective_mode | 编排器 |
+|------|---------------|----------------|--------|
+| 无指定（默认，来自 config.yaml） | auto | cloud 或 cli（回退） | basic（强制） |
+| `--execution-mode auto` 无 API Key | auto | cli（回退） | **basic**（仍保持） |
+| `--execution-mode cloud` 无 API Key | cloud | cli（回退） | **basic**（仍保持） |
+| `--execution-mode cli` | cli | cli | mp（支持） |
+
+- **默认行为**：未指定 `--execution-mode` 时，系统从 config.yaml 读取默认值 `auto`
+- **回退不影响编排器**：即使因缺少 API Key 导致回退到 CLI，编排器仍保持 basic
+- **如需 MP 编排器**：请显式指定 `--execution-mode cli`
+
+**警告与日志策略**：
+
+| 情况 | 日志级别 | 说明 |
+|------|----------|------|
+| CLI 显式 `--execution-mode auto/cloud` | WARNING | 用户显式请求，明确提示回退 |
+| config.yaml 默认 auto 且未显式指定 | INFO | 避免"每次都警告"的问题 |
+| 编排器不兼容回退 | INFO | 信息提示而非警告 |
+
+**设计决策**：编排器选择严格基于 requested_mode（不因回退而改变）
+- 语义一致性：用户请求 auto 意味着期望云端执行，即使回退也保持 basic 编排器
+- 可预测性：用户可通过显式 `--execution-mode cli` 获得 MP 编排器
+
+**推荐写法**：
+
+```bash
+# 最简写法（使用 config.yaml 默认的 auto 模式）
+python scripts/run_iterate.py "任务描述"
+
+# 显式写法（避免警告，更清晰表达意图）
+python scripts/run_iterate.py --execution-mode auto --orchestrator basic "任务描述"
+python scripts/run_iterate.py --execution-mode cloud --orchestrator basic "任务描述"
+
+# 如需 MP 编排器
+python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
+```
+
 **`&` 前缀路由语义**:
 - `&` 必须在任务开头才会触发 Cloud 模式
 - `&` 后面必须有实际内容（只有 `&` 或 `& ` 不会触发）
 - 任务中间的 `&` 不会被识别为 Cloud 请求
+- 成功触发 Cloud 后，`prefix_routed=True`（**推荐使用此字段**判断是否成功路由）
+
+> **术语说明**：
+> - `prefix_routed`：**策略决策层面**，表示 `&` 前缀是否成功触发 Cloud（**推荐使用**，新代码应统一使用此字段）
+> - `has_ampersand_prefix`：**语法检测层面**，仅表示原始文本是否有 `&` 前缀
+> - `triggered_by_prefix`：**已废弃的兼容别名**，语义等同于 `prefix_routed`（仅保留用于兼容旧版输出格式，新代码禁止使用）
+
+**`cloud_agent.enabled` 对 `&` 前缀的影响**:
+- `&` 前缀成功触发 Cloud（`prefix_routed=True`）需要满足**全部条件**：
+  1. 输入以 `&` 开头（`has_ampersand_prefix=True`）
+  2. `cloud_agent.enabled=True`（config.yaml 中启用）
+  3. 有可用的 API Key
+  4. 未禁用自动检测（默认启用）
+- **注意**：`cloud_agent.enabled` 默认为 `true`（参见 `config.yaml`），此时 `&` 前缀会正常触发 Cloud；如设为 `false`，`&` 前缀不会触发 Cloud（`prefix_routed=False`）
 
 **入口脚本验证检查清单**：
 
@@ -791,6 +882,75 @@ pytest tests/ -v --tb=short
 ✗ 失败      - 必须修复后才能提交
 ⚠ 警告      - 建议修复但不阻止提交
 ○ 跳过      - 相关工具未安装或不适用
+```
+
+---
+
+## CI 失败快速诊断
+
+本节提供 CI 各类失败的分组、复现和修复命令速查。
+
+### 失败分组
+
+| 分组 | 触发条件 | CI Job |
+|------|----------|--------|
+| **deps-lock** | 锁文件与 .in 不同步 | lint / ci |
+| **import** | 模块导入失败 | ci |
+| **lint** | ruff/flake8/isort 报错 | lint |
+| **type** | mypy 类型检查失败 | lint |
+| **test** | pytest 用例失败 | ci |
+| **coverage** | 覆盖率低于阈值 | ci |
+| **network** | 网络隔离测试失败 | ci |
+
+### 复现命令
+
+```bash
+# 1. 优先使用 check_all --json 获取完整报告
+bash scripts/check_all.sh --json 2>/dev/null | jq '.failed_groups'
+
+# 2. 定位具体失败类型
+# deps-lock: 锁文件不同步
+bash scripts/sync-deps.sh check
+
+# import: 模块导入失败
+python -c "import agents; import core; import cursor; import coordinator"
+
+# lint: 代码风格
+ruff check . && isort --check-only .
+
+# type: 类型检查
+mypy agents/ core/ cursor/ --ignore-missing-imports
+
+# test: 单元测试
+pytest tests/ -v --tb=short
+
+# coverage: 覆盖率
+pytest tests/ --cov=. --cov-fail-under=80
+
+# network: 网络隔离
+pytest tests/ -m network_isolation -v
+```
+
+### 修复命令
+
+| 分组 | 修复命令 |
+|------|----------|
+| **deps-lock** | `bash scripts/sync-deps.sh compile && pip-sync requirements.txt requirements-dev.txt` |
+| **import** | 检查 `__init__.py` 的 `__all__` 导出，修复循环导入 |
+| **lint** | `ruff check . --fix && isort .` |
+| **type** | 添加类型注解或 `# type: ignore` 注释 |
+| **test** | `pytest tests/test_xxx.py -v --tb=long` 定位后修复 |
+| **coverage** | 补充缺失测试或调整 `--cov-fail-under` 阈值 |
+| **network** | 检查 `@pytest.mark.network_isolation` 测试中的网络访问 |
+
+### 快速修复流程
+
+```bash
+# 一键修复 lint + deps（最常见问题）
+ruff check . --fix && isort . && bash scripts/sync-deps.sh compile
+
+# 验证修复结果
+bash scripts/check_all.sh
 ```
 
 ---

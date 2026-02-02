@@ -63,12 +63,21 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: Install dependencies
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: 安装依赖（使用 pip-sync）
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit>=2.6.0
-          pip install -r requirements.txt
+          # 与 CI core 一致的安装方式
+          pip-sync requirements.txt
+
+      - name: 安装安全审计工具
+        run: pip install pip-audit>=2.6.0
 
       - name: Run pip check
         id: pip_check

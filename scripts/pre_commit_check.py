@@ -5,7 +5,9 @@
 
 检查内容：
 1. 语法检查 - 验证所有 Python 文件的语法正确性
-2. 依赖检查 - 检查 requirements.txt 中的依赖是否都已安装
+2. 依赖检查 - 检查 requirements 文件中的依赖是否都已安装
+   默认检查: requirements.txt, requirements-dev.txt, requirements-test.txt
+   可通过 --req-files 参数指定要检查的文件
 3. 模块导入检查 - 递归导入项目所有 Python 模块
 4. 完整导入验证 - 验证 agents/, coordinator/, core/, cursor/, knowledge/, tasks/
    目录下的所有模块，并对 run.py 执行语法和导入测试
@@ -14,11 +16,20 @@
 7. 运行模式验证 - 验证 run.py --help 和所有模式（basic、mp、knowledge、iterate、auto、plan、ask）
 8. 冒烟测试 - 运行快速测试（不实际执行任务，仅验证初始化）
 
+模块分类：
+- 核心模块 (CORE_MODULES): core, agents, coordinator, tasks, cursor, process
+  这些模块仅需要 requirements.txt 中的核心依赖
+- 可选模块 (OPTIONAL_MODULES): indexing, knowledge
+  这些模块需要可选依赖（sentence-transformers, chromadb 等）
+
 用法：
     python scripts/pre_commit_check.py [--verbose] [--fix]
     python scripts/pre_commit_check.py --quick  # 快速检查模式
     python scripts/pre_commit_check.py --ci     # CI 模式（禁用颜色）
     python scripts/pre_commit_check.py --module-only  # 仅模块导入检查
+    python scripts/pre_commit_check.py --core-only    # 仅检查核心模块（CI Import Test 使用）
+    python scripts/pre_commit_check.py --quick --core-only --json  # CI 推荐组合
+    python scripts/pre_commit_check.py --req-files requirements.txt  # 仅检查核心依赖
 """
 
 import argparse
@@ -34,7 +45,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-
 # ============================================================
 # 常量定义
 # ============================================================
@@ -42,6 +52,16 @@ from typing import Optional
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# 依赖文件列表（分层配置）
+# - requirements.txt: 核心依赖（CI 默认）
+# - requirements-dev.txt: 开发依赖（本地开发）
+# - requirements-test.txt: 测试依赖（CI 测试阶段）
+REQUIREMENTS_FILES = [
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-test.txt",
+]
 
 # 项目模块列表
 PROJECT_MODULES = [
@@ -53,6 +73,24 @@ PROJECT_MODULES = [
     "indexing",
     "knowledge",
     "process",
+]
+
+# 核心模块列表（不依赖可选依赖，可在仅安装 requirements.txt 后导入）
+# 用于 CI Import Test 的 --core-only 模式
+CORE_MODULES = [
+    "core",
+    "agents",
+    "coordinator",
+    "tasks",
+    "cursor",
+    "process",
+]
+
+# 需要可选依赖的模块（ML/向量搜索依赖：sentence-transformers, chromadb 等）
+# 这些模块在 pyproject.toml 的 [project.optional-dependencies.ml] 中定义
+OPTIONAL_MODULES = [
+    "indexing",  # 需要 sentence-transformers, chromadb
+    "knowledge",  # 部分功能依赖 indexing 模块
 ]
 
 # run.py 中需要验证的关键类和函数
@@ -93,10 +131,19 @@ PACKAGE_IMPORT_MAP = {
     # 测试依赖
     "pytest": "pytest",
     "pytest-asyncio": "pytest_asyncio",
+    "pytest-timeout": "pytest_timeout",
+    "pytest-cov": "pytest_cov",
     "respx": "respx",
+    # 开发/安全依赖
+    "boolean-py": "boolean",
+    "cyclonedx-python-lib": "cyclonedx",
+    "markdown-it-py": "markdown_it",
+    "packageurl-python": "packageurl",
+    "pip-tools": "piptools",
 }
 
 # 必需依赖（缺失会导致检查失败）
+# 必须与 requirements.in 保持同步
 REQUIRED_PACKAGES = [
     "aiofiles",
     "pydantic",
@@ -105,18 +152,22 @@ REQUIRED_PACKAGES = [
     "python-dotenv",
     "pyyaml",
     "typing-extensions",
-    "beautifulsoup4",
-    "lxml",
+    "httpx",  # Cloud API 通信
+    "websockets",  # WebSocket 实时连接
 ]
 
 # 可选依赖（缺失只警告）
+# 包含 [web] 和 [ml] 分组的依赖
 OPTIONAL_PACKAGES = [
+    # Web 处理依赖（来自 pyproject.toml [web]）
+    "beautifulsoup4",
+    "html2text",
+    "lxml",
+    # ML/向量搜索依赖（来自 pyproject.toml [ml]）
     "sentence-transformers",
     "chromadb",
     "tiktoken",
     "hnswlib",
-    "httpx",
-    "websockets",
     # 开发/测试工具（可选）
     "pre-commit",
     "pip-audit",
@@ -129,6 +180,7 @@ OPTIONAL_PACKAGES = [
 # ============================================================
 # CI 环境检测
 # ============================================================
+
 
 def is_ci_environment() -> bool:
     """检测是否在 CI 环境中运行"""
@@ -144,10 +196,12 @@ def get_github_step_summary_path() -> Optional[str]:
 # 颜色输出
 # ============================================================
 
+
 class Colors:
     """终端颜色定义，支持禁用颜色输出"""
+
     _enabled: bool = True
-    
+
     RED = "\033[0;31m"
     GREEN = "\033[0;32m"
     YELLOW = "\033[1;33m"
@@ -156,7 +210,7 @@ class Colors:
     MAGENTA = "\033[0;35m"
     BOLD = "\033[1m"
     NC = "\033[0m"
-    
+
     @classmethod
     def disable(cls) -> None:
         """禁用颜色输出"""
@@ -169,7 +223,7 @@ class Colors:
         cls.MAGENTA = ""
         cls.BOLD = ""
         cls.NC = ""
-    
+
     @classmethod
     def enable(cls) -> None:
         """启用颜色输出"""
@@ -182,7 +236,7 @@ class Colors:
         cls.MAGENTA = "\033[0;35m"
         cls.BOLD = "\033[1m"
         cls.NC = "\033[0m"
-    
+
     @classmethod
     def is_enabled(cls) -> bool:
         """检查颜色输出是否启用"""
@@ -231,9 +285,11 @@ def print_debug(text: str, verbose: bool = False) -> None:
 # 检查结果数据结构
 # ============================================================
 
+
 @dataclass
 class CheckResult:
     """单项检查结果"""
+
     name: str
     passed: bool
     message: str = ""
@@ -244,34 +300,35 @@ class CheckResult:
 @dataclass
 class CheckReport:
     """检查报告"""
+
     checks: list[CheckResult] = field(default_factory=list)
-    
+
     @property
     def passed_count(self) -> int:
         return sum(1 for c in self.checks if c.passed)
-    
+
     @property
     def failed_count(self) -> int:
         return sum(1 for c in self.checks if not c.passed)
-    
+
     @property
     def all_passed(self) -> bool:
         return all(c.passed for c in self.checks)
-    
+
     def add(self, result: CheckResult) -> None:
         self.checks.append(result)
-    
+
     def print_summary(self) -> None:
         """打印检查汇总"""
         print_header("预提交检查报告")
-        
+
         pass_symbol = "✓" if Colors.is_enabled() else "[PASS]"
         fail_symbol = "✗" if Colors.is_enabled() else "[FAIL]"
-        
+
         print(f"\n  {Colors.GREEN}{pass_symbol} 通过:{Colors.NC} {self.passed_count}")
         print(f"  {Colors.RED}{fail_symbol} 失败:{Colors.NC} {self.failed_count}")
         print()
-        
+
         if self.all_passed:
             print(f"{Colors.GREEN}{Colors.BOLD}{'━' * 60}{Colors.NC}")
             print(f"{Colors.GREEN}{Colors.BOLD}  所有预提交检查通过！可以安全提交{Colors.NC}")
@@ -280,34 +337,34 @@ class CheckReport:
             print(f"{Colors.RED}{Colors.BOLD}{'━' * 60}{Colors.NC}")
             print(f"{Colors.RED}{Colors.BOLD}  发现 {self.failed_count} 个问题需要修复{Colors.NC}")
             print(f"{Colors.RED}{Colors.BOLD}{'━' * 60}{Colors.NC}")
-            
+
             # 打印失败项的修复建议
             print("\n修复建议：")
             for check in self.checks:
                 if not check.passed and check.fix_suggestion:
                     print(f"\n  {Colors.YELLOW}• {check.name}:{Colors.NC}")
                     print(f"    {check.fix_suggestion}")
-    
+
     def to_markdown(self) -> str:
         """生成 Markdown 格式的检查报告（用于 GitHub Step Summary）"""
         lines = []
         lines.append("## 预提交检查报告")
         lines.append("")
-        
+
         # 总体状态
         if self.all_passed:
             lines.append("### ✅ 所有检查通过")
         else:
             lines.append(f"### ❌ 发现 {self.failed_count} 个问题")
         lines.append("")
-        
+
         # 统计表格
         lines.append("| 统计 | 数量 |")
         lines.append("|------|------|")
         lines.append(f"| ✅ 通过 | {self.passed_count} |")
         lines.append(f"| ❌ 失败 | {self.failed_count} |")
         lines.append("")
-        
+
         # 详细结果表格
         lines.append("### 检查详情")
         lines.append("")
@@ -318,7 +375,7 @@ class CheckReport:
             message = check.message.replace("|", "\\|")  # 转义表格分隔符
             lines.append(f"| {check.name} | {status} | {message} |")
         lines.append("")
-        
+
         # 失败项的修复建议
         failed_checks = [c for c in self.checks if not c.passed and c.fix_suggestion]
         if failed_checks:
@@ -327,7 +384,7 @@ class CheckReport:
             for check in failed_checks:
                 lines.append(f"- **{check.name}**: {check.fix_suggestion}")
             lines.append("")
-        
+
         return "\n".join(lines)
 
 
@@ -335,37 +392,75 @@ class CheckReport:
 # 检查函数
 # ============================================================
 
-def check_dependencies(verbose: bool = False) -> CheckResult:
-    """检查 requirements.txt 中的依赖是否都已安装"""
+
+def check_dependencies(
+    verbose: bool = False,
+    req_files: Optional[list[str]] = None,
+) -> CheckResult:
+    """检查 requirements 文件中的依赖是否都已安装
+
+    Args:
+        verbose: 是否显示详细信息
+        req_files: 要检查的 requirements 文件列表，默认为 REQUIREMENTS_FILES
+                   支持指定多个文件以覆盖 dev/test 场景
+
+    依赖检查会读取指定的 requirements 文件（默认包含核心/开发/测试三个文件），
+    避免在 dev/test 环境下因只读 requirements.txt 而误判依赖缺失。
+    """
     result = CheckResult(name="依赖检查", passed=True)
     missing_required = []
     missing_optional = []
     installed = []
-    
-    # 读取 requirements.txt
-    req_file = PROJECT_ROOT / "requirements.txt"
-    if not req_file.exists():
+
+    # 使用默认文件列表或指定的文件列表
+    files_to_check = req_files if req_files else REQUIREMENTS_FILES
+
+    # 收集所有 requirements 文件中的包
+    packages: list[str] = []
+    files_found: list[str] = []
+    files_missing: list[str] = []
+
+    for req_filename in files_to_check:
+        req_file = PROJECT_ROOT / req_filename
+        if not req_file.exists():
+            files_missing.append(req_filename)
+            print_debug(f"文件不存在: {req_filename}", verbose)
+            continue
+
+        files_found.append(req_filename)
+
+        # 解析 requirements 文件
+        with open(req_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # 跳过 -r/-e 等特殊行
+                if line.startswith("-"):
+                    continue
+                # 提取包名（去除版本约束）
+                match = re.match(r"^([a-zA-Z0-9_-]+)", line)
+                if match:
+                    pkg_name = match.group(1).lower()
+                    if pkg_name not in packages:
+                        packages.append(pkg_name)
+
+    # 如果没有找到任何文件
+    if not files_found:
         result.passed = False
-        result.message = "requirements.txt 不存在"
-        result.fix_suggestion = "创建 requirements.txt 文件"
+        result.message = f"未找到任何 requirements 文件: {', '.join(files_to_check)}"
+        result.fix_suggestion = "创建 requirements.txt 文件或指定正确的文件路径"
         return result
-    
-    # 解析 requirements.txt
-    packages = []
-    with open(req_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            # 提取包名（去除版本约束）
-            match = re.match(r'^([a-zA-Z0-9_-]+)', line)
-            if match:
-                packages.append(match.group(1).lower())
-    
+
+    # 记录检查的文件
+    result.details.append(f"检查文件: {', '.join(files_found)}")
+    if files_missing:
+        result.details.append(f"未找到文件: {', '.join(files_missing)}")
+
     # 检查每个包是否可导入
     for package in packages:
         import_name = PACKAGE_IMPORT_MAP.get(package, package.replace("-", "_"))
-        
+
         try:
             importlib.import_module(import_name)
             installed.append(package)
@@ -381,44 +476,58 @@ def check_dependencies(verbose: bool = False) -> CheckResult:
                 # 未分类的依赖视为必需
                 missing_required.append(package)
                 print_debug(f"缺失(未分类): {package}", verbose)
-    
+
     # 生成结果
     result.details.append(f"已安装: {len(installed)}/{len(packages)}")
-    
+
     if missing_required:
         result.passed = False
         result.details.append(f"缺失必需依赖: {', '.join(missing_required)}")
         result.message = f"缺少 {len(missing_required)} 个必需依赖"
-        result.fix_suggestion = f"运行: pip install {' '.join(missing_required)}"
-    
+        result.fix_suggestion = (
+            f"运行: pip-sync requirements.txt requirements-test.txt (核心+测试)\n"
+            f"    或: pip-sync requirements.txt requirements-dev.txt requirements-test.txt (完整开发环境)\n"
+            f"    或: pip install {' '.join(missing_required)}"
+        )
+
     if missing_optional:
         result.details.append(f"缺失可选依赖: {', '.join(missing_optional)}")
-    
+
     if result.passed:
         result.message = f"所有 {len(installed)} 个依赖已安装"
-    
+
     return result
 
 
-def check_module_imports(verbose: bool = False) -> CheckResult:
-    """递归导入项目所有 Python 模块"""
+def check_module_imports(verbose: bool = False, core_only: bool = False) -> CheckResult:
+    """递归导入项目所有 Python 模块
+
+    Args:
+        verbose: 是否显示详细信息
+        core_only: 是否仅检查核心模块（排除需要可选依赖的模块）
+    """
     result = CheckResult(name="模块导入检查", passed=True)
     import_errors = []
     successful_imports = []
-    
-    for module_name in PROJECT_MODULES:
+
+    # 根据 core_only 参数选择要检查的模块列表
+    modules_to_check = CORE_MODULES if core_only else PROJECT_MODULES
+    if core_only:
+        result.name = "核心模块导入检查"
+
+    for module_name in modules_to_check:
         module_path = PROJECT_ROOT / module_name
-        
+
         if not module_path.is_dir():
             print_debug(f"模块目录不存在: {module_name}/", verbose)
             continue
-        
+
         # 检查 __init__.py
         init_file = module_path / "__init__.py"
         if not init_file.exists():
             import_errors.append((module_name, "__init__.py 不存在"))
             continue
-        
+
         # 尝试导入主模块
         try:
             importlib.import_module(module_name)
@@ -428,23 +537,23 @@ def check_module_imports(verbose: bool = False) -> CheckResult:
             import_errors.append((module_name, str(e)))
             print_debug(f"导入失败: {module_name} - {e}", verbose)
             continue
-        
+
         # 递归导入所有子模块
         for py_file in module_path.rglob("*.py"):
             if py_file.name.startswith("_") and py_file.name != "__init__.py":
                 continue
-            
+
             # 构建模块路径
             relative_path = py_file.relative_to(PROJECT_ROOT)
             parts = list(relative_path.parts)
             parts[-1] = parts[-1].replace(".py", "")
-            
+
             # 跳过 __init__
             if parts[-1] == "__init__":
                 continue
-            
+
             full_module_name = ".".join(parts)
-            
+
             try:
                 importlib.import_module(full_module_name)
                 successful_imports.append(full_module_name)
@@ -452,10 +561,10 @@ def check_module_imports(verbose: bool = False) -> CheckResult:
             except Exception as e:
                 import_errors.append((full_module_name, str(e)))
                 print_debug(f"导入失败: {full_module_name} - {e}", verbose)
-    
+
     # 生成结果
     result.details.append(f"成功导入: {len(successful_imports)} 个模块")
-    
+
     if import_errors:
         result.passed = False
         result.message = f"{len(import_errors)} 个模块导入失败"
@@ -467,7 +576,7 @@ def check_module_imports(verbose: bool = False) -> CheckResult:
         result.fix_suggestion = "检查导入错误并修复语法/依赖问题"
     else:
         result.message = f"所有 {len(successful_imports)} 个模块导入成功"
-    
+
     return result
 
 
@@ -477,7 +586,7 @@ def check_critical_components(verbose: bool = False) -> CheckResult:
     missing_classes = []
     missing_functions = []
     found_components = []
-    
+
     # 检查关键类
     for module_name, class_name in CRITICAL_CLASSES:
         try:
@@ -490,7 +599,7 @@ def check_critical_components(verbose: bool = False) -> CheckResult:
                 print_debug(f"缺失类: {module_name}.{class_name}", verbose)
         except ImportError as e:
             missing_classes.append(f"{module_name}.{class_name} (导入失败: {e})")
-    
+
     # 检查关键函数
     for module_name, func_name in CRITICAL_FUNCTIONS:
         try:
@@ -503,24 +612,24 @@ def check_critical_components(verbose: bool = False) -> CheckResult:
                 print_debug(f"缺失函数: {module_name}.{func_name}", verbose)
         except ImportError as e:
             missing_functions.append(f"{module_name}.{func_name} (导入失败: {e})")
-    
+
     # 生成结果
     result.details.append(f"找到组件: {len(found_components)}")
-    
+
     if missing_classes or missing_functions:
         result.passed = False
         result.message = f"缺少 {len(missing_classes)} 个类, {len(missing_functions)} 个函数"
-        
+
         if missing_classes:
             result.details.append(f"缺失的类: {', '.join(missing_classes)}")
         if missing_functions:
             result.details.append(f"缺失的函数: {', '.join(missing_functions)}")
-        
+
         result.fix_suggestion = "检查 run.py 中的类和函数定义是否完整"
     else:
         total = len(CRITICAL_CLASSES) + len(CRITICAL_FUNCTIONS)
         result.message = f"所有 {total} 个关键组件存在"
-    
+
     return result
 
 
@@ -529,53 +638,53 @@ def check_smoke_test(verbose: bool = False) -> CheckResult:
     result = CheckResult(name="冒烟测试", passed=True)
     test_results = []
     errors = []
-    
+
     # 测试 1: Orchestrator 初始化
     try:
         from coordinator import Orchestrator, OrchestratorConfig
         from cursor.client import CursorAgentConfig
-        
+
         cursor_config = CursorAgentConfig(working_directory=str(PROJECT_ROOT))
         config = OrchestratorConfig(
             working_directory=str(PROJECT_ROOT),
             cursor_config=cursor_config,
         )
-        orchestrator = Orchestrator(config)
+        Orchestrator(config)
         test_results.append("Orchestrator 初始化成功")
         print_debug("Orchestrator 初始化成功", verbose)
     except Exception as e:
         errors.append(f"Orchestrator 初始化失败: {e}")
         print_debug(f"Orchestrator 初始化失败: {e}", verbose)
-    
+
     # 测试 2: MultiProcessOrchestrator 初始化
     try:
         from coordinator import MultiProcessOrchestrator, MultiProcessOrchestratorConfig
-        
-        config = MultiProcessOrchestratorConfig(
+
+        mp_config = MultiProcessOrchestratorConfig(
             working_directory=str(PROJECT_ROOT),
         )
-        mp_orchestrator = MultiProcessOrchestrator(config)
+        MultiProcessOrchestrator(mp_config)
         test_results.append("MultiProcessOrchestrator 初始化成功")
         print_debug("MultiProcessOrchestrator 初始化成功", verbose)
     except Exception as e:
         errors.append(f"MultiProcessOrchestrator 初始化失败: {e}")
         print_debug(f"MultiProcessOrchestrator 初始化失败: {e}", verbose)
-    
+
     # 测试 3: TaskQueue 初始化
     try:
         from tasks import TaskQueue
-        
-        queue = TaskQueue()
+
+        TaskQueue()
         test_results.append("TaskQueue 初始化成功")
         print_debug("TaskQueue 初始化成功", verbose)
     except Exception as e:
         errors.append(f"TaskQueue 初始化失败: {e}")
         print_debug(f"TaskQueue 初始化失败: {e}", verbose)
-    
+
     # 测试 4: Agent 初始化
     try:
-        from agents import Planner, Worker, Reviewer
-        
+        from agents import Planner, Reviewer, Worker
+
         # 只验证类存在，不实际初始化（需要配置）
         assert Planner is not None
         assert Worker is not None
@@ -585,11 +694,11 @@ def check_smoke_test(verbose: bool = False) -> CheckResult:
     except Exception as e:
         errors.append(f"Agent 类检查失败: {e}")
         print_debug(f"Agent 类检查失败: {e}", verbose)
-    
+
     # 测试 5: KnowledgeManager 初始化
     try:
         from knowledge import KnowledgeManager
-        
+
         # 只验证类存在
         assert KnowledgeManager is not None
         test_results.append("KnowledgeManager 类存在")
@@ -597,21 +706,21 @@ def check_smoke_test(verbose: bool = False) -> CheckResult:
     except Exception as e:
         # 知识库是可选的
         print_debug(f"KnowledgeManager 检查跳过: {e}", verbose)
-    
+
     # 测试 6: TaskAnalyzer 初始化
     try:
         from run import TaskAnalyzer
-        
-        analyzer = TaskAnalyzer(use_agent=False)  # 不使用 Agent 避免网络调用
+
+        TaskAnalyzer(use_agent=False)  # 不使用 Agent 避免网络调用
         test_results.append("TaskAnalyzer 初始化成功")
         print_debug("TaskAnalyzer 初始化成功", verbose)
     except Exception as e:
         errors.append(f"TaskAnalyzer 初始化失败: {e}")
         print_debug(f"TaskAnalyzer 初始化失败: {e}", verbose)
-    
+
     # 生成结果
     result.details.append(f"通过测试: {len(test_results)}")
-    
+
     if errors:
         result.passed = False
         result.message = f"{len(errors)} 个组件初始化失败"
@@ -621,7 +730,7 @@ def check_smoke_test(verbose: bool = False) -> CheckResult:
         result.fix_suggestion = "检查组件初始化代码和依赖关系"
     else:
         result.message = f"所有 {len(test_results)} 个组件初始化成功"
-    
+
     return result
 
 
@@ -630,27 +739,26 @@ def check_syntax(verbose: bool = False) -> CheckResult:
     result = CheckResult(name="语法检查", passed=True)
     syntax_errors = []
     checked_files = 0
-    
+
     for py_file in PROJECT_ROOT.rglob("*.py"):
         # 跳过不需要检查的目录
-        if any(part.startswith(".") or part == "__pycache__" or part == "venv" 
-               for part in py_file.parts):
+        if any(part.startswith(".") or part == "__pycache__" or part == "venv" for part in py_file.parts):
             continue
-        
+
         checked_files += 1
-        
+
         try:
-            with open(py_file, "r", encoding="utf-8") as f:
+            with open(py_file, encoding="utf-8") as f:
                 source = f.read()
             compile(source, str(py_file), "exec")
             print_debug(f"语法正确: {py_file.relative_to(PROJECT_ROOT)}", verbose)
         except SyntaxError as e:
             syntax_errors.append((py_file.relative_to(PROJECT_ROOT), e))
             print_debug(f"语法错误: {py_file.relative_to(PROJECT_ROOT)}", verbose)
-    
+
     # 生成结果
     result.details.append(f"检查文件: {checked_files}")
-    
+
     if syntax_errors:
         result.passed = False
         result.message = f"{len(syntax_errors)} 个文件有语法错误"
@@ -662,30 +770,39 @@ def check_syntax(verbose: bool = False) -> CheckResult:
         result.fix_suggestion = "修复语法错误后重新检查"
     else:
         result.message = f"所有 {checked_files} 个文件语法正确"
-    
+
     return result
 
 
-def verify_all_imports(verbose: bool = False) -> CheckResult:
+def verify_all_imports(verbose: bool = False, core_only: bool = False) -> CheckResult:
     """递归验证所有项目模块的导入
 
     该函数会：
-    1. 递归导入 agents/, coordinator/, core/, cursor/, knowledge/, tasks/ 下的所有模块
+    1. 递归导入指定目录下的所有模块
     2. 对 run.py 执行语法验证和导入测试
     3. 报告所有导入错误
+
+    Args:
+        verbose: 是否显示详细信息
+        core_only: 是否仅检查核心模块（排除需要可选依赖的模块）
     """
     result = CheckResult(name="完整导入验证", passed=True)
     import_errors: list[tuple[str, str]] = []
     successful_imports: list[str] = []
 
     # 需要验证的目录列表
-    target_dirs = ["agents", "coordinator", "core", "cursor", "knowledge", "tasks"]
+    # core_only 模式排除 indexing 和 knowledge（需要可选依赖）
+    if core_only:
+        target_dirs = ["agents", "coordinator", "core", "cursor", "tasks", "process"]
+        result.name = "核心模块完整导入验证"
+    else:
+        target_dirs = ["agents", "coordinator", "core", "cursor", "knowledge", "tasks", "indexing", "process"]
 
     # 1. 验证 run.py 语法
     run_py = PROJECT_ROOT / "run.py"
     if run_py.exists():
         try:
-            with open(run_py, "r", encoding="utf-8") as f:
+            with open(run_py, encoding="utf-8") as f:
                 source = f.read()
             compile(source, str(run_py), "exec")
             print_debug("run.py 语法验证通过", verbose)
@@ -790,22 +907,22 @@ def verify_all_imports(verbose: bool = False) -> CheckResult:
 
 def verify_run_modes(verbose: bool = False) -> CheckResult:
     """验证 run.py 的运行模式
-    
+
     验证内容：
     1. run.py --help 是否正常工作
     2. 循环验证所有模式：basic、mp、knowledge、iterate、auto、plan、ask
-    
+
     注意：模式列表需要与 .github/workflows/ci.yml 中的 MODES 变量保持一致
     """
     import subprocess
-    
+
     result = CheckResult(name="运行模式验证", passed=True)
     errors = []
     verified = []
-    
+
     # 需要验证的模式列表（与 ci.yml 保持一致）
     run_modes = ["basic", "mp", "knowledge", "iterate", "auto", "plan", "ask"]
-    
+
     # 1. 验证 run.py --help
     try:
         proc = subprocess.run(
@@ -815,11 +932,11 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
             timeout=30,
             cwd=str(PROJECT_ROOT),
         )
-        
+
         if proc.returncode == 0:
             verified.append("--help")
             print_debug("run.py --help 执行成功", verbose)
-            
+
             # 检查帮助信息中是否包含所有模式
             help_output = proc.stdout
             for mode in run_modes:
@@ -835,15 +952,17 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
     except Exception as e:
         errors.append(f"--help 执行异常: {e}")
         print_debug(f"run.py --help 执行异常: {e}", verbose)
-    
+
     # 2. 验证每个模式的可用性
     # 使用空任务来验证模式参数是否被接受（会返回错误但应该是"请提供任务描述"而不是参数错误）
     for mode in run_modes:
         try:
             proc = subprocess.run(
                 [
-                    sys.executable, str(PROJECT_ROOT / "run.py"),
-                    "--mode", mode,
+                    sys.executable,
+                    str(PROJECT_ROOT / "run.py"),
+                    "--mode",
+                    mode,
                     "--no-auto-analyze",
                     "",  # 空任务
                 ],
@@ -852,11 +971,11 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
                 timeout=15,
                 cwd=str(PROJECT_ROOT),
             )
-            
+
             # 检查输出
             # 期望的行为：要么成功，要么提示"请提供任务描述"
             output = proc.stdout + proc.stderr
-            
+
             # 如果是参数错误则失败
             if "invalid choice" in output.lower() or "unrecognized arguments" in output.lower():
                 errors.append(f"模式 '{mode}' 参数无效")
@@ -869,7 +988,7 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
                 # 其他情况也视为通过（可能是环境问题）
                 verified.append(f"--mode {mode}")
                 print_debug(f"模式 '{mode}' 验证通过 (returncode={proc.returncode})", verbose)
-                
+
         except subprocess.TimeoutExpired:
             # 超时可能是因为模式启动成功但在等待输入
             verified.append(f"--mode {mode} (超时)")
@@ -877,14 +996,14 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
         except Exception as e:
             errors.append(f"模式 '{mode}' 验证异常: {e}")
             print_debug(f"模式 '{mode}' 验证异常: {e}", verbose)
-    
+
     # 3. 验证 RunMode 枚举定义完整性
     try:
         from run import RunMode
-        
+
         expected_modes = {"basic", "iterate", "plan", "ask", "mp", "knowledge", "auto"}
         actual_modes = {m.value for m in RunMode}
-        
+
         missing_modes = expected_modes - actual_modes
         if missing_modes:
             errors.append(f"RunMode 枚举缺少模式: {missing_modes}")
@@ -895,11 +1014,11 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
     except ImportError as e:
         errors.append(f"无法导入 RunMode: {e}")
         print_debug(f"无法导入 RunMode: {e}", verbose)
-    
+
     # 生成结果
     result.details.append(f"验证通过: {len(verified)} 项")
     result.details.append(f"验证的模式: {', '.join(run_modes)}")
-    
+
     if errors:
         result.passed = False
         result.message = f"{len(errors)} 个运行模式验证失败"
@@ -915,7 +1034,7 @@ def verify_run_modes(verbose: bool = False) -> CheckResult:
         )
     else:
         result.message = f"所有 {len(verified)} 项运行模式验证通过"
-    
+
     return result
 
 
@@ -924,13 +1043,14 @@ def check_config_files(verbose: bool = False) -> CheckResult:
     result = CheckResult(name="配置文件检查", passed=True)
     errors = []
     checked = []
-    
+
     # 检查 config.yaml
     config_yaml = PROJECT_ROOT / "config.yaml"
     if config_yaml.exists():
         try:
             import yaml
-            with open(config_yaml, "r", encoding="utf-8") as f:
+
+            with open(config_yaml, encoding="utf-8") as f:
                 yaml.safe_load(f)
             checked.append("config.yaml")
             print_debug("config.yaml 格式正确", verbose)
@@ -938,34 +1058,36 @@ def check_config_files(verbose: bool = False) -> CheckResult:
             errors.append(f"config.yaml: {e}")
     else:
         errors.append("config.yaml 不存在")
-    
+
     # 检查 mcp.json
     mcp_json = PROJECT_ROOT / "mcp.json"
     if mcp_json.exists():
         try:
             import json
-            with open(mcp_json, "r", encoding="utf-8") as f:
+
+            with open(mcp_json, encoding="utf-8") as f:
                 json.load(f)
             checked.append("mcp.json")
             print_debug("mcp.json 格式正确", verbose)
         except Exception as e:
             errors.append(f"mcp.json: {e}")
-    
+
     # 检查 .cursor/cli.json
     cli_json = PROJECT_ROOT / ".cursor" / "cli.json"
     if cli_json.exists():
         try:
             import json
-            with open(cli_json, "r", encoding="utf-8") as f:
+
+            with open(cli_json, encoding="utf-8") as f:
                 json.load(f)
             checked.append(".cursor/cli.json")
             print_debug(".cursor/cli.json 格式正确", verbose)
         except Exception as e:
             errors.append(f".cursor/cli.json: {e}")
-    
+
     # 生成结果
     result.details.append(f"检查通过: {len(checked)} 个配置文件")
-    
+
     if errors:
         result.passed = False
         result.message = f"{len(errors)} 个配置文件有问题"
@@ -974,13 +1096,14 @@ def check_config_files(verbose: bool = False) -> CheckResult:
         result.fix_suggestion = "修复配置文件格式错误"
     else:
         result.message = f"所有 {len(checked)} 个配置文件格式正确"
-    
+
     return result
 
 
 # ============================================================
 # 主函数
 # ============================================================
+
 
 def _print_check_result(section: str, result: CheckResult, silent: bool) -> None:
     """打印检查结果（辅助函数）"""
@@ -995,78 +1118,99 @@ def _print_check_result(section: str, result: CheckResult, silent: bool) -> None
             print_info(detail)
 
 
-def run_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+def run_checks(
+    verbose: bool = False,
+    silent: bool = False,
+    core_only: bool = False,
+    req_files: Optional[list[str]] = None,
+) -> CheckReport:
     """运行所有检查
-    
+
     Args:
         verbose: 是否显示详细信息
         silent: 是否静默模式（不打印进度，用于 --json 输出）
+        core_only: 是否仅检查核心模块（排除需要可选依赖的模块）
+        req_files: 要检查的 requirements 文件列表
     """
     report = CheckReport()
-    
+
     if not silent:
         print_header("预提交检查")
         print(f"  项目路径: {PROJECT_ROOT}")
         print(f"  Python: {sys.version.split()[0]}")
-    
+        if core_only:
+            print("  模式: 核心模块检查（排除 indexing、knowledge）")
+        if req_files:
+            print(f"  依赖文件: {', '.join(req_files)}")
+
     # 1. 语法检查
     result = check_syntax(verbose)
     report.add(result)
     _print_check_result("1. 语法检查", result, silent)
-    
+
     # 2. 依赖检查
-    result = check_dependencies(verbose)
+    result = check_dependencies(verbose, req_files=req_files)
     report.add(result)
     _print_check_result("2. 依赖检查", result, silent)
-    
+
     # 3. 模块导入检查
-    result = check_module_imports(verbose)
+    result = check_module_imports(verbose, core_only=core_only)
     report.add(result)
     _print_check_result("3. 模块导入检查", result, silent)
-    
+
     # 4. 完整导入验证（verify_all_imports）
-    result = verify_all_imports(verbose)
+    result = verify_all_imports(verbose, core_only=core_only)
     report.add(result)
     _print_check_result("4. 完整导入验证", result, silent)
-    
+
     # 5. 关键组件检查
     result = check_critical_components(verbose)
     report.add(result)
     _print_check_result("5. 关键组件检查", result, silent)
-    
+
     # 6. 配置文件检查
     result = check_config_files(verbose)
     report.add(result)
     _print_check_result("6. 配置文件检查", result, silent)
-    
+
     # 7. 运行模式验证
     result = verify_run_modes(verbose)
     report.add(result)
     _print_check_result("7. 运行模式验证", result, silent)
-    
+
     # 8. 冒烟测试
     result = check_smoke_test(verbose)
     report.add(result)
     _print_check_result("8. 冒烟测试", result, silent)
-    
+
     return report
 
 
-def run_quick_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+def run_quick_checks(
+    verbose: bool = False,
+    silent: bool = False,
+    core_only: bool = False,
+    req_files: Optional[list[str]] = None,
+) -> CheckReport:
     """运行快速检查（仅语法和导入）
-    
+
     Args:
         verbose: 是否显示详细信息
         silent: 是否静默模式（不打印进度，用于 --json 输出）
+        core_only: 是否仅检查核心模块（排除需要可选依赖的模块）
+        req_files: 要检查的 requirements 文件列表
     """
     report = CheckReport()
-    
+
     if not silent:
         print_header("快速预提交检查")
         print(f"  项目路径: {PROJECT_ROOT}")
         print(f"  Python: {sys.version.split()[0]}")
-        print(f"  模式: 快速检查（仅语法和导入）")
-    
+        mode_desc = "快速检查（仅语法和导入）"
+        if core_only:
+            mode_desc += "，核心模块检查"
+        print(f"  模式: {mode_desc}")
+
     # 1. 语法检查
     if not silent:
         print_section("1. 语法检查")
@@ -1079,11 +1223,11 @@ def run_quick_checks(verbose: bool = False, silent: bool = False) -> CheckReport
             print_fail(result.message)
             for detail in result.details:
                 print_info(detail)
-    
+
     # 2. 模块导入检查
     if not silent:
         print_section("2. 模块导入检查")
-    result = check_module_imports(verbose)
+    result = check_module_imports(verbose, core_only=core_only)
     report.add(result)
     if not silent:
         if result.passed:
@@ -1092,11 +1236,11 @@ def run_quick_checks(verbose: bool = False, silent: bool = False) -> CheckReport
             print_fail(result.message)
             for detail in result.details:
                 print_info(detail)
-    
+
     # 3. 完整导入验证（verify_all_imports）
     if not silent:
         print_section("3. 完整导入验证")
-    result = verify_all_imports(verbose)
+    result = verify_all_imports(verbose, core_only=core_only)
     report.add(result)
     if not silent:
         if result.passed:
@@ -1105,31 +1249,35 @@ def run_quick_checks(verbose: bool = False, silent: bool = False) -> CheckReport
             print_fail(result.message)
             for detail in result.details:
                 print_info(detail)
-    
+
     return report
 
 
-def run_module_only_checks(verbose: bool = False, silent: bool = False) -> CheckReport:
+def run_module_only_checks(verbose: bool = False, silent: bool = False, core_only: bool = False) -> CheckReport:
     """仅运行模块导入检查（用于 CI 快速验证）
-    
+
     Args:
         verbose: 是否显示详细信息
         silent: 是否静默模式（不打印进度，用于 --json 输出）
+        core_only: 是否仅检查核心模块（排除需要可选依赖的模块）
     """
     report = CheckReport()
-    
+
     if not silent:
         print_header("模块导入检查")
         print(f"  项目路径: {PROJECT_ROOT}")
         print(f"  Python: {sys.version.split()[0]}")
-        print(f"  模式: 仅模块导入检查")
+        mode_desc = "仅模块导入检查"
+        if core_only:
+            mode_desc += "（核心模块，排除 indexing、knowledge）"
+        print(f"  模式: {mode_desc}")
         if is_ci_environment():
-            print(f"  环境: CI/GitHub Actions")
-    
+            print("  环境: CI/GitHub Actions")
+
     # 1. 完整导入验证（verify_all_imports）
     if not silent:
         print_section("1. 完整导入验证")
-    result = verify_all_imports(verbose)
+    result = verify_all_imports(verbose, core_only=core_only)
     report.add(result)
     if not silent:
         if result.passed:
@@ -1138,7 +1286,7 @@ def run_module_only_checks(verbose: bool = False, silent: bool = False) -> Check
             print_fail(result.message)
             for detail in result.details:
                 print_info(detail)
-    
+
     return report
 
 
@@ -1150,7 +1298,7 @@ def write_github_step_summary(report: CheckReport) -> None:
             with open(summary_path, "a", encoding="utf-8") as f:
                 f.write(report.to_markdown())
                 f.write("\n")
-            print_info(f"已写入 GitHub Step Summary")
+            print_info("已写入 GitHub Step Summary")
         except Exception as e:
             print_warn(f"无法写入 GitHub Step Summary: {e}")
 
@@ -1162,7 +1310,8 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="显示详细输出",
     )
@@ -1177,7 +1326,8 @@ def main() -> int:
         help="以 JSON 格式输出结果",
     )
     parser.add_argument(
-        "-q", "--quick",
+        "-q",
+        "--quick",
         action="store_true",
         help="快速检查模式（仅语法和导入）",
     )
@@ -1191,9 +1341,23 @@ def main() -> int:
         action="store_true",
         help="仅运行模块导入检查",
     )
-    
+    parser.add_argument(
+        "--core-only",
+        action="store_true",
+        help="仅检查核心模块（排除需要可选依赖的模块如 indexing、knowledge）",
+    )
+    parser.add_argument(
+        "--req-files",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "指定要检查的 requirements 文件列表，默认检查 requirements.txt, requirements-dev.txt, requirements-test.txt"
+        ),
+    )
+
     args = parser.parse_args()
-    
+
     # 检测 CI 环境或显式指定 --ci 参数时禁用颜色
     if args.ci or is_ci_environment():
         Colors.disable()
@@ -1205,28 +1369,30 @@ def main() -> int:
             sys.stderr.reconfigure(encoding="utf-8")
         except Exception:
             pass
-    
+
     # 记录开始时间
     start_time = datetime.now(timezone.utc)
-    
+
     try:
         # 根据模式选择检查范围
         # 在 --json 模式下使用静默模式，避免进度输出污染 JSON
         silent = args.json
+        core_only = args.core_only
+        req_files = args.req_files
         if args.module_only:
-            report = run_module_only_checks(verbose=args.verbose, silent=silent)
+            report = run_module_only_checks(verbose=args.verbose, silent=silent, core_only=core_only)
         elif args.quick:
-            report = run_quick_checks(verbose=args.verbose, silent=silent)
+            report = run_quick_checks(verbose=args.verbose, silent=silent, core_only=core_only, req_files=req_files)
         else:
-            report = run_checks(verbose=args.verbose, silent=silent)
-        
+            report = run_checks(verbose=args.verbose, silent=silent, core_only=core_only, req_files=req_files)
+
         # 计算退出码
         exit_code = 0 if report.all_passed else 1
-        
+
         # 计算结束时间
         end_time = datetime.now(timezone.utc)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
-        
+
         if args.json:
             output = {
                 "passed": report.all_passed,
@@ -1253,9 +1419,9 @@ def main() -> int:
             # 在 CI 环境中写入 GitHub Step Summary（仅非 JSON 模式）
             if is_ci_environment():
                 write_github_step_summary(report)
-        
+
         return exit_code
-        
+
     except KeyboardInterrupt:
         print("\n\n检查已中断")
         return 130

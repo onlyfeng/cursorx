@@ -5,6 +5,11 @@
 #   1. 编译 .in 文件生成锁定的 .txt 文件
 #   2. 检测依赖不一致问题
 #   3. 验证 pyproject.toml 与 requirements.in 同步
+#
+# 注意:
+#   锁文件生成基准环境: Python 3.11
+#   所有 compile/upgrade 操作必须在 Python 3.11 环境下执行，
+#   以确保 CI 验证和本地生成的一致性，避免跨版本漂移。
 # ============================================================
 
 set -e
@@ -16,21 +21,65 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# 锁文件生成基准 Python 版本
+REQUIRED_PYTHON_VERSION="3.11"
+
 # 项目根目录
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
+
+# 检查 Python 版本是否为基准版本
+check_python_version() {
+    local current_version
+    current_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
+    
+    if [[ "$current_version" != "$REQUIRED_PYTHON_VERSION" ]]; then
+        echo -e "${RED}[错误] 当前 Python 版本: $current_version${NC}"
+        echo -e "${RED}[错误] 锁文件生成需要 Python $REQUIRED_PYTHON_VERSION${NC}"
+        echo ""
+        echo -e "${YELLOW}请使用以下方式切换到 Python $REQUIRED_PYTHON_VERSION:${NC}"
+        echo -e "  1. pyenv: ${BLUE}pyenv shell $REQUIRED_PYTHON_VERSION${NC}"
+        echo -e "  2. conda: ${BLUE}conda activate py${REQUIRED_PYTHON_VERSION//.}${NC}"
+        echo -e "  3. venv:  ${BLUE}python$REQUIRED_PYTHON_VERSION -m venv .venv && source .venv/bin/activate${NC}"
+        echo ""
+        echo -e "${YELLOW}或者设置环境变量跳过检查（不推荐，可能导致 CI 不一致）:${NC}"
+        echo -e "  ${BLUE}SKIP_PYTHON_VERSION_CHECK=1 $0 $*${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}[OK] Python 版本检查通过: $current_version${NC}"
+    return 0
+}
+
+# 编译/升级前检查 Python 版本（除非 SKIP_PYTHON_VERSION_CHECK=1）
+require_python_version() {
+    if [[ "${SKIP_PYTHON_VERSION_CHECK:-}" == "1" ]]; then
+        echo -e "${YELLOW}[警告] 跳过 Python 版本检查 (SKIP_PYTHON_VERSION_CHECK=1)${NC}"
+        echo -e "${YELLOW}[警告] 生成的锁文件可能与 CI 不一致${NC}"
+        return 0
+    fi
+    
+    check_python_version
+}
 
 # 帮助信息
 show_help() {
     echo "用法: $0 [命令]"
     echo ""
     echo "命令:"
-    echo "  compile     编译 .in 文件生成锁定的 .txt 文件"
+    echo "  compile     编译 .in 文件生成锁定的 .txt 文件 (需要 Python $REQUIRED_PYTHON_VERSION)"
     echo "  check       检查依赖一致性"
-    echo "  upgrade     升级所有依赖到最新版本"
+    echo "  upgrade     升级所有依赖到最新版本 (需要 Python $REQUIRED_PYTHON_VERSION)"
     echo "  sync        同步安装依赖到当前环境"
     echo "  audit       运行安全审计"
     echo "  help        显示帮助信息"
+    echo ""
+    echo "环境变量:"
+    echo "  SKIP_PYTHON_VERSION_CHECK=1  跳过 Python 版本检查（不推荐）"
+    echo ""
+    echo "注意:"
+    echo "  compile/upgrade 操作需要 Python $REQUIRED_PYTHON_VERSION 环境，"
+    echo "  以确保生成的锁文件与 CI 一致。"
     echo ""
     echo "示例:"
     echo "  $0 compile   # 编译锁定文件"
@@ -50,6 +99,9 @@ check_pip_tools() {
 compile_requirements() {
     echo -e "${BLUE}[INFO] 编译依赖锁定文件...${NC}"
     
+    # 检查 Python 版本（确保使用基准版本 3.11）
+    require_python_version || return 1
+    
     check_pip_tools
     
     # 编译核心依赖
@@ -64,12 +116,21 @@ compile_requirements() {
     echo -e "${BLUE}[INFO] 编译 requirements-test.txt...${NC}"
     pip-compile requirements-test.in -o requirements-test.txt --quiet --strip-extras
     
+    # 编译 ML 测试依赖（如果存在）
+    if [[ -f "requirements-test-ml.in" ]]; then
+        echo -e "${BLUE}[INFO] 编译 requirements-test-ml.txt...${NC}"
+        pip-compile requirements-test-ml.in -o requirements-test-ml.txt --quiet --strip-extras
+    fi
+    
     echo -e "${GREEN}[成功] 所有锁定文件已生成${NC}"
 }
 
 # 升级依赖
 upgrade_requirements() {
     echo -e "${BLUE}[INFO] 升级依赖到最新版本...${NC}"
+    
+    # 检查 Python 版本（确保使用基准版本 3.11）
+    require_python_version || return 1
     
     check_pip_tools
     
@@ -84,6 +145,12 @@ upgrade_requirements() {
     # 升级测试依赖
     echo -e "${BLUE}[INFO] 升级 requirements-test.txt...${NC}"
     pip-compile requirements-test.in -o requirements-test.txt --upgrade --quiet --strip-extras
+    
+    # 升级 ML 测试依赖（如果存在）
+    if [[ -f "requirements-test-ml.in" ]]; then
+        echo -e "${BLUE}[INFO] 升级 requirements-test-ml.txt...${NC}"
+        pip-compile requirements-test-ml.in -o requirements-test-ml.txt --upgrade --quiet --strip-extras
+    fi
     
     echo -e "${GREEN}[成功] 所有依赖已升级${NC}"
 }
@@ -171,6 +238,11 @@ check_consistency() {
             echo -e "${YELLOW}[警告] 锁定文件不存在: $file (运行 '$0 compile' 生成)${NC}"
         fi
     done
+    
+    # 检查 ML 测试锁定文件（如果源文件存在）
+    if [[ -f "requirements-test-ml.in" ]] && [[ ! -f "requirements-test-ml.txt" ]]; then
+        echo -e "${YELLOW}[警告] 锁定文件不存在: requirements-test-ml.txt (运行 '$0 compile' 生成)${NC}"
+    fi
     
     # 检查 pyproject.toml 与 requirements.in 的核心依赖
     echo -e "${BLUE}[INFO] 检查 pyproject.toml 与 requirements.in 同步...${NC}"
@@ -261,6 +333,14 @@ check_consistency() {
             fi
         fi
     done
+    
+    # 检查 ML 测试锁定文件是否过期（如果存在）
+    if [[ -f "requirements-test-ml.in" ]] && [[ -f "requirements-test-ml.txt" ]]; then
+        if [[ "requirements-test-ml.in" -nt "requirements-test-ml.txt" ]]; then
+            echo -e "${YELLOW}[警告] requirements-test-ml.txt 可能已过期 (源文件 requirements-test-ml.in 更新)${NC}"
+            has_error=1
+        fi
+    fi
     
     if [[ $has_error -eq 0 ]]; then
         echo -e "${GREEN}[成功] 依赖一致性检查通过${NC}"

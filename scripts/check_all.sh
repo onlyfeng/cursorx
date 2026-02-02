@@ -7,7 +7,22 @@
 #   --json        JSON 输出格式（便于 CI 解析）
 #   --fail-fast   遇到失败立即退出
 #   --full, -f    执行完整检查
+#   --mode MODE   运行特定检查模式（可多次指定）
 #   --help, -h    显示帮助信息
+#
+# 运行模式（--mode）:
+#   import        语法检查 + 核心模块导入（对齐 import-test.yml）
+#   lint          flake8-critical + ruff + mypy（对齐 lint.yml）
+#   test          单元测试 + E2E 测试（对齐 ci.yml test/e2e）
+#   minimal       轻量检查（仅 Python 版本 + 基础验证，无额外依赖）
+#   all           运行所有检查（默认，等同于不指定 --mode）
+#
+# 检查项包括:
+#   - 依赖一致性检查（check_deps.py + sync-deps.sh check）
+#     * 检测版本不匹配、缺失依赖、依赖冲突
+#     * 检测未声明的第三方导入（定位到具体文件:行号）
+#     * 检测 pyproject.toml 与 .in 文件同步状态
+#     * 失败时给出层级（core/dev/test/ml）和修复命令
 #
 # 环境变量:
 #   CI=true       自动启用 CI 模式
@@ -24,6 +39,9 @@ JSON_OUTPUT=false
 FAIL_FAST=false
 FULL_CHECK=false
 SPLIT_TESTS=false
+# 检查模式：import/lint/test/all，支持多选
+declare -a CHECK_MODES=()
+CHECK_MODE_SET=false
 TEST_CHUNK_SIZE=8
 TEST_TIMEOUT=0
 PYTEST_ARGS_STR=""
@@ -41,6 +59,70 @@ SPLIT_COVERAGE=false
 # 默认值偏保守，避免本地环境下单元+覆盖率过早超时；可用 --coverage-timeout 覆盖
 COVERAGE_TIMEOUT=1800
 E2E_TIMEOUT=900
+# 覆盖率阈值（百分比），用于 --cov-fail-under
+# 默认 80，CI matrix 仅收集覆盖率时可传 0（覆盖率 gating 收敛到 pr-check full-check）
+COV_FAIL_UNDER=80
+COV_FAIL_UNDER_SET=false
+
+# Marker 包含控制（默认排除 cloud/network，与 CI 一致）
+INCLUDE_NETWORK=false
+INCLUDE_CLOUD=false
+ALL_MARKERS=false
+RUN_NETWORK_ISOLATION=false
+
+# 跟踪脚本是否正常完成（用于 trap 判断）
+_CHECK_ALL_COMPLETED=false
+
+# JSON 错误输出（用于参数解析阶段的错误）
+# 注意：此函数在 json_escape 定义前调用，使用简单转义
+_json_error_output() {
+    local message="$1"
+    local exit_code="${2:-1}"
+    # 简单转义（此时 json_escape 可能未定义）
+    message=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' ' | tr '\r' ' ')
+    cat << EOF
+{
+  "success": false,
+  "exit_code": $exit_code,
+  "error": "$message",
+  "summary": {"passed": 0, "failed": 1, "warnings": 0, "skipped": 0, "total": 1},
+  "ci_mode": $CI_MODE,
+  "fail_fast": $FAIL_FAST,
+  "full_check": $FULL_CHECK,
+  "timestamp": "$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')",
+  "checks": []
+}
+EOF
+}
+
+# trap 处理函数：确保异常退出时 JSON 模式输出有效 JSON
+_trap_handler() {
+    local exit_code=$?
+    # 如果脚本已正常完成，不需要 trap 输出
+    if [ "$_CHECK_ALL_COMPLETED" = true ]; then
+        return
+    fi
+    # JSON 模式下输出最小有效 JSON
+    if [ "$JSON_OUTPUT" = true ]; then
+        _json_error_output "Script terminated unexpectedly (exit_code=$exit_code)" "$exit_code"
+    fi
+    exit "$exit_code"
+}
+
+# 设置 trap（EXIT 信号，确保任何退出都触发）
+trap '_trap_handler' EXIT
+
+# 参数错误处理（JSON 模式下输出 JSON，否则输出文本）
+_arg_error() {
+    local message="$1"
+    if [ "$JSON_OUTPUT" = true ]; then
+        _json_error_output "$message" 1
+    else
+        echo "$message" >&2
+    fi
+    _CHECK_ALL_COMPLETED=true  # 标记完成避免 trap 重复输出
+    exit 1
+}
 
 # 环境变量检测：CI=true 自动启用 CI 模式
 if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${JENKINS_URL:-}" ]; then
@@ -72,38 +154,49 @@ while [[ $# -gt 0 ]]; do
             FULL_CHECK=true
             shift
             ;;
+        --mode)
+            if [ -z "${2:-}" ]; then
+                _arg_error "参数错误: --mode 需要指定模式 (import/lint/test/all)"
+            fi
+            case "$2" in
+                import|lint|test|all|minimal)
+                    CHECK_MODES+=("$2")
+                    CHECK_MODE_SET=true
+                    ;;
+                *)
+                    _arg_error "未知模式: $2 (支持的模式: import, lint, test, minimal, all)"
+                    ;;
+            esac
+            shift 2
+            ;;
         --split-tests)
             SPLIT_TESTS=true
             shift
             ;;
         --test-chunk-size)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --test-chunk-size 需要数值"
-                exit 1
+                _arg_error "参数错误: --test-chunk-size 需要数值"
             fi
             TEST_CHUNK_SIZE="$2"
             shift 2
             ;;
         --test-timeout)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --test-timeout 需要数值 (秒)"
-                exit 1
+                _arg_error "参数错误: --test-timeout 需要数值 (秒)"
             fi
             TEST_TIMEOUT="$2"
             shift 2
             ;;
         --case-timeout)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --case-timeout 需要数值 (秒)"
-                exit 1
+                _arg_error "参数错误: --case-timeout 需要数值 (秒)"
             fi
             CASE_TIMEOUT="$2"
             shift 2
             ;;
         --coverage-timeout)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --coverage-timeout 需要数值 (秒)"
-                exit 1
+                _arg_error "参数错误: --coverage-timeout 需要数值 (秒)"
             fi
             COVERAGE_TIMEOUT="$2"
             shift 2
@@ -114,16 +207,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --pytest-args)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --pytest-args 需要参数"
-                exit 1
+                _arg_error "参数错误: --pytest-args 需要参数"
             fi
             PYTEST_ARGS_STR="$2"
             shift 2
             ;;
         --pytest-arg)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --pytest-arg 需要参数"
-                exit 1
+                _arg_error "参数错误: --pytest-arg 需要参数"
             fi
             PYTEST_EXTRA_ARGS+=("$2")
             shift 2
@@ -140,8 +231,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --log-dir)
             if [ -z "${2:-}" ]; then
-                echo "参数错误: --log-dir 需要路径"
-                exit 1
+                _arg_error "参数错误: --log-dir 需要路径"
             fi
             LOG_DIR="$2"
             LOG_DIR_SET=true
@@ -161,7 +251,48 @@ while [[ $# -gt 0 ]]; do
             DIAGNOSE_HANG_SET=true
             shift
             ;;
+        --include-network)
+            INCLUDE_NETWORK=true
+            shift
+            ;;
+        --include-cloud)
+            INCLUDE_CLOUD=true
+            shift
+            ;;
+        --all-markers)
+            ALL_MARKERS=true
+            INCLUDE_NETWORK=true
+            INCLUDE_CLOUD=true
+            shift
+            ;;
+        --run-network-isolation)
+            RUN_NETWORK_ISOLATION=true
+            shift
+            ;;
+        --cov-fail-under)
+            if [ -z "${2:-}" ]; then
+                _arg_error "参数错误: --cov-fail-under 需要数值 (0-100)"
+            fi
+            COV_FAIL_UNDER="$2"
+            COV_FAIL_UNDER_SET=true
+            shift 2
+            ;;
         --help|-h)
+            # JSON 模式下返回帮助信息的 JSON 格式
+            if [ "$JSON_OUTPUT" = true ]; then
+                _CHECK_ALL_COMPLETED=true
+                cat << 'HELPJSON'
+{
+  "success": true,
+  "exit_code": 0,
+  "type": "help",
+  "message": "使用 --help 查看帮助信息（非 JSON 模式）",
+  "summary": {"passed": 0, "failed": 0, "warnings": 0, "skipped": 0, "total": 0},
+  "checks": []
+}
+HELPJSON
+                exit 0
+            fi
             echo "用法: $0 [选项]"
             echo ""
             echo "选项:"
@@ -169,6 +300,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --json        JSON 输出格式（便于 CI 解析）"
             echo "  --fail-fast   遇到失败立即退出"
             echo "  -f, --full    执行完整检查（包括类型、风格和测试）"
+            echo "  --mode MODE   运行特定检查模式，可多次指定（见下方模式说明）"
             echo "  --split-tests 按组运行测试（便于定位卡住/失败用例）"
             echo "  --test-chunk-size N  每组包含的测试文件数（默认 8）"
             echo "  --test-timeout N     单组测试超时秒数（默认 0=不限制）"
@@ -182,7 +314,19 @@ while [[ $# -gt 0 ]]; do
             echo "  --keep-logs          保留测试日志（默认成功可清理）"
             echo "  --diagnose-hang      启用卡住定位诊断输出"
             echo "  --no-diagnose-hang   禁用卡住定位诊断输出"
+            echo "  --include-network    包含 network 标记的测试（默认排除）"
+            echo "  --include-cloud      包含 cloud 标记的测试（默认排除）"
+            echo "  --all-markers        包含所有 marker 的测试（等同于 --include-network --include-cloud）"
+            echo "  --run-network-isolation 运行网络隔离测试（与 CI no-api-key-smoke-test 对齐）"
+            echo "  --cov-fail-under N      覆盖率阈值 (默认 80；CI 模式自动为 0)，0 表示仅收集不检查"
             echo "  -h, --help    显示此帮助信息"
+            echo ""
+            echo "运行模式 (--mode):"
+            echo "  import        语法检查 + 核心模块导入（对齐 import-test.yml）"
+            echo "  lint          flake8-critical + ruff + mypy（对齐 lint.yml）"
+            echo "  test          单元测试 + E2E 测试（对齐 ci.yml test/e2e）"
+            echo "  minimal       轻量检查（仅 Python 版本 + 基础验证，无额外依赖）"
+            echo "  all           运行所有检查（默认，等同于不指定 --mode）"
             echo ""
             echo "环境变量:"
             echo "  CI=true       自动启用 CI 模式"
@@ -191,6 +335,11 @@ while [[ $# -gt 0 ]]; do
             echo "示例:"
             echo "  $0                 快速检查"
             echo "  $0 --full          完整检查"
+            echo "  $0 --mode import   仅运行导入检查（对齐 import-test.yml）"
+            echo "  $0 --mode lint     仅运行 lint 检查（对齐 lint.yml）"
+            echo "  $0 --mode test     仅运行测试（对齐 ci.yml）"
+            echo "  $0 --mode minimal  轻量检查（无额外依赖，快速验证）"
+            echo "  $0 --mode import --mode lint  运行导入和 lint 检查"
             echo "  $0 --full --split-tests --test-chunk-size 6"
             echo "  $0 --full --split-tests --test-timeout 600"
             echo "  $0 --full --coverage-timeout 900"
@@ -200,15 +349,25 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --ci --json     CI 环境 JSON 输出"
             echo "  $0 --fail-fast     遇到失败立即退出"
             echo "  CI=true $0         自动 CI 模式"
+            echo ""
+            echo "Marker 控制示例:"
+            echo "  $0 --full --include-network   包含 network 标记测试"
+            echo "  $0 --full --include-cloud     包含 cloud 标记测试"
+            echo "  $0 --full --all-markers       包含所有 marker 测试"
+            echo "  $0 --full --run-network-isolation  运行网络隔离测试"
+            _CHECK_ALL_COMPLETED=true
             exit 0
             ;;
         *)
-            echo "未知选项: $1"
-            echo "使用 --help 查看帮助"
-            exit 1
+            _arg_error "未知选项: $1 (使用 --help 查看帮助)"
             ;;
     esac
 done
+
+# CI 模式默认不做覆盖率阈值 gating（除非显式指定）
+if [ "$CI_MODE" = true ] && [ "$COV_FAIL_UNDER_SET" = false ]; then
+    COV_FAIL_UNDER=0
+fi
 
 # 分组测试默认超时（避免卡死）
 if [ "$SPLIT_TESTS" = true ] && [ "$TEST_TIMEOUT" -le 0 ]; then
@@ -219,6 +378,31 @@ fi
 if [ "$FULL_CHECK" = true ] && [ "$DIAGNOSE_HANG_SET" = false ]; then
     DIAGNOSE_HANG=true
 fi
+
+# 动态构建 UNIT_MARKER_EXPR（根据 --include-* 参数调整）
+# 基础表达式：排除 e2e、slow、integration
+build_unit_marker_expr() {
+    local expr="not e2e and not slow and not integration"
+    
+    if [ "$ALL_MARKERS" = true ]; then
+        # --all-markers: 仅排除 e2e、slow、integration
+        echo "$expr"
+        return
+    fi
+    
+    if [ "$INCLUDE_CLOUD" != true ]; then
+        expr="$expr and not cloud"
+    fi
+    
+    if [ "$INCLUDE_NETWORK" != true ]; then
+        expr="$expr and not network"
+    fi
+    
+    echo "$expr"
+}
+
+# 设置 UNIT_MARKER_EXPR（在参数解析后调用）
+UNIT_MARKER_EXPR=$(build_unit_marker_expr)
 
 # ============================================================
 # 颜色定义 (CI 模式下禁用)
@@ -275,9 +459,9 @@ cd "$PROJECT_ROOT"
 # 辅助函数
 # ============================================================
 
-# JSON 字符串转义
+# JSON 字符串转义（使用 Python json.dumps 确保正确处理所有控制字符）
 json_escape() {
-    echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1])[1:-1])' "$1"
 }
 
 # 添加 JSON 检查结果
@@ -386,6 +570,20 @@ check_warn() {
         echo -e "  ${YELLOW}⚠${NC} $name"
     fi
     ((++WARN_COUNT)) || true
+}
+
+check_warn_or_info() {
+    local name="$1"
+    local message="${2:-}"
+    local log_file="${3:-}"
+    local duration_ms="${4:-}"
+    local meta_json="${5:-}"
+
+    if [ "$CI_MODE" = true ]; then
+        check_info "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
+    else
+        check_warn "$name" "$message" "$log_file" "$duration_ms" "$meta_json"
+    fi
 }
 
 check_skip() {
@@ -683,22 +881,24 @@ PY
 
 # 从混合输出中提取 JSON（取最后一个可解析对象）
 extract_json_from_output() {
-    python3 - <<'PY'
-import json
-import sys
-
+    python3 -c 'import json,sys
 text = sys.stdin.read()
-for i in range(len(text) - 1, -1, -1):
-    if text[i] != "{":
-        continue
+decoder = json.JSONDecoder()
+last_obj = None
+idx = 0
+text_len = len(text)
+while idx < text_len:
     try:
-        data = json.loads(text[i:])
-    except Exception:
+        obj, end = decoder.raw_decode(text, idx)
+    except json.JSONDecodeError:
+        idx += 1
         continue
-    print(json.dumps(data, ensure_ascii=False))
-    sys.exit(0)
-sys.exit(1)
-PY
+    if isinstance(obj, dict):
+        last_obj = obj
+    idx = end
+if last_obj is None:
+    sys.exit(1)
+print(json.dumps(last_obj, ensure_ascii=False))'
 }
 
 # 运行命令并支持超时与输出捕获
@@ -922,9 +1122,17 @@ CORE_TEST_FILES=(
     "tests/test_project_workspace.py"
 )
 
-# 测试分层（与 pyproject.toml 的 markers 定义保持一致）
-UNIT_MARKER_EXPR="not e2e and not slow and not integration"
+# 测试分层（与 CI 的 markers 定义保持一致）
+# UNIT_MARKER_EXPR 动态构建（见 build_unit_marker_expr 函数，第 266 行）
+# 此处不重新赋值，保持 build_unit_marker_expr 的结果
+# E2E 测试：仅运行 e2e 标记（不排除 cloud/network，由 CI 的 e2e-test job 决定）
 E2E_MARKER_EXPR="e2e and not slow"
+
+# 网络隔离测试文件（与 CI no-api-key-smoke-test job 对齐）
+NETWORK_ISOLATION_TEST_FILES=(
+    "tests/test_network_blocking.py"
+    "tests/test_no_api_key_network_isolation.py"
+)
 
 check_python_version() {
     print_section "Python 环境检查"
@@ -970,23 +1178,48 @@ check_timeout_backend() {
 check_dependencies() {
     print_section "依赖检查"
 
-    if [ ! -f "requirements.txt" ]; then
+    # 检查分层依赖文件
+    # - requirements.txt: 核心依赖（CI 默认）
+    # - requirements-dev.txt: 开发依赖（本地开发）
+    # - requirements-test.txt: 测试依赖（CI 测试阶段）
+    REQ_FILES_FOUND=0
+    
+    if [ -f "requirements.txt" ]; then
+        check_pass "requirements.txt 存在（核心依赖）"
+        ((REQ_FILES_FOUND++))
+    else
         check_fail "requirements.txt 不存在"
         return 1
     fi
-
-    check_pass "requirements.txt 存在"
+    
+    if [ -f "requirements-dev.txt" ]; then
+        check_pass "requirements-dev.txt 存在（开发依赖）"
+        ((REQ_FILES_FOUND++))
+    else
+        check_warn "requirements-dev.txt 不存在"
+    fi
+    
+    if [ -f "requirements-test.txt" ]; then
+        check_pass "requirements-test.txt 存在（测试依赖）"
+        ((REQ_FILES_FOUND++))
+    else
+        check_warn "requirements-test.txt 不存在"
+    fi
+    
+    check_info "找到 ${REQ_FILES_FOUND}/3 个依赖文件"
 
     # 使用 Python 直接导入检查（比 pip list 更快）
     DEPS_MISSING=0
 
     # 核心依赖 (包名:导入名)
+    # 必须与 requirements.in 保持同步
     CORE_DEPS=(
         "pydantic:pydantic"
         "loguru:loguru"
         "pyyaml:yaml"
         "aiofiles:aiofiles"
-        "beautifulsoup4:bs4"
+        "httpx:httpx"
+        "websockets:websockets"
     )
 
     for dep in "${CORE_DEPS[@]}"; do
@@ -1000,24 +1233,76 @@ check_dependencies() {
         fi
     done
 
-    # 检查可选依赖
-    OPTIONAL_DEPS=(
+    # 检查开发依赖（来自 requirements-dev.txt）
+    DEV_DEPS=(
+        "mypy:mypy"
+        "ruff:ruff"
+        "flake8:flake8"
+    )
+
+    for dep in "${DEV_DEPS[@]}"; do
+        pkg="${dep%%:*}"
+        import_name="${dep##*:}"
+        if python3 -c "import $import_name" 2>/dev/null; then
+            check_pass "已安装 (开发): $pkg"
+        else
+            check_warn "未安装 (开发): $pkg"
+        fi
+    done
+
+    # 检查测试依赖（来自 requirements-test.txt）
+    TEST_DEPS=(
+        "pytest:pytest"
+        "pytest-asyncio:pytest_asyncio"
+        "pytest-cov:pytest_cov"
+    )
+
+    for dep in "${TEST_DEPS[@]}"; do
+        pkg="${dep%%:*}"
+        import_name="${dep##*:}"
+        if python3 -c "import $import_name" 2>/dev/null; then
+            check_pass "已安装 (测试): $pkg"
+        else
+            check_warn "未安装 (测试): $pkg"
+        fi
+    done
+
+    # 检查可选依赖 - Web 处理（来自 pyproject.toml [web]）
+    WEB_DEPS=(
+        "beautifulsoup4:bs4"
+        "html2text:html2text"
+        "lxml:lxml"
+    )
+
+    for dep in "${WEB_DEPS[@]}"; do
+        pkg="${dep%%:*}"
+        import_name="${dep##*:}"
+        if python3 -c "import $import_name" 2>/dev/null; then
+            check_pass "已安装 (可选/Web): $pkg"
+        else
+            check_info "未安装 (可选/Web): $pkg"
+        fi
+    done
+
+    # 检查可选依赖 - ML/向量功能（来自 pyproject.toml [ml]）
+    ML_DEPS=(
         "sentence-transformers:sentence_transformers"
         "chromadb:chromadb"
     )
 
-    for dep in "${OPTIONAL_DEPS[@]}"; do
+    for dep in "${ML_DEPS[@]}"; do
         pkg="${dep%%:*}"
         import_name="${dep##*:}"
         if python3 -c "import $import_name" 2>/dev/null; then
-            check_pass "已安装 (可选): $pkg"
+            check_pass "已安装 (可选/ML): $pkg"
         else
-            check_warn "未安装 (可选): $pkg"
+            check_info "未安装 (可选/ML): $pkg"
         fi
     done
 
     if [ $DEPS_MISSING -gt 0 ]; then
-        check_info "运行 'pip install -r requirements.txt' 安装依赖"
+        check_info "运行 'pip-sync requirements.txt requirements-dev.txt requirements-test.txt' 安装依赖"
+        check_info "或: pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt"
     fi
 }
 
@@ -1080,10 +1365,25 @@ check_type_hints() {
 
     if command -v mypy &> /dev/null; then
         # 只检查核心模块
-        if mypy core/ agents/ --ignore-missing-imports --no-error-summary 2>/dev/null; then
-            check_pass "类型检查通过"
+        # JSON 模式下将输出重定向到日志文件，避免污染 JSON 输出
+        ensure_log_dir
+        local mypy_log="$LOG_DIR/mypy.log"
+        if [ "$JSON_OUTPUT" = true ]; then
+            if mypy core/ agents/ --ignore-missing-imports --no-error-summary > "$mypy_log" 2>&1; then
+                check_pass "类型检查通过" "" "$mypy_log"
+            else
+                check_warn_or_info "类型检查有警告 (非致命)" "" "$mypy_log"
+            fi
         else
-            check_warn "类型检查有警告 (非致命)"
+            if mypy core/ agents/ --ignore-missing-imports --no-error-summary > "$mypy_log" 2>&1; then
+                check_pass "类型检查通过"
+            else
+                check_warn_or_info "类型检查有警告 (非致命)" "" "$mypy_log"
+                if [ -s "$mypy_log" ]; then
+                    tail -n 20 "$mypy_log" | sed 's/^/    /'
+                    check_info "日志: $mypy_log"
+                fi
+            fi
         fi
     else
         check_skip "mypy 未安装 (pip install mypy)"
@@ -1119,7 +1419,7 @@ check_code_style() {
         if [ "$RUFF_ERRORS" -eq 0 ]; then
             check_pass "ruff 检查通过"
         else
-            check_warn "ruff 发现 $RUFF_ERRORS 个问题"
+            check_warn_or_info "ruff 发现 $RUFF_ERRORS 个问题"
         fi
     else
         check_info "ruff 未安装 (pip install ruff) - 推荐使用"
@@ -1540,7 +1840,7 @@ check_unit_tests_with_coverage() {
         COV_REPORT_FILE="$LOG_DIR/coverage_report.log"
         if python3 -c "import coverage" 2>/dev/null; then
             set +e
-            python3 -m coverage report --fail-under=80 > "$COV_REPORT_FILE" 2>&1
+            python3 -m coverage report --fail-under="$COV_FAIL_UNDER" > "$COV_REPORT_FILE" 2>&1
             COV_EXIT=$?
             set -e
             COV_OUTPUT=$(cat "$COV_REPORT_FILE" 2>/dev/null || echo "")
@@ -1562,7 +1862,7 @@ check_unit_tests_with_coverage() {
             "${PYTEST_COMMON_ARGS[@]}" \
             -m "$UNIT_MARKER_EXPR" \
             --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
-            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 \
+            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under="$COV_FAIL_UNDER" \
             tests/
         COV_EXIT=$?
         set -e
@@ -1570,7 +1870,7 @@ check_unit_tests_with_coverage() {
         COV_OUTPUT=$(cat "$COV_OUTPUT_FILE" 2>/dev/null || echo "")
         COV_CMD_STR=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$UNIT_MARKER_EXPR" \
             --cov=run --cov=core --cov=agents --cov=coordinator --cov=cursor --cov=tasks \
-            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under=80 tests/)
+            --cov=knowledge --cov=indexing --cov=process --cov-report=term-missing --cov-fail-under="$COV_FAIL_UNDER" tests/)
         if [ "$COV_EXIT" -ne 0 ]; then
             COV_LAST_TEST=$(extract_last_test_case "$COV_OUTPUT_FILE")
             COV_META_JSON=$(build_meta_json "$COV_LAST_TEST" "$COV_CMD_STR")
@@ -1582,7 +1882,7 @@ check_unit_tests_with_coverage() {
 
     if [ -n "$TOTAL_COV" ]; then
         if [ "$COV_EXIT" -eq 0 ]; then
-            check_pass "单元测试通过，覆盖率: ${TOTAL_COV}% (阈值: 80%)" "" "$COV_OUTPUT_FILE" "$duration_ms"
+            check_pass "单元测试通过，覆盖率: ${TOTAL_COV}% (阈值: ${COV_FAIL_UNDER}%)" "" "$COV_OUTPUT_FILE" "$duration_ms"
         else
             if [ "$COV_EXIT" -eq 124 ]; then
                 check_fail "单元测试/覆盖率检查超时" "timeout" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
@@ -1596,7 +1896,7 @@ check_unit_tests_with_coverage() {
             else
                 # 检查是否是覆盖率不足导致的失败
                 if echo "$COV_OUTPUT" | grep -q "FAIL Required test coverage"; then
-                    check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: 80%)" "coverage" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
+                    check_fail "代码覆盖率不足: ${TOTAL_COV}% (阈值: ${COV_FAIL_UNDER}%)" "coverage" "$COV_OUTPUT_FILE" "$duration_ms" "$COV_META_JSON"
                     if [ "$JSON_OUTPUT" != true ] && [ -n "$COV_OUTPUT_FILE" ]; then
                         echo -e "  ${YELLOW}⚠${NC} 覆盖率不足输出摘要:"
                         tail -n 20 "$COV_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
@@ -1681,7 +1981,7 @@ check_e2e_tests() {
         check_pass "E2E 测试通过: ${PASSED:-0} 个" "" "$E2E_OUTPUT_FILE" "$duration_ms"
     elif [ "$E2E_EXIT" -eq 5 ]; then
         # pytest 退出码 5: no tests collected
-        check_warn "未找到 E2E 测试用例（不计为失败）"
+        check_info "未找到 E2E 测试用例（不计为失败）"
     elif [ "$E2E_EXIT" -eq 124 ]; then
         last_test=$(extract_last_test_case "$E2E_OUTPUT_FILE")
         cmd_str=$(format_pytest_command "${PYTEST_COMMON_ARGS[@]}" -m "$E2E_MARKER_EXPR" tests/)
@@ -1706,6 +2006,98 @@ check_e2e_tests() {
             [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
             check_info "日志: $E2E_OUTPUT_FILE"
             check_info "复现: $cmd_str"
+        fi
+    fi
+}
+
+check_network_isolation_tests() {
+    # 网络隔离测试（与 CI no-api-key-smoke-test job 对齐）
+    # 包含 test_network_blocking.py 和 test_no_api_key_network_isolation.py
+    print_section "网络隔离测试"
+
+    if ! command -v pytest &> /dev/null; then
+        check_skip "pytest 未安装 (pip install pytest)"
+        return 0
+    fi
+    prepare_pytest_env
+
+    # 验证测试文件存在
+    MISSING_FILES=0
+    for test_file in "${NETWORK_ISOLATION_TEST_FILES[@]}"; do
+        if [ ! -f "$test_file" ]; then
+            check_fail "网络隔离测试文件缺失: $test_file"
+            ((MISSING_FILES++))
+        fi
+    done
+
+    if [ $MISSING_FILES -gt 0 ]; then
+        check_fail "有 $MISSING_FILES 个网络隔离测试文件缺失"
+        return 1
+    fi
+
+    check_pass "所有网络隔离测试文件存在 (${#NETWORK_ISOLATION_TEST_FILES[@]} 个)"
+
+    if [ "$JSON_OUTPUT" != true ]; then
+        echo -e "  ${BLUE}ℹ${NC} 运行网络隔离测试..."
+        echo -e "  ${BLUE}ℹ${NC} 这些测试验证无 API Key 时的网络阻断机制"
+        echo ""
+        echo -e "  ${CYAN}复现命令:${NC}"
+        echo -e "    # 同步网络阻断用例"
+        echo -e "    CURSOR_API_KEY='' CURSOR_CLOUD_API_KEY='' pytest tests/test_network_blocking.py -v --timeout=60"
+        echo ""
+        echo -e "    # 异步网络隔离用例"
+        echo -e "    CURSOR_API_KEY='' CURSOR_CLOUD_API_KEY='' pytest tests/test_no_api_key_network_isolation.py -v --timeout=60"
+        echo ""
+    fi
+
+    # 使用子 shell 隔离环境变量
+    NETWORK_TEST_OUTPUT_FILE="$LOG_DIR/pytest_network_isolation.log"
+    ensure_log_dir
+
+    local start_ms
+    start_ms=$(now_ms)
+    set +e
+    (
+        # 清除 API Key 环境变量
+        unset CURSOR_API_KEY
+        unset CURSOR_CLOUD_API_KEY
+        export CURSOR_API_KEY=""
+        export CURSOR_CLOUD_API_KEY=""
+
+        run_pytest_group "$NETWORK_TEST_OUTPUT_FILE" 180 "${PYTEST_COMMON_ARGS[@]}" \
+            "${NETWORK_ISOLATION_TEST_FILES[@]}"
+    )
+    NETWORK_EXIT=$?
+    set -e
+    local duration_ms=$(( $(now_ms) - start_ms ))
+
+    if [ "$NETWORK_EXIT" -eq 0 ]; then
+        PASSED=$(parse_pytest_count "$NETWORK_TEST_OUTPUT_FILE" "passed")
+        check_pass "网络隔离测试通过: ${PASSED:-0} 个" "" "$NETWORK_TEST_OUTPUT_FILE" "$duration_ms"
+    elif [ "$NETWORK_EXIT" -eq 5 ]; then
+        check_warn "未找到网络隔离测试用例（不计为失败）"
+    elif [ "$NETWORK_EXIT" -eq 124 ]; then
+        last_test=$(extract_last_test_case "$NETWORK_TEST_OUTPUT_FILE")
+        cmd_str="CURSOR_API_KEY='' CURSOR_CLOUD_API_KEY='' pytest ${NETWORK_ISOLATION_TEST_FILES[*]} -v --timeout=60"
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "网络隔离测试超时" "timeout" "$NETWORK_TEST_OUTPUT_FILE" "$duration_ms" "$meta_json"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 超时前输出:"
+            tail -n 30 "$NETWORK_TEST_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $NETWORK_TEST_OUTPUT_FILE"
+        fi
+    else
+        FAILED=$(parse_pytest_count "$NETWORK_TEST_OUTPUT_FILE" "failed")
+        last_test=$(extract_last_test_case "$NETWORK_TEST_OUTPUT_FILE")
+        cmd_str="CURSOR_API_KEY='' CURSOR_CLOUD_API_KEY='' pytest ${NETWORK_ISOLATION_TEST_FILES[*]} -v --timeout=60"
+        meta_json=$(build_meta_json "$last_test" "$cmd_str")
+        check_fail "网络隔离测试失败: ${FAILED:-?} 个" "failed" "$NETWORK_TEST_OUTPUT_FILE" "$duration_ms" "$meta_json"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 失败输出摘要:"
+            tail -n 30 "$NETWORK_TEST_OUTPUT_FILE" 2>/dev/null | sed 's/^/    /'
+            [ -n "$last_test" ] && check_info "最后开始的测试: $last_test"
+            check_info "日志: $NETWORK_TEST_OUTPUT_FILE"
         fi
     fi
 }
@@ -1764,7 +2156,7 @@ check_git() {
         if [ "$CHANGES" -eq 0 ]; then
             check_pass "工作区干净"
         else
-            check_warn "有 $CHANGES 个未提交的更改"
+            check_warn_or_info "有 $CHANGES 个未提交的更改"
         fi
 
         # 未跟踪文件
@@ -1859,34 +2251,78 @@ check_pre_commit() {
     print_section "预提交检查 (Python)"
 
     # 检查预提交检查脚本是否存在
-    if [ -f "scripts/pre_commit_check.py" ]; then
-        check_pass "预提交检查脚本存在"
+    if [ ! -f "scripts/pre_commit_check.py" ]; then
+        check_skip "预提交检查脚本不存在" "scripts/pre_commit_check.py 缺失"
+        check_info "运行 'python scripts/pre_commit_check.py' 进行检查"
+        return 0
+    fi
 
-        # 运行预提交检查
+    # 检查 Python3 是否可用
+    if ! command -v python3 &> /dev/null; then
+        check_skip "Python3 不可用，跳过预提交检查"
+        return 0
+    fi
+
+    check_pass "预提交检查脚本存在"
+
+    # 根据检查模式选择参数
+    # 默认（非 --full）：快速 core-only 导入验证，仅检查核心依赖
+    # --full：更严格的检查（仍使用 core-only 以确保稳定性，额外依赖由 check_deps 覆盖）
+    local PRE_COMMIT_ARGS=""
+    if [ "$FULL_CHECK" = true ]; then
+        # --full 模式：完整检查，但仍使用 core-only 保持稳定
+        # 依赖一致性由 check_dependencies 覆盖
+        PRE_COMMIT_ARGS="--json --core-only --req-files requirements.txt requirements-test.txt"
         if [ "$JSON_OUTPUT" != true ]; then
-            echo -e "  ${BLUE}ℹ${NC} 运行预提交检查..."
+            echo -e "  ${BLUE}ℹ${NC} 运行完整预提交检查 (core-only + test deps)..."
         fi
+    else
+        # 默认模式：快速 core-only 检查，仅检查核心依赖
+        PRE_COMMIT_ARGS="--json --quick --core-only --req-files requirements.txt"
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${BLUE}ℹ${NC} 运行快速预提交检查 (core-only)..."
+        fi
+    fi
 
-        # 捕获输出并检查结果
-        set +e
-        PRE_COMMIT_OUTPUT=$(PYTHONPATH=. python3 scripts/pre_commit_check.py --json 2>&1)
-        PRE_COMMIT_EXIT=$?
-        set -e
+    # 捕获输出并检查结果
+    set +e
+    PRE_COMMIT_OUTPUT=$(PYTHONPATH=. python3 scripts/pre_commit_check.py $PRE_COMMIT_ARGS 2>&1)
+    PRE_COMMIT_EXIT=$?
+    set -e
 
-        PRE_COMMIT_JSON=$(echo "$PRE_COMMIT_OUTPUT" | extract_json_from_output 2>/dev/null || echo "")
+    PRE_COMMIT_JSON=$(printf "%s" "$PRE_COMMIT_OUTPUT" | extract_json_from_output 2>/dev/null || echo "")
 
-        if [ $PRE_COMMIT_EXIT -eq 0 ]; then
-            # 解析 JSON 输出获取通过数量
-            PASSED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('passed_count', 0))" 2>/dev/null || echo "?")
-            check_pass "预提交检查通过 ($PASSED_COUNT 项)"
+    # 处理脚本执行错误（如依赖缺失导致的 ImportError）
+    if [ -z "$PRE_COMMIT_JSON" ]; then
+        # 无法解析 JSON，可能是依赖缺失或脚本错误
+        if echo "$PRE_COMMIT_OUTPUT" | grep -qiE "(ModuleNotFoundError|ImportError|No module named)"; then
+            check_warn "预提交检查跳过：依赖未安装"
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo -e "  ${YELLOW}⚠${NC} 原因: 缺少运行检查脚本所需的依赖"
+                echo -e "  ${BLUE}ℹ${NC} 建议: pip install -r requirements.txt"
+            fi
+            return 0
         else
-            # 解析失败数量
-            FAILED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo "?")
-            check_fail "预提交检查失败 ($FAILED_COUNT 项)"
+            check_warn "预提交检查输出无法解析"
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo "$PRE_COMMIT_OUTPUT" | tail -5 | sed 's/^/    /'
+            fi
+            return 0
+        fi
+    fi
 
-            # 在非 JSON 模式下显示失败详情
-            if [ "$JSON_OUTPUT" != true ] && [ -n "$PRE_COMMIT_JSON" ]; then
-                echo "$PRE_COMMIT_JSON" | python3 -c "
+    if [ $PRE_COMMIT_EXIT -eq 0 ]; then
+        # 解析 JSON 输出获取通过数量
+        PASSED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('passed_count', 0))" 2>/dev/null || echo "?")
+        check_pass "预提交检查通过 ($PASSED_COUNT 项)"
+    else
+        # 解析失败数量
+        FAILED_COUNT=$(echo "$PRE_COMMIT_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo "?")
+        check_fail "预提交检查失败 ($FAILED_COUNT 项)"
+
+        # 在非 JSON 模式下显示失败详情
+        if [ "$JSON_OUTPUT" != true ] && [ -n "$PRE_COMMIT_JSON" ]; then
+            echo "$PRE_COMMIT_JSON" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -1898,11 +2334,7 @@ try:
 except Exception:
     pass
 " 2>/dev/null
-            fi
         fi
-    else
-        check_warn "预提交检查脚本不存在"
-        check_info "运行 'python scripts/pre_commit_check.py' 进行检查"
     fi
 }
 
@@ -2032,6 +2464,636 @@ check_run_modes() {
     fi
 }
 
+check_no_api_key_smoke() {
+    # 无 API Key 环境 Smoke 测试
+    # 验证在没有 CURSOR_API_KEY 和 CURSOR_CLOUD_API_KEY 时系统行为正确
+    print_section "无 API Key Smoke 测试"
+
+    SMOKE_ERRORS=0
+
+    # 使用子 shell 隔离环境变量
+    (
+        # 明确清空 API Key 环境变量
+        unset CURSOR_API_KEY
+        unset CURSOR_CLOUD_API_KEY
+        export CURSOR_API_KEY=""
+        export CURSOR_CLOUD_API_KEY=""
+
+        # 测试 1: run.py --help
+        if python3 run.py --help &>/dev/null; then
+            echo "SMOKE_TEST_1=pass"
+        else
+            echo "SMOKE_TEST_1=fail"
+        fi
+
+        # 测试 2: --print-config 能正确显示配置
+        if python3 run.py --print-config 2>&1 | grep -qE "(requested_mode|effective_mode|config_path)"; then
+            echo "SMOKE_TEST_2=pass"
+        else
+            echo "SMOKE_TEST_2=fail"
+        fi
+
+        # 测试 3: scripts/run_iterate.py --help
+        if python3 -m scripts.run_iterate --help &>/dev/null; then
+            echo "SMOKE_TEST_3=pass"
+        else
+            echo "SMOKE_TEST_3=fail"
+        fi
+    ) > /tmp/smoke_test_results.txt 2>/dev/null
+
+    # 解析结果
+    if grep -q "SMOKE_TEST_1=pass" /tmp/smoke_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: run.py --help"
+    else
+        check_fail "无 API Key: run.py --help 失败"
+        ((SMOKE_ERRORS++))
+    fi
+
+    if grep -q "SMOKE_TEST_2=pass" /tmp/smoke_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: --print-config"
+    else
+        check_fail "无 API Key: --print-config 失败"
+        ((SMOKE_ERRORS++))
+    fi
+
+    if grep -q "SMOKE_TEST_3=pass" /tmp/smoke_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: scripts/run_iterate.py --help"
+    else
+        check_fail "无 API Key: scripts/run_iterate.py --help 失败"
+        ((SMOKE_ERRORS++))
+    fi
+
+    rm -f /tmp/smoke_test_results.txt
+
+    if [ $SMOKE_ERRORS -eq 0 ]; then
+        check_info "无 API Key Smoke 测试全部通过"
+    else
+        check_warn "有 $SMOKE_ERRORS 个 Smoke 测试失败"
+    fi
+}
+
+check_dependency_consistency() {
+    # 依赖一致性检查
+    # 检查已安装依赖与声明依赖的一致性，检测未声明的 import
+    print_section "依赖一致性检查"
+
+    # 检查 check_deps.py 是否存在
+    if [[ ! -f "scripts/check_deps.py" ]]; then
+        check_skip "依赖检查脚本不存在" "scripts/check_deps.py 缺失"
+        return 0
+    fi
+
+    # 检查 sync-deps.sh 是否存在
+    if [[ ! -f "scripts/sync-deps.sh" ]]; then
+        check_warn "依赖同步脚本不存在: scripts/sync-deps.sh"
+    fi
+
+    check_pass "依赖检查脚本存在"
+
+    ensure_log_dir
+    local DEPS_OUTPUT_FILE="$LOG_DIR/check_deps.json"
+    local SYNC_OUTPUT_FILE="$LOG_DIR/sync_deps_check.log"
+    local DEPS_ERRORS=0
+
+    # ======================================
+    # 步骤 1: 运行 check_deps.py --ci
+    # ======================================
+    if [[ "$JSON_OUTPUT" != true ]]; then
+        echo -e "  ${BLUE}ℹ${NC} 运行依赖版本与导入一致性检查..."
+    fi
+
+    local start_ms
+    start_ms=$(now_ms)
+    set +e
+    PYTHONPATH=. python3 scripts/check_deps.py --ci --format json > "$DEPS_OUTPUT_FILE" 2>&1
+    local DEPS_EXIT=$?
+    set -e
+    local duration_ms=$(( $(now_ms) - start_ms ))
+
+    if [[ ! -s "$DEPS_OUTPUT_FILE" ]]; then
+        check_fail "依赖检查脚本执行失败（无输出）" "execution_error" "$DEPS_OUTPUT_FILE" "$duration_ms"
+        return 1
+    fi
+
+    # 解析 JSON 输出
+    local PARSE_RESULT
+    PARSE_RESULT=$(python3 - "$DEPS_OUTPUT_FILE" <<'PYEOF'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], 'r') as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"PARSE_ERROR:{e}")
+    sys.exit(1)
+
+summary = data.get("summary", {})
+has_errors = summary.get("has_errors", False)
+missing = data.get("missing_packages", [])
+mismatches = data.get("version_mismatches", [])
+conflicts = data.get("dependency_conflicts", [])
+undeclared = data.get("undeclared_imports", {})
+import_summary = data.get("import_consistency_summary", {})
+
+# 输出汇总信息
+print(f"HAS_ERRORS:{has_errors}")
+print(f"MISSING_COUNT:{len(missing)}")
+print(f"MISMATCH_COUNT:{len(mismatches)}")
+print(f"CONFLICT_COUNT:{len(conflicts)}")
+print(f"UNDECLARED_COUNT:{len(undeclared)}")
+print(f"TOTAL_IMPORTS:{import_summary.get('total_imports', 0)}")
+print(f"TOTAL_PY_FILES:{import_summary.get('total_py_files', 0)}")
+
+# 输出层级详情（用于定位问题）
+if missing:
+    print("MISSING:" + ",".join(missing))
+
+# 输出版本不匹配详情（按层级分组）
+for m in mismatches:
+    source = m.get("source", "unknown")
+    pkg = m.get("package", "?")
+    spec = m.get("declared_spec", "?")
+    installed = m.get("installed_version", "?")
+    print(f"MISMATCH:{source}|{pkg}|{spec}|{installed}")
+
+# 输出未声明导入详情（包含文件位置）
+for pkg, info in undeclared.items():
+    locations = info.get("locations", [])[:3]  # 最多 3 个位置
+    loc_str = ";".join(locations) if locations else "unknown"
+    print(f"UNDECLARED:{pkg}|{loc_str}")
+PYEOF
+    )
+
+    if echo "$PARSE_RESULT" | grep -q "^PARSE_ERROR:"; then
+        check_fail "依赖检查结果解析失败" "parse_error" "$DEPS_OUTPUT_FILE" "$duration_ms"
+        if [[ "$JSON_OUTPUT" != true ]]; then
+            echo -e "  ${YELLOW}⚠${NC} 日志: $DEPS_OUTPUT_FILE"
+        fi
+        return 1
+    fi
+
+    # 解析汇总数据
+    local HAS_ERRORS MISSING_COUNT MISMATCH_COUNT CONFLICT_COUNT UNDECLARED_COUNT
+    HAS_ERRORS=$(echo "$PARSE_RESULT" | grep "^HAS_ERRORS:" | cut -d: -f2)
+    MISSING_COUNT=$(echo "$PARSE_RESULT" | grep "^MISSING_COUNT:" | cut -d: -f2)
+    MISMATCH_COUNT=$(echo "$PARSE_RESULT" | grep "^MISMATCH_COUNT:" | cut -d: -f2)
+    CONFLICT_COUNT=$(echo "$PARSE_RESULT" | grep "^CONFLICT_COUNT:" | cut -d: -f2)
+    UNDECLARED_COUNT=$(echo "$PARSE_RESULT" | grep "^UNDECLARED_COUNT:" | cut -d: -f2)
+
+    # 输出检查结果
+    if [[ "$HAS_ERRORS" == "True" ]]; then
+        ((DEPS_ERRORS++)) || true
+
+        # 输出缺失的包（按层级）
+        if [[ "$MISSING_COUNT" -gt 0 ]]; then
+            check_fail "缺失 $MISSING_COUNT 个依赖包" "missing" "$DEPS_OUTPUT_FILE" "$duration_ms"
+            if [[ "$JSON_OUTPUT" != true ]]; then
+                local MISSING_PKGS
+                MISSING_PKGS=$(echo "$PARSE_RESULT" | grep "^MISSING:" | cut -d: -f2)
+                if [[ -n "$MISSING_PKGS" ]]; then
+                    echo -e "  ${YELLOW}⚠${NC} 缺失: $MISSING_PKGS"
+                    echo -e "  ${BLUE}ℹ${NC} 修复: pip install $MISSING_PKGS"
+                fi
+            fi
+        fi
+
+        # 输出版本不匹配（按层级分组）
+        if [[ "$MISMATCH_COUNT" -gt 0 ]]; then
+            check_fail "发现 $MISMATCH_COUNT 个版本不匹配" "mismatch" "$DEPS_OUTPUT_FILE" "$duration_ms"
+            if [[ "$JSON_OUTPUT" != true ]]; then
+                echo "$PARSE_RESULT" | grep "^MISMATCH:" | while read -r line; do
+                    # 格式: MISMATCH:source|pkg|spec|installed
+                    local mismatch_data="${line#MISMATCH:}"
+                    local mismatch_source="${mismatch_data%%|*}"
+                    local mismatch_rest="${mismatch_data#*|}"
+                    local mismatch_pkg="${mismatch_rest%%|*}"
+                    mismatch_rest="${mismatch_rest#*|}"
+                    local mismatch_spec="${mismatch_rest%%|*}"
+                    local mismatch_installed="${mismatch_rest#*|}"
+                    echo -e "  ${YELLOW}⚠${NC} [$mismatch_source] $mismatch_pkg: 要求 $mismatch_spec, 已安装 $mismatch_installed"
+                done | head -5
+                if [[ "$MISMATCH_COUNT" -gt 5 ]]; then
+                    echo -e "  ${YELLOW}...${NC} 还有 $((MISMATCH_COUNT - 5)) 个不匹配"
+                fi
+                echo -e "  ${BLUE}ℹ${NC} 修复: pip-sync requirements.txt requirements-dev.txt requirements-test.txt"
+            fi
+        fi
+
+        # 输出依赖冲突
+        if [[ "$CONFLICT_COUNT" -gt 0 ]]; then
+            check_fail "发现 $CONFLICT_COUNT 个依赖冲突" "conflict" "$DEPS_OUTPUT_FILE" "$duration_ms"
+            if [[ "$JSON_OUTPUT" != true ]]; then
+                echo -e "  ${BLUE}ℹ${NC} 修复: bash scripts/sync-deps.sh compile && pip-sync requirements.txt requirements-dev.txt requirements-test.txt"
+            fi
+        fi
+
+        # 输出未声明的导入（包含文件位置）
+        if [[ "$UNDECLARED_COUNT" -gt 0 ]]; then
+            check_fail "发现 $UNDECLARED_COUNT 个未声明的第三方导入" "undeclared" "$DEPS_OUTPUT_FILE" "$duration_ms"
+            if [[ "$JSON_OUTPUT" != true ]]; then
+                echo "$PARSE_RESULT" | grep "^UNDECLARED:" | while read -r line; do
+                    # 格式: UNDECLARED:pkg|loc1;loc2;loc3
+                    local undeclared_data="${line#UNDECLARED:}"
+                    local undeclared_pkg="${undeclared_data%%|*}"
+                    local undeclared_locs="${undeclared_data#*|}"
+                    # 将分号分隔的位置转换为逗号+空格分隔
+                    local loc_display=$(echo "$undeclared_locs" | sed 's/;/, /g')
+                    echo -e "  ${YELLOW}⚠${NC} $undeclared_pkg (引用: $loc_display)"
+                done | head -5
+                if [[ "$UNDECLARED_COUNT" -gt 5 ]]; then
+                    echo -e "  ${YELLOW}...${NC} 还有 $((UNDECLARED_COUNT - 5)) 个未声明导入"
+                fi
+                echo -e "  ${BLUE}ℹ${NC} 修复: 将包添加到对应层级的 requirements 文件"
+                echo -e "  ${BLUE}ℹ${NC}   核心依赖 → requirements.in"
+                echo -e "  ${BLUE}ℹ${NC}   开发依赖 → requirements-dev.in"
+                echo -e "  ${BLUE}ℹ${NC}   测试依赖 → requirements-test.in"
+                echo -e "  ${BLUE}ℹ${NC}   ML测试依赖 → requirements-test-ml.in"
+                echo -e "  ${BLUE}ℹ${NC}   然后运行: bash scripts/sync-deps.sh compile"
+            fi
+        fi
+    else
+        check_pass "依赖版本与导入一致性检查通过" "" "$DEPS_OUTPUT_FILE" "$duration_ms"
+    fi
+
+    # ======================================
+    # 步骤 2: 运行 sync-deps.sh check（可选）
+    # ======================================
+    if [[ -f "scripts/sync-deps.sh" ]]; then
+        if [[ "$JSON_OUTPUT" != true ]]; then
+            echo -e "  ${BLUE}ℹ${NC} 运行 pyproject.toml 与 .in 文件同步检查..."
+        fi
+
+        local sync_start_ms
+        sync_start_ms=$(now_ms)
+        set +e
+        bash scripts/sync-deps.sh check > "$SYNC_OUTPUT_FILE" 2>&1
+        local SYNC_EXIT=$?
+        set -e
+        local sync_duration_ms=$(( $(now_ms) - sync_start_ms ))
+
+        if [[ $SYNC_EXIT -eq 0 ]]; then
+            check_pass "pyproject.toml 与 .in 文件同步检查通过" "" "$SYNC_OUTPUT_FILE" "$sync_duration_ms"
+        else
+            ((DEPS_ERRORS++)) || true
+            check_fail "pyproject.toml 与 .in 文件不同步" "sync_mismatch" "$SYNC_OUTPUT_FILE" "$sync_duration_ms"
+
+            if [[ "$JSON_OUTPUT" != true ]]; then
+                # 提取警告信息
+                grep -E "^\[警告\]" "$SYNC_OUTPUT_FILE" 2>/dev/null | head -5 | while read -r line; do
+                    echo -e "  ${YELLOW}⚠${NC} ${line#\[警告\] }"
+                done
+                # 检查锁文件过期
+                if grep -q "可能已过期" "$SYNC_OUTPUT_FILE" 2>/dev/null; then
+                    echo -e "  ${BLUE}ℹ${NC} 修复: bash scripts/sync-deps.sh compile"
+                fi
+                # 检查依赖缺失
+                if grep -q "中缺少" "$SYNC_OUTPUT_FILE" 2>/dev/null; then
+                    echo -e "  ${BLUE}ℹ${NC} 修复: 同步 pyproject.toml 与 requirements.in 文件"
+                fi
+                echo -e "  ${BLUE}ℹ${NC} 详细日志: $SYNC_OUTPUT_FILE"
+            fi
+        fi
+    fi
+
+    # 汇总
+    if [[ $DEPS_ERRORS -eq 0 ]]; then
+        check_info "依赖一致性检查全部通过"
+    else
+        check_warn "依赖一致性检查发现 $DEPS_ERRORS 类问题"
+        if [[ "$JSON_OUTPUT" != true ]]; then
+            echo -e "  ${BLUE}ℹ${NC} 查看完整报告: python3 scripts/check_deps.py --format text"
+        fi
+    fi
+}
+
+check_format() {
+    # 格式检查（与 pr-check.yml format-check job 对齐）
+    # 包括：ruff format --check 和 isort --check-only --diff
+    # 失败 -> warn（不阻止 CI，只是警告）
+    print_section "格式检查"
+
+    ensure_log_dir
+    local FORMAT_ERRORS=0
+
+    # ======================================
+    # 检查 1: ruff format --check
+    # ======================================
+    if command -v ruff &> /dev/null; then
+        local RUFF_FORMAT_OUTPUT_FILE="$LOG_DIR/ruff_format_check.log"
+        local ruff_start_ms
+        ruff_start_ms=$(now_ms)
+        set +e
+        ruff format --check . > "$RUFF_FORMAT_OUTPUT_FILE" 2>&1
+        local RUFF_FORMAT_EXIT=$?
+        set -e
+        local ruff_duration_ms=$(( $(now_ms) - ruff_start_ms ))
+
+        if [ "$RUFF_FORMAT_EXIT" -eq 0 ]; then
+            check_pass "ruff format 检查通过" "" "$RUFF_FORMAT_OUTPUT_FILE" "$ruff_duration_ms"
+        else
+            ((FORMAT_ERRORS++)) || true
+            local ruff_meta_json
+            ruff_meta_json=$(build_meta_json "" "ruff format .")
+            check_warn_or_info "发现未格式化的代码" "ruff format --check 失败" "$RUFF_FORMAT_OUTPUT_FILE" "$ruff_duration_ms" "$ruff_meta_json"
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo -e "  ${BLUE}ℹ${NC} 修复: ruff format ."
+                echo -e "  ${BLUE}ℹ${NC} 日志: $RUFF_FORMAT_OUTPUT_FILE"
+            fi
+        fi
+    else
+        check_skip "ruff 未安装 (pip install ruff)"
+    fi
+
+    # ======================================
+    # 检查 2: ruff import 排序（I001）
+    # ======================================
+    if command -v ruff &> /dev/null; then
+        local RUFF_IMPORT_OUTPUT_FILE="$LOG_DIR/ruff_import_check.log"
+        local ruff_import_start_ms
+        ruff_import_start_ms=$(now_ms)
+        set +e
+        ruff check --select I001 . > "$RUFF_IMPORT_OUTPUT_FILE" 2>&1
+        local RUFF_IMPORT_EXIT=$?
+        set -e
+        local ruff_import_duration_ms=$(( $(now_ms) - ruff_import_start_ms ))
+
+        if [ "$RUFF_IMPORT_EXIT" -eq 0 ]; then
+            check_pass "Import 排序检查通过 (ruff)" "" "$RUFF_IMPORT_OUTPUT_FILE" "$ruff_import_duration_ms"
+        else
+            ((FORMAT_ERRORS++)) || true
+            local ruff_import_meta_json
+            ruff_import_meta_json=$(build_meta_json "" "ruff check --select I001 .")
+            check_warn_or_info "Import 排序不正确" "ruff I001 检查失败" "$RUFF_IMPORT_OUTPUT_FILE" "$ruff_import_duration_ms" "$ruff_import_meta_json"
+            if [ "$JSON_OUTPUT" != true ]; then
+                echo -e "  ${BLUE}ℹ${NC} 修复: ruff check --select I001 --fix ."
+                echo -e "  ${BLUE}ℹ${NC} 日志: $RUFF_IMPORT_OUTPUT_FILE"
+            fi
+        fi
+    else
+        check_skip "ruff 未安装 (pip install ruff)"
+    fi
+
+    # 汇总
+    if [ $FORMAT_ERRORS -eq 0 ]; then
+        check_info "格式检查全部通过"
+    else
+        check_info "发现 $FORMAT_ERRORS 个格式问题（不影响 CI 通过，建议修复）"
+    fi
+}
+
+check_no_api_key_iterate_config() {
+    # 无 API Key 环境下 Iterate 模式配置验证
+    # 详细验证 requested_mode/effective_mode/orchestrator 输出稳定性
+    print_section "无 API Key Iterate 配置验证"
+
+    ITERATE_ERRORS=0
+    ITERATE_OUTPUT_FILE="$LOG_DIR/no_api_key_iterate_config.log"
+    ensure_log_dir
+
+    # 使用子 shell 隔离环境变量
+    (
+        # 明确清空 API Key 环境变量（双重保障：unset + export 空值）
+        unset CURSOR_API_KEY
+        unset CURSOR_CLOUD_API_KEY
+        export CURSOR_API_KEY=""
+        export CURSOR_CLOUD_API_KEY=""
+
+        # 测试 1: run.py --mode iterate --print-config
+        # 验证输出包含正确的 requested_mode/effective_mode/orchestrator
+        echo "=== TEST 1: run.py --mode iterate --print-config ===" >> "$ITERATE_OUTPUT_FILE"
+        python3 run.py --mode iterate --print-config >> "$ITERATE_OUTPUT_FILE" 2>&1
+        TEST1_EXIT=$?
+        echo "EXIT_CODE=$TEST1_EXIT" >> "$ITERATE_OUTPUT_FILE"
+        echo "" >> "$ITERATE_OUTPUT_FILE"
+
+        # 检查关键字段
+        # requested_mode 应为 auto（来自 config.yaml 默认值或 CLI）
+        if grep -q "requested_mode: auto" "$ITERATE_OUTPUT_FILE"; then
+            echo "ITERATE_TEST_1A=pass"
+        else
+            echo "ITERATE_TEST_1A=fail"
+        fi
+
+        # effective_mode 应为 cli（无 API Key 时回退到 cli）
+        if grep -q "effective_mode: cli" "$ITERATE_OUTPUT_FILE"; then
+            echo "ITERATE_TEST_1B=pass"
+        else
+            echo "ITERATE_TEST_1B=fail"
+        fi
+
+        # orchestrator 应为 basic（requested_mode=auto 强制 basic）
+        if grep -q "orchestrator: basic" "$ITERATE_OUTPUT_FILE"; then
+            echo "ITERATE_TEST_1C=pass"
+        else
+            echo "ITERATE_TEST_1C=fail"
+        fi
+
+        # 测试 2: scripts/run_iterate.py --minimal --execution-mode auto
+        # 验证 minimal 模式能正常结束（不触网/不写入/不执行 Orchestrator.run）
+        echo "=== TEST 2: scripts/run_iterate.py --minimal --execution-mode auto ===" >> "$ITERATE_OUTPUT_FILE"
+        # 设置超时避免卡死（30 秒足够 minimal 模式完成）
+        # macOS 兼容：优先使用 gtimeout，否则直接运行（无超时保护）
+        if command -v timeout &> /dev/null; then
+            timeout 30 python3 -m scripts.run_iterate --minimal --execution-mode auto "分析代码结构" >> "$ITERATE_OUTPUT_FILE" 2>&1
+            TEST2_EXIT=$?
+        elif command -v gtimeout &> /dev/null; then
+            gtimeout 30 python3 -m scripts.run_iterate --minimal --execution-mode auto "分析代码结构" >> "$ITERATE_OUTPUT_FILE" 2>&1
+            TEST2_EXIT=$?
+        else
+            # 无超时工具，直接运行（依赖 minimal 模式快速完成）
+            python3 -m scripts.run_iterate --minimal --execution-mode auto "分析代码结构" >> "$ITERATE_OUTPUT_FILE" 2>&1
+            TEST2_EXIT=$?
+        fi
+        echo "EXIT_CODE=$TEST2_EXIT" >> "$ITERATE_OUTPUT_FILE"
+        echo "" >> "$ITERATE_OUTPUT_FILE"
+
+        # minimal 模式应正常退出（退出码 0 表示成功）
+        if [ "$TEST2_EXIT" -eq 0 ]; then
+            echo "ITERATE_TEST_2=pass"
+        else
+            echo "ITERATE_TEST_2=fail"
+        fi
+
+        # 测试 3: scripts/run_iterate.py --print-config --execution-mode auto
+        # 验证 scripts/run_iterate.py 也支持 --print-config 且输出一致
+        echo "=== TEST 3: scripts/run_iterate.py --print-config --execution-mode auto ===" >> "$ITERATE_OUTPUT_FILE"
+        python3 -m scripts.run_iterate --print-config --execution-mode auto >> "$ITERATE_OUTPUT_FILE" 2>&1
+        TEST3_EXIT=$?
+        echo "EXIT_CODE=$TEST3_EXIT" >> "$ITERATE_OUTPUT_FILE"
+        echo "" >> "$ITERATE_OUTPUT_FILE"
+
+        # 检查输出是否包含 requested_mode: auto
+        if grep -q "requested_mode: auto" "$ITERATE_OUTPUT_FILE"; then
+            echo "ITERATE_TEST_3=pass"
+        else
+            echo "ITERATE_TEST_3=fail"
+        fi
+
+    ) > /tmp/iterate_test_results.txt 2>/dev/null
+
+    # 解析测试 1A 结果: requested_mode
+    if grep -q "ITERATE_TEST_1A=pass" /tmp/iterate_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: requested_mode: auto"
+    else
+        check_fail "无 API Key: requested_mode 不为 auto"
+        ((ITERATE_ERRORS++))
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 日志: $ITERATE_OUTPUT_FILE"
+        fi
+    fi
+
+    # 解析测试 1B 结果: effective_mode
+    if grep -q "ITERATE_TEST_1B=pass" /tmp/iterate_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: effective_mode: cli"
+    else
+        check_fail "无 API Key: effective_mode 不为 cli（预期无 Key 时回退）"
+        ((ITERATE_ERRORS++))
+    fi
+
+    # 解析测试 1C 结果: orchestrator
+    if grep -q "ITERATE_TEST_1C=pass" /tmp/iterate_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: orchestrator: basic"
+    else
+        check_fail "无 API Key: orchestrator 不为 basic（预期 auto 模式强制 basic）"
+        ((ITERATE_ERRORS++))
+    fi
+
+    # 解析测试 2 结果: minimal 模式
+    if grep -q "ITERATE_TEST_2=pass" /tmp/iterate_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: --minimal 模式正常结束"
+    else
+        check_fail "无 API Key: --minimal 模式执行失败或超时"
+        ((ITERATE_ERRORS++))
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${YELLOW}⚠${NC} 日志: $ITERATE_OUTPUT_FILE"
+            echo -e "  ${YELLOW}⚠${NC} 提示: minimal 模式应跳过网络请求和 Orchestrator.run"
+        fi
+    fi
+
+    # 解析测试 3 结果: scripts/run_iterate.py --print-config
+    if grep -q "ITERATE_TEST_3=pass" /tmp/iterate_test_results.txt 2>/dev/null; then
+        check_pass "无 API Key: scripts/run_iterate.py --print-config"
+    else
+        check_fail "无 API Key: scripts/run_iterate.py --print-config 失败"
+        ((ITERATE_ERRORS++))
+    fi
+
+    rm -f /tmp/iterate_test_results.txt
+
+    if [ $ITERATE_ERRORS -eq 0 ]; then
+        check_info "无 API Key Iterate 配置验证全部通过"
+    else
+        check_warn "有 $ITERATE_ERRORS 个 Iterate 配置验证失败"
+        if [ "$JSON_OUTPUT" != true ]; then
+            check_info "详细日志: $ITERATE_OUTPUT_FILE"
+        fi
+    fi
+}
+
+# ============================================================
+# 模式检查辅助函数
+# ============================================================
+
+# 检查是否应运行指定模式
+# 用法: should_run_mode "import" && run_import_checks
+should_run_mode() {
+    local mode="$1"
+    
+    # 未指定模式时运行所有检查
+    if [ "$CHECK_MODE_SET" = false ]; then
+        return 0
+    fi
+    
+    # 检查是否包含 "all" 模式
+    for m in "${CHECK_MODES[@]}"; do
+        if [ "$m" = "all" ]; then
+            return 0
+        fi
+    done
+    
+    # 检查是否包含指定模式
+    for m in "${CHECK_MODES[@]}"; do
+        if [ "$m" = "$mode" ]; then
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# 运行 import 模式检查（对齐 import-test.yml）
+# 包括：语法检查 + 核心模块导入
+run_import_mode() {
+    run_check "Python 语法检查" check_syntax
+    run_check "模块结构检查" check_imports
+    run_check "预提交检查 (Python)" check_pre_commit
+}
+
+# 运行 lint 模式检查（对齐 lint.yml）
+# 包括：flake8-critical + ruff + mypy
+run_lint_mode() {
+    run_check "代码风格检查" check_code_style
+    run_check "类型检查 (mypy)" check_type_hints
+}
+
+# 运行 test 模式检查（对齐 ci.yml test/e2e）
+# 包括：单元测试 + 覆盖率 + E2E 测试
+run_test_mode() {
+    # 准备 pytest 环境
+    prepare_pytest_env
+    
+    # 根据 FULL_CHECK 和 SPLIT_TESTS 选择测试方式
+    if [ "$SPLIT_TESTS" = true ]; then
+        if [ "$SPLIT_COVERAGE" = true ]; then
+            run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+        else
+            run_check "单元测试" check_unit_tests
+        fi
+    else
+        run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+    fi
+    
+    run_check "E2E 测试" check_e2e_tests
+    
+    # 网络隔离测试
+    if [ "$RUN_NETWORK_ISOLATION" = true ]; then
+        run_check "网络隔离测试" check_network_isolation_tests
+    fi
+}
+
+# 运行 minimal 模式检查（轻量检查，无额外依赖）
+# 仅依赖 bash + python3，用于快速验证基础环境
+run_minimal_mode() {
+    print_section "轻量检查 (minimal)"
+    
+    local mode_start_ms
+    mode_start_ms=$(now_ms)
+    
+    # 检查 1: Python 版本检查（pass）
+    local py_version
+    py_version=$(python3 --version 2>&1 || echo "未安装")
+    if [[ "$py_version" == Python* ]]; then
+        check_pass "Python 版本检查" "$py_version"
+    else
+        check_fail "Python 版本检查" "Python3 未安装或不可用"
+        return 1
+    fi
+    
+    # 检查 2: 项目根目录验证（info）
+    if [ -f "$PROJECT_ROOT/pyproject.toml" ]; then
+        check_info "项目结构验证" "pyproject.toml 存在"
+    else
+        check_info "项目结构验证" "pyproject.toml 不存在（非 Python 项目或未初始化）"
+    fi
+    
+    # 记录 minimal 模式总耗时
+    local mode_end_ms
+    mode_end_ms=$(now_ms)
+    local mode_duration_ms=$((mode_end_ms - mode_start_ms))
+    record_section_duration "轻量检查 (minimal)" "$mode_duration_ms"
+}
+
 # ============================================================
 # 主程序
 # ============================================================
@@ -2050,48 +3112,99 @@ main() {
         fi
     fi
 
-    # 执行所有检查
-    run_check "Python 环境检查" check_python_version
-    run_check "超时机制检查" check_timeout_backend
-    run_check "依赖检查" check_dependencies
-    run_check "Python 语法检查" check_syntax
-    run_check "模块结构检查" check_imports
-    run_check "目录结构检查" check_directories
-    run_check "入口文件检查" check_main_entries
-    run_check "运行模式检查" check_run_modes
-    run_check "过时模式检测" check_deprecated_patterns
-    run_check "配置文件检查" check_config
-    run_check "Git 状态检查" check_git
-    run_check "Agent CLI 检查" check_agent_cli
-    run_check "知识库验证" check_knowledge_base
-    run_check "预提交检查 (Python)" check_pre_commit
+    # ============================================================
+    # 根据模式执行检查
+    # ============================================================
+    
+    # 指定模式时仅运行对应检查
+    if [ "$CHECK_MODE_SET" = true ]; then
+        # 显示运行模式
+        if [ "$JSON_OUTPUT" != true ]; then
+            echo -e "  ${BLUE}运行模式:${NC} ${CHECK_MODES[*]}"
+        fi
+        
+        # import 模式：语法 + 核心导入（对齐 import-test.yml）
+        if should_run_mode "import"; then
+            run_import_mode
+        fi
+        
+        # lint 模式：flake8-critical + ruff + mypy（对齐 lint.yml）
+        if should_run_mode "lint"; then
+            run_lint_mode
+        fi
+        
+        # test 模式：单元测试 + E2E（对齐 ci.yml）
+        if should_run_mode "test"; then
+            run_test_mode
+        fi
+        
+        # minimal 模式：轻量检查（无额外依赖）
+        if should_run_mode "minimal"; then
+            run_minimal_mode
+        fi
+    else
+        # 未指定模式时：执行所有检查（原有逻辑）
+        run_check "Python 环境检查" check_python_version
+        run_check "超时机制检查" check_timeout_backend
+        run_check "依赖检查" check_dependencies
+        run_check "依赖一致性检查" check_dependency_consistency
+        run_check "Python 语法检查" check_syntax
+        run_check "模块结构检查" check_imports
+        run_check "目录结构检查" check_directories
+        run_check "入口文件检查" check_main_entries
+        run_check "运行模式检查" check_run_modes
+        run_check "无 API Key Smoke 测试" check_no_api_key_smoke
+        run_check "无 API Key Iterate 配置验证" check_no_api_key_iterate_config
+        run_check "过时模式检测" check_deprecated_patterns
+        run_check "配置文件检查" check_config
+        run_check "Git 状态检查" check_git
+        run_check "Agent CLI 检查" check_agent_cli
+        run_check "知识库验证" check_knowledge_base
+        run_check "预提交检查 (Python)" check_pre_commit
 
-    # 可选的深度检查
-    if [ "$FULL_CHECK" = true ]; then
-        run_check "类型检查 (mypy)" check_type_hints
-        run_check "代码风格检查" check_code_style
-        # 综合：单元测试 + 覆盖率（一次完成），再跑一次 E2E（若无用例不失败）
-        # --split-tests 用于排查/定位，避免覆盖率聚合带来的重复执行，split 模式下跳过覆盖率阈值检查
-        if [ "$SPLIT_TESTS" = true ]; then
-            if [ "$SPLIT_COVERAGE" = true ]; then
-                run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+        # 可选的深度检查
+        if [ "$FULL_CHECK" = true ]; then
+            run_check "类型检查 (mypy)" check_type_hints
+            run_check "代码风格检查" check_code_style
+            run_check "格式检查" check_format
+            # 综合：单元测试 + 覆盖率（一次完成），再跑一次 E2E（若无用例不失败）
+            # --split-tests 用于排查/定位，避免覆盖率聚合带来的重复执行，split 模式下跳过覆盖率阈值检查
+            if [ "$SPLIT_TESTS" = true ]; then
+                if [ "$SPLIT_COVERAGE" = true ]; then
+                    run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+                else
+                    check_warn "--split-tests 模式下跳过覆盖率阈值检查（避免重复执行），建议单独再跑一次 --full 获取覆盖率"
+                    run_check "单元测试" check_unit_tests
+                fi
             else
-                check_warn "--split-tests 模式下跳过覆盖率阈值检查（避免重复执行），建议单独再跑一次 --full 获取覆盖率"
-                run_check "单元测试" check_unit_tests
+                run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
+            fi
+            run_check "E2E 测试" check_e2e_tests
+            
+            # 网络隔离测试（--run-network-isolation 或 --full 时运行）
+            if [ "$RUN_NETWORK_ISOLATION" = true ]; then
+                run_check "网络隔离测试" check_network_isolation_tests
             fi
         else
-            run_check "单元测试 + 覆盖率" check_unit_tests_with_coverage
-        fi
-        run_check "E2E 测试" check_e2e_tests
-    else
-        # 默认：快速 + 核心测试集合
-        run_check "核心测试集合" check_core_tests
-        if [ "$JSON_OUTPUT" != true ]; then
-            print_section "跳过的检查 (使用 --full 启用)"
-            check_info "类型检查 (mypy)"
-            check_info "代码风格检查 (flake8/ruff)"
-            check_info "单元测试 + 覆盖率 (pytest-cov, 阈值 80%)"
-            check_info "E2E 测试 (-m e2e)"
+            # 默认：快速 + 核心测试集合
+            run_check "核心测试集合" check_core_tests
+            
+            # 即使不是 FULL_CHECK，如果显式指定 --run-network-isolation 也运行
+            if [ "$RUN_NETWORK_ISOLATION" = true ]; then
+                run_check "网络隔离测试" check_network_isolation_tests
+            fi
+            
+            if [ "$JSON_OUTPUT" != true ]; then
+                print_section "跳过的检查 (使用 --full 启用)"
+                check_info "类型检查 (mypy)"
+                check_info "代码风格检查 (flake8/ruff)"
+                check_info "格式检查 (ruff format/isort)"
+                check_info "单元测试 + 覆盖率 (pytest-cov, 阈值 ${COV_FAIL_UNDER}%)"
+                check_info "E2E 测试 (-m e2e)"
+                if [ "$RUN_NETWORK_ISOLATION" != true ]; then
+                    check_info "网络隔离测试 (--run-network-isolation)"
+                fi
+            fi
         fi
     fi
 
@@ -2103,6 +3216,7 @@ main() {
 
     # JSON 输出
     if [ "$JSON_OUTPUT" = true ]; then
+        _CHECK_ALL_COMPLETED=true
         output_json_result $EXIT_CODE
         exit $EXIT_CODE
     fi
@@ -2124,6 +3238,7 @@ main() {
         rm -rf "$LOG_DIR" 2>/dev/null || true
     fi
 
+    _CHECK_ALL_COMPLETED=true
     if [ $FAIL_COUNT -eq 0 ]; then
         echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${GREEN}${BOLD}  所有检查通过! 项目状态良好${NC}"

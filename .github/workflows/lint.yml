@@ -1,5 +1,14 @@
 # 代码质量检查工作流
 # 专注于代码风格、类型检查和质量分析
+# PR 检查由 pr-check.yml 统一调用本工作流（避免重复运行）
+#
+# 本地等效命令:
+#   bash scripts/check_all.sh --mode lint --ci
+#
+# check_all.sh --mode lint 包含:
+#   - flake8 严重错误检查 (E9, F63, F7, F82)
+#   - ruff 代码检查
+#   - mypy 类型检查 (core/ 和 agents/)
 
 name: Lint
 
@@ -10,12 +19,8 @@ on:
       - master
       - 'feature/**'
       - 'fix/**'
-  pull_request:
-    branches:
-      - main
-      - master
   workflow_call:
-    # 允许被其他工作流调用
+    # 允许被其他工作流（如 pr-check.yml）调用
 
 jobs:
   # flake8 严重错误检查 - 必须通过
@@ -34,13 +39,13 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装 pip-tools 和 flake8
+      - name: 安装依赖（使用 pip-sync）
         run: |
           python -m pip install --upgrade pip pip-tools
-          pip install flake8
+          pip-sync requirements.txt requirements-dev.txt
 
       - name: 检查严重错误 (E9, F63, F7, F82)
         run: |
@@ -66,13 +71,13 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装 pip-tools 和 ruff
+      - name: 安装依赖（使用 pip-sync）
         run: |
           python -m pip install --upgrade pip pip-tools
-          pip install ruff
+          pip-sync requirements.txt requirements-dev.txt
 
       - name: ruff 检查
         run: |
@@ -109,17 +114,13 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装 pip-tools
-        run: python -m pip install --upgrade pip pip-tools
-
-      - name: 使用 pip-sync 安装依赖
-        run: pip-sync requirements.txt
-
-      - name: 安装 mypy
-        run: pip install mypy
+      - name: 安装依赖（使用 pip-sync）
+        run: |
+          python -m pip install --upgrade pip pip-tools
+          pip-sync requirements.txt requirements-dev.txt
 
       - name: mypy 类型检查 (core/ 和 agents/)
         run: |
@@ -151,13 +152,13 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装 pip-tools 和检查工具
+      - name: 安装依赖（使用 pip-sync）
         run: |
           python -m pip install --upgrade pip pip-tools
-          pip install flake8 ruff
+          pip-sync requirements.txt requirements-dev.txt
 
       - name: flake8 代码风格检查
         run: |

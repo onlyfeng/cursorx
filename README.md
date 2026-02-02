@@ -56,9 +56,13 @@
 git clone https://github.com/onlyfeng/cursorx.git
 cd cursorx
 
-# 创建 Python 环境
-conda create -n cursorx python=3.11
-conda activate cursorx
+# 创建虚拟环境（二选一）
+# 方式 1: pyenv + venv（推荐，轻量无额外依赖）
+pyenv install 3.11.9  # 如需安装特定版本
+python -m venv .venv && source .venv/bin/activate
+
+# 方式 2: conda
+# conda create -n cursorx python=3.11 && conda activate cursorx
 
 # 安装依赖
 pip install -r requirements.txt
@@ -297,9 +301,9 @@ python scripts/run_iterate.py --dry-run "分析改进点"
 | `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 5 |
 | `--workers` | Worker 池大小 | 3 |
 | `--force-update` | 强制更新知识库 | False |
-| `--orchestrator` | 编排器类型: `mp`=多进程(默认), `basic`=协程模式 | `mp` |
+| `--orchestrator` | 编排器类型: `mp`=多进程, `basic`=协程模式 | `basic`（因 `execution_mode` 默认 `auto`） |
 | `--no-mp` | 禁用多进程编排器，使用基本协程编排器 | False |
-| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `cli` |
+| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `auto` |
 | `--auto-commit` | 迭代完成后自动提交代码更改 | False |
 | `--auto-push` | 自动推送到远程仓库（需配合 `--auto-commit`） | False |
 | `--commit-per-iteration` | 每次迭代都提交（默认仅在全部完成时提交） | False |
@@ -307,27 +311,31 @@ python scripts/run_iterate.py --dry-run "分析改进点"
 
 ### 多进程并行执行
 
-自我迭代模式 **默认启用多进程并行执行**（`MultiProcessOrchestrator`），可显著提升任务执行效率：
+自我迭代模式支持多进程并行执行（`MultiProcessOrchestrator`），可显著提升任务执行效率。
+
+**注意**: `--execution-mode` 默认值为 `auto`（云端优先，失败回退本地 CLI），此时系统 **强制使用 basic 编排器**。如需使用 MP 编排器，请显式指定 `--execution-mode cli` 或使用 `scripts/run_mp.py`。
 
 ```bash
-# 默认使用多进程编排器（推荐，execution-mode=cli 时）
+# 默认执行模式为 auto（云端优先，回退本地 CLI，使用 basic 编排器）
 python run.py --mode iterate "优化代码"
 python scripts/run_iterate.py "增加新功能支持"
 
-# 指定使用多进程编排器（显式）
-python run.py --mode iterate --orchestrator mp "任务描述"
-python scripts/run_iterate.py --orchestrator mp "任务描述"
+# 如需使用多进程编排器，必须显式指定 --execution-mode cli
+python run.py --mode iterate --execution-mode cli "任务描述"
+python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
+
+# 或直接使用 run_mp.py（默认 CLI 模式 + MP 编排器）
+python scripts/run_mp.py "任务描述" --workers 5
 
 # 禁用多进程，使用协程编排器
 python run.py --mode iterate --no-mp "任务描述"
 python scripts/run_iterate.py --orchestrator basic "任务描述"
 
-# 使用 Cloud/Auto 执行模式（自动使用 basic 编排器）
-python scripts/run_iterate.py --execution-mode auto "任务描述"
+# 显式使用 Cloud 执行模式（强制 basic 编排器）
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 ```
 
-**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。
+**无 API Key 时的默认行为**: 当 `--execution-mode auto` 且未配置 `CURSOR_API_KEY` 时，系统会自动回退到本地 CLI 执行，但编排器仍保持 basic（不会恢复到 mp）。如需 MP 编排器，请显式指定 `--execution-mode cli`。
 
 ### 回退策略
 

@@ -58,10 +58,47 @@ agent_cli:
 #   - cli:   使用本地 agent CLI 执行（需要安装 cursor CLI）
 #   - cloud: 使用 Cloud API 执行（需要 API 密钥）
 #   - auto:  自动选择（优先使用 cloud，失败时降级到 cli）
-# 优先级: CLI(--execution-mode) > 环境变量 > config.yaml > DEFAULT_EXECUTION_MODE
+# 优先级: CLI(--execution-mode) > 环境变量 > config.yaml > CloudAgentConfig.execution_mode 默认值 ("auto")
+#
+# ⚠ 编排器兼容性说明:
+#   - execution_mode=cloud 或 auto 时，系统会**强制使用 basic 编排器**
+#   - MP 编排器（MultiProcessOrchestrator）仅在 execution_mode=cli/plan/ask 时可用
+#   - 推荐命令: python scripts/run_iterate.py "任务"  # 默认 auto + 自动 basic 编排器
+#   - 显式指定: python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务"  # 使用本地 CLI + MP 编排器
 cloud_agent:
-  enabled: false                              # 是否启用 Cloud Agent
-  execution_mode: cli                         # 执行模式: cli | cloud | auto（CLI: --execution-mode）
+  # 是否启用 Cloud Agent
+  # 作用范围: 控制 `&` 前缀自动路由是否生效
+  #   - enabled=true:  输入以 `&` 开头时自动触发 Cloud 模式（如 "& 分析代码"）
+  #   - enabled=false: `&` 前缀不会触发 Cloud 模式，任务使用本地 CLI 执行
+  # 注意: 即使 enabled=false，显式指定 --execution-mode cloud/auto 仍可使用 Cloud
+  # 触发条件: enabled=true + has_api_key + 输入以 `&` 开头
+  enabled: true
+
+  # 是否自动检测 `&` 前缀作为 Cloud 意图
+  # 仅控制 `&` 前缀是否被视为 Cloud 意图（影响 prefix_routed 与编排器选择）
+  # 不替代 cloud_agent.enabled（控制 Cloud 功能开关）和 execution_mode（控制执行模式选择）
+  #
+  # 取值说明:
+  #   - true（默认）: `&` 前缀触发 Cloud 意图检测，影响 prefix_routed 和编排器选择
+  #   - false: `&` 前缀被忽略，不触发 Cloud 意图检测
+  #
+  # 与 R-2/R-3 规则的关系:
+  #   - R-2: 当 auto_detect_cloud_prefix=true 时，& 前缀即表达 Cloud 意图；
+  #          即使因缺少 API Key 或 cloud_agent.enabled=false 未成功路由，编排器仍强制 basic
+  #   - R-3: 当 auto_detect_cloud_prefix=false 或显式 --execution-mode cli 时，
+  #          & 前缀被忽略，编排器可使用 mp
+  #
+  # CLI 参数（tri-state，优先级高于本配置）:
+  #   --auto-detect-cloud-prefix      显式启用（覆盖本配置）
+  #   --no-auto-detect-cloud-prefix   显式禁用（覆盖本配置）
+  #   未指定时使用本配置的值
+  auto_detect_cloud_prefix: true
+
+  # 执行模式: cli | cloud | auto（CLI: --execution-mode）
+  # auto 模式下无 Cloud API Key 时会自动回退到 CLI（仍保持 auto 语义）
+  # ⚠ 重要: cloud/auto 模式强制使用 basic 编排器，不支持 MP 多进程编排
+  # 默认 auto：优先使用 Cloud，不可用时自动回退到本地 CLI
+  execution_mode: auto
 
   # Cloud API 配置
   # API Key 优先级: CLI(--cloud-api-key) > CURSOR_API_KEY > CURSOR_CLOUD_API_KEY > config.yaml
@@ -76,6 +113,26 @@ cloud_agent:
   egress_ip_cache_ttl: 3600                   # 出口 IP 缓存有效期（秒），默认 1 小时
   egress_ip_api_url: ""                       # 自定义 IP 范围 API URL（可选，留空使用默认）
   verify_egress_ip: false                     # 是否验证出口 IP
+
+  # Cloud 冷却策略配置
+  # 控制 Cloud API 失败后的冷却时间，按错误类型自适应
+  cooldown:
+    # RateLimitError（429）冷却配置
+    # 使用 retry_after 响应头，夹逼在 [min, max] 区间
+    rate_limit_min_seconds: 30                # 最小冷却时间（秒）
+    rate_limit_default_seconds: 60            # 默认冷却时间（无 retry_after 时使用）
+    rate_limit_max_seconds: 300               # 最大冷却时间（秒）
+
+    # AuthError/NO_KEY 冷却配置
+    auth_cooldown_seconds: 600                # 认证失败冷却时间（秒），默认 10 分钟
+    auth_require_config_change: true          # 是否需要配置变化才能提前结束冷却
+
+    # Network/Timeout 冷却配置
+    network_cooldown_seconds: 120             # 网络错误冷却时间（秒），默认 2 分钟
+    timeout_cooldown_seconds: 60              # 超时错误冷却时间（秒），默认 1 分钟
+
+    # Unknown 冷却配置
+    unknown_cooldown_seconds: 300             # 未知错误冷却时间（秒），默认 5 分钟
 
 # 网络配置
 # 代理和 SSL 设置，影响所有外部网络请求
@@ -150,3 +207,142 @@ logging:
     console: true           # 是否输出到控制台
     detail_dir: logs/stream_json/detail/  # 详细日志目录
     raw_dir: logs/stream_json/raw/        # 原始 NDJSON 目录
+
+# 知识库文档更新配置
+# 控制自我迭代（run_iterate.py）时的文档获取策略
+# CLI 参数可覆盖以下配置
+# 术语说明参见 knowledge/doc_url_strategy.py 模块契约的【术语表】
+knowledge_docs_update:
+  docs_source:
+    max_fetch_urls: 20                              # 单次更新最多抓取的 URL 数量，CLI: --max-fetch-urls
+    fallback_core_docs_count: 5                     # 回退核心文档数量，CLI: --fallback-core-docs-count
+    llms_txt_url: "https://cursor.com/llms.txt"     # llms.txt 在线来源，CLI: --llms-txt-url
+    llms_cache_path: ".cursor/cache/llms.txt"       # llms.txt 本地缓存路径，CLI: --llms-cache-path
+    changelog_url: "https://cursor.com/cn/changelog"  # Changelog URL，CLI: --changelog-url
+
+    # 允许的文档 URL 前缀（完整 URL 前缀格式）
+    # 用于 load_core_docs 过滤核心文档 URL
+    # CLI: --allowed-doc-url-prefixes（逗号分隔）
+    allowed_doc_url_prefixes:
+      - "https://cursor.com/cn/docs"
+      - "https://cursor.com/docs"
+      - "https://cursor.com/cn/changelog"
+      - "https://cursor.com/changelog"
+
+    # ============================================================
+    # 在线抓取策略配置 (fetch_policy)
+    # ============================================================
+    # 控制哪些 URL **可以被抓取**（网络请求层面）
+    # 与 url_strategy 不同：
+    # - fetch_policy: 决定是否发起抓取请求
+    # - url_strategy: 决定如何过滤/排序/选择 URL
+    # 术语说明参见 knowledge/doc_url_strategy.py 模块契约的【术语表】
+    #
+    # **当前作用范围**：
+    # - 配置已解析并在 update_from_analysis() 主流程中实际调用
+    # - 外链过滤（external_link_mode）已生效
+    # - 内链路径检查（enforce_path_prefixes）默认禁用，可通过 CLI 启用
+    # - 详见 knowledge/doc_url_strategy.py 【fetch_policy 作用范围说明】
+    fetch_policy:
+      # 允许抓取的 URL **路径前缀**列表
+      # 格式：路径前缀（不含 scheme/host），如 "docs", "cn/docs"
+      # 仅抓取以这些前缀开头的页面路径
+      # 示例: ["docs", "cn/docs"] 表示只抓取 /docs/* 和 /cn/docs/* 路径
+      # 注意：与 url_strategy.allowed_url_prefixes（完整 URL 前缀，含域名）格式不同
+      # CLI: --allowed-path-prefixes（逗号分隔）
+      # [DEPRECATED] 旧字段名 allowed_url_prefixes 仅作为兼容别名保留，请勿使用
+      allowed_path_prefixes:
+        - "docs"
+        - "cn/docs"
+        - "changelog"
+        - "cn/changelog"
+
+      # **域名白名单**（可选）
+      # 空列表表示仅允许主域名（如配置的 llms_txt_url 和 changelog_url 的域名）
+      # 支持子域名匹配，如 "cursor.com" 可匹配 api.cursor.com
+      # 示例: ["cursor.com", "docs.cursor.com"]
+      # CLI: --allowed-domains（逗号分隔）
+      allowed_domains: []
+
+      # **外链处理模式**
+      # - record_only: 仅记录外链，不抓取（默认，最小抓取面）
+      # - skip_all: 完全跳过外链，不记录也不抓取
+      # - fetch_allowlist: 仅抓取白名单内的外链
+      # CLI: --external-link-mode
+      external_link_mode: "record_only"
+
+      # 外链允许白名单（可选）
+      # 仅在 external_link_mode="fetch_allowlist" 时生效
+      # 示例: ["github.com/cursor", "docs.example.com"]
+      # CLI: --external-link-allowlist（逗号分隔）
+      external_link_allowlist: []
+
+  # ============================================================
+  # URL 选择策略配置 (url_strategy)
+  # ============================================================
+  # 控制如何**过滤/排序/选择** URL（数据处理层面）
+  # 处理流程: 发现 URL → 过滤 → 规范化 → 去重 → 优先级排序 → 截取
+  # 与 fetch_policy 不同：url_strategy 处理已获取的 URL，fetch_policy 决定是否获取
+  # 术语说明参见 knowledge/doc_url_strategy.py 模块契约的【术语表】
+  url_strategy:
+    # **域名白名单**
+    # 只有匹配这些域名的 URL 才会被处理
+    # 支持子域名匹配，如 "cursor.com" 可匹配 api.cursor.com
+    # 示例: ["cursor.com", "docs.cursor.com"]
+    # CLI: --url-allowed-domains（逗号分隔）
+    allowed_domains:
+      - "cursor.com"
+
+    # 允许的**完整 URL 前缀**列表（可选）
+    # 空列表表示不限制（回退到 allowed_domains 过滤）
+    # **格式要求：必须包含 scheme/host（完整 URL 前缀）**
+    # 正确示例: ["https://cursor.com/docs", "https://cursor.com/cn/docs"]
+    # 错误示例: ["docs", "cn/docs"]（旧版路径前缀格式，已废弃）
+    # 注意：与 fetch_policy.allowed_path_prefixes（路径前缀，不含域名）格式不同！
+    # CLI: --url-allowed-prefixes（逗号分隔）
+    # allowed_url_prefixes: []
+
+    # URL **过滤**排除模式列表（正则表达式）
+    # 匹配这些模式的 URL 将被排除
+    # 示例: [".*\\.pdf$", ".*#.*", ".*/archive/.*"]
+    # CLI: --url-exclude-patterns（逗号分隔）
+    exclude_patterns:
+      - ".*\\.pdf$"
+      - ".*\\.zip$"
+      - ".*\\.(png|jpg|jpeg|gif|svg|ico)$"
+      - ".*\\.(css|js|woff|woff2|ttf|eot)$"  # 静态资源文件
+      - ".*/api/.*"  # API 端点路径
+
+    # URL **选择**时是否优先处理 Changelog 文档
+    # 启用后，Changelog 相关文档的优先级会被提升
+    # CLI: --prefer-changelog
+    prefer_changelog: true
+
+    # 是否启用 URL **去重**
+    # 启用后，相同内容的不同 URL 变体会被合并（基于规范化后的结果）
+    # 示例: 带/不带尾部斜杠、带/不带 www 前缀
+    # CLI: --url-deduplicate / --no-url-deduplicate
+    deduplicate: true
+
+    # 是否启用 URL **规范化**
+    # 启用后，URL 会被规范化处理（移除锚点、统一斜杠、scheme/host 小写化）
+    # CLI: --url-normalize / --no-url-normalize
+    normalize: true
+
+    # 关键词匹配权重增益
+    # 当文档 URL 包含搜索关键词时的权重提升系数
+    # 范围: 0.0 - 2.0（1.0 表示无增益，2.0 表示双倍权重）
+    # CLI: --keyword-boost-weight
+    keyword_boost_weight: 1.2
+
+    # 语言路径偏好
+    # 指定优先匹配的语言路径前缀
+    # 示例: ["cn", "zh-CN", "en"]，空列表表示无偏好
+    # CLI: --lang-path-preference（逗号分隔）
+    lang_path_preference:
+      - "cn"
+
+    # 最大重定向跟随次数
+    # 防止无限重定向循环
+    # CLI: --max-redirects
+    max_redirects: 5

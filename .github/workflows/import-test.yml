@@ -1,5 +1,13 @@
 # 模块导入检查工作流
-# 验证所有 Python 模块可以正确导入，确保依赖完整性
+# 验证核心 Python 模块可以正确导入，确保依赖完整性
+#
+# 目标：验证"核心可导入"
+# - 仅安装 requirements.txt（核心依赖）
+# - 仅检查核心模块（排除 indexing、knowledge 等需要可选 ML 依赖的模块）
+# - 确保核心功能在没有可选依赖的情况下可用
+#
+# 可选依赖模块（indexing、knowledge）需要安装 requirements-optional.txt
+# 或使用 pip install -e ".[ml]"，这些在完整测试中验证，不在此 workflow 中
 
 name: Import Test
 
@@ -34,25 +42,37 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装依赖
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: 安装核心依赖（使用 pip-sync）
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # 仅安装核心依赖（requirements.txt）
+          # 可选依赖（sentence-transformers, chromadb 等）不在此处安装
+          pip-sync requirements.txt
 
-      - name: 运行模块导入检查
+      - name: 运行核心模块导入检查
         id: import-check
         run: |
-          # 运行检查并捕获 JSON 输出
-          python scripts/pre_commit_check.py --json --quick > import-check-result.json 2>&1 || true
+          # 使用 check_all.sh --mode import 运行导入检查
+          # 等效于：语法检查 + 核心模块导入 + 预提交检查
+          set +e
+          bash scripts/check_all.sh --mode import --ci --json > import-check-result.json 2>&1
+          EXIT_CODE=$?
+          set -e
           
           # 检查结果
-          if python -c "import json; data = json.load(open('import-check-result.json')); exit(0 if data.get('passed') else 1)" 2>/dev/null; then
+          if [ $EXIT_CODE -eq 0 ]; then
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "所有模块导入检查通过"
+            echo "所有核心模块导入检查通过"
           else
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "模块导入检查失败"
+            echo "核心模块导入检查失败"
           fi
           
           # 显示完整输出
@@ -61,11 +81,14 @@ jobs:
       - name: 生成检查报告摘要
         if: always()
         run: |
-          echo "## 模块导入检查报告 (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo "## 核心模块导入检查报告 (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> 检查范围：核心模块（排除 indexing、knowledge 等需要可选 ML 依赖的模块）" >> $GITHUB_STEP_SUMMARY
+          echo "> 使用命令: \`bash scripts/check_all.sh --mode import --ci\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f import-check-result.json ]; then
-            # 解析 JSON 并生成 Markdown 表格
+            # 解析 check_all.sh --json 输出并生成 Markdown 表格
             python << 'EOF'
           import json
           import os
@@ -76,14 +99,18 @@ jobs:
               
               summary = []
               
-              # 总体状态
-              if data.get('passed'):
+              # 总体状态（check_all.sh --json 输出格式）
+              is_success = data.get('success', False)
+              passed_count = data.get('summary', {}).get('passed', 0)
+              failed_count = data.get('summary', {}).get('failed', 0)
+              
+              if is_success:
                   summary.append("### ✅ 检查通过\n")
               else:
                   summary.append("### ❌ 检查失败\n")
               
-              summary.append(f"- **通过**: {data.get('passed_count', 0)}")
-              summary.append(f"- **失败**: {data.get('failed_count', 0)}")
+              summary.append(f"- **通过**: {passed_count}")
+              summary.append(f"- **失败**: {failed_count}")
               summary.append("")
               
               # 详细结果表格
@@ -92,23 +119,31 @@ jobs:
               summary.append("|--------|------|------|")
               
               for check in data.get('checks', []):
-                  status = "✅" if check.get('passed') else "❌"
+                  status_str = check.get('status', 'unknown')
+                  if status_str == 'pass':
+                      status = "✅"
+                  elif status_str == 'fail':
+                      status = "❌"
+                  elif status_str == 'warn':
+                      status = "⚠️"
+                  else:
+                      status = "ℹ️"
                   name = check.get('name', 'Unknown')
-                  message = check.get('message', '')
+                  message = check.get('message', '')[:80]  # 截断长消息
                   summary.append(f"| {name} | {status} | {message} |")
               
               summary.append("")
               
               # 失败项详情
-              failed_checks = [c for c in data.get('checks', []) if not c.get('passed')]
+              failed_checks = [c for c in data.get('checks', []) if c.get('status') == 'fail']
               if failed_checks:
                   summary.append("### 失败详情\n")
                   for check in failed_checks:
                       summary.append(f"#### {check.get('name')}")
-                      for detail in check.get('details', []):
-                          summary.append(f"- {detail}")
-                      if check.get('fix_suggestion'):
-                          summary.append(f"\n**修复建议**: {check.get('fix_suggestion')}")
+                      if check.get('message'):
+                          summary.append(f"- {check.get('message')}")
+                      if check.get('log_file'):
+                          summary.append(f"- 日志: `{check.get('log_file')}`")
                       summary.append("")
               
               # 写入摘要
@@ -134,5 +169,8 @@ jobs:
       - name: 检查结果判定
         if: steps.import-check.outputs.status == 'failed'
         run: |
-          echo "模块导入检查失败，请查看详细报告"
+          echo "核心模块导入检查失败，请查看详细报告"
+          echo ""
+          echo "本地复现命令:"
+          echo "  bash scripts/check_all.sh --mode import --ci"
           exit 1

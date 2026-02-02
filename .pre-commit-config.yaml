@@ -59,6 +59,15 @@ repos:
         stages: [pre-commit]
         always_run: true
 
+      - id: check-deps-full
+        name: 依赖一致性检查（含ML层）
+        entry: python scripts/check_deps.py --ci --include-ml
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [manual]
+        always_run: true
+
 # 默认配置
 default_language_version:
   python: python3

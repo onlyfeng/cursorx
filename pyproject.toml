@@ -49,6 +49,9 @@ dependencies = [
     "pyyaml>=6.0.1",
     # 类型支持
     "typing-extensions>=4.9.0",
+    # HTTP 客户端 (核心通信依赖)
+    "httpx>=0.27.0",                 # 异步 HTTP 客户端，Cloud API 通信
+    "websockets>=12.0",              # WebSocket 实时连接支持
 ]
 
 # ============================================================
@@ -61,8 +64,7 @@ web = [
     "beautifulsoup4>=4.12.0",        # HTML 解析
     "html2text>=2024.1.0",           # HTML 转 Markdown
     "lxml>=5.0.0",                   # 高性能 XML/HTML 解析器
-    "httpx>=0.27.0",                 # 异步 HTTP 客户端
-    "websockets>=12.0",              # WebSocket 实时连接支持
+    "playwright>=1.57.0",            # 浏览器渲染抓取
 ]
 # ML/向量搜索依赖 - 语义搜索、知识库功能
 ml = [
@@ -83,8 +85,11 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
     "flake8>=6.0.0",
+    "black>=23.0.0",                 # Python 代码格式化
+    "isort>=5.12.0",                 # Import 排序工具
     "pre-commit>=3.5.0",
     "pip-audit>=2.6.0",              # 依赖安全漏洞扫描
+    "pip-tools>=7.3.0",              # pip-compile 工具，用于生成锁定文件
 ]
 # 测试工具 - 单元测试、集成测试
 test = [
@@ -135,12 +140,12 @@ loguru = ">=0.7.2"
 python-dotenv = ">=1.0.0"
 pyyaml = ">=6.0.1"
 typing-extensions = ">=4.9.0"
+httpx = ">=0.27.0"           # 核心通信依赖
+websockets = ">=12.0"        # 核心通信依赖
 # Web/网页处理依赖 (可选)
 beautifulsoup4 = { version = ">=4.12.0", optional = true }
 html2text = { version = ">=2024.1.0", optional = true }
 lxml = { version = ">=5.0.0", optional = true }
-httpx = { version = ">=0.27.0", optional = true }
-websockets = { version = ">=12.0", optional = true }
 # ML/向量依赖 (可选)
 sentence-transformers = { version = ">=2.2.0", optional = true }
 chromadb = { version = ">=0.4.0", optional = true }
@@ -154,8 +159,11 @@ optional = true
 mypy = ">=1.0.0"
 ruff = ">=0.1.0"
 flake8 = ">=6.0.0"
+black = ">=23.0.0"
+isort = ">=5.12.0"
 pre-commit = ">=3.5.0"
 pip-audit = ">=2.6.0"
+pip-tools = ">=7.3.0"
 
 [tool.poetry.group.test]
 optional = true
@@ -168,7 +176,7 @@ pytest-timeout = ">=2.4.0"
 respx = ">=0.20.0"
 
 [tool.poetry.extras]
-web = ["beautifulsoup4", "html2text", "lxml", "httpx", "websockets"]
+web = ["beautifulsoup4", "html2text", "lxml"]
 ml = ["sentence-transformers", "chromadb", "tiktoken", "hnswlib"]
 vector = ["sentence-transformers", "chromadb", "tiktoken", "hnswlib"]
 
@@ -190,8 +198,10 @@ markers = [
     "slow: 运行时间较长的测试，超过 30 秒 (deselect with '-m \"not slow\"')",
     "integration: 集成测试，需要外部服务或资源 (deselect with '-m \"not integration\"')",
     "unit: 单元测试，快速独立的测试 (select with '-m unit')",
-    "cloud: 需要云服务 API 的测试 (deselect with '-m \"not cloud\"')",
+    "cloud: 需要云服务 API Key 的测试 (deselect with '-m \"not cloud\"')",
     "network: 需要网络连接的测试 (deselect with '-m \"not network\"')",
+    "block_network: 显式阻断网络请求的测试 (用于测试网络隔离机制)",
+    "allow_network: 允许网络请求的测试 (覆盖网络阻断设置)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -239,7 +249,7 @@ output = "coverage.xml"
 # mypy 配置
 # ============================================================
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 ignore_missing_imports = true
 strict_optional = true
 warn_unused_ignores = true
@@ -259,7 +269,7 @@ exclude = [
 # ============================================================
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py311"
 exclude = [
     ".git",
     ".venv",
@@ -295,6 +305,17 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["core", "agents", "coordinator", "tasks", "cursor", "indexing", "knowledge", "process"]
+
+# ============================================================
+# isort 配置（与 ruff isort 规则对齐）
+# ============================================================
+[tool.isort]
+line_length = 120
+known_first_party = ["core", "agents", "coordinator", "tasks", "cursor", "indexing", "knowledge", "process"]
+multi_line_output = 9
+include_trailing_comma = true
+use_parentheses = true
+split_on_trailing_comma = true
 
 # ============================================================
 # flake8 配置 (与 check_all.sh 一致)

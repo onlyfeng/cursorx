@@ -1,5 +1,18 @@
 # CI 工作流
-# 在 push 和 PR 事件时运行测试和检查
+# 在 push 事件时运行测试和检查
+# PR 检查由 pr-check.yml 统一调用本工作流（避免重复运行）
+#
+# 本地等效命令:
+#   bash scripts/check_all.sh --mode test --ci              # 单元测试 + E2E
+#   bash scripts/check_all.sh --mode test --full --ci       # 含覆盖率
+#   bash scripts/check_all.sh --mode import --ci            # 导入检查
+#   bash scripts/check_all.sh --mode lint --ci              # Lint 检查
+#   bash scripts/check_all.sh --full --ci                   # 完整检查
+#
+# check_all.sh --mode test 包含:
+#   - 单元测试 (pytest -m "not e2e and not slow...")
+#   - E2E 测试 (pytest -m "e2e")
+#   - 可选: 覆盖率报告 (--full 时启用)
 
 name: CI
 
@@ -10,12 +23,16 @@ on:
       - master
       - 'feature/**'
       - 'fix/**'
-  pull_request:
-    branches:
-      - main
-      - master
   workflow_call:
-    # 允许被其他工作流调用
+    # 允许被其他工作流（如 pr-check.yml）调用
+  workflow_dispatch:
+    # 允许手动触发（用于 ML 测试等可选任务）
+    inputs:
+      run_ml_tests:
+        description: '运行 ML 测试 (知识库/向量索引)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -28,6 +45,8 @@ jobs:
     outputs:
       deps: ${{ steps.filter.outputs.deps }}
       deps_files: ${{ steps.filter.outputs.deps_files }}
+      ml: ${{ steps.filter.outputs.ml }}
+      ml_files: ${{ steps.filter.outputs.ml_files }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -43,6 +62,13 @@ jobs:
               - 'pyproject.toml'
               - 'setup.py'
               - 'setup.cfg'
+            ml:
+              - 'indexing/**'
+              - 'knowledge/**'
+              - 'requirements-test-ml.in'
+              - 'requirements-test-ml.txt'
+              - 'tests/test_indexing/**'
+              - 'tests/test_knowledge*.py'
           list-files: shell
 
   # 依赖变更检查
@@ -54,6 +80,7 @@ jobs:
       pip_check_result: ${{ steps.pip_check.outputs.result }}
       pip_audit_result: ${{ steps.pip_audit.outputs.result }}
       import_test_result: ${{ steps.import_test.outputs.result }}
+      sync_deps_result: ${{ steps.sync_deps_check.outputs.result }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -63,12 +90,76 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装依赖
+      - name: 校验依赖锁定文件一致性
+        id: sync_deps_check
         run: |
-          python -m pip install --upgrade pip
-          pip install pip-audit>=2.6.0
-          pip install -r requirements.txt
+          echo "## 依赖锁定文件校验" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 验证当前 Python 版本（必须是 3.11，与锁文件生成基准版本一致）
+          echo "### Python 版本验证" >> $GITHUB_STEP_SUMMARY
+          PYTHON_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          echo "当前 Python 版本: $PYTHON_VERSION" >> $GITHUB_STEP_SUMMARY
+          if [ "$PYTHON_VERSION" != "3.11" ]; then
+            echo "❌ 错误: 锁文件验证需要 Python 3.11，当前为 $PYTHON_VERSION" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "✅ Python 版本检查通过" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 安装 pip-tools（使用基准 Python 3.11，与锁文件生成环境一致）
+          python -m pip install --upgrade pip pip-tools>=7.3.0
+          
+          # 重新编译锁定文件（CI 环境使用 SKIP_PYTHON_VERSION_CHECK，因为已在上面验证）
+          echo "### 重新编译 requirements*.txt 锁定文件" >> $GITHUB_STEP_SUMMARY
+          SKIP_PYTHON_VERSION_CHECK=1 bash scripts/sync-deps.sh compile
+          
+          # 使用 git diff 检查锁定文件是否有变化
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 检查锁定文件是否与仓库一致" >> $GITHUB_STEP_SUMMARY
+          
+          # 检查所有 requirements*.txt 文件（包括 ML 锁文件，如果存在）
+          set +e
+          DIFF_OUTPUT=$(git diff --exit-code -- 'requirements*.txt' 2>&1)
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ 依赖锁定文件与源文件同步" >> $GITHUB_STEP_SUMMARY
+            echo "result=success" >> $GITHUB_OUTPUT
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ 依赖锁定文件不同步" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "检测到以下差异:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
+            echo "$DIFF_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**修复方法**: 在本地运行以下命令更新锁定文件后提交:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "bash scripts/sync-deps.sh compile" >> $GITHUB_STEP_SUMMARY
+            echo "git add requirements*.txt" >> $GITHUB_STEP_SUMMARY
+            echo "git commit -m \"chore: 更新依赖锁定文件\"" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: 安装依赖（使用 pip-sync）
+        run: pip-sync requirements.txt
+
+      - name: 安装安全审计工具
+        run: pip install pip-audit>=2.6.0
 
       - name: 运行 pip check
         id: pip_check
@@ -117,25 +208,40 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: 完整导入测试
+      - name: 核心模块导入测试
         id: import_test
         run: |
-          echo "## 完整模块导入测试" >> $GITHUB_STEP_SUMMARY
+          echo "## 核心模块导入测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "说明: 仅检查核心模块（排除需要可选依赖的 indexing、knowledge）" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
           set +e
-          OUTPUT=$(python scripts/pre_commit_check.py --json 2>&1)
+          # 使用 --core-only 仅检查核心模块，--req-files 仅检查已安装的 requirements.txt
+          OUTPUT=$(python scripts/pre_commit_check.py --json --quick --core-only --req-files requirements.txt 2>&1)
           EXIT_CODE=$?
           set -e
           
           if [ $EXIT_CODE -eq 0 ]; then
-            echo "✅ 所有模块导入测试通过" >> $GITHUB_STEP_SUMMARY
+            echo "✅ 核心模块导入测试通过" >> $GITHUB_STEP_SUMMARY
+            # 解析 JSON 输出获取统计信息
             PASSED_COUNT=$(echo "$OUTPUT" | python -c "import sys, json; d=json.load(sys.stdin); print(d.get('passed_count', 0))" 2>/dev/null || echo "N/A")
-            echo "- 通过检查项: $PASSED_COUNT" >> $GITHUB_STEP_SUMMARY
+            FAILED_COUNT=$(echo "$OUTPUT" | python -c "import sys, json; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo "0")
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| 统计 | 数量 |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+            echo "| ✅ 通过 | $PASSED_COUNT |" >> $GITHUB_STEP_SUMMARY
+            echo "| ❌ 失败 | $FAILED_COUNT |" >> $GITHUB_STEP_SUMMARY
             echo "result=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ 模块导入测试失败" >> $GITHUB_STEP_SUMMARY
+            echo "❌ 核心模块导入测试失败" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>详细信息</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
             echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
             echo "result=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -150,7 +256,8 @@ jobs:
   # PR 依赖变更评论
   dependency-comment:
     needs: [changes, dependency-check]
-    if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
+    # 支持直接触发和 workflow_call（继承调用者的 github.event）
+    if: (github.event_name == 'pull_request' || github.event.pull_request) && needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 发表依赖变更评论
@@ -160,6 +267,7 @@ jobs:
             const pipCheck = '${{ needs.dependency-check.outputs.pip_check_result }}';
             const pipAudit = '${{ needs.dependency-check.outputs.pip_audit_result }}';
             const importTest = '${{ needs.dependency-check.outputs.import_test_result }}';
+            const syncDeps = '${{ needs.dependency-check.outputs.sync_deps_result }}';
             
             const statusIcon = (status) => {
               if (status === 'success') return '✅';
@@ -173,9 +281,10 @@ jobs:
             
             | 检查项 | 状态 |
             |--------|------|
+            | 锁定文件同步 (.in → .txt) | ${statusIcon(syncDeps)} ${syncDeps || 'N/A'} |
             | pip check (依赖完整性) | ${statusIcon(pipCheck)} ${pipCheck || 'N/A'} |
             | pip-audit (安全漏洞) | ${statusIcon(pipAudit)} ${pipAudit || 'N/A'} |
-            | 模块导入测试 | ${statusIcon(importTest)} ${importTest || 'N/A'} |
+            | 核心模块导入测试 | ${statusIcon(importTest)} ${importTest || 'N/A'} |
             
             > 详细信息请查看 [workflow 运行日志](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})
             `;
@@ -235,17 +344,14 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
       - name: 安装 pip-tools
         run: python -m pip install --upgrade pip pip-tools
 
       - name: 使用 pip-sync 安装依赖
-        run: pip-sync requirements.txt
-
-      - name: 安装测试工具
-        run: pip install pytest-timeout
+        run: pip-sync requirements.txt requirements-test.txt
 
       - name: 验证依赖安装
         run: |
@@ -326,8 +432,14 @@ jobs:
       - name: 运行单元测试（含覆盖率）
         shell: bash
         run: |
+          echo "## 单元测试（Matrix: ${{ matrix.os }} / Python ${{ matrix.python-version }}）" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **说明**: Matrix 单测仅收集覆盖率数据（\`--cov-fail-under=0\`），不做阈值检查。" >> $GITHUB_STEP_SUMMARY
+          echo "> 覆盖率 gating 收敛到 \`pr-check.yml\` 的 \`full-check\` job（阈值 80%）。" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
           pytest tests/ -v --tb=short --color=yes \
-            -m "not e2e and not slow and not integration" \
+            -m "not e2e and not slow and not integration and not cloud and not network" \
             --cov=. --cov-report=xml --cov-report=term-missing \
             --cov-report=html:htmlcov \
             --cov-fail-under=0 \
@@ -397,7 +509,8 @@ jobs:
           echo "### 单元测试覆盖率: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: PR 覆盖率评论
-        if: github.event_name == 'pull_request' && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
+        # 支持直接触发和 workflow_call（继承调用者的 github.event）
+        if: (github.event_name == 'pull_request' || github.event.pull_request) && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         uses: py-cov-action/python-coverage-comment-action@v3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -421,17 +534,14 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
       - name: 安装 pip-tools
         run: python -m pip install --upgrade pip pip-tools
 
       - name: 使用 pip-sync 安装依赖
-        run: pip-sync requirements.txt
-
-      - name: 安装 pytest-timeout
-        run: pip install pytest-timeout
+        run: pip-sync requirements.txt requirements-test.txt
 
       - name: 运行 E2E 测试
         run: |
@@ -483,12 +593,15 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
 
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip pip-tools
-          pip-sync requirements.txt
-          pip install pytest-timeout
+          pip-sync requirements.txt requirements-test.txt
 
       - name: 运行集成测试
         run: |
@@ -510,6 +623,164 @@ jobs:
             exit 1
           fi
 
+  # 无 API Key 环境 Smoke 测试
+  # 验证在没有 CURSOR_API_KEY 和 CURSOR_CLOUD_API_KEY 时系统行为正确
+  no-api-key-smoke-test:
+    name: No API Key Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-test.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip pip-tools
+          pip-sync requirements.txt requirements-test.txt
+
+      - name: 无 API Key Smoke 测试
+        env:
+          # 明确设置 API Key 为空（确保不使用任何 secrets）
+          CURSOR_API_KEY: ""
+          CURSOR_CLOUD_API_KEY: ""
+          # 启用网络阻断，防止意外发起真实网络请求（双保险）
+          CURSORX_BLOCK_NETWORK: "1"
+        run: |
+          echo "## 无 API Key Smoke 测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 测试 1: 验证 run.py --help 正常工作
+          echo "### 测试 1: run.py --help" >> $GITHUB_STEP_SUMMARY
+          if python run.py --help > /dev/null 2>&1; then
+            echo "✅ run.py --help 通过" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ run.py --help 失败" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          # 测试 2: 验证 --print-config 能正确显示配置（无 API Key 状态）
+          echo "### 测试 2: --print-config" >> $GITHUB_STEP_SUMMARY
+          CONFIG_OUTPUT=$(python run.py --print-config 2>&1 || true)
+          if echo "$CONFIG_OUTPUT" | grep -qE "(requested_mode|effective_mode|config_path)"; then
+            echo "✅ --print-config 通过" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ --print-config 失败" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$CONFIG_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          # 测试 3: 验证 scripts/run_iterate.py --help 正常工作
+          echo "### 测试 3: scripts/run_iterate.py --help" >> $GITHUB_STEP_SUMMARY
+          if python scripts/run_iterate.py --help > /dev/null 2>&1; then
+            echo "✅ scripts/run_iterate.py --help 通过" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ scripts/run_iterate.py --help 失败" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          
+          # 测试 4: 验证 --dry-run --skip-online 模式可以启动（最小依赖）
+          echo "### 测试 4: --dry-run --skip-online 模式" >> $GITHUB_STEP_SUMMARY
+          DRY_RUN_OUTPUT=$(timeout 10 python scripts/run_iterate.py --dry-run --skip-online --execution-mode cli "测试任务" 2>&1 || true)
+          # 只要不是因为缺少 API Key 而报错就算通过
+          if echo "$DRY_RUN_OUTPUT" | grep -qiE "(error|exception|traceback)" && ! echo "$DRY_RUN_OUTPUT" | grep -qi "api.key\|api_key\|认证\|auth"; then
+            echo "❌ --dry-run --skip-online 模式失败" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$DRY_RUN_OUTPUT" | tail -20 >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ --dry-run --skip-online 模式通过" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 总结" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **所有无 API Key Smoke 测试通过**" >> $GITHUB_STEP_SUMMARY
+
+      - name: 同步网络阻断用例测试
+        env:
+          # 明确设置 API Key 为空（确保不使用任何 secrets）
+          CURSOR_API_KEY: ""
+          CURSOR_CLOUD_API_KEY: ""
+          # 不设置全局 CURSORX_BLOCK_NETWORK=1
+          # 测试用例通过 @pytest.mark.block_network 标记按需控制阻断
+          # 这样可以正确测试 integration+API Key 放行等边界情况
+        run: |
+          echo "## 同步网络阻断用例测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "说明: 这些用例使用 @pytest.mark.block_network 标记，在 socket 级别阻断网络" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 运行 test_network_blocking.py 中的同步阻断用例
+          # 这些用例不包含 @pytest.mark.asyncio，不受事件循环初始化影响
+          # 阻断由 @pytest.mark.block_network 标记按需控制
+          set +e
+          pytest -q tests/test_network_blocking.py \
+            --timeout=60 \
+            --tb=short \
+            --color=yes 2>&1 | tee network_blocking_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ **同步网络阻断用例测试通过**" >> $GITHUB_STEP_SUMMARY
+          elif [ $EXIT_CODE -eq 5 ]; then
+            echo "⚠️ **没有找到同步阻断测试用例**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          else
+            echo "❌ **同步网络阻断用例测试失败**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat network_blocking_output.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: 异步网络隔离用例测试
+        env:
+          # 明确设置 API Key 为空（确保不使用任何 secrets）
+          CURSOR_API_KEY: ""
+          CURSOR_CLOUD_API_KEY: ""
+          # 不启用 socket 级别阻断，因为 pytest_asyncio 需要 socket 创建事件循环
+          # 这些用例使用 mock 验证网络隔离，不触发真实网络请求
+        run: |
+          echo "## 异步网络隔离用例测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "说明: 这些用例包含 @pytest.mark.asyncio，使用 mock 验证网络隔离" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 运行 test_no_api_key_network_isolation.py 中的异步隔离用例
+          # 这些用例使用 mock 替代真实网络请求，验证无 API Key 时的行为
+          set +e
+          pytest -q tests/test_no_api_key_network_isolation.py \
+            --timeout=60 \
+            --tb=short \
+            --color=yes 2>&1 | tee network_isolation_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ **异步网络隔离用例测试通过**" >> $GITHUB_STEP_SUMMARY
+          elif [ $EXIT_CODE -eq 5 ]; then
+            echo "⚠️ **没有找到异步隔离测试用例**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          else
+            echo "❌ **异步网络隔离用例测试失败**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat network_isolation_output.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -524,13 +795,14 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-dev.in
-            requirements-test.in
+            requirements-dev.txt
+            requirements-test.txt
 
-      - name: 安装 pip-tools 和检查工具
-        run: |
-          python -m pip install --upgrade pip pip-tools
-          pip install flake8 ruff
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: "安装依赖（使用 pip-sync: core+dev）"
+        run: pip-sync requirements.txt requirements-dev.txt
 
       - name: flake8 严重错误检查
         run: |
@@ -541,3 +813,211 @@ jobs:
         run: |
           ruff check . --exit-zero
         continue-on-error: true
+
+  # ML 测试 (知识库、向量索引相关)
+  # 触发条件：
+  #   1. 手动触发且勾选 run_ml_tests
+  #   2. PR 带有 run-ml-tests 标签
+  #   3. indexing/、knowledge/、requirements-test-ml.* 文件变更
+  ml-test:
+    name: ML 测试 (知识库/向量索引)
+    runs-on: ubuntu-latest
+    needs: changes
+    # 触发条件：手动触发 | PR 标签 | 文件变更
+    if: |
+      github.event.inputs.run_ml_tests == 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'run-ml-tests') ||
+      needs.changes.outputs.ml == 'true'
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+            requirements-test-ml.txt
+
+      - name: 安装 pip-tools
+        run: python -m pip install --upgrade pip pip-tools
+
+      - name: 安装 ML 测试依赖
+        id: install_deps
+        run: |
+          echo "## ML 测试依赖安装" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 记录开始时间
+          START_TIME=$(date +%s)
+          
+          # 安装完整依赖链
+          echo "### 安装依赖" >> $GITHUB_STEP_SUMMARY
+          echo "安装 requirements.txt + requirements-test.txt + requirements-test-ml.txt..." >> $GITHUB_STEP_SUMMARY
+          
+          set +e
+          pip-sync requirements.txt requirements-test.txt requirements-test-ml.txt 2>&1 | tee /tmp/install_output.txt
+          INSTALL_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          
+          # 记录结束时间
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          
+          if [ $INSTALL_EXIT_CODE -eq 0 ]; then
+            echo "✅ 依赖安装成功 (耗时 ${DURATION}s)" >> $GITHUB_STEP_SUMMARY
+            echo "install_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 依赖安装失败" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            tail -30 /tmp/install_output.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "install_status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 已安装的 ML 相关包" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          pip list | grep -iE "(torch|sentence-transformers|chromadb|tiktoken|hnswlib)" >> $GITHUB_STEP_SUMMARY || echo "未找到 ML 相关包"
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: 验证 ML 依赖导入
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ML 依赖导入验证" >> $GITHUB_STEP_SUMMARY
+          
+          # 验证关键 ML 依赖可以导入
+          python -c "
+          import sys
+          errors = []
+          
+          packages = [
+              ('torch', 'PyTorch'),
+              ('sentence_transformers', 'Sentence Transformers'),
+              ('chromadb', 'ChromaDB'),
+              ('tiktoken', 'Tiktoken'),
+              ('hnswlib', 'HNSWLib'),
+          ]
+          
+          for module, name in packages:
+              try:
+                  __import__(module)
+                  print(f'✅ {name}')
+              except ImportError as e:
+                  print(f'❌ {name}: {e}')
+                  errors.append(name)
+          
+          if errors:
+              print(f'\\n导入失败的包: {errors}', file=sys.stderr)
+              sys.exit(1)
+          " | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: 运行 ML 测试
+        id: ml_tests
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ML 测试结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 定义 ML 测试路径
+          ML_TEST_PATHS="tests/test_indexing/ tests/test_knowledge.py tests/test_knowledge_vector.py tests/test_knowledge_validation.py tests/test_knowledge_injection.py"
+          
+          echo "### 测试范围" >> $GITHUB_STEP_SUMMARY
+          echo "- tests/test_indexing/ (向量索引测试)" >> $GITHUB_STEP_SUMMARY
+          echo "- tests/test_knowledge*.py (知识库测试)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 运行测试
+          set +e
+          pytest $ML_TEST_PATHS -v --tb=short --color=yes \
+            --timeout=300 \
+            --cov=indexing --cov=knowledge \
+            --cov-report=xml:coverage-ml.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=0 2>&1 | tee /tmp/ml_test_output.txt
+          TEST_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          
+          # 解析测试结果
+          PASSED=$(grep -oP '\d+(?= passed)' /tmp/ml_test_output.txt | tail -1 || echo "0")
+          FAILED=$(grep -oP '\d+(?= failed)' /tmp/ml_test_output.txt | tail -1 || echo "0")
+          SKIPPED=$(grep -oP '\d+(?= skipped)' /tmp/ml_test_output.txt | tail -1 || echo "0")
+          ERRORS=$(grep -oP '\d+(?= error)' /tmp/ml_test_output.txt | tail -1 || echo "0")
+          
+          echo "### 测试统计" >> $GITHUB_STEP_SUMMARY
+          echo "| 状态 | 数量 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ 通过 | $PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ 失败 | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ 跳过 | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⚠️ 错误 | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "### ✅ ML 测试全部通过" >> $GITHUB_STEP_SUMMARY
+            echo "test_status=success" >> $GITHUB_OUTPUT
+          elif [ $TEST_EXIT_CODE -eq 5 ]; then
+            echo "### ⚠️ 没有找到 ML 测试用例" >> $GITHUB_STEP_SUMMARY
+            echo "test_status=no_tests" >> $GITHUB_OUTPUT
+            exit 0  # 没有测试不算失败
+          else
+            echo "### ❌ ML 测试失败" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>失败详情</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            tail -100 /tmp/ml_test_output.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+            echo "test_status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: 生成安装说明
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 本地运行 ML 测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 安装依赖" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# 安装 pip-tools (如果尚未安装)" >> $GITHUB_STEP_SUMMARY
+          echo "pip install pip-tools" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# 安装完整 ML 测试依赖" >> $GITHUB_STEP_SUMMARY
+          echo "pip-sync requirements.txt requirements-test.txt requirements-test-ml.txt" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 运行测试" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# 运行所有 ML 测试" >> $GITHUB_STEP_SUMMARY
+          echo "pytest tests/test_indexing/ tests/test_knowledge*.py -v" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# 仅运行向量索引测试" >> $GITHUB_STEP_SUMMARY
+          echo "pytest tests/test_indexing/ -v" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# 仅运行知识库测试" >> $GITHUB_STEP_SUMMARY
+          echo "pytest tests/test_knowledge*.py -v" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 触发 CI 运行 ML 测试" >> $GITHUB_STEP_SUMMARY
+          echo "- **手动触发**: Actions → CI → Run workflow → 勾选 'run_ml_tests'" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR 标签**: 给 PR 添加 \`run-ml-tests\` 标签" >> $GITHUB_STEP_SUMMARY
+          echo "- **自动触发**: 修改 \`indexing/\`、\`knowledge/\`、\`requirements-test-ml.*\` 文件" >> $GITHUB_STEP_SUMMARY
+
+      - name: 上传 ML 测试覆盖率
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage-ml.xml
+          flags: ml-tests
+          name: codecov-ml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

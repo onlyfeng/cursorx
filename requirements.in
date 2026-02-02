@@ -24,20 +24,15 @@ pyyaml>=6.0.1
 # 类型支持
 typing-extensions>=4.9.0
 
-# HTML/网页处理
-beautifulsoup4>=4.12.0  # HTML 解析
-html2text>=2024.1.0     # HTML 转 Markdown
-lxml>=5.0.0             # 高性能 XML/HTML 解析器
-
-# HTTP 客户端
-httpx>=0.27.0           # 异步 HTTP 客户端
+# HTTP 客户端 (核心通信依赖)
+httpx>=0.27.0           # 异步 HTTP 客户端，Cloud API 通信
 websockets>=12.0        # WebSocket 实时连接支持
 
 # ============================================================
-# ML/向量搜索依赖 (可选，用于语义搜索功能)
-# 取消注释以启用向量搜索功能
+# 注意: 以下依赖已移至可选分组
 # ============================================================
-# sentence-transformers>=2.2.0  # 文本嵌入向量生成
-# chromadb>=0.4.0               # 向量数据库
-# tiktoken>=0.5.0               # OpenAI 分词器
-# hnswlib>=0.7.0                # 轻量级向量索引
+# [web] 网页处理 → requirements-optional.txt / pyproject.toml [web]
+#   beautifulsoup4, html2text, lxml
+#
+# [ml] ML/向量搜索 → requirements-optional.txt / pyproject.toml [ml]
+#   sentence-transformers, chromadb, tiktoken, hnswlib

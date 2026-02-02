@@ -6,11 +6,14 @@
 2. 使用语义搜索增强代码理解
 3. 自我更新迭代能力
 """
+
 from __future__ import annotations
+
 import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -35,9 +38,22 @@ CURSOR_DOCS_KB_NAME = "cursor-docs"
 
 # Cursor 相关关键词，用于自动检测是否需要知识库上下文
 CURSOR_KEYWORDS = [
-    "cursor", "agent", "cli", "mcp", "hook", "subagent", "skill",
-    "stream-json", "output-format", "cursor-agent", "--force", "--print",
-    "cursor.com", "cursor api", "cursor 命令", "cursor 工具",
+    "cursor",
+    "agent",
+    "cli",
+    "mcp",
+    "hook",
+    "subagent",
+    "skill",
+    "stream-json",
+    "output-format",
+    "cursor-agent",
+    "--force",
+    "--print",
+    "cursor.com",
+    "cursor api",
+    "cursor 命令",
+    "cursor 工具",
 ]
 
 
@@ -113,7 +129,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-d", "--directory",
+        "-d",
+        "--directory",
         type=str,
         default=".",
         help="工作目录 (默认: 当前目录)",
@@ -121,7 +138,8 @@ def parse_args() -> argparse.Namespace:
 
     # workers 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
-        "-w", "--workers",
+        "-w",
+        "--workers",
         type=int,
         default=None,
         help=f"Worker 池大小 (默认: {cfg_workers}，来自 config.yaml)",
@@ -129,7 +147,8 @@ def parse_args() -> argparse.Namespace:
 
     # max_iterations 使用 tri-state (None=未指定，使用 config.yaml)
     parser.add_argument(
-        "-m", "--max-iterations",
+        "-m",
+        "--max-iterations",
         type=str,
         default=None,
         help=f"最大迭代次数 (默认: {cfg_max_iterations}，使用 MAX 或 -1 表示无限迭代直到完成或用户中断)",
@@ -168,7 +187,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="详细输出",
     )
@@ -364,12 +384,14 @@ async def search_knowledge_base(
         # 加载完整文档内容
         doc = await storage.load_document(result.doc_id)
         if doc:
-            knowledge_context.append({
-                "title": doc.title or result.url,
-                "url": doc.url,
-                "content": doc.content[:2000],  # 限制内容长度
-                "score": result.score,
-            })
+            knowledge_context.append(
+                {
+                    "title": doc.title or result.url,
+                    "url": doc.url,
+                    "content": doc.content[:2000],  # 限制内容长度
+                    "score": result.score,
+                }
+            )
 
     return knowledge_context
 
@@ -393,11 +415,13 @@ async def get_all_knowledge(kb_name: str = "default", limit: int = 10) -> list[d
     for entry in entries:
         doc = await storage.load_document(entry.doc_id)
         if doc:
-            knowledge_context.append({
-                "title": doc.title or entry.url,
-                "url": doc.url,
-                "summary": doc.content[:500] + "..." if len(doc.content) > 500 else doc.content,
-            })
+            knowledge_context.append(
+                {
+                    "title": doc.title or entry.url,
+                    "url": doc.url,
+                    "summary": doc.content[:500] + "..." if len(doc.content) > 500 else doc.content,
+                }
+            )
 
     return knowledge_context
 
@@ -461,18 +485,20 @@ async def search_cursor_docs(
     for result in results:
         doc = manager.get_document(result.doc_id)
         if doc:
-            knowledge_context.append({
-                "title": doc.title or result.url,
-                "url": doc.url,
-                "content": doc.content[:2000],
-                "score": result.score,
-            })
+            knowledge_context.append(
+                {
+                    "title": doc.title or result.url,
+                    "url": doc.url,
+                    "content": doc.content[:2000],
+                    "score": result.score,
+                }
+            )
 
     return knowledge_context
 
 
 def _build_cloud_auth_config(
-    args: argparse.Namespace,
+    args: argparse.Namespace | Any,
     resolved: dict,
 ) -> CloudAuthConfig | None:
     """构建 Cloud 认证配置
@@ -685,9 +711,9 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
         for i, doc in enumerate(knowledge_context, 1):
             context_text += f"### {i}. {doc['title']}\n"
             context_text += f"URL: {doc['url']}\n"
-            if 'content' in doc:
+            if "content" in doc:
                 context_text += f"内容:\n```\n{doc['content'][:1000]}\n```\n\n"
-            elif 'summary' in doc:
+            elif "summary" in doc:
                 context_text += f"摘要: {doc['summary']}\n\n"
 
         enhanced_goal = f"{args.goal}\n{context_text}"
@@ -699,10 +725,19 @@ async def run_orchestrator(args: argparse.Namespace) -> dict:
     if args.use_semantic_search:
         try:
             from indexing import SemanticSearch
-            semantic_search = SemanticSearch()
-            await semantic_search.initialize()
-            # TODO: 注入到 orchestrator
-            logger.info("语义搜索已启用")
+
+            vector_store = cursor_docs_manager._vector_store
+            embedding_model = getattr(vector_store, "_embedding_model", None)
+            vector_backend = getattr(vector_store, "_vector_store", None)
+            if vector_store and embedding_model is not None and vector_backend is not None:
+                semantic_search = SemanticSearch(
+                    embedding_model,
+                    vector_backend,
+                )
+                # TODO: 注入到 orchestrator
+                logger.info("语义搜索已启用")
+            else:
+                logger.warning("语义搜索初始化失败: 向量存储未初始化")
         except Exception as e:
             logger.warning(f"语义搜索初始化失败: {e}")
 
@@ -725,7 +760,7 @@ def print_result(result: dict) -> None:
     print(f"  - 完成: {result.get('total_tasks_completed', 0)}")
     print(f"  - 失败: {result.get('total_tasks_failed', 0)}")
 
-    if result.get('final_score'):
+    if result.get("final_score"):
         print(f"\n最终评分: {result['final_score']:.1f}")
 
     print("=" * 60)

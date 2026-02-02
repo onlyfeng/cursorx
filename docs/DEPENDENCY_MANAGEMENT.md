@@ -15,19 +15,27 @@
 
 ## 依赖管理架构
 
+### 核心原则
+
+- **`requirements.txt` = 核心运行时锁定文件**：仅包含运行 Agent 系统必需的最小依赖
+- **全量能力通过 extras 或 optional requirements 安装**：ML、浏览器、开发工具等按需安装
+
 ### 文件结构
 
 ```
 cursorx/
-├── pyproject.toml          # 项目元数据和依赖定义（PEP 621）
-├── requirements.in          # 核心依赖源文件
-├── requirements-dev.in      # 开发依赖源文件
-├── requirements-test.in     # 测试依赖源文件
-├── requirements.txt         # 锁定的核心依赖（自动生成）
-├── requirements-dev.txt     # 锁定的开发依赖（自动生成）
-├── requirements-test.txt    # 锁定的测试依赖（自动生成）
+├── pyproject.toml             # 项目元数据和依赖定义（PEP 621）
+├── requirements.in            # 核心依赖源文件
+├── requirements-dev.in        # 开发依赖源文件
+├── requirements-test.in       # 测试依赖源文件
+├── requirements-test-ml.in    # ML 测试依赖源文件（不进入默认 CI）
+├── requirements-optional.txt  # 可选依赖（ML/浏览器等，手动维护）
+├── requirements.txt           # 锁定的核心依赖（sync-deps.sh 自动生成）
+├── requirements-dev.txt       # 锁定的开发依赖（sync-deps.sh 自动生成）
+├── requirements-test.txt      # 锁定的测试依赖（sync-deps.sh 自动生成）
+├── requirements-test-ml.txt   # 锁定的 ML 测试依赖（sync-deps.sh 自动生成，需 Python <= 3.12）
 └── scripts/
-    └── sync-deps.sh         # 依赖同步脚本
+    └── sync-deps.sh           # 依赖同步脚本（编译/升级/同步）
 ```
 
 ### 依赖分组
@@ -37,20 +45,111 @@ cursorx/
 | 核心依赖 | `requirements.in` | 运行时必需 |
 | 开发依赖 | `requirements-dev.in` | 代码质量、linting |
 | 测试依赖 | `requirements-test.in` | pytest、mock 工具 |
-| 可选依赖 | `pyproject.toml [optional-dependencies]` | ML/向量功能 |
+| ML 测试依赖 | `requirements-test-ml.in` | 知识库/向量测试 |
+| 可选依赖 | `requirements-optional.txt` | ML/向量/浏览器功能 |
+
+### 依赖分层对照表
+
+| 依赖包 | requirements.in | pyproject.toml | 分组 | 进入 CI |
+|--------|-----------------|----------------|------|---------|
+| **核心运行时** |||||
+| asyncio-pool | ✓ | dependencies | core | ✓ |
+| aiofiles | ✓ | dependencies | core | ✓ |
+| pydantic | ✓ | dependencies | core | ✓ |
+| psutil | ✓ | dependencies | core | ✓ |
+| loguru | ✓ | dependencies | core | ✓ |
+| python-dotenv | ✓ | dependencies | core | ✓ |
+| pyyaml | ✓ | dependencies | core | ✓ |
+| typing-extensions | ✓ | dependencies | core | ✓ |
+| httpx | ✓ | dependencies | core | ✓ |
+| websockets | ✓ | dependencies | core | ✓ |
+| **网页处理 [web]** |||||
+| beautifulsoup4 | - | optional-deps.web | web | ✗ |
+| html2text | - | optional-deps.web | web | ✗ |
+| lxml | - | optional-deps.web | web | ✗ |
+| **ML/向量 [ml]** |||||
+| sentence-transformers | - | optional-deps.ml | ml | ✗ |
+| chromadb | - | optional-deps.ml | ml | ✗ |
+| tiktoken | - | optional-deps.ml | ml | ✗ |
+| hnswlib | - | optional-deps.ml | ml | ✗ |
+| torch | - | requirements-optional.txt | ml | ✗ |
+| numpy | - | requirements-optional.txt | ml | ✗ |
+| **浏览器 [browser]** |||||
+| playwright | - | requirements-optional.txt | browser | ✗ |
+| **开发工具 [dev]** |||||
+| mypy | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| ruff | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| flake8 | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| black | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| isort | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| pre-commit | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| pip-audit | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| pip-tools | requirements-dev.in | optional-deps.dev | dev | ✓ |
+| **测试工具 [test]** |||||
+| pytest | requirements-test.in | optional-deps.test | test | ✓ |
+| pytest-asyncio | requirements-test.in | optional-deps.test | test | ✓ |
+| pytest-cov | requirements-test.in | optional-deps.test | test | ✓ |
+| pytest-timeout | requirements-test.in | optional-deps.test | test | ✓ |
+| respx | requirements-test.in | optional-deps.test | test | ✓ |
 
 ### 依赖类型说明
 
 ```python
 # pyproject.toml 中的分组
 [project.optional-dependencies]
-web = [...]      # 网页处理：beautifulsoup4, httpx
-ml = [...]       # ML/向量：sentence-transformers, chromadb
+web = [...]      # 网页处理：beautifulsoup4, html2text, lxml
+ml = [...]       # ML/向量：sentence-transformers, chromadb, tiktoken, hnswlib
 vector = [...]   # 向量搜索（ml 的别名）
-dev = [...]      # 开发工具：mypy, ruff, flake8
-test = [...]     # 测试工具：pytest, pytest-asyncio
+dev = [...]      # 开发工具：mypy, ruff, flake8, black, isort, pip-tools
+test = [...]     # 测试工具：pytest, pytest-asyncio, respx
 all = [...]      # 完整安装
 ```
+
+### 推荐安装命令
+
+根据使用场景选择对应的安装命令：
+
+#### 场景对照表
+
+| 场景 | 推荐命令 | 说明 |
+|------|----------|------|
+| **CI 构建** | `pip install -r requirements.txt` | 仅核心依赖，最小化安装 |
+| **CI 测试** | `pip-sync requirements.txt requirements-test.txt` | 核心 + 测试，精确同步 |
+| **本地开发** | `pip-sync requirements.txt requirements-dev.txt requirements-test.txt` | 全量开发环境 |
+| **ML 测试** | `pip-sync requirements.txt requirements-test.txt requirements-test-ml.txt` | 包含 ML 依赖（需 Python ≤ 3.12） |
+
+#### 安装命令详解
+
+```bash
+# ===== CI 场景 =====
+
+# CI 构建阶段：仅核心依赖
+pip install -r requirements.txt
+
+# CI 测试阶段：核心 + 测试（推荐使用 pip-sync 精确同步）
+pip-sync requirements.txt requirements-test.txt
+
+# CI lint 阶段：核心 + 开发工具
+pip-sync requirements.txt requirements-dev.txt
+
+# ===== 本地开发场景 =====
+
+# 完整开发环境（推荐）
+pip-sync requirements.txt requirements-dev.txt requirements-test.txt
+
+# 包含 ML 功能的测试环境（需 Python <= 3.12）
+pip-sync requirements.txt requirements-test.txt requirements-test-ml.txt
+
+# ===== pyproject.toml extras 安装（备选方式）=====
+
+pip install -e ".[dev,test]"      # 开发 + 测试
+pip install -e ".[ml]"            # ML/向量功能
+pip install -e ".[web]"           # 网页处理功能
+pip install -e ".[all]"           # 完整安装（所有 extras）
+```
+
+> **注意**：`pip-sync` 会精确同步环境（移除不在列表中的包），适合需要干净环境的场景。
+> 如果只需添加依赖而不移除，使用 `pip install -r ...` 即可。
 
 ---
 
@@ -155,11 +254,13 @@ pip-compile requirements-test.in -o requirements-test.txt --strip-extras
 #### 步骤 4：安装依赖
 
 ```bash
-# 使用 pip-sync（精确同步）
+# 使用 pip-sync（精确同步，推荐本地开发使用）
 pip-sync requirements.txt requirements-dev.txt requirements-test.txt
 
-# 或使用脚本
+# 或使用脚本（同步核心 + 开发 + 测试依赖）
 bash scripts/sync-deps.sh sync
+
+# CI 环境推荐分阶段安装（见"推荐安装命令"章节）
 ```
 
 ### 更新依赖
@@ -335,23 +436,23 @@ python -c "from core import BaseAgent; from agents import PlannerAgent; print('O
 git clone <repository-url>
 cd cursorx
 
-# 2. 创建虚拟环境
-python3.9 -m venv venv
+# 2. 创建虚拟环境（推荐 Python 3.11，与锁文件生成基准一致）
+python3.11 -m venv venv
 source venv/bin/activate  # Linux/macOS
 # 或 venv\Scripts\activate  # Windows
 
-# 3. 升级 pip
-pip install --upgrade pip
+# 3. 升级 pip 并安装 pip-tools
+pip install --upgrade pip pip-tools>=7.3.0
 
-# 4. 安装 pip-tools
-pip install pip-tools>=7.3.0
-
-# 5. 同步依赖
+# 4. 同步完整开发环境
 pip-sync requirements.txt requirements-dev.txt requirements-test.txt
 
-# 6. 验证安装
+# 5. 验证安装
 python -c "from core import BaseAgent; print('核心模块加载成功')"
 ```
+
+> **锁文件生成基准**：所有锁定文件（`requirements*.txt`）基于 Python 3.11 生成。
+> 在其他 Python 版本下安装通常可以工作，但如需重新生成锁文件，请使用 Python 3.11。
 
 ### 使用 pyproject.toml 安装
 
@@ -506,7 +607,51 @@ bash scripts/sync-deps.sh audit
 
 # 依赖一致性检查
 bash scripts/sync-deps.sh check
+
+# 依赖版本检查与冲突检测
+python scripts/check_deps.py --verbose
 ```
+
+### 分层依赖检查
+
+项目使用分层依赖检查策略，确保在不同环境下正确验证依赖：
+
+#### 检查脚本
+
+| 脚本 | 说明 | 检查范围 |
+|------|------|----------|
+| `scripts/pre_commit_check.py` | 预提交检查 | 默认检查三个文件，可用 `--req-files` 指定 |
+| `scripts/check_all.sh` | 完整健康检查 | 检查三个文件存在性及核心/开发/测试依赖 |
+| `scripts/check_deps.py` | 依赖冲突检测 | 解析三个文件，检测版本冲突和未声明导入 |
+
+#### 使用示例
+
+```bash
+# 预提交检查（默认检查所有三个 requirements 文件）
+python scripts/pre_commit_check.py
+
+# 仅检查核心依赖（CI 环境）
+python scripts/pre_commit_check.py --req-files requirements.txt
+
+# 检查核心 + 测试依赖
+python scripts/pre_commit_check.py --req-files requirements.txt requirements-test.txt
+
+# 依赖冲突检测（自动解析三个文件）
+python scripts/check_deps.py --verbose
+
+# 完整健康检查
+bash scripts/check_all.sh --full
+```
+
+#### 避免误判
+
+分层检查避免了以下常见误判：
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| `pytest` 报告为未安装 | 仅检查 `requirements.txt` | 同时检查 `requirements-test.txt` |
+| `mypy` 报告为未安装 | 仅检查 `requirements.txt` | 同时检查 `requirements-dev.txt` |
+| 未声明的导入误报 | 未解析 dev/test 依赖 | `check_deps.py` 解析所有三个文件 |
 
 ### Docker 构建
 

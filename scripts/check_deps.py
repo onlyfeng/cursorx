@@ -4,40 +4,62 @@
 检查已安装包版本与声明版本是否匹配，检测间接依赖冲突，生成冲突报告。
 
 功能：
-1. 检查已安装包版本与 requirements.txt / pyproject.toml 声明版本是否匹配
-2. 检测间接依赖冲突（通过 pip check）
-3. 分析依赖树，识别版本不兼容问题
-4. 生成详细的冲突报告（支持 text/json/markdown 格式）
+1. 检查已安装包版本与 requirements 文件 / pyproject.toml 声明版本是否匹配
+2. 分层检查：requirements.txt（核心）、requirements-dev.txt（开发）、requirements-test.txt（测试）、requirements-test-ml.txt（ML测试，可选）
+3. 检测间接依赖冲突（通过 pip check）
+4. 分析依赖树，识别版本不兼容问题
+5. 检查 import 语句与声明的一致性，避免把 test/dev 依赖误报为未声明
+6. 生成详细的冲突报告（支持 text/json/markdown 格式）
+
+依赖分层：
+- requirements.txt: 核心依赖（CI 默认）
+- requirements-dev.txt: 开发依赖（本地开发）
+- requirements-test.txt: 测试依赖（CI 测试阶段）
+- requirements-test-ml.txt: ML 测试依赖（可选，存在则解析）
 
 用法：
     python scripts/check_deps.py [--format text|json|md] [--output report.txt] [--verbose]
 """
 
 import argparse
+import ast
 import json
+import pkgutil
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-import ast
-import pkgutil
-
+from typing import Any, Optional
 
 # ============================================================
 # 常量定义
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent
-REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 PYPROJECT_FILE = PROJECT_ROOT / "pyproject.toml"
+
+# 分层依赖文件配置
+# - requirements.txt: 核心依赖（CI 默认）
+# - requirements-dev.txt: 开发依赖（本地开发）
+# - requirements-test.txt: 测试依赖（CI 测试阶段）
+# - requirements-test-ml.txt: ML 测试依赖（可选，存在则解析）
+REQUIREMENTS_FILES = [
+    ("requirements.txt", "核心依赖", False),  # (文件名, 层级名, 是否可选)
+    ("requirements-dev.txt", "开发依赖", False),
+    ("requirements-test.txt", "测试依赖", False),
+    ("requirements-test-ml.txt", "ML测试依赖", True),  # 可选：存在则解析，不存在则跳过
+]
+
+# 向后兼容：保留 REQUIREMENTS_FILE 常量
+REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 
 
 # ============================================================
 # 颜色输出
 # ============================================================
+
 
 class Colors:
     RED = "\033[0;31m"
@@ -78,13 +100,20 @@ def print_info(text: str) -> None:
     print(f"  {Colors.BLUE}ℹ{Colors.NC} {text}")
 
 
+def normalize_package_name(name: str) -> str:
+    """标准化包名，用于匹配不同分隔符格式"""
+    return re.sub(r"[-_.]+", "", name.lower())
+
+
 # ============================================================
 # 数据结构
 # ============================================================
 
+
 @dataclass
 class DependencySpec:
     """依赖声明"""
+
     name: str
     version_spec: str  # 原始版本规范，如 ">=1.0.0"
     min_version: Optional[str] = None
@@ -96,6 +125,7 @@ class DependencySpec:
 @dataclass
 class InstalledPackage:
     """已安装的包"""
+
     name: str
     version: str
     location: str = ""
@@ -105,6 +135,7 @@ class InstalledPackage:
 @dataclass
 class VersionMismatch:
     """版本不匹配"""
+
     package: str
     declared_spec: str
     installed_version: str
@@ -116,6 +147,7 @@ class VersionMismatch:
 @dataclass
 class DependencyConflict:
     """依赖冲突"""
+
     package: str
     required_by: str
     required_version: str
@@ -126,9 +158,10 @@ class DependencyConflict:
 @dataclass
 class UndeclaredImport:
     """未声明的导入"""
+
     package: str
     import_locations: list[str] = field(default_factory=list)  # 文件:行号 列表
-    
+
     def add_location(self, file_path: str, line_no: int) -> None:
         self.import_locations.append(f"{file_path}:{line_no}")
 
@@ -136,10 +169,11 @@ class UndeclaredImport:
 @dataclass
 class ImportConsistencyReport:
     """导入一致性检查报告"""
+
     undeclared_imports: dict[str, UndeclaredImport] = field(default_factory=dict)
     total_py_files: int = 0
     total_imports: int = 0
-    
+
     @property
     def has_issues(self) -> bool:
         return bool(self.undeclared_imports)
@@ -148,37 +182,49 @@ class ImportConsistencyReport:
 @dataclass
 class DependencyReport:
     """依赖检查报告"""
+
     timestamp: str = ""
     total_declared: int = 0
     total_installed: int = 0
     version_mismatches: list[VersionMismatch] = field(default_factory=list)
     dependency_conflicts: list[DependencyConflict] = field(default_factory=list)
     missing_packages: list[str] = field(default_factory=list)
+    missing_optional_packages: list[str] = field(default_factory=list)
     extra_packages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     import_consistency: Optional[ImportConsistencyReport] = None
-    
+
     @property
     def has_errors(self) -> bool:
         has_import_issues = self.import_consistency.has_issues if self.import_consistency else False
         return bool(self.version_mismatches or self.dependency_conflicts or self.missing_packages or has_import_issues)
-    
+
     @property
     def has_warnings(self) -> bool:
-        return bool(self.warnings or self.extra_packages)
+        return bool(self.warnings or self.extra_packages or self.missing_optional_packages)
+
+
+def _is_optional_source(source: str) -> bool:
+    """判断依赖来源是否为可选层（不作为缺失错误）"""
+    if "[可选]" in source:
+        return True
+    if source.startswith("pyproject.toml["):
+        return True
+    return bool(source.startswith("requirements-optional.txt"))
 
 
 # ============================================================
 # 版本解析与比较
 # ============================================================
 
+
 def parse_version(version: str) -> tuple:
     """解析版本号为可比较的元组"""
     # 移除前导 v
     version = version.lstrip("v")
     # 分割版本号
-    parts = re.split(r'[.\-]', version)
-    result = []
+    parts = re.split(r"[.\-]", version)
+    result: list[int | str] = []
     for part in parts:
         # 尝试转换为数字
         try:
@@ -202,22 +248,22 @@ def version_satisfies(installed: str, spec: str) -> bool:
     """检查已安装版本是否满足规范"""
     if not spec or spec == "*":
         return True
-    
+
     # 解析版本规范
     # 支持: >=1.0, <=2.0, ==1.0, ~=1.0, !=1.0, >1.0, <2.0
     patterns = [
-        (r'^>=\s*(.+)$', lambda v, s: compare_versions(v, s) >= 0),
-        (r'^>\s*(.+)$', lambda v, s: compare_versions(v, s) > 0),
-        (r'^<=\s*(.+)$', lambda v, s: compare_versions(v, s) <= 0),
-        (r'^<\s*(.+)$', lambda v, s: compare_versions(v, s) < 0),
-        (r'^==\s*(.+)$', lambda v, s: compare_versions(v, s) == 0),
-        (r'^!=\s*(.+)$', lambda v, s: compare_versions(v, s) != 0),
-        (r'^~=\s*(.+)$', lambda v, s: compare_versions(v, s) >= 0),  # 兼容版本
+        (r"^>=\s*(.+)$", lambda v, s: compare_versions(v, s) >= 0),
+        (r"^>\s*(.+)$", lambda v, s: compare_versions(v, s) > 0),
+        (r"^<=\s*(.+)$", lambda v, s: compare_versions(v, s) <= 0),
+        (r"^<\s*(.+)$", lambda v, s: compare_versions(v, s) < 0),
+        (r"^==\s*(.+)$", lambda v, s: compare_versions(v, s) == 0),
+        (r"^!=\s*(.+)$", lambda v, s: compare_versions(v, s) != 0),
+        (r"^~=\s*(.+)$", lambda v, s: compare_versions(v, s) >= 0),  # 兼容版本
     ]
-    
+
     # 处理复合规范（如 >=1.0,<2.0）
     specs = [s.strip() for s in spec.split(",")]
-    
+
     for single_spec in specs:
         matched = False
         for pattern, check_fn in patterns:
@@ -228,12 +274,11 @@ def version_satisfies(installed: str, spec: str) -> bool:
                     return False
                 matched = True
                 break
-        
-        if not matched and single_spec:
+
+        if not matched and single_spec and compare_versions(installed, single_spec) != 0:
             # 没有操作符，假设是精确匹配
-            if compare_versions(installed, single_spec) != 0:
-                return False
-    
+            return False
+
     return True
 
 
@@ -241,14 +286,15 @@ def version_satisfies(installed: str, spec: str) -> bool:
 # 依赖解析
 # ============================================================
 
+
 def parse_requirements_txt(file_path: Path) -> list[DependencySpec]:
     """解析 requirements.txt 文件"""
-    dependencies = []
-    
+    dependencies: list[DependencySpec] = []
+
     if not file_path.exists():
         return dependencies
-    
-    with open(file_path, "r", encoding="utf-8") as f:
+
+    with open(file_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             # 跳过注释和空行
@@ -257,56 +303,49 @@ def parse_requirements_txt(file_path: Path) -> list[DependencySpec]:
             # 跳过 -r/-e 等特殊行
             if line.startswith("-"):
                 continue
-            
+
             # 解析包名和版本
             # 支持格式: package>=1.0.0, package==1.0.0, package, package[extra]>=1.0
-            match = re.match(r'^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$', line)
+            match = re.match(r"^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$", line)
             if match:
                 name = match.group(1).lower()
                 version_spec = match.group(2).strip() if match.group(2) else ""
-                dependencies.append(DependencySpec(
-                    name=name,
-                    version_spec=version_spec,
-                    source="requirements.txt"
-                ))
-    
+                dependencies.append(DependencySpec(name=name, version_spec=version_spec, source="requirements.txt"))
+
     return dependencies
 
 
 def parse_pyproject_toml(file_path: Path) -> list[DependencySpec]:
     """解析 pyproject.toml 文件中的依赖"""
-    dependencies = []
-    
+    dependencies: list[DependencySpec] = []
+
     if not file_path.exists():
         return dependencies
-    
+
     try:
         # Python 3.11+ 内置 tomllib
         try:
             import tomllib
+
             with open(file_path, "rb") as f:
                 data = tomllib.load(f)
         except ImportError:
             # 回退到手动解析
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
             data = _parse_toml_simple(content)
-        
+
         # 获取 project.dependencies
         project = data.get("project", {})
         deps = project.get("dependencies", [])
-        
+
         for dep in deps:
-            match = re.match(r'^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$', dep)
+            match = re.match(r"^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$", dep)
             if match:
                 name = match.group(1).lower()
                 version_spec = match.group(2).strip() if match.group(2) else ""
-                dependencies.append(DependencySpec(
-                    name=name,
-                    version_spec=version_spec,
-                    source="pyproject.toml"
-                ))
-        
+                dependencies.append(DependencySpec(name=name, version_spec=version_spec, source="pyproject.toml"))
+
         # 获取可选依赖
         optional_deps = project.get("optional-dependencies", {})
         for group, deps in optional_deps.items():
@@ -314,32 +353,29 @@ def parse_pyproject_toml(file_path: Path) -> list[DependencySpec]:
                 # 跳过自引用 (如 cursorx[vector])
                 if dep.startswith(project.get("name", "")):
                     continue
-                match = re.match(r'^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$', dep)
+                match = re.match(r"^([a-zA-Z0-9_-]+)(?:\[.+\])?\s*(.*)$", dep)
                 if match:
                     name = match.group(1).lower()
                     version_spec = match.group(2).strip() if match.group(2) else ""
-                    dependencies.append(DependencySpec(
-                        name=name,
-                        version_spec=version_spec,
-                        source=f"pyproject.toml[{group}]"
-                    ))
+                    dependencies.append(
+                        DependencySpec(name=name, version_spec=version_spec, source=f"pyproject.toml[{group}]")
+                    )
     except Exception as e:
         print_warn(f"解析 pyproject.toml 失败: {e}")
-    
+
     return dependencies
 
 
 def _parse_toml_simple(content: str) -> dict:
     """简单的 TOML 解析（仅用于回退）"""
-    result = {}
-    current_section = result
-    section_path = []
-    
+    result: dict[str, Any] = {}
+    current_section: dict[str, Any] = result
+
     for line in content.split("\n"):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        
+
         # 解析节
         if line.startswith("["):
             section_name = line.strip("[]").strip()
@@ -349,15 +385,14 @@ def _parse_toml_simple(content: str) -> dict:
                 if part not in current_section:
                     current_section[part] = {}
                 current_section = current_section[part]
-            section_path = parts
             continue
-        
+
         # 解析键值对
         if "=" in line:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip()
-            
+
             # 解析值
             if value.startswith("["):
                 # 简单数组解析
@@ -372,49 +407,40 @@ def _parse_toml_simple(content: str) -> dict:
                 current_section[key] = value.strip('"').strip("'")
             else:
                 current_section[key] = value
-    
+
     return result
 
 
 def get_installed_packages() -> dict[str, InstalledPackage]:
     """获取已安装的包列表"""
     packages = {}
-    
+
     try:
         # 使用 pip list --format=json
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "list", "--format=json"],
-            capture_output=True,
-            text=True,
-            timeout=30
+            [sys.executable, "-m", "pip", "list", "--format=json"], capture_output=True, text=True, timeout=30
         )
-        
+
         if result.returncode == 0:
             pip_list = json.loads(result.stdout)
             for pkg in pip_list:
-                name = pkg["name"].lower()
-                packages[name] = InstalledPackage(
-                    name=pkg["name"],
-                    version=pkg["version"]
-                )
+                name = pkg["name"]
+                normalized = normalize_package_name(name)
+                if normalized not in packages:
+                    packages[normalized] = InstalledPackage(name=name, version=pkg["version"])
     except Exception as e:
         print_warn(f"获取已安装包列表失败: {e}")
-    
+
     return packages
 
 
 def check_pip_conflicts() -> list[DependencyConflict]:
     """使用 pip check 检测依赖冲突"""
     conflicts = []
-    
+
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "check"],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        
+        result = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True, timeout=60)
+
         if result.returncode != 0:
             # 解析冲突信息
             # 格式: package X.Y.Z has requirement dep>=A.B.C, but you have dep A.B.B.
@@ -423,54 +449,52 @@ def check_pip_conflicts() -> list[DependencyConflict]:
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 # 解析 "has requirement" 格式
                 match = re.match(
-                    r'^(.+?)\s+[\d.]+\s+has requirement\s+(.+?)\s*([<>=!~]+[\d.]+)?,\s*but you have\s+(.+?)\s+([\d.]+)',
-                    line
+                    r"^(.+?)\s+[\d.]+\s+has requirement\s+(.+?)\s*([<>=!~]+[\d.]+)?,\s*but you have\s+(.+?)\s+([\d.]+)",
+                    line,
                 )
                 if match:
-                    conflicts.append(DependencyConflict(
-                        package=match.group(2),
-                        required_by=match.group(1),
-                        required_version=match.group(3) or "any",
-                        installed_version=match.group(5),
-                        message=line
-                    ))
+                    conflicts.append(
+                        DependencyConflict(
+                            package=match.group(2),
+                            required_by=match.group(1),
+                            required_version=match.group(3) or "any",
+                            installed_version=match.group(5),
+                            message=line,
+                        )
+                    )
                     continue
-                
+
                 # 解析 "requires ... not installed" 格式
-                match = re.match(
-                    r'^(.+?)\s+[\d.]+\s+requires\s+(.+?),\s*which is not installed',
-                    line
-                )
+                match = re.match(r"^(.+?)\s+[\d.]+\s+requires\s+(.+?),\s*which is not installed", line)
                 if match:
-                    conflicts.append(DependencyConflict(
-                        package=match.group(2),
-                        required_by=match.group(1),
-                        required_version="any",
-                        installed_version="NOT INSTALLED",
-                        message=line
-                    ))
+                    conflicts.append(
+                        DependencyConflict(
+                            package=match.group(2),
+                            required_by=match.group(1),
+                            required_version="any",
+                            installed_version="NOT INSTALLED",
+                            message=line,
+                        )
+                    )
     except Exception as e:
         print_warn(f"运行 pip check 失败: {e}")
-    
+
     return conflicts
 
 
 def analyze_dependency_tree(verbose: bool = False) -> list[DependencyConflict]:
     """分析依赖树，检测间接依赖冲突"""
-    conflicts = []
-    
+    conflicts: list[DependencyConflict] = []
+
     try:
         # 使用 pipdeptree 如果可用
         result = subprocess.run(
-            [sys.executable, "-m", "pipdeptree", "--warn", "fail", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=60
+            [sys.executable, "-m", "pipdeptree", "--warn", "fail", "--json"], capture_output=True, text=True, timeout=60
         )
-        
+
         if result.returncode != 0 and result.stderr:
             # 解析 pipdeptree 警告
             for line in result.stderr.split("\n"):
@@ -483,7 +507,7 @@ def analyze_dependency_tree(verbose: bool = False) -> list[DependencyConflict]:
     except Exception as e:
         if verbose:
             print_warn(f"依赖树分析失败: {e}")
-    
+
     return conflicts
 
 
@@ -491,62 +515,234 @@ def analyze_dependency_tree(verbose: bool = False) -> list[DependencyConflict]:
 # 导入一致性检查
 # ============================================================
 
+
 def get_stdlib_modules() -> set[str]:
     """获取 Python 标准库模块列表"""
-    stdlib = set()
-    
+    stdlib: set[str] = set()
+
     # Python 3.10+ 内置 sys.stdlib_module_names
-    if hasattr(sys, 'stdlib_module_names'):
+    if hasattr(sys, "stdlib_module_names"):
         stdlib.update(sys.stdlib_module_names)
     else:
         # 回退: 使用已知的标准库模块列表
         # 这是 Python 3.9+ 常见标准库模块的子集
         known_stdlib = {
             # 内置
-            'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio',
-            'asyncore', 'atexit', 'audioop', 'base64', 'bdb', 'binascii',
-            'binhex', 'bisect', 'builtins', 'bz2', 'calendar', 'cgi', 'cgitb',
-            'chunk', 'cmath', 'cmd', 'code', 'codecs', 'codeop', 'collections',
-            'colorsys', 'compileall', 'concurrent', 'configparser', 'contextlib',
-            'contextvars', 'copy', 'copyreg', 'cProfile', 'crypt', 'csv',
-            'ctypes', 'curses', 'dataclasses', 'datetime', 'dbm', 'decimal',
-            'difflib', 'dis', 'distutils', 'doctest', 'email', 'encodings',
-            'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp', 'fileinput',
-            'fnmatch', 'fractions', 'ftplib', 'functools', 'gc', 'getopt',
-            'getpass', 'gettext', 'glob', 'graphlib', 'grp', 'gzip', 'hashlib',
-            'heapq', 'hmac', 'html', 'http', 'idlelib', 'imaplib', 'imghdr',
-            'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools',
-            'json', 'keyword', 'lib2to3', 'linecache', 'locale', 'logging',
-            'lzma', 'mailbox', 'mailcap', 'marshal', 'math', 'mimetypes',
-            'mmap', 'modulefinder', 'multiprocessing', 'netrc', 'nis',
-            'nntplib', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev',
-            'parser', 'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes',
-            'pkgutil', 'platform', 'plistlib', 'poplib', 'posix', 'posixpath',
-            'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile',
-            'pyclbr', 'pydoc', 'queue', 'quopri', 'random', 're', 'readline',
-            'reprlib', 'resource', 'rlcompleter', 'runpy', 'sched', 'secrets',
-            'select', 'selectors', 'shelve', 'shlex', 'shutil', 'signal',
-            'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver',
-            'spwd', 'sqlite3', 'ssl', 'stat', 'statistics', 'string',
-            'stringprep', 'struct', 'subprocess', 'sunau', 'symtable', 'sys',
-            'sysconfig', 'syslog', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile',
-            'termios', 'test', 'textwrap', 'threading', 'time', 'timeit',
-            'tkinter', 'token', 'tokenize', 'trace', 'traceback', 'tracemalloc',
-            'tty', 'turtle', 'turtledemo', 'types', 'typing', 'unicodedata',
-            'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings', 'wave',
-            'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib',
-            'xml', 'xmlrpc', 'zipapp', 'zipfile', 'zipimport', 'zlib',
+            "abc",
+            "aifc",
+            "argparse",
+            "array",
+            "ast",
+            "asynchat",
+            "asyncio",
+            "asyncore",
+            "atexit",
+            "audioop",
+            "base64",
+            "bdb",
+            "binascii",
+            "binhex",
+            "bisect",
+            "builtins",
+            "bz2",
+            "calendar",
+            "cgi",
+            "cgitb",
+            "chunk",
+            "cmath",
+            "cmd",
+            "code",
+            "codecs",
+            "codeop",
+            "collections",
+            "colorsys",
+            "compileall",
+            "concurrent",
+            "configparser",
+            "contextlib",
+            "contextvars",
+            "copy",
+            "copyreg",
+            "cProfile",
+            "crypt",
+            "csv",
+            "ctypes",
+            "curses",
+            "dataclasses",
+            "datetime",
+            "dbm",
+            "decimal",
+            "difflib",
+            "dis",
+            "distutils",
+            "doctest",
+            "email",
+            "encodings",
+            "enum",
+            "errno",
+            "faulthandler",
+            "fcntl",
+            "filecmp",
+            "fileinput",
+            "fnmatch",
+            "fractions",
+            "ftplib",
+            "functools",
+            "gc",
+            "getopt",
+            "getpass",
+            "gettext",
+            "glob",
+            "graphlib",
+            "grp",
+            "gzip",
+            "hashlib",
+            "heapq",
+            "hmac",
+            "html",
+            "http",
+            "idlelib",
+            "imaplib",
+            "imghdr",
+            "imp",
+            "importlib",
+            "inspect",
+            "io",
+            "ipaddress",
+            "itertools",
+            "json",
+            "keyword",
+            "lib2to3",
+            "linecache",
+            "locale",
+            "logging",
+            "lzma",
+            "mailbox",
+            "mailcap",
+            "marshal",
+            "math",
+            "mimetypes",
+            "mmap",
+            "modulefinder",
+            "multiprocessing",
+            "netrc",
+            "nis",
+            "nntplib",
+            "numbers",
+            "operator",
+            "optparse",
+            "os",
+            "ossaudiodev",
+            "parser",
+            "pathlib",
+            "pdb",
+            "pickle",
+            "pickletools",
+            "pipes",
+            "pkgutil",
+            "platform",
+            "plistlib",
+            "poplib",
+            "posix",
+            "posixpath",
+            "pprint",
+            "profile",
+            "pstats",
+            "pty",
+            "pwd",
+            "py_compile",
+            "pyclbr",
+            "pydoc",
+            "queue",
+            "quopri",
+            "random",
+            "re",
+            "readline",
+            "reprlib",
+            "resource",
+            "rlcompleter",
+            "runpy",
+            "sched",
+            "secrets",
+            "select",
+            "selectors",
+            "shelve",
+            "shlex",
+            "shutil",
+            "signal",
+            "site",
+            "smtpd",
+            "smtplib",
+            "sndhdr",
+            "socket",
+            "socketserver",
+            "spwd",
+            "sqlite3",
+            "ssl",
+            "stat",
+            "statistics",
+            "string",
+            "stringprep",
+            "struct",
+            "subprocess",
+            "sunau",
+            "symtable",
+            "sys",
+            "sysconfig",
+            "syslog",
+            "tabnanny",
+            "tarfile",
+            "telnetlib",
+            "tempfile",
+            "termios",
+            "test",
+            "textwrap",
+            "threading",
+            "time",
+            "timeit",
+            "tkinter",
+            "token",
+            "tokenize",
+            "trace",
+            "traceback",
+            "tracemalloc",
+            "tty",
+            "turtle",
+            "turtledemo",
+            "types",
+            "typing",
+            "unicodedata",
+            "unittest",
+            "urllib",
+            "uu",
+            "uuid",
+            "venv",
+            "warnings",
+            "wave",
+            "weakref",
+            "webbrowser",
+            "winreg",
+            "winsound",
+            "wsgiref",
+            "xdrlib",
+            "xml",
+            "xmlrpc",
+            "zipapp",
+            "zipfile",
+            "zipimport",
+            "zlib",
             # Python 3.11+ 新增
-            'tomllib', '_thread',
+            "tomllib",
+            "_thread",
         }
         stdlib.update(known_stdlib)
-    
+
     # 添加 pkgutil 发现的内置模块
-    for importer, modname, ispkg in pkgutil.iter_modules():
+    for _importer, modname, _ispkg in pkgutil.iter_modules():
         # 只取内置模块
-        if modname.startswith('_') or modname in stdlib:
+        if modname.startswith("_") or modname in stdlib:
             stdlib.add(modname)
-    
+
     return stdlib
 
 
@@ -556,193 +752,226 @@ def get_package_import_mapping() -> dict[str, str]:
     # 格式: import_name -> package_name (requirements.txt 中的名称)
     return {
         # import 名 -> pypi 包名
-        'PIL': 'pillow',
-        'cv2': 'opencv-python',
-        'sklearn': 'scikit-learn',
-        'yaml': 'pyyaml',
-        'bs4': 'beautifulsoup4',
-        'dotenv': 'python-dotenv',
-        'git': 'gitpython',
-        'magic': 'python-magic',
-        'dateutil': 'python-dateutil',
-        'jose': 'python-jose',
-        'jwt': 'pyjwt',
-        'Crypto': 'pycryptodome',
-        'OpenSSL': 'pyopenssl',
-        'wx': 'wxpython',
-        'serial': 'pyserial',
-        'usb': 'pyusb',
-        'lxml': 'lxml',
-        'attr': 'attrs',
+        "PIL": "pillow",
+        "cv2": "opencv-python",
+        "sklearn": "scikit-learn",
+        "yaml": "pyyaml",
+        "bs4": "beautifulsoup4",
+        "dotenv": "python-dotenv",
+        "git": "gitpython",
+        "magic": "python-magic",
+        "dateutil": "python-dateutil",
+        "jose": "python-jose",
+        "jwt": "pyjwt",
+        "Crypto": "pycryptodome",
+        "OpenSSL": "pyopenssl",
+        "wx": "wxpython",
+        "serial": "pyserial",
+        "usb": "pyusb",
+        "lxml": "lxml",
+        "attr": "attrs",
     }
-
-
-def normalize_package_name(name: str) -> str:
-    """规范化包名（处理 - 和 _ 的差异）"""
-    return name.lower().replace("-", "_").replace(".", "_")
 
 
 def extract_imports_from_file(file_path: Path) -> list[tuple[str, int]]:
     """从 Python 文件中提取所有 import 的模块名和行号"""
     imports = []
-    
+
     try:
         content = file_path.read_text(encoding="utf-8")
         tree = ast.parse(content, filename=str(file_path))
-        
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     # 取顶层模块名
-                    module_name = alias.name.split('.')[0]
+                    module_name = alias.name.split(".")[0]
                     imports.append((module_name, node.lineno))
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    # 取顶层模块名
-                    module_name = node.module.split('.')[0]
-                    imports.append((module_name, node.lineno))
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                # 取顶层模块名
+                module_name = node.module.split(".")[0]
+                imports.append((module_name, node.lineno))
     except SyntaxError:
         # 文件语法错误，跳过
         pass
     except Exception:
         # 其他错误，跳过
         pass
-    
+
     return imports
 
 
 def get_project_local_modules() -> set[str]:
     """获取项目中所有本地模块名（排除第三方依赖检测）"""
     local_modules = set()
-    
+
     # 顶级包目录
-    top_level_dirs = ['agents', 'coordinator', 'core', 'cursor', 'indexing', 
-                      'knowledge', 'process', 'tasks', 'tests', 'scripts']
+    top_level_dirs = [
+        "agents",
+        "coordinator",
+        "core",
+        "cursor",
+        "indexing",
+        "knowledge",
+        "process",
+        "tasks",
+        "tests",
+        "scripts",
+    ]
     local_modules.update(top_level_dirs)
-    
+
     # 扫描项目中所有 Python 模块
     for py_file in PROJECT_ROOT.rglob("*.py"):
         # 排除特定目录
-        if any(d in py_file.parts for d in {'venv', '.venv', 'node_modules', '__pycache__', '.git'}):
+        if any(d in py_file.parts for d in {"venv", ".venv", "node_modules", "__pycache__", ".git"}):
             continue
-        
+
         try:
             rel_path = py_file.relative_to(PROJECT_ROOT)
             parts = rel_path.parts
-            
+
             # 添加所有路径组件作为可能的本地模块
             for part in parts:
-                if part.endswith('.py'):
+                if part.endswith(".py"):
                     # 模块名（不含 .py）
                     local_modules.add(part[:-3])
                 else:
                     local_modules.add(part)
         except ValueError:
             continue
-    
+
     return local_modules
 
 
 def check_import_consistency(verbose: bool = False) -> ImportConsistencyReport:
-    """检查项目中 import 语句与 requirements.txt 声明的一致性
-    
+    """检查项目中 import 语句与 requirements 文件声明的一致性
+
     功能：
     1. 扫描所有 .py 文件的 import 语句
-    2. 对比 requirements.txt 中的声明
+    2. 对比所有 requirements 文件（核心/开发/测试）中的声明
     3. 报告未声明的第三方依赖
     4. 排除标准库模块
-    
+
+    分层检查：
+    - requirements.txt: 核心依赖
+    - requirements-dev.txt: 开发依赖
+    - requirements-test.txt: 测试依赖
+    - requirements-test-ml.txt: ML 测试依赖（可选）
+
     Returns:
         ImportConsistencyReport: 包含未声明导入的详细报告
     """
     report = ImportConsistencyReport()
-    
+
     # 获取标准库模块
     stdlib_modules = get_stdlib_modules()
-    
+
     # 获取包名映射
     import_to_package = get_package_import_mapping()
-    
-    # 解析 requirements.txt 中声明的依赖
-    declared_deps = parse_requirements_txt(REQUIREMENTS_FILE)
+
+    # 解析所有 requirements 文件中声明的依赖
+    declared_deps: list[DependencySpec] = []
+    files_checked: list[str] = []
+
+    for req_entry in REQUIREMENTS_FILES:
+        req_filename, layer_name, is_optional = req_entry
+        req_file = PROJECT_ROOT / req_filename
+        if req_file.exists():
+            layer_deps = parse_requirements_txt(req_file)
+            # 标记来源层（可选文件额外标注）
+            source_label = f"{req_filename} ({layer_name})"
+            if is_optional:
+                source_label += " [可选]"
+            for dep in layer_deps:
+                dep.source = source_label
+            declared_deps.extend(layer_deps)
+            files_checked.append(req_filename)
+            if verbose:
+                print_info(f"已解析 {req_filename}: {len(layer_deps)} 个依赖")
+        elif is_optional:
+            # 可选文件不存在时静默跳过
+            if verbose:
+                print_info(f"跳过可选文件 {req_filename}（不存在）")
+
+    # 解析 pyproject.toml
     declared_deps.extend(parse_pyproject_toml(PYPROJECT_FILE))
-    
+
+    if verbose:
+        print_info(f"检查的依赖文件: {', '.join(files_checked)}")
+
     # 构建已声明包名集合（规范化后）
     declared_packages = set()
     for dep in declared_deps:
         declared_packages.add(normalize_package_name(dep.name))
         # 也添加原始名称
         declared_packages.add(dep.name.lower())
-    
+
     # 获取项目本地模块
     project_modules = get_project_local_modules()
-    
+
     # 扫描所有 .py 文件
     py_files = list(PROJECT_ROOT.rglob("*.py"))
     # 排除特定目录
-    exclude_dirs = {'venv', '.venv', 'node_modules', '__pycache__', '.git', 'build', 'dist', '.eggs'}
+    exclude_dirs = {"venv", ".venv", "node_modules", "__pycache__", ".git", "build", "dist", ".eggs"}
     py_files = [f for f in py_files if not any(d in f.parts for d in exclude_dirs)]
-    
+
     report.total_py_files = len(py_files)
-    
+
     if verbose:
         print_info(f"扫描 {len(py_files)} 个 Python 文件...")
-    
+
     all_imports: dict[str, list[tuple[str, int]]] = {}  # module -> [(file, line), ...]
-    
+
     for py_file in py_files:
         imports = extract_imports_from_file(py_file)
         report.total_imports += len(imports)
-        
+
         for module_name, line_no in imports:
             # 获取相对路径用于报告
             try:
                 rel_path = py_file.relative_to(PROJECT_ROOT)
             except ValueError:
                 rel_path = py_file
-            
+
             if module_name not in all_imports:
                 all_imports[module_name] = []
             all_imports[module_name].append((str(rel_path), line_no))
-    
+
     # 检查每个导入是否已声明
     for module_name, locations in all_imports.items():
         # 跳过标准库
         if module_name in stdlib_modules:
             continue
-        
+
         # 跳过项目本地模块
         if module_name in project_modules or module_name.lower() in project_modules:
             continue
-        
+
         # 规范化模块名
         normalized_module = normalize_package_name(module_name)
-        
+
         # 检查是否在已声明依赖中
-        is_declared = (
-            normalized_module in declared_packages or
-            module_name.lower() in declared_packages
-        )
-        
+        is_declared = normalized_module in declared_packages or module_name.lower() in declared_packages
+
         # 检查包名映射
         if not is_declared and module_name in import_to_package:
             mapped_package = import_to_package[module_name]
             is_declared = normalize_package_name(mapped_package) in declared_packages
-        
+
         if not is_declared:
             # 记录未声明的导入
             if module_name not in report.undeclared_imports:
                 report.undeclared_imports[module_name] = UndeclaredImport(package=module_name)
-            
+
             for file_path, line_no in locations:
                 report.undeclared_imports[module_name].add_location(file_path, line_no)
-    
+
     if verbose:
         if report.has_issues:
             print_warn(f"发现 {len(report.undeclared_imports)} 个未声明的第三方依赖")
         else:
             print_pass("所有导入的第三方包均已在 requirements.txt 中声明")
-    
+
     return report
 
 
@@ -750,17 +979,48 @@ def check_import_consistency(verbose: bool = False) -> ImportConsistencyReport:
 # 检查与报告
 # ============================================================
 
+
 def check_dependencies(verbose: bool = False) -> DependencyReport:
-    """执行完整的依赖检查"""
-    report = DependencyReport(
-        timestamp=datetime.now().isoformat()
-    )
-    
-    # 解析声明的依赖
-    declared_deps = []
-    declared_deps.extend(parse_requirements_txt(REQUIREMENTS_FILE))
+    """执行完整的依赖检查
+
+    分层检查所有 requirements 文件：
+    - requirements.txt: 核心依赖
+    - requirements-dev.txt: 开发依赖
+    - requirements-test.txt: 测试依赖
+    - requirements-test-ml.txt: ML 测试依赖（可选）
+    """
+    report = DependencyReport(timestamp=datetime.now().isoformat())
+
+    # 解析所有 requirements 文件中声明的依赖
+    declared_deps: list[DependencySpec] = []
+    files_checked: list[str] = []
+
+    for req_entry in REQUIREMENTS_FILES:
+        req_filename, layer_name, is_optional = req_entry
+        req_file = PROJECT_ROOT / req_filename
+        if req_file.exists():
+            layer_deps = parse_requirements_txt(req_file)
+            # 标记来源层（可选文件额外标注）
+            source_label = f"{req_filename} ({layer_name})"
+            if is_optional:
+                source_label += " [可选]"
+            for dep in layer_deps:
+                dep.source = source_label
+            declared_deps.extend(layer_deps)
+            files_checked.append(req_filename)
+            if verbose:
+                print_info(f"已解析 {req_filename}: {len(layer_deps)} 个依赖")
+        elif is_optional:
+            # 可选文件不存在时静默跳过
+            if verbose:
+                print_info(f"跳过可选文件 {req_filename}（不存在）")
+
+    # 解析 pyproject.toml
     declared_deps.extend(parse_pyproject_toml(PYPROJECT_FILE))
-    
+
+    if verbose:
+        print_info(f"检查的依赖文件: {', '.join(files_checked)}")
+
     # 去重（保留第一个）
     seen = set()
     unique_deps = []
@@ -769,50 +1029,54 @@ def check_dependencies(verbose: bool = False) -> DependencyReport:
             seen.add(dep.name)
             unique_deps.append(dep)
     declared_deps = unique_deps
-    
+
     report.total_declared = len(declared_deps)
-    
+
     # 获取已安装的包
     installed = get_installed_packages()
     report.total_installed = len(installed)
-    
+
     if verbose:
         print_info(f"声明依赖: {report.total_declared} 个")
         print_info(f"已安装包: {report.total_installed} 个")
-    
+
     # 检查版本匹配
     for dep in declared_deps:
-        pkg_name = dep.name.lower().replace("-", "_")
-        # 尝试多种名称格式
-        pkg = installed.get(dep.name) or installed.get(pkg_name) or installed.get(dep.name.replace("_", "-"))
-        
+        normalized_name = normalize_package_name(dep.name)
+        pkg = installed.get(normalized_name)
+
         if not pkg:
-            report.missing_packages.append(dep.name)
+            if _is_optional_source(dep.source):
+                report.missing_optional_packages.append(dep.name)
+            else:
+                report.missing_packages.append(dep.name)
             continue
-        
+
         if dep.version_spec and not version_satisfies(pkg.version, dep.version_spec):
-            report.version_mismatches.append(VersionMismatch(
-                package=dep.name,
-                declared_spec=dep.version_spec,
-                installed_version=pkg.version,
-                source=dep.source,
-                severity="error",
-                message=f"已安装 {pkg.version}，但要求 {dep.version_spec}"
-            ))
-    
+            report.version_mismatches.append(
+                VersionMismatch(
+                    package=dep.name,
+                    declared_spec=dep.version_spec,
+                    installed_version=pkg.version,
+                    source=dep.source,
+                    severity="error",
+                    message=f"已安装 {pkg.version}，但要求 {dep.version_spec}",
+                )
+            )
+
     # 检查 pip 冲突
     pip_conflicts = check_pip_conflicts()
     report.dependency_conflicts.extend(pip_conflicts)
-    
+
     # 分析依赖树
     tree_conflicts = analyze_dependency_tree(verbose)
     report.dependency_conflicts.extend(tree_conflicts)
-    
+
     # 检查导入一致性
     if verbose:
         print_info("检查导入一致性...")
     report.import_consistency = check_import_consistency(verbose)
-    
+
     return report
 
 
@@ -825,7 +1089,7 @@ def format_report_text(report: DependencyReport) -> str:
     lines.append(f"\n时间: {report.timestamp}")
     lines.append(f"声明依赖: {report.total_declared}")
     lines.append(f"已安装包: {report.total_installed}")
-    
+
     # 缺失包
     if report.missing_packages:
         lines.append(f"\n{'─' * 60}")
@@ -833,7 +1097,15 @@ def format_report_text(report: DependencyReport) -> str:
         lines.append(f"{'─' * 60}")
         for pkg in report.missing_packages:
             lines.append(f"  ✗ {pkg}")
-    
+
+    # 可选依赖缺失（仅提示，不计为错误）
+    if report.missing_optional_packages:
+        lines.append(f"\n{'─' * 60}")
+        lines.append("  可选依赖未安装")
+        lines.append(f"{'─' * 60}")
+        for pkg in report.missing_optional_packages:
+            lines.append(f"  ⚠ {pkg}")
+
     # 版本不匹配
     if report.version_mismatches:
         lines.append(f"\n{'─' * 60}")
@@ -843,7 +1115,7 @@ def format_report_text(report: DependencyReport) -> str:
             lines.append(f"  ✗ {mismatch.package}")
             lines.append(f"    声明: {mismatch.declared_spec} ({mismatch.source})")
             lines.append(f"    已安装: {mismatch.installed_version}")
-    
+
     # 依赖冲突
     if report.dependency_conflicts:
         lines.append(f"\n{'─' * 60}")
@@ -855,7 +1127,7 @@ def format_report_text(report: DependencyReport) -> str:
             lines.append(f"    已安装: {conflict.installed_version}")
             if conflict.message:
                 lines.append(f"    信息: {conflict.message}")
-    
+
     # 未声明的导入
     if report.import_consistency and report.import_consistency.has_issues:
         lines.append(f"\n{'─' * 60}")
@@ -868,7 +1140,7 @@ def format_report_text(report: DependencyReport) -> str:
                 lines.append(f"    - {loc}")
             if len(undeclared.import_locations) > 3:
                 lines.append(f"    ... 及其他 {len(undeclared.import_locations) - 3} 处")
-    
+
     # 汇总
     lines.append(f"\n{'=' * 60}")
     if report.has_errors:
@@ -881,14 +1153,20 @@ def format_report_text(report: DependencyReport) -> str:
         if report.missing_packages:
             lines.append(f"    pip install {' '.join(report.missing_packages)}")
         if report.version_mismatches or report.dependency_conflicts:
-            lines.append("    pip install -r requirements.txt --upgrade")
-        if undeclared_count > 0:
+            lines.append("    pip-sync requirements.txt requirements-dev.txt requirements-test.txt")
+            lines.append(
+                "    或: pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt --upgrade"
+            )
+        if undeclared_count > 0 and report.import_consistency:
             undeclared_pkgs = list(report.import_consistency.undeclared_imports.keys())
-            lines.append(f"    需在 requirements.txt 中添加: {', '.join(undeclared_pkgs)}")
+            lines.append(f"    需在对应 requirements 文件中添加: {', '.join(undeclared_pkgs)}")
+            lines.append(
+                "    提示: 核心依赖→requirements.txt, 开发依赖→requirements-dev.txt, 测试依赖→requirements-test.txt, ML测试依赖→requirements-test-ml.txt"
+            )
     else:
         lines.append("  ✓ 所有依赖检查通过")
     lines.append("=" * 60)
-    
+
     return "\n".join(lines)
 
 
@@ -903,6 +1181,7 @@ def format_report_json(report: DependencyReport) -> str:
             "has_warnings": report.has_warnings,
         },
         "missing_packages": report.missing_packages,
+        "missing_optional_packages": report.missing_optional_packages,
         "version_mismatches": [
             {
                 "package": m.package,
@@ -929,8 +1208,12 @@ def format_report_json(report: DependencyReport) -> str:
                 "package": undeclared.package,
                 "locations": undeclared.import_locations,
             }
-            for pkg, undeclared in (report.import_consistency.undeclared_imports.items() if report.import_consistency else {})
-        } if report.import_consistency else {},
+            for pkg, undeclared in (
+                report.import_consistency.undeclared_imports.items() if report.import_consistency else {}
+            )
+        }
+        if report.import_consistency
+        else {},
         "import_consistency_summary": {
             "total_py_files": report.import_consistency.total_py_files if report.import_consistency else 0,
             "total_imports": report.import_consistency.total_imports if report.import_consistency else 0,
@@ -949,18 +1232,18 @@ def format_report_markdown(report: DependencyReport) -> str:
     lines.append(f"**时间**: {report.timestamp}")
     lines.append(f"**声明依赖**: {report.total_declared}")
     lines.append(f"**已安装包**: {report.total_installed}")
-    
+
     if report.has_errors:
         lines.append("")
         lines.append("## 发现问题")
-        
+
         if report.missing_packages:
             lines.append("")
             lines.append("### 缺失的包")
             lines.append("")
             for pkg in report.missing_packages:
                 lines.append(f"- [ ] `{pkg}`")
-        
+
         if report.version_mismatches:
             lines.append("")
             lines.append("### 版本不匹配")
@@ -969,7 +1252,7 @@ def format_report_markdown(report: DependencyReport) -> str:
             lines.append("|---|---|---|---|")
             for m in report.version_mismatches:
                 lines.append(f"| `{m.package}` | {m.declared_spec} | {m.installed_version} | {m.source} |")
-        
+
         if report.dependency_conflicts:
             lines.append("")
             lines.append("### 依赖冲突")
@@ -978,7 +1261,7 @@ def format_report_markdown(report: DependencyReport) -> str:
             lines.append("|---|---|---|---|")
             for c in report.dependency_conflicts:
                 lines.append(f"| `{c.package}` | {c.required_version} | {c.installed_version} | {c.required_by} |")
-        
+
         if report.import_consistency and report.import_consistency.has_issues:
             lines.append("")
             lines.append("### 未声明的第三方依赖")
@@ -991,7 +1274,7 @@ def format_report_markdown(report: DependencyReport) -> str:
                 if len(undeclared.import_locations) > 3:
                     loc_str += f" 等 {len(undeclared.import_locations)} 处"
                 lines.append(f"| `{pkg}` | {loc_str} |")
-        
+
         lines.append("")
         lines.append("## 修复建议")
         lines.append("")
@@ -1000,15 +1283,30 @@ def format_report_markdown(report: DependencyReport) -> str:
             lines.append(f"pip install {' '.join(report.missing_packages)}")
             lines.append("```")
         lines.append("")
+        lines.append("使用 pip-sync 同步所有依赖（推荐）：")
+        lines.append("")
         lines.append("```bash")
-        lines.append("pip install -r requirements.txt --upgrade")
+        lines.append("pip-sync requirements.txt requirements-dev.txt requirements-test.txt")
+        lines.append("```")
+        lines.append("")
+        lines.append("或使用 pip 升级：")
+        lines.append("")
+        lines.append("```bash")
+        lines.append("pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt --upgrade")
         lines.append("```")
     else:
         lines.append("")
         lines.append("## 检查结果")
         lines.append("")
         lines.append("✅ 所有依赖检查通过")
-    
+
+    if report.missing_optional_packages:
+        lines.append("")
+        lines.append("## 可选依赖未安装")
+        lines.append("")
+        for pkg in report.missing_optional_packages:
+            lines.append(f"- [ ] `{pkg}`")
+
     return "\n".join(lines)
 
 
@@ -1018,13 +1316,19 @@ def print_report(report: DependencyReport) -> None:
     print(f"\n  时间: {report.timestamp}")
     print(f"  声明依赖: {report.total_declared}")
     print(f"  已安装包: {report.total_installed}")
-    
+
     # 缺失包
     if report.missing_packages:
         print_section("缺失的包")
         for pkg in report.missing_packages:
             print_fail(pkg)
-    
+
+    # 可选依赖缺失（仅提示）
+    if report.missing_optional_packages:
+        print_section("可选依赖未安装")
+        for pkg in report.missing_optional_packages:
+            print_warn(pkg)
+
     # 版本不匹配
     if report.version_mismatches:
         print_section("版本不匹配")
@@ -1032,7 +1336,7 @@ def print_report(report: DependencyReport) -> None:
             print_fail(f"{mismatch.package}")
             print_info(f"  声明: {mismatch.declared_spec} ({mismatch.source})")
             print_info(f"  已安装: {mismatch.installed_version}")
-    
+
     # 依赖冲突
     if report.dependency_conflicts:
         print_section("依赖冲突")
@@ -1040,7 +1344,7 @@ def print_report(report: DependencyReport) -> None:
             print_fail(f"{conflict.package}")
             print_info(f"  需要: {conflict.required_version} (by {conflict.required_by})")
             print_info(f"  已安装: {conflict.installed_version}")
-    
+
     # 未声明的导入
     if report.import_consistency and report.import_consistency.has_issues:
         print_section("未声明的第三方依赖")
@@ -1050,7 +1354,7 @@ def print_report(report: DependencyReport) -> None:
                 print_info(f"  - {loc}")
             if len(undeclared.import_locations) > 3:
                 print_info(f"  ... 及其他 {len(undeclared.import_locations) - 3} 处")
-    
+
     # 汇总
     print_header("检查汇总")
     if report.has_errors:
@@ -1062,10 +1366,16 @@ def print_report(report: DependencyReport) -> None:
         if report.missing_packages:
             print(f"    {Colors.YELLOW}pip install {' '.join(report.missing_packages)}{Colors.NC}")
         if report.version_mismatches or report.dependency_conflicts:
-            print(f"    {Colors.YELLOW}pip install -r requirements.txt --upgrade{Colors.NC}")
-        if undeclared_count > 0:
+            print(f"    {Colors.YELLOW}pip-sync requirements.txt requirements-dev.txt requirements-test.txt{Colors.NC}")
+            print(
+                f"    或: {Colors.YELLOW}pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt --upgrade{Colors.NC}"
+            )
+        if undeclared_count > 0 and report.import_consistency:
             undeclared_pkgs = list(report.import_consistency.undeclared_imports.keys())
-            print(f"    {Colors.YELLOW}需在 requirements.txt 中添加: {', '.join(undeclared_pkgs)}{Colors.NC}")
+            print(f"    {Colors.YELLOW}需在对应 requirements 文件中添加: {', '.join(undeclared_pkgs)}{Colors.NC}")
+            print(
+                "    提示: 核心依赖→requirements.txt, 开发依赖→requirements-dev.txt, 测试依赖→requirements-test.txt, ML测试依赖→requirements-test-ml.txt"
+            )
     else:
         print(f"\n{Colors.GREEN}{Colors.BOLD}  ✓ 所有依赖检查通过{Colors.NC}")
 
@@ -1074,6 +1384,7 @@ def print_report(report: DependencyReport) -> None:
 # 主函数
 # ============================================================
 
+
 def main() -> int:
     """主入口"""
     parser = argparse.ArgumentParser(
@@ -1081,18 +1392,21 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="显示详细输出",
     )
     parser.add_argument(
-        "-f", "--format",
+        "-f",
+        "--format",
         choices=["text", "json", "md", "markdown"],
         default="text",
         help="输出格式 (default: text)",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         type=str,
         help="输出到文件",
     )
@@ -1101,9 +1415,14 @@ def main() -> int:
         action="store_true",
         help="CI 模式：简化输出，返回适当的退出码",
     )
-    
+    parser.add_argument(
+        "--include-ml",
+        action="store_true",
+        help="显式包含 ML 测试依赖层检查（默认自动检测：存在则解析）",
+    )
+
     args = parser.parse_args()
-    
+
     try:
         # 执行检查
         # 非 text 格式或 CI 模式时不打印头部
@@ -1112,11 +1431,19 @@ def main() -> int:
             print_header("依赖检查")
             print(f"  项目路径: {PROJECT_ROOT}")
             print(f"  Python: {sys.version.split()[0]}")
-        
+
+        # 如果显式指定 --include-ml，检查 ML 文件是否存在
+        if args.include_ml:
+            ml_file = PROJECT_ROOT / "requirements-test-ml.txt"
+            if not ml_file.exists():
+                print_warn("--include-ml 已指定，但 requirements-test-ml.txt 不存在")
+            elif show_header or args.verbose:
+                print_info("已启用 ML 测试依赖层检查")
+
         # 非 text 格式时禁用 verbose 打印
         verbose_mode = args.verbose and (args.format == "text" and not args.output)
         report = check_dependencies(verbose=verbose_mode)
-        
+
         # 生成报告
         if args.format == "json":
             output = format_report_json(report)
@@ -1128,7 +1455,7 @@ def main() -> int:
             else:
                 print_report(report)
                 return 1 if report.has_errors else 0
-        
+
         # 输出
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
@@ -1137,9 +1464,9 @@ def main() -> int:
                 print_pass(f"报告已保存到: {args.output}")
         else:
             print(output)
-        
+
         return 1 if report.has_errors else 0
-        
+
     except KeyboardInterrupt:
         print("\n\n检查已中断")
         return 130
@@ -1147,6 +1474,7 @@ def main() -> int:
         print(f"\n{Colors.RED}检查过程出错: {e}{Colors.NC}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 

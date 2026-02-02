@@ -425,23 +425,23 @@ Cloud Agent 提供云端 API 访问能力，支持程序化调用 Cursor Agent�
 
 本系统提供三种触发 Cloud 执行的方式，语义各有不同：
 
-| 方式 | 语义 | 使用场景 | 恢复方式 |
-|------|------|----------|----------|
-| `&` 前缀 | **Cloud Relay**：把这条消息/会话推到云端继续跑 | 交互式提交单条任务到云端 | `agent --resume <session_id>` |
-| `--execution-mode cloud` | **强制云端**：本系统强制使用云端执行器（无需依赖 `&`） | 脚本/自动化场景，确保使用云端 | `agent --resume <session_id>` |
-| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | 推荐默认选择，兼顾可用性和云端优势 | `agent --resume <session_id>` |
+| 方式 | 语义 | `prefix_routed` | 使用场景 | 恢复方式 |
+|------|------|-----------------|----------|----------|
+| `&` 前缀 | **Cloud Relay**：把这条消息路由到云端继续跑 | `True`（满足条件时） | 交互式提交单条任务到云端 | `agent --resume <session_id>` |
+| `--execution-mode cloud` | **强制云端**：显式使用云端执行器 | `False` | 脚本/自动化场景（**推荐**） | `agent --resume <session_id>` |
+| `--execution-mode auto` | **自动选择**：云端优先，失败回退本地 CLI | `False` | 推荐默认选择，兼顾可用性和云端优势 | `agent --resume <session_id>` |
 
 #### 最小示例
 
 ```bash
-# ===== 方式 1: & 前缀（Cloud Relay）=====
-# 语义：把这条消息推到云端继续跑
+# ===== 方式 1: & 前缀路由（prefix_routed=True）=====
+# 语义：把这条消息路由到云端继续跑（需满足 prefix_routed 条件）
 agent -p "& 分析整个代码库的架构"
 # 返回 session_id 后可恢复：
 agent --resume abc123-session-id
 
-# ===== 方式 2: --execution-mode cloud =====
-# 语义：强制使用云端执行器，不依赖 & 前缀
+# ===== 方式 2（推荐）: --execution-mode cloud =====
+# 语义：显式使用云端执行器，无需 & 前缀路由，prefix_routed=False
 python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
 # 恢复方式同上（脚本会输出 session_id）
 agent --resume abc123-session-id
@@ -473,12 +473,12 @@ agent --resume <session_id>
 agent resume
 ```
 
-### Cloud Relay（& 前缀）
+### Cloud Relay（`&` 前缀路由，`prefix_routed`）
 
-使用 `&` 前缀可以将任务提交到云端后台执行，无需等待完成即可继续其他工作。
+使用 `&` 前缀可以将任务路由到云端后台执行（`prefix_routed=True`），无需等待完成即可继续其他工作。
 
 ```bash
-# 使用 & 前缀提交云端任务
+# 使用 & 前缀路由到云端（需满足 prefix_routed 条件）
 agent -p "& 分析整个代码库的架构"
 
 # 等效于使用 -b (background) 模式
@@ -496,16 +496,94 @@ agent --resume <session_id>
 - 自动轮询任务状态并获取结果
 - 支持会话恢复（`--resume`）继续之前的任务
 - 适合长时间运行的分析或重构任务
+- 需要 `prefix_routed=True`（满足全部路由条件）才能生效
 
-**`&` 前缀路由语义**:
+**`&` 前缀路由语义（`prefix_routed`）**:
 
-| 输入 | 是否触发 Cloud 模式 | 说明 |
-|------|---------------------|------|
-| `& 分析代码` | ✓ 是 | 正常触发 |
-| `&分析代码` | ✓ 是 | 无空格也有效 |
-| `&` | ✗ 否 | 只有 `&` 无实际内容 |
-| `&   ` | ✗ 否 | `&` 后仅有空白 |
-| `分析 & 代码` | ✗ 否 | `&` 不在开头 |
+| 输入 | `prefix_routed` | 说明 |
+|------|-----------------|------|
+| `& 分析代码` | `True` | 正常触发 Cloud |
+| `&分析代码` | `True` | 无空格也有效 |
+| `&` | `False` | 只有 `&` 无实际内容 |
+| `&   ` | `False` | `&` 后仅有空白 |
+| `分析 & 代码` | `False` | `&` 不在开头 |
+
+> **术语说明**：
+> - `prefix_routed`：**策略决策层面**，表示 `&` 前缀是否成功触发 Cloud（**推荐使用**，新代码应统一使用此字段）
+> - `has_ampersand_prefix`：**语法检测层面**，仅表示原始文本是否有 `&` 前缀
+> - `triggered_by_prefix`：**已废弃的兼容别名**，语义等同于 `prefix_routed`（仅保留用于兼容旧版输出格式，新代码禁止使用）
+
+**`cloud_agent.enabled` 对 `prefix_routed` 的影响**:
+
+`prefix_routed=True` 需要满足以下**全部条件**：
+
+| 条件 | 说明 |
+|------|------|
+| `has_ampersand_prefix=True` | 语法检测：输入以 `&` 开头 |
+| `cloud_agent.enabled=True` | 配置启用：config.yaml 中 `cloud_agent.enabled: true` |
+| `has_api_key=True` | 认证可用：设置了 `CURSOR_API_KEY` 或等效配置 |
+| `auto_detect_cloud_prefix=True` | 未禁用自动检测（默认启用） |
+
+**注意**：`cloud_agent.enabled` 默认为 `true`（参见 `config.yaml`）。当此配置为 `false` 时，即使 `has_ampersand_prefix=True`，`prefix_routed` 仍为 `False`，任务将使用本地 CLI 执行。
+
+```bash
+# 启用 cloud_agent.enabled 后 & 前缀才能使 prefix_routed=True
+# 方式 1：修改 config.yaml
+cloud_agent:
+  enabled: true
+
+# 方式 2（推荐）：显式 Cloud 模式，不依赖 & 前缀路由
+python scripts/run_iterate.py --execution-mode cloud "任务描述"
+```
+
+**`auto_detect_cloud_prefix` 配置详解**:
+
+| 配置键 | config.yaml 路径 | 默认值 | 说明 |
+|--------|------------------|--------|------|
+| `auto_detect_cloud_prefix` | `cloud_agent.auto_detect_cloud_prefix` | `true` | 控制 `&` 前缀是否被视为 Cloud 意图 |
+
+**取值效果**:
+
+| 值 | 效果 | 编排器行为 |
+|----|------|-----------|
+| `true`（默认） | `&` 前缀触发 Cloud 意图检测，影响 `prefix_routed` | R-2 规则生效，编排器强制 basic |
+| `false` | `&` 前缀被完全忽略，不触发 Cloud 意图检测 | R-3 规则生效，编排器可使用 mp |
+
+**CLI 参数（tri-state）**:
+
+| CLI 参数 | 效果 | 优先级 |
+|----------|------|--------|
+| `--auto-detect-cloud-prefix` | 显式启用，覆盖 config.yaml | CLI > config.yaml |
+| `--no-auto-detect-cloud-prefix` | 显式禁用，覆盖 config.yaml | CLI > config.yaml |
+| 未指定 | 使用 config.yaml 中的值（默认 `true`） | config.yaml |
+
+**与 R-2/R-3 规则的关系**:
+
+| 规则 | 条件 | 效果 |
+|------|------|------|
+| **R-2** | `auto_detect_cloud_prefix=true` + `has_ampersand_prefix=true` | `&` 前缀表达 Cloud 意图；即使未成功路由（`prefix_routed=False`），编排器仍强制 basic |
+| **R-3** | `auto_detect_cloud_prefix=false` 或显式 `--execution-mode cli` | `&` 前缀被忽略，编排器可使用 mp |
+
+**使用示例**:
+
+```bash
+# 场景 1：config.yaml auto_detect_cloud_prefix=true（默认）
+# & 前缀触发 R-2 规则，编排器强制 basic
+python scripts/run_iterate.py "& 分析代码"  # orchestrator=basic
+
+# 场景 2：CLI 显式禁用 auto_detect_cloud_prefix
+# & 前缀被忽略，可使用 mp 编排器
+python scripts/run_iterate.py --no-auto-detect-cloud-prefix "& 分析代码"  # orchestrator=mp
+
+# 场景 3：CLI 显式启用，覆盖 config.yaml 中的禁用设置
+# 假设 config.yaml 中 auto_detect_cloud_prefix=false
+python scripts/run_iterate.py --auto-detect-cloud-prefix "& 分析代码"  # orchestrator=basic
+
+# 场景 4：显式 --execution-mode cli 忽略 & 前缀（R-3 规则）
+python scripts/run_iterate.py --execution-mode cli "& 分析代码"  # orchestrator=mp
+```
+
+**配置优先级**: CLI 参数 > config.yaml（`cloud_agent.auto_detect_cloud_prefix`）
 
 **Cloud 模式的自动提交**:
 - Cloud 模式下 **默认不开启** `auto_commit`（安全策略）
@@ -600,14 +678,68 @@ result = await cloud_executor.wait_for_task(task_id, timeout=600)
 |------|------|------|----------------|----------|
 | `CLI` | 本地 CLI 执行 | 否 | ✓ 是 | 本地开发、完整代理功能 |
 | `CLOUD` | Cloud API 执行 | 否 | ✗ 否（强制 basic） | 后台任务、长时间运行 |
-| `AUTO` | 自动选择（Cloud 优先，回退 CLI） | 否 | ✗ 否（强制 basic） | 推荐默认选择 |
+| `AUTO` | 自动选择（Cloud 优先，回退 CLI） | 否 | ✗ 否（强制 basic） | **系统默认**（来自 config.yaml） |
 | `PLAN` | 规划模式 | **是** | ✓ 是 | 任务分析、代码审查 |
 | `ASK` | 问答模式 | **是** | ✓ 是 | 代码解释、咨询 |
 
+> **默认执行模式**: 系统默认使用 `auto` 模式（配置于 `config.yaml` 的 `cloud_agent.execution_mode`）。这意味着：
+> - 直接运行 `python scripts/run_iterate.py "任务"` 等效于 `--execution-mode auto`
+> - 系统会优先尝试 Cloud 执行，无 API Key 或 Cloud 不可用时自动回退到本地 CLI
+> - 无论是否回退，编排器始终保持 basic（基于 requested_mode 语义）
+
 **编排器兼容性说明**:
-- **MP 编排器** (`MultiProcessOrchestrator`): 仅在 `execution_mode=cli` 时可用
+- **MP 编排器** (`MultiProcessOrchestrator`): 仅在 `requested_mode=cli/plan/ask/None` 时可用
 - **Cloud/Auto 模式**: 强制使用 basic 编排器，因为 Cloud API 不支持多进程编排
 - 系统会自动检测并切换，无需手动处理
+
+**requested_mode vs effective_mode 关键区别**:
+
+| 概念 | 含义 | 示例 |
+|------|------|------|
+| `requested_mode` | 用户请求的执行模式（CLI 参数指定） | `--execution-mode auto` → requested_mode=auto |
+| `effective_mode` | 实际生效的执行模式（可能因回退而变化） | 无 API Key 时 auto → effective_mode=cli |
+
+**核心规则**：编排器选择基于 **requested_mode**，而非 effective_mode。这意味着：
+
+| 场景 | requested_mode | effective_mode | 编排器 |
+|------|---------------|----------------|--------|
+| `--execution-mode auto` 有 API Key | auto | cloud | basic（强制） |
+| `--execution-mode auto` 无 API Key | auto | cli（回退） | **basic**（仍保持） |
+| `--execution-mode cloud` 无 API Key | cloud | cli（回退） | **basic**（仍保持） |
+| `--execution-mode cli` | cli | cli | mp（支持） |
+| 无指定（默认，来自 config.yaml） | auto | cloud 或 cli（回退） | basic（强制） |
+
+**关键**：
+- **默认行为**：未指定 `--execution-mode` 时，系统从 config.yaml 读取默认值 `auto`
+- **回退不影响编排器**：即使因缺少 API Key 导致 effective_mode 回退到 CLI，编排器**仍保持 basic**（不会恢复到 mp）
+- **如需 MP 编排器**：请显式指定 `--execution-mode cli`
+
+**警告与日志策略**：
+
+| 情况 | 日志级别 | 说明 |
+|------|----------|------|
+| CLI 显式 `--execution-mode auto/cloud` | WARNING | 用户显式请求，明确提示回退 |
+| config.yaml 默认 auto 且未显式指定 | INFO | 避免"每次都警告"的问题 |
+| `scripts/run_mp.py` 中的模式不兼容提示 | INFO | 信息提示而非警告 |
+
+**设计决策**（记录于 `core/execution_policy.py`）：
+- **编排器选择严格基于 requested_mode**：不因回退而改变，保持语义一致性
+- **日志级别区分显式/隐式配置**：避免默认 auto 导致的"每次都警告"问题
+- **用户指引**：如需 MP 编排器，请显式指定 `--execution-mode cli`
+
+> **重要**: `execution_mode=auto` 或 `execution_mode=cloud` 与 MP 编排器**不兼容**，系统会**强制切换到 basic 编排器**。推荐在使用 Cloud/Auto 模式时显式指定 `--orchestrator basic` 以避免警告：
+>
+> ```bash
+> # 推荐写法：显式指定 basic 编排器（避免警告）
+> python scripts/run_iterate.py --execution-mode auto --orchestrator basic "任务描述"
+> python scripts/run_iterate.py --execution-mode cloud --orchestrator basic "后台分析任务"
+>
+> # 也可省略 --orchestrator basic，系统会自动强制切换（但会输出警告）
+> python scripts/run_iterate.py --execution-mode auto "任务描述"
+>
+> # 如需使用 MP 编排器，必须显式指定 cli 模式
+> python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述"
+> ```
 
 ### 错误处理
 
@@ -622,6 +754,113 @@ except CursorError as e:
     print(f"API 错误: {e.message}")
 ```
 
+#### Cloud 常见错误代码与处理
+
+| 错误代码 | 含义 | 用户提示 | 下一步操作 |
+|----------|------|----------|------------|
+| `NO_KEY` | 未配置 API Key | `未设置 CURSOR_API_KEY，Cloud 模式不可用` | 设置环境变量: `export CURSOR_API_KEY=your_key` 或使用 `--cloud-api-key` 参数 |
+| `AUTH` | 认证失败（Key 无效或已过期） | `Cloud 认证失败: API Key 无效` | 检查 API Key 是否正确，必要时重新获取: `agent login` |
+| `RATE_LIMIT` | 请求频率超限 | `速率限制，请在 {retry_after} 秒后重试` | 等待提示的 `retry_after` 秒数后重试，或降低请求频率 |
+| `TIMEOUT` | 请求超时 | `Cloud 请求超时 ({timeout}s)` | 增大 `--cloud-timeout` 参数值，或检查网络连接 |
+| `NETWORK` | 网络连接错误 | `无法连接到 Cloud API` | 检查网络连接和代理设置 |
+
+**处理示例**:
+
+```bash
+# 错误: 未设置 API Key
+# 提示: ⚠ 未设置 CURSOR_API_KEY，Cloud 模式不可用，回退到本地 CLI
+# 解决: 设置环境变量
+export CURSOR_API_KEY=your_api_key_here
+
+# 错误: 速率限制
+# 提示: ⚠ 速率限制，请在 60 秒后重试
+# 解决: 等待后重试，或切换到本地 CLI 模式
+python scripts/run_iterate.py --execution-mode cli "任务描述"
+```
+
+**回退后的编排器状态**:
+- 当 `--execution-mode auto/cloud` 因缺少 API Key 或其他错误回退到 CLI 时
+- **编排器仍保持 basic**（不会恢复到 mp）
+- 原因：编排器选择基于 `requested_mode`（用户请求的模式），而非 `effective_mode`
+- 如需使用 MP 编排器，请显式指定 `--execution-mode cli`
+
+**回退场景示例**:
+
+```bash
+# 场景 1：auto 模式无 API Key → 回退到 CLI，编排器仍为 basic
+$ python scripts/run_iterate.py --execution-mode auto "任务"
+# 输出: ⚠ 未设置 CURSOR_API_KEY，Cloud 模式不可用，回退到本地 CLI
+# requested_mode=auto, effective_mode=cli, orchestrator=basic
+
+# 场景 2：显式 cli 模式 → 支持 MP 编排器
+$ python scripts/run_iterate.py --execution-mode cli "任务"
+# requested_mode=cli, effective_mode=cli, orchestrator=mp（默认）
+```
+
+**`&` 前缀未成功路由时的编排器（`prefix_routed=False`）**:
+
+| 场景 | auto_detect | prefix_routed | orchestrator | 说明 |
+|------|-------------|---------------|--------------|------|
+| & + 无 API Key / cloud_disabled | `true`（默认） | `False` | **basic** | R-2: & 前缀表达 Cloud 意图，未成功路由仍强制 basic |
+| & + 显式 `--execution-mode cli` | * | `False` | mp | R-3: 显式 cli 忽略 & 前缀 |
+| & + `auto_detect_cloud_prefix=false` | `false` | `False` | mp | R-3: 禁用检测忽略 & 前缀 |
+
+- **R-2 规则**: 当 `auto_detect_cloud_prefix=true` 时，& 前缀即表达 Cloud 意图；即使因缺少 API Key 或 `cloud_agent.enabled=false` 未成功路由，编排器**仍强制 basic**
+- **R-3 规则**: 仅当显式 `--execution-mode cli` 或 `auto_detect_cloud_prefix=false` 时，& 前缀被忽略，编排器可使用 mp
+- 如需 MP 编排器，请显式指定 `--execution-mode cli`
+
+### `execution_mode=plan/ask` 时 `&` 前缀的处理规则
+
+`plan` 和 `ask` 是**只读模式**（readonly mode），设计上用于代码分析、审查和问答场景，不参与 Cloud 路由。
+
+**核心规则**:
+
+| 规则编号 | 规则描述 | 说明 |
+|----------|----------|------|
+| R-4 | **plan/ask 模式不参与 Cloud 路由** | 只读模式仅用于分析，不需要 Cloud 后台执行 |
+| R-5 | **& 前缀在 plan/ask 模式下被忽略** | 与显式 `--execution-mode cli` 的行为一致 |
+| R-6 | **plan/ask 模式允许使用 MP 编排器** | 因为它们不是 cloud/auto 模式 |
+
+**决策矩阵**:
+
+| 场景 | requested_mode | has_ampersand_prefix | prefix_routed | orchestrator | 说明 |
+|------|----------------|---------------------|---------------|--------------|------|
+| `--execution-mode plan` | plan | False | `False` | **mp** | 只读模式，正常使用 |
+| `--execution-mode ask` | ask | False | `False` | **mp** | 只读模式，正常使用 |
+| `--execution-mode plan` + `& 任务` | plan | True | **False** | **mp** | **& 前缀被忽略** |
+| `--execution-mode ask` + `& 任务` | ask | True | **False** | **mp** | **& 前缀被忽略** |
+
+**术语统一**:
+
+| 字段名 | 含义 | 类型 |
+|--------|------|------|
+| `requested_mode` | 用户请求的执行模式（CLI 参数或 config.yaml） | `str`: cli/cloud/auto/plan/ask |
+| `effective_mode` | 实际生效的执行模式（可能因回退而变化） | `str`: cli/cloud/plan/ask |
+| `has_ampersand_prefix` | 语法检测层面，原始文本是否以 `&` 开头 | `bool` |
+| `prefix_routed` | 策略决策层面，`&` 前缀是否成功触发 Cloud 路由 | `bool` |
+
+**推荐写法**:
+
+```bash
+# ✓ 推荐：plan/ask 模式不使用 & 前缀
+agent -p "分析项目架构" --mode plan
+agent -p "解释这段代码" --mode ask
+
+# ✗ 不推荐：plan/ask 模式使用 & 前缀（会被忽略，造成困惑）
+agent -p "& 分析项目架构" --mode plan  # & 前缀被忽略，prefix_routed=False
+
+# ✓ 推荐：需要 Cloud 后台执行时，使用 --execution-mode cloud/auto（而非 plan/ask）
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
+```
+
+**设计理由**:
+
+1. **语义清晰**: plan/ask 是只读模式，Cloud 后台执行通常用于可能修改文件的任务
+2. **避免冲突**: Cloud 模式（`--execution-mode cloud`）和只读模式（`--mode plan/ask`）是不同维度的配置
+3. **一致性**: 与显式 `--execution-mode cli` 忽略 & 前缀的行为保持一致
+
+**注意**: 如需在只读模式下使用 Cloud 执行，请改用 `--execution-mode cloud` 或 `--execution-mode auto`，并通过 `--mode plan` 或 `--mode ask` 指定 Cursor CLI 的运行模式（两者不冲突，前者控制执行位置，后者控制 CLI 行为）。
+
 ## 系统架构
 
 ```
@@ -632,36 +871,78 @@ Planner (规划者) → TaskQueue → Workers (执行者) → Reviewer (评审�
 
 ## 自我迭代模式
 
-自我迭代模式（iterate）**默认启用多进程并行执行**（`MultiProcessOrchestrator`），支持高效的任务并行处理。
+自我迭代模式（iterate）的编排器选择取决于执行模式：**在 `execution_mode=cli` 时默认使用 MP 编排器**（`MultiProcessOrchestrator`）；**`auto`/`cloud` 模式（默认 `auto`）强制使用 basic 编排器**。
 
 ### 编排器选择
 
 | 编排器 | 参数 | 说明 |
 |--------|------|------|
-| `MultiProcessOrchestrator` | `--orchestrator mp`（默认） | 多进程并行，适合复杂任务 |
-| `Orchestrator` | `--orchestrator basic` 或 `--no-mp` | 协程模式，适合简单任务或资源受限环境 |
+| `MultiProcessOrchestrator` | `--orchestrator mp`（`execution_mode=cli` 时的默认） | 多进程并行，适合复杂任务 |
+| `Orchestrator` | `--orchestrator basic` 或 `--no-mp`（`auto`/`cloud` 模式强制） | 协程模式，适合简单任务或资源受限环境 |
 
-**注意**: 当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。此时即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。
+**注意**: 系统默认 `execution_mode=auto`（来自 config.yaml），因此**默认使用 basic 编排器**。当 `--execution-mode` 为 `cloud` 或 `auto` 时，系统会 **强制使用 basic 编排器**，因为 Cloud/Auto 执行模式不支持多进程编排器。此时即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。**如需 MP 编排器，必须显式指定 `--execution-mode cli`**。
+
+> **核心规则**: 编排器选择严格基于 `requested_mode`（用户请求的执行模式），而非 `effective_mode`（实际生效的模式）。即使 `requested_mode=auto/cloud` 因缺少 API Key 而回退到 CLI 执行，编排器**仍强制 basic**，不会恢复到 mp。
+
+### 最小自我迭代运行
+
+快速启动自我迭代的最精简命令，适合快速验证功能或离线环境下运行。
+
+```bash
+# 最小运行：跳过在线文档检查 + 仅分析不执行
+python scripts/run_iterate.py --skip-online --dry-run "分析代码结构"
+
+# 最小运行 + 禁用多进程（资源受限环境）
+python scripts/run_iterate.py --skip-online --dry-run --no-mp "分析任务"
+
+# 最小运行 + 强制本地 CLI 执行（确保不触发 Cloud）
+python scripts/run_iterate.py --skip-online --dry-run --execution-mode cli "本地分析"
+```
+
+**参数组合说明**:
+
+| 参数 | 作用 | 适用场景 |
+|------|------|----------|
+| `--skip-online` | 跳过在线文档检查，无网络依赖 | 离线环境、加速启动 |
+| `--dry-run` | 仅分析不执行实际修改 | 测试验证、安全预览 |
+| `--no-mp` | 禁用多进程编排器，使用协程模式 | 资源受限、调试场景 |
+| `--execution-mode cli` | 强制本地 CLI 执行 | 确保不触发 Cloud、本地调试 |
+
+**参数组合关系**:
+- `--skip-online` + `--dry-run`: 最安全的测试组合，无网络请求、无文件修改
+- `--no-mp` 与 `--execution-mode cli` 兼容，均使用本地资源
+- `--execution-mode cloud/auto` 会自动禁用 MP 编排器（等效于隐式 `--no-mp`）
 
 ### 运行示例
 
 ```bash
-# 默认使用多进程编排器（推荐，execution-mode=cli 时）
-python run.py --mode iterate "优化代码"
-python scripts/run_iterate.py "增加新功能支持"
+# ===== 推荐用法（默认 auto 模式，来自 config.yaml）=====
 
-# 显式指定多进程编排器
-python run.py --mode iterate --orchestrator mp "任务描述" --workers 5
+# 直接运行，默认使用 auto 模式 + basic 编排器
+# - 有 API Key: 使用 Cloud 执行
+# - 无 API Key: 自动回退到本地 CLI，编排器仍为 basic
+python scripts/run_iterate.py "任务描述"
 
-# 禁用多进程，使用协程编排器
+# 显式指定（效果与上面相同，但更清晰）
+python scripts/run_iterate.py --execution-mode auto --orchestrator basic "任务描述"
+
+# ===== 强制本地 CLI + 多进程编排器 =====
+
+# 如需使用 MP 编排器，必须显式指定 --execution-mode cli
+python run.py --mode iterate --execution-mode cli "优化代码"
+python scripts/run_iterate.py --execution-mode cli --orchestrator mp "任务描述" --workers 5
+
+# ===== 禁用多进程，使用协程编排器 =====
 python run.py --mode iterate --no-mp "任务描述"
 python scripts/run_iterate.py --orchestrator basic "任务描述"
 
-# 使用 Cloud/Auto 执行模式（自动使用 basic 编排器）
-python scripts/run_iterate.py --execution-mode auto "任务描述"
-python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
+# ===== Cloud 执行模式 =====
 
-# 使用 & 前缀触发 Cloud 模式（等效于 --execution-mode cloud）
+# 强制使用 Cloud（有 API Key 时）
+python scripts/run_iterate.py --execution-mode cloud "长时间分析任务"
+python scripts/run_iterate.py --execution-mode cloud --orchestrator basic "后台任务"
+
+# 使用 & 前缀路由到 Cloud（prefix_routed=True，需 cloud_agent.enabled=true）
 python scripts/run_iterate.py "& 后台分析代码架构"
 
 # 配合自动提交
@@ -671,7 +952,7 @@ python run.py --mode iterate --auto-commit --auto-push "完成功能"
 python scripts/run_iterate.py --stream-console-renderer --stream-show-word-diff "重构代码"
 ```
 
-**注意**: 当使用 `&` 前缀或 `--execution-mode cloud/auto` 时，即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。
+**注意**: 当 `prefix_routed=True`（`&` 前缀成功路由）或使用 `--execution-mode cloud/auto` 时，即使指定 `--orchestrator mp` 也会自动切换到 basic 编排器。
 
 ### 回退策略
 
@@ -737,16 +1018,16 @@ python scripts/run_iterate.py --print-config
 python run.py --workers 5 --execution-mode cloud --print-config
 ```
 
-**输出示例**:
+**输出示例**（实际输出会随 config.yaml 配置而变化）:
 
 ```
 [CONFIG] config_path: /path/to/config.yaml
 [CONFIG] source: run.py
 [CONFIG] max_iterations: 10
 [CONFIG] workers: 3
-[CONFIG] execution_mode: cli
-[CONFIG] orchestrator: mp
-[CONFIG] orchestrator_fallback: none
+[CONFIG] execution_mode: auto
+[CONFIG] orchestrator: basic
+[CONFIG] orchestrator_fallback: none (auto/cloud 强制 basic)
 [CONFIG] planner_model: gpt-5.2-high
 [CONFIG] worker_model: opus-4.5-thinking
 [CONFIG] reviewer_model: gpt-5.2-codex
@@ -768,9 +1049,9 @@ python run.py --workers 5 --execution-mode cloud --print-config
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--orchestrator` | 编排器类型: `mp`/`basic` | `mp` |
+| `--orchestrator` | 编排器类型: `mp`/`basic` | `cli` 模式默认 `mp`；`auto`/`cloud` 模式强制 `basic` |
 | `--no-mp` | 禁用多进程编排器 | False |
-| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `cli` |
+| `--execution-mode` | 执行模式: `cli`/`auto`/`cloud`（`cloud`/`auto` 强制使用 basic 编排器） | `auto`（来自 config.yaml，因此**默认 basic 编排器**） |
 | `--workers` | Worker 池大小 | 3 |
 | `--max-iterations` | 最大迭代次数（MAX/-1 表示无限迭代） | 10 |
 | `--skip-online` | 跳过在线文档检查 | False |

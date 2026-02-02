@@ -21,9 +21,9 @@ pytest-timeout>=2.4.0   # 测试超时控制
 respx>=0.20.0           # HTTP mock 测试（配合 httpx）
 
 # ============================================================
-# ML 测试依赖 (知识库和向量测试需要)
+# 注意: ML 测试依赖已移至 requirements-test-ml.in
+# 运行 ML 相关测试请使用:
+#   pip install -r requirements-test-ml.in
+# 或:
+#   pip install -e ".[test,ml]"
 # ============================================================
-sentence-transformers>=2.2.0  # 文本嵌入向量生成
-chromadb>=0.4.0               # 向量数据库
-tiktoken>=0.5.0               # OpenAI 分词器
-hnswlib>=0.7.0                # 轻量级向量索引
