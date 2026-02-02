@@ -47,5 +47,7 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
-websockets==16.0
+websockets==16.0 ; python_version >= "3.10"
+    # via -r requirements.in
+websockets==15.0.1 ; python_version < "3.10"
     # via -r requirements.in

@@ -95,6 +95,48 @@ check_pip_tools() {
     fi
 }
 
+# 确保 requirements*.txt 包含 Python 3.9 的 websockets 锁定行
+ensure_py39_websockets() {
+    local target_file="$1"
+    if [[ ! -f "$target_file" ]]; then
+        return 0
+    fi
+
+    python3 - << 'PY' "$target_file"
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
+py39_line = 'websockets==15.0.1 ; python_version < "3.10"'
+
+if py39_line in content:
+    sys.exit(0)
+
+lines = content.splitlines()
+output = []
+inserted = False
+after_ws = False
+for line in lines:
+    if after_ws and not line.startswith("    #") and not inserted:
+        output.append(py39_line)
+        output.append("    # via -r requirements.in")
+        inserted = True
+        after_ws = False
+    output.append(line)
+    if line.strip() == 'websockets==16.0 ; python_version >= "3.10"':
+        after_ws = True
+
+if after_ws and not inserted:
+    output.append(py39_line)
+    output.append("    # via -r requirements.in")
+    inserted = True
+
+if inserted:
+    path.write_text("\n".join(output) + "\n", encoding="utf-8")
+PY
+}
+
 # 编译锁定文件
 compile_requirements() {
     echo -e "${BLUE}[INFO] 编译依赖锁定文件...${NC}"
@@ -107,19 +149,23 @@ compile_requirements() {
     # 编译核心依赖
     echo -e "${BLUE}[INFO] 编译 requirements.txt...${NC}"
     pip-compile requirements.in -o requirements.txt --quiet --strip-extras
+    ensure_py39_websockets requirements.txt
     
     # 编译开发依赖
     echo -e "${BLUE}[INFO] 编译 requirements-dev.txt...${NC}"
     pip-compile requirements-dev.in -o requirements-dev.txt --quiet --strip-extras
+    ensure_py39_websockets requirements-dev.txt
     
     # 编译测试依赖
     echo -e "${BLUE}[INFO] 编译 requirements-test.txt...${NC}"
     pip-compile requirements-test.in -o requirements-test.txt --quiet --strip-extras
+    ensure_py39_websockets requirements-test.txt
     
     # 编译 ML 测试依赖（如果存在）
     if [[ -f "requirements-test-ml.in" ]]; then
         echo -e "${BLUE}[INFO] 编译 requirements-test-ml.txt...${NC}"
         pip-compile requirements-test-ml.in -o requirements-test-ml.txt --quiet --strip-extras
+        ensure_py39_websockets requirements-test-ml.txt
     fi
     
     echo -e "${GREEN}[成功] 所有锁定文件已生成${NC}"
