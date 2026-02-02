@@ -49,7 +49,7 @@ jobs:
       ml_files: ${{ steps.filter.outputs.ml_files }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 检测依赖文件变更
         uses: dorny/paths-filter@v3
@@ -83,7 +83,7 @@ jobs:
       sync_deps_result: ${{ steps.sync_deps_check.outputs.result }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -327,7 +327,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python ${{ matrix.python-version }}
@@ -518,7 +518,7 @@ jobs:
     if: success()
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -579,7 +579,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-integration]')
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -623,7 +623,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -778,7 +778,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Python 环境设置 (遵循 reusable-python-setup.yml 标准)
       - name: 设置 Python
@@ -823,7 +823,7 @@ jobs:
       needs.changes.outputs.ml == 'true'
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 设置 Python
         uses: actions/setup-python@v5
