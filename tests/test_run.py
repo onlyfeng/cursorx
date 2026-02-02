@@ -1509,9 +1509,9 @@ class TestCloudModeAutoCommitSafety:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,  # 默认禁用
@@ -3346,9 +3346,9 @@ class TestRunMpMode:
             max_iterations=10,
             worker_count=3,
             strict_review=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=DEFAULT_PLANNER_MODEL,
+            worker_model=DEFAULT_WORKER_MODEL,
+            reviewer_model=DEFAULT_REVIEWER_MODEL,
             stream_events_enabled=True,
         )
 
@@ -3357,9 +3357,9 @@ class TestRunMpMode:
         assert config.max_iterations == 10
         assert config.worker_count == 3
         assert config.strict_review is False
-        assert config.planner_model == "gpt-5.2-high"
-        assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "gpt-5.2-codex"
+        assert config.planner_model == DEFAULT_PLANNER_MODEL
+        assert config.worker_model == DEFAULT_WORKER_MODEL
+        assert config.reviewer_model == DEFAULT_REVIEWER_MODEL
         assert config.stream_events_enabled is True
 
     def test_mp_config_with_unlimited_iterations(self) -> None:
@@ -3390,9 +3390,9 @@ class TestRunMpMode:
         assert config.planning_timeout == 500.0
         assert config.execution_timeout == 600.0
         assert config.review_timeout == 300.0
-        assert config.planner_model == "gpt-5.2-high"
-        assert config.worker_model == "opus-4.5-thinking"
-        assert config.reviewer_model == "gpt-5.2-codex"
+        assert config.planner_model == DEFAULT_PLANNER_MODEL
+        assert config.worker_model == DEFAULT_WORKER_MODEL
+        assert config.reviewer_model == DEFAULT_REVIEWER_MODEL
         # stream_events_enabled 使用 tri-state 设计：None 表示使用 config.yaml 的值
         assert config.stream_events_enabled is None
         # 验证提交相关默认值（auto_commit 默认禁用，需显式开启）
@@ -3426,11 +3426,11 @@ class TestRunMpMode:
         """
         from coordinator import MultiProcessOrchestratorConfig
 
-        # 验证默认的 reviewer_model 来自 config.yaml（gpt-5.2-codex）
-        # 而非 worker_model（opus-4.5-thinking）
+        # 验证默认的 reviewer_model 来自 config.yaml
+        # 而非与 worker_model 相同
         config = MultiProcessOrchestratorConfig()
         assert config.reviewer_model == CONFIG_REVIEWER_MODEL
-        assert config.reviewer_model == "gpt-5.2-codex"
+        assert config.reviewer_model == DEFAULT_REVIEWER_MODEL
         assert config.reviewer_model != config.worker_model, "reviewer_model 应独立配置，而非与 worker_model 相同"
 
     def test_mp_config_reviewer_model_custom_override(self) -> None:
@@ -3439,8 +3439,8 @@ class TestRunMpMode:
 
         custom_reviewer = "custom-reviewer-model"
         config = MultiProcessOrchestratorConfig(
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
+            planner_model=DEFAULT_PLANNER_MODEL,
+            worker_model=DEFAULT_WORKER_MODEL,
             reviewer_model=custom_reviewer,
         )
 
@@ -6168,8 +6168,8 @@ class TestAsyncMain:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,  # 默认禁用自动提交
@@ -6799,9 +6799,9 @@ class TestRunCloudMode:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,
@@ -7509,9 +7509,9 @@ class TestRunCloudModeNoApiKeyError:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,
@@ -7803,9 +7803,9 @@ class TestRunCloudModeParameterValidation:
             use_knowledge=False,
             search_knowledge=None,
             self_update=False,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=CONFIG_PLANNER_MODEL,
+            worker_model=CONFIG_WORKER_MODEL,
+            reviewer_model=CONFIG_REVIEWER_MODEL,
             stream_log=True,
             no_auto_analyze=False,
             auto_commit=False,
@@ -12728,9 +12728,9 @@ class TestExecutionModeOrchestratorMatrixConsistencyWithRunPy:
         mock_config.system.worker_pool_size = 3
         mock_config.system.enable_sub_planners = True
         mock_config.system.strict_review = False
-        mock_config.models.planner = "gpt-5.2-high"
-        mock_config.models.worker = "opus-4.5-thinking"
-        mock_config.models.reviewer = "gpt-5.2-codex"
+        mock_config.models.planner = CONFIG_PLANNER_MODEL
+        mock_config.models.worker = CONFIG_WORKER_MODEL
+        mock_config.models.reviewer = CONFIG_REVIEWER_MODEL
         mock_config.planner.timeout = 500.0
         mock_config.worker.task_timeout = 600.0
         mock_config.reviewer.timeout = 300.0
@@ -13108,9 +13108,9 @@ class TestMergeOptionsAndBuildUnifiedOverridesConsistency:
         mock.system.worker_pool_size = 3
         mock.system.enable_sub_planners = True
         mock.system.strict_review = False
-        mock.models.planner = "gpt-5.2-high"
-        mock.models.worker = "opus-4.5-thinking"
-        mock.models.reviewer = "gpt-5.2-codex"
+        mock.models.planner = CONFIG_PLANNER_MODEL
+        mock.models.worker = CONFIG_WORKER_MODEL
+        mock.models.reviewer = CONFIG_REVIEWER_MODEL
         mock.planner.timeout = 500.0
         mock.worker.task_timeout = 600.0
         mock.reviewer.timeout = 300.0

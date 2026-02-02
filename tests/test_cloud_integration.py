@@ -1437,6 +1437,7 @@ class TestCloudClientFactory:
         """测试显式参数覆盖 agent_config"""
         from cursor.client import CursorAgentConfig
         from cursor.cloud_client import CloudClientFactory
+        from core.config import DEFAULT_WORKER_MODEL
 
         agent_config = CursorAgentConfig(
             model="gpt-5.2-high",
@@ -1447,13 +1448,13 @@ class TestCloudClientFactory:
 
         options = CloudClientFactory.build_task_options(
             agent_config=agent_config,
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             working_directory="/custom",
             timeout=120,
             allow_write=False,
         )
 
-        assert options.model == "opus-4.5-thinking"
+        assert options.model == DEFAULT_WORKER_MODEL
         assert options.working_directory == "/custom"
         assert options.timeout == 120
         assert options.allow_write is False
@@ -1617,12 +1618,13 @@ class TestCloudExecutionPathConsistency:
     def cloud_enabled_agent_config(self):
         """启用 Cloud 的 Agent 配置"""
         from cursor.client import CursorAgentConfig
+        from core.config import DEFAULT_WORKER_MODEL
 
         return CursorAgentConfig(
             cloud_enabled=True,
             auto_detect_cloud_prefix=True,
             api_key="unified-api-key",
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
             force_write=True,
         )
@@ -1898,11 +1900,12 @@ class TestCursorAgentClientCloudRouting:
     def cloud_enabled_config(self):
         """启用 Cloud 路由的配置"""
         from cursor.client import CursorAgentConfig
+        from core.config import DEFAULT_WORKER_MODEL
 
         return CursorAgentConfig(
             cloud_enabled=True,
             auto_detect_cloud_prefix=True,
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
             force_write=True,
             api_key="test-api-key",  # 需要 API Key 才能路由到 Cloud

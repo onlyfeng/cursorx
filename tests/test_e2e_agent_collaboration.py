@@ -334,6 +334,8 @@ class TestReviewerFeedbackLoop:
             tasks_completed: list[dict],
             tasks_failed: list[dict],
             previous_reviews: list[dict] | None = None,
+            extra_context: dict | None = None,
+            **_kwargs: Any,
         ) -> dict:
             received_review_args.append(
                 {

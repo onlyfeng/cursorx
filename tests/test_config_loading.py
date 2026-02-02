@@ -5624,6 +5624,8 @@ class TestRunPyGetCloudAuthConfig:
         """创建 Runner 所需的最小 args 对象"""
         from argparse import Namespace
 
+        from core.config import DEFAULT_PLANNER_MODEL, DEFAULT_REVIEWER_MODEL, DEFAULT_WORKER_MODEL
+
         return Namespace(
             task="测试任务",
             mode="auto",
@@ -5650,9 +5652,9 @@ class TestRunPyGetCloudAuthConfig:
             knowledge_top_k=3,
             knowledge_max_chars_per_doc=1200,
             knowledge_max_total_chars=3000,
-            planner_model="gpt-5.2-high",
-            worker_model="opus-4.5-thinking",
-            reviewer_model="gpt-5.2-codex",
+            planner_model=DEFAULT_PLANNER_MODEL,
+            worker_model=DEFAULT_WORKER_MODEL,
+            reviewer_model=DEFAULT_REVIEWER_MODEL,
             stream_log_enabled=None,
             stream_log_console=None,
             stream_log_detail_dir=None,

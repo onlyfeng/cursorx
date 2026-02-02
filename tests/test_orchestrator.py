@@ -196,6 +196,7 @@ class TestModelConfigPerRole:
         """验证初始化时输出各角色模型配置日志"""
         from io import StringIO
 
+        from core.config import get_config
         from loguru import logger
 
         # 使用 loguru sink 捕获日志
@@ -203,6 +204,7 @@ class TestModelConfigPerRole:
         handler_id = logger.add(log_output, format="{message}", level="INFO")
 
         try:
+            yaml_cfg = get_config()
             config = OrchestratorConfig()
             Orchestrator(config)
 
@@ -210,19 +212,26 @@ class TestModelConfigPerRole:
             log_content = log_output.getvalue()
 
             # 验证日志包含模型配置信息
-            expected_log = "各角色模型配置 - Planner: gpt-5.2-high, Worker: opus-4.5-thinking, Reviewer: gpt-5.2-codex"
+            expected_log = (
+                f"各角色模型配置 - Planner: {yaml_cfg.models.planner}, "
+                f"Worker: {yaml_cfg.models.worker}, "
+                f"Reviewer: {yaml_cfg.models.reviewer}"
+            )
             assert expected_log in log_content, f"未找到预期日志: {expected_log}\n实际日志: {log_content}"
         finally:
             logger.remove(handler_id)
 
     def test_orchestrator_uses_different_models_per_role(self) -> None:
-        """验证 Planner 使用 gpt-5.2-high，Worker 使用 opus-4.5-thinking，Reviewer 使用 gpt-5.2-codex
+        """验证各角色模型配置来自 config.yaml
 
         tri-state 设计说明:
         - OrchestratorConfig.planner_model 等字段默认为 None
         - 实际使用的模型值通过 _resolved_config 从 config.yaml 解析获取
         - 此测试验证解析后的模型配置正确应用到各角色
         """
+        from core.config import get_config
+
+        yaml_cfg = get_config()
         config = OrchestratorConfig()
         orchestrator = Orchestrator(config)
 
@@ -232,19 +241,19 @@ class TestModelConfigPerRole:
         assert config.reviewer_model is None
 
         # 验证解析后的模型配置（来自 config.yaml 或 DEFAULT_* 常量）
-        assert orchestrator._resolved_config["planner_model"] == "gpt-5.2-high"
-        assert orchestrator._resolved_config["worker_model"] == "opus-4.5-thinking"
-        assert orchestrator._resolved_config["reviewer_model"] == "gpt-5.2-codex"
+        assert orchestrator._resolved_config["planner_model"] == yaml_cfg.models.planner
+        assert orchestrator._resolved_config["worker_model"] == yaml_cfg.models.worker
+        assert orchestrator._resolved_config["reviewer_model"] == yaml_cfg.models.reviewer
 
         # 验证 Planner 使用正确的模型
-        assert orchestrator.planner.planner_config.cursor_config.model == "gpt-5.2-high"
+        assert orchestrator.planner.planner_config.cursor_config.model == yaml_cfg.models.planner
 
         # 验证 Reviewer 使用正确的模型
-        assert orchestrator.reviewer.reviewer_config.cursor_config.model == "gpt-5.2-codex"
+        assert orchestrator.reviewer.reviewer_config.cursor_config.model == yaml_cfg.models.reviewer
 
         # 验证 Workers 使用正确的模型
         for worker in orchestrator.worker_pool.workers:
-            assert worker.worker_config.cursor_config.model == "opus-4.5-thinking"
+            assert worker.worker_config.cursor_config.model == yaml_cfg.models.worker
 
     def test_orchestrator_custom_model_config(self) -> None:
         """验证自定义模型配置能够正确传递到各角色"""

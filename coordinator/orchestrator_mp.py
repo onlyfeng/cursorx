@@ -58,6 +58,8 @@ class MultiProcessOrchestratorConfig(BaseModel):
     worker_count: int = DEFAULT_WORKER_POOL_SIZE  # Worker 进程数量
     enable_sub_planners: bool = True
     strict_review: bool = False
+    # 迭代助手上下文（.iteration + Engram + 规则摘要）
+    iteration_context: dict[str, Any] | None = None
 
     # 超时设置 - 默认值从 core.config 获取
     planning_timeout: float = DEFAULT_PLANNING_TIMEOUT  # 规划超时
@@ -65,7 +67,7 @@ class MultiProcessOrchestratorConfig(BaseModel):
     review_timeout: float = DEFAULT_REVIEW_TIMEOUT  # 评审超时
 
     # 模型配置 - 默认值从 core.config 获取
-    # 可用模型: gpt-5.2-high, opus-4.5-thinking, gpt-5.2-codex, sonnet-4.5-thinking 等
+    # 可用模型: gpt-5.2-high, gpt-5.2-codex-high, gpt-5.2-codex-xhigh, gpt-5.2-codex 等
     # 使用 `agent models` 查看完整列表
     planner_model: str = DEFAULT_PLANNER_MODEL  # 规划者模型
     worker_model: str = DEFAULT_WORKER_MODEL  # 执行者模型
@@ -188,6 +190,9 @@ class MultiProcessOrchestrator:
 
         # 任务队列
         self.task_queue = TaskQueue()
+
+        # 迭代助手上下文
+        self._iteration_context: dict[str, Any] = config.iteration_context or {}
 
         # 进程管理器
         self.process_manager = AgentProcessManager()
@@ -1121,7 +1126,7 @@ class MultiProcessOrchestrator:
         self.state.register_agent(self.planner_id, AgentRole.PLANNER)
         logger.info(f"Planner 进程已创建: {self.planner_id} (模型: {self.config.planner_model})")
 
-        # 创建 Workers - 使用 opus-4.5-thinking
+        # 创建 Workers - 使用执行者模型
         # 注意：Worker 使用 mode='agent' 和 force_write=True（允许修改文件）
         worker_config = {
             "working_directory": self.config.working_directory,
@@ -1151,7 +1156,7 @@ class MultiProcessOrchestrator:
             self.state.register_agent(worker_id, AgentRole.WORKER)
             logger.info(f"Worker 进程已创建: {worker_id} (模型: {self.config.worker_model})")
 
-        # 创建 Reviewer - 使用 gpt-5.2-codex
+        # 创建 Reviewer - 使用评审者模型
         # 注意：Reviewer 强制使用 mode='ask' 和 force_write=False（只读语义）
         reviewer_config = {
             "working_directory": self.config.working_directory,
@@ -1593,6 +1598,8 @@ class MultiProcessOrchestrator:
             "iteration_id": iteration_id,
             "working_directory": self.config.working_directory,
         }
+        if self._iteration_context:
+            context["iteration_assistant"] = self._iteration_context
 
         # 发送规划请求
         request = ProcessMessage(
@@ -1627,6 +1634,10 @@ class MultiProcessOrchestrator:
         # 处理规划结果
         tasks_data = response.payload.get("tasks", [])
         for task_data in tasks_data:
+            if self._iteration_context:
+                task_context = task_data.get("context") or {}
+                task_context.setdefault("iteration_assistant", self._iteration_context)
+                task_data["context"] = task_context
             task = Task(**task_data)
             await self.task_queue.enqueue(task)
             self.state.total_tasks_created += 1
@@ -2003,6 +2014,7 @@ class MultiProcessOrchestrator:
                 "iteration_id": iteration_id,
                 "tasks_completed": completed,
                 "tasks_failed": failed,
+                "context": {"iteration_assistant": self._iteration_context} if self._iteration_context else {},
             },
         )
 

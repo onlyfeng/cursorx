@@ -9,8 +9,8 @@ CLI 用法:
 
 模型支持：
 - 规划任务: gpt-5.2-high (擅长高层规划)
-- 编码任务: opus-4.5-thinking (擅长代码生成)
-- 评审任务: opus-4.5-thinking (擅长代码审查)
+- 编码任务: gpt-5.2-codex-high (擅长代码生成/重构)
+- 评审任务: gpt-5.2-codex-xhigh (擅长代码审查)
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from typing import Any
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from core.config import DEFAULT_PLANNER_MODEL, DEFAULT_REVIEWER_MODEL, DEFAULT_WORKER_MODEL
 from core.cloud_utils import (
     is_cloud_request as _is_cloud_request_util,
 )
@@ -107,8 +108,8 @@ class CursorAgentConfig(BaseModel):
 
     # 模型设置
     # 规划类任务推荐: gpt-5.2-high
-    # 编码类任务推荐: opus-4.5-thinking
-    model: str = "opus-4.5-thinking"
+    # 编码类任务推荐: gpt-5.2-codex-high
+    model: str = DEFAULT_WORKER_MODEL
 
     # 输出格式 (--output-format)
     # - "text": 纯文本输出，仅返回最终答案（推荐用于 Worker）
@@ -270,19 +271,19 @@ class ModelPresets:
 
     # 规划者模型 - GPT 5.2-high 擅长高层规划和分析
     PLANNER = CursorAgentConfig(
-        model="gpt-5.2-high",
+        model=DEFAULT_PLANNER_MODEL,
         timeout=180,
     )
 
-    # 执行者模型 - Opus 4.5 Thinking 擅长编码
+    # 执行者模型 - 默认执行者模型（与 config.yaml 对齐）
     WORKER = CursorAgentConfig(
-        model="opus-4.5-thinking",
+        model=DEFAULT_WORKER_MODEL,
         timeout=300,
     )
 
-    # 评审者模型 - Opus 4.5 Thinking 擅长代码审查
+    # 评审者模型 - 默认评审者模型（与 config.yaml 对齐）
     REVIEWER = CursorAgentConfig(
-        model="opus-4.5-thinking",
+        model=DEFAULT_REVIEWER_MODEL,
         timeout=120,
     )
 

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import subprocess
 from dataclasses import dataclass
 
@@ -162,7 +164,51 @@ class MCPManager:
     def _parse_tool_list(self, output: str) -> list[MCPTool]:
         """解析工具列表输出"""
         tools: list[MCPTool] = []
-        # TODO: 根据实际 CLI 输出格式解析
+        content = output.strip()
+        if not content:
+            return tools
+
+        # 优先尝试解析 JSON 输出
+        try:
+            data = json.loads(content)
+            # 可能是 {"tools": [...]}
+            if isinstance(data, dict):
+                data = data.get("tools", [])
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        tools.append(
+                            MCPTool(
+                                name=str(item.get("name", "")).strip(),
+                                description=str(item.get("description", "")).strip(),
+                                parameters=item.get("parameters") or [],
+                            )
+                        )
+                return [t for t in tools if t.name]
+        except json.JSONDecodeError:
+            pass
+
+        # 兼容文本输出（常见格式：name: desc 或 name - desc）
+        # 注意：为避免把任意文本误识别为 tool，这里对 name 做严格校验：
+        # - 仅允许由字母/数字/._- 组成（不含空格）
+        tool_name_pattern = re.compile(r"^[A-Za-z0-9_.-]+$")
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        for line in lines:
+            # 去除项目符号
+            cleaned = line.lstrip("-*• ").strip()
+            name = cleaned
+            desc = ""
+            if ":" in cleaned:
+                name, desc = cleaned.split(":", 1)
+            elif " - " in cleaned:
+                name, desc = cleaned.split(" - ", 1)
+
+            name = name.strip()
+            desc = desc.strip()
+            # 过滤掉不符合 tool 命名规范的行（如 "some output"）
+            if name and tool_name_pattern.match(name):
+                tools.append(MCPTool(name=name, description=desc, parameters=[]))
+
         return tools
 
     def check_available(self) -> bool:

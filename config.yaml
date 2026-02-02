@@ -20,26 +20,38 @@ system:
 # 适用于: 基本模式 (run.py) 和 多进程模式 (run_mp.py)
 # 使用 `agent models` 查看完整可用模型列表
 models:
-  # 规划者模型 - GPT 5.2 High 擅长高层规划和任务分解
+  # 规划者模型 - GPT-5.2 High 擅长高层规划和任务分解
   planner: gpt-5.2-high
 
-  # 执行者模型 - Claude 4.5 Opus (Thinking) 擅长代码生成
-  worker: opus-4.5-thinking
+  # 执行者模型 - GPT-5.2 Codex High 擅长代码生成/重构
+  worker: gpt-5.2-codex-high
 
-  # 评审者模型 - GPT 5.2 Codex 擅长代码审查
-  reviewer: gpt-5.2-codex
+  # 评审者模型 - GPT-5.2 Codex Extra High 擅长代码审查
+  reviewer: gpt-5.2-codex-xhigh
 
-# 可用模型列表 (2026-01):
-# - gpt-5.2-high      : GPT-5.2 High
-# - gpt-5.2           : GPT-5.2
-# - gpt-5.2-codex     : GPT-5.2 Codex
-# - opus-4.5-thinking : Claude 4.5 Opus (Thinking) [默认]
-# - opus-4.5          : Claude 4.5 Opus
-# - sonnet-4.5-thinking: Claude 4.5 Sonnet (Thinking)
-# - sonnet-4.5        : Claude 4.5 Sonnet
-# - gemini-3-pro      : Gemini 3 Pro
-# - gemini-3-flash    : Gemini 3 Flash
-# - grok              : Grok
+# 可用模型列表 (来自 `agent models`, 2026-02):
+# - auto                  : Auto
+# - composer-1            : Composer 1
+# - gpt-5.2               : GPT-5.2
+# - gpt-5.2-high          : GPT-5.2 High
+# - gpt-5.2-codex         : GPT-5.2 Codex
+# - gpt-5.2-codex-low     : GPT-5.2 Codex Low
+# - gpt-5.2-codex-high    : GPT-5.2 Codex High
+# - gpt-5.2-codex-xhigh   : GPT-5.2 Codex Extra High
+# - gpt-5.2-codex-fast    : GPT-5.2 Codex Fast
+# - gpt-5.2-codex-low-fast: GPT-5.2 Codex Low Fast
+# - gpt-5.2-codex-high-fast: GPT-5.2 Codex High Fast
+# - gpt-5.2-codex-xhigh-fast: GPT-5.2 Codex Extra High Fast
+# - gpt-5.1-high          : GPT-5.1 High
+# - gpt-5.1-codex-max     : GPT-5.1 Codex Max
+# - gpt-5.1-codex-max-high: GPT-5.1 Codex Max High
+# - opus-4.5-thinking     : Claude 4.5 Opus (Thinking)
+# - opus-4.5              : Claude 4.5 Opus
+# - sonnet-4.5-thinking   : Claude 4.5 Sonnet (Thinking)
+# - sonnet-4.5            : Claude 4.5 Sonnet
+# - gemini-3-pro          : Gemini 3 Pro
+# - gemini-3-flash        : Gemini 3 Flash
+# - grok                  : Grok
 
 # agent CLI 配置
 # 安装: curl https://cursor.com/install -fsS | bash

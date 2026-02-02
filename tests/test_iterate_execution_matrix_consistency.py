@@ -94,7 +94,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.config import DEFAULT_EXECUTION_MODE, ConfigManager, resolve_orchestrator_settings
+from core.config import (
+    DEFAULT_EXECUTION_MODE,
+    DEFAULT_PLANNER_MODEL,
+    DEFAULT_REVIEWER_MODEL,
+    DEFAULT_WORKER_MODEL,
+    ConfigManager,
+    resolve_orchestrator_settings,
+)
 from core.execution_policy import (
     EXECUTION_DECISION_MATRIX_CASES,
     DecisionMatrixCase,
@@ -468,9 +475,9 @@ class TestRunPyAndRunIterateConsistency:
         mock_config.system.worker_pool_size = 3
         mock_config.system.enable_sub_planners = True
         mock_config.system.strict_review = False
-        mock_config.models.planner = "gpt-5.2-high"
-        mock_config.models.worker = "opus-4.5-thinking"
-        mock_config.models.reviewer = "gpt-5.2-codex"
+        mock_config.models.planner = DEFAULT_PLANNER_MODEL
+        mock_config.models.worker = DEFAULT_WORKER_MODEL
+        mock_config.models.reviewer = DEFAULT_REVIEWER_MODEL
         mock_config.planner.timeout = 500.0
         mock_config.worker.task_timeout = 600.0
         mock_config.reviewer.timeout = 300.0
@@ -1448,9 +1455,9 @@ def _create_mock_config(
     mock_config.system.worker_pool_size = 3
     mock_config.system.enable_sub_planners = True
     mock_config.system.strict_review = False
-    mock_config.models.planner = "gpt-5.2-high"
-    mock_config.models.worker = "opus-4.5-thinking"
-    mock_config.models.reviewer = "gpt-5.2-codex"
+    mock_config.models.planner = DEFAULT_PLANNER_MODEL
+    mock_config.models.worker = DEFAULT_WORKER_MODEL
+    mock_config.models.reviewer = DEFAULT_REVIEWER_MODEL
     mock_config.planner.timeout = 500.0
     mock_config.worker.task_timeout = 600.0
     mock_config.reviewer.timeout = 300.0
@@ -6940,9 +6947,9 @@ class TestConfigYamlAndSelfIteratorConsistency:
         mock_config.system.worker_pool_size = 3
         mock_config.system.enable_sub_planners = True
         mock_config.system.strict_review = False
-        mock_config.models.planner = "gpt-5.2-high"
-        mock_config.models.worker = "opus-4.5-thinking"
-        mock_config.models.reviewer = "gpt-5.2-codex"
+        mock_config.models.planner = DEFAULT_PLANNER_MODEL
+        mock_config.models.worker = DEFAULT_WORKER_MODEL
+        mock_config.models.reviewer = DEFAULT_REVIEWER_MODEL
         mock_config.planner.timeout = 500.0
         mock_config.worker.task_timeout = 600.0
         mock_config.reviewer.timeout = 300.0

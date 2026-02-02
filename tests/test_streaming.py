@@ -1971,13 +1971,20 @@ class TestReadLinesLongLineHandling:
 
 def test_parse_stream_event_system_init_with_session_id() -> None:
     """测试从 system/init 事件中提取 session_id"""
+    from core.config import DEFAULT_WORKER_MODEL
+
     line = json.dumps(
-        {"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "test-session-uuid-12345"}
+        {
+            "type": "system",
+            "subtype": "init",
+            "model": DEFAULT_WORKER_MODEL,
+            "session_id": "test-session-uuid-12345",
+        }
     )
     event = parse_stream_event(line)
     assert event is not None
     assert event.type == StreamEventType.SYSTEM_INIT
-    assert event.model == "opus-4.5-thinking"
+    assert event.model == DEFAULT_WORKER_MODEL
     assert event.data.get("session_id") == "test-session-uuid-12345"
 
 

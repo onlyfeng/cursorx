@@ -601,7 +601,7 @@ client = CloudClient(api_key="your_api_key")
 # 发送请求
 response = client.chat(
     prompt="分析项目结构",
-    model="opus-4.5-thinking",
+    model="gpt-5.2-codex-high",
     output_format="json"
 )
 
@@ -1029,8 +1029,8 @@ python run.py --workers 5 --execution-mode cloud --print-config
 [CONFIG] orchestrator: basic
 [CONFIG] orchestrator_fallback: none (auto/cloud 强制 basic)
 [CONFIG] planner_model: gpt-5.2-high
-[CONFIG] worker_model: opus-4.5-thinking
-[CONFIG] reviewer_model: gpt-5.2-codex
+[CONFIG] worker_model: gpt-5.2-codex-high
+[CONFIG] reviewer_model: gpt-5.2-codex-xhigh
 [CONFIG] cloud_timeout: 300
 [CONFIG] cloud_auth_timeout: 30
 [CONFIG] auto_commit: false
@@ -1147,7 +1147,7 @@ python run.py "禁用提交，仅分析代码"       # 检测到 "禁用提交" 
 - **工具**: 文件搜索、读取、Shell（只读命令如 ls, find, grep）
 
 ### Worker (执行者)
-- **模型**: opus-4.5-thinking
+- **模型**: gpt-5.2-codex-high
 - **职责**: 执行具体编码任务
 - **权限**: 完整的文件操作、Shell 命令
 - **要求**: 专注当前任务，不考虑其他任务

@@ -232,11 +232,13 @@ class TestStreamingWorkflow:
     @pytest.mark.asyncio
     async def test_stream_event_sequence(self) -> None:
         """事件顺序验证"""
+        from core.config import DEFAULT_WORKER_MODEL
+
         tracker = ProgressTracker(verbose=False)
 
         # 定义期望的事件序列
         events = [
-            StreamEvent(type=StreamEventType.SYSTEM_INIT, model="opus-4.5-thinking"),
+            StreamEvent(type=StreamEventType.SYSTEM_INIT, model=DEFAULT_WORKER_MODEL),
             StreamEvent(type=StreamEventType.ASSISTANT, content="开始执行..."),
             StreamEvent(
                 type=StreamEventType.TOOL_STARTED,

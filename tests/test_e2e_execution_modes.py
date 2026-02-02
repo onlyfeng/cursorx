@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # cooldown_info 契约字段常量
+from core.config import DEFAULT_WORKER_MODEL
 from core.output_contract import CooldownInfoFields
 from cursor import AuthError
 from cursor.client import CursorAgentConfig, CursorAgentResult
@@ -46,7 +47,7 @@ class TestCLIExecutionMode:
     def cli_config(self) -> CursorAgentConfig:
         """创建 CLI 配置"""
         return CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
             force_write=True,
         )
@@ -112,7 +113,7 @@ class TestCLIExecutionMode:
 
         # 测试自定义配置
         executor_custom = CLIAgentExecutor(config=cli_config)
-        assert executor_custom.config.model == "opus-4.5-thinking"
+        assert executor_custom.config.model == DEFAULT_WORKER_MODEL
         assert executor_custom.config.timeout == 300
         assert executor_custom.config.force_write is True
 
@@ -711,7 +712,7 @@ class TestAutoExecutionMode:
     def cli_config(self) -> CursorAgentConfig:
         """创建 CLI 配置"""
         return CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
         )
 
@@ -1222,7 +1223,7 @@ class TestAutoExecutorCooldown:
     def cli_config(self) -> CursorAgentConfig:
         """创建 CLI 配置"""
         return CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
         )
 
@@ -1844,7 +1845,7 @@ class TestExecutorFactory:
     def cli_config(self) -> CursorAgentConfig:
         """创建 CLI 配置"""
         return CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             timeout=300,
         )
 
@@ -1978,7 +1979,7 @@ class TestPlanAndAskExecutors:
     def cli_config(self) -> CursorAgentConfig:
         """创建 CLI 配置"""
         return CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             force_write=True,  # 这个应该被覆盖
         )
 

@@ -177,8 +177,8 @@ def reset_deprecated_warnings() -> None:
 
 # 模型默认值
 DEFAULT_PLANNER_MODEL = "gpt-5.2-high"
-DEFAULT_WORKER_MODEL = "opus-4.5-thinking"
-DEFAULT_REVIEWER_MODEL = "gpt-5.2-codex"
+DEFAULT_WORKER_MODEL = "gpt-5.2-codex-high"
+DEFAULT_REVIEWER_MODEL = "gpt-5.2-codex-xhigh"
 
 # 超时默认值（秒）
 DEFAULT_PLANNING_TIMEOUT = 500.0
@@ -1725,7 +1725,7 @@ def build_cursor_agent_config(
     示例:
         >>> config_dict = build_cursor_agent_config(
         ...     working_directory="/path/to/project",
-        ...     overrides={"timeout": 600, "model": "opus-4.5-thinking"}
+        ...     overrides={"timeout": 600, "model": "gpt-5.2-codex-xhigh"}
         ... )
         >>> from cursor.client import CursorAgentConfig
         >>> agent_config = CursorAgentConfig(**config_dict)
@@ -2998,7 +2998,7 @@ def format_debug_config(
     [CONFIG] orchestrator: basic
     [CONFIG] orchestrator_fallback: mp->basic (requested_mode=auto forces basic)
     [CONFIG] planner_model: gpt-5.2-high
-    [CONFIG] worker_model: opus-4.5-thinking
+    [CONFIG] worker_model: gpt-5.2-codex-xhigh
     [CONFIG] reviewer_model: gpt-5.2-codex
     [CONFIG] cloud_timeout: 300
     [CONFIG] cloud_auth_timeout: 30

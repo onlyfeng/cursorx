@@ -296,6 +296,8 @@ class TestCursorAgentConfigDefaults:
 
     def test_default_values(self):
         """测试 CursorAgentConfig 默认值"""
+        from core.config import DEFAULT_WORKER_MODEL
+
         config = CursorAgentConfig()
 
         assert config.agent_path == "agent"
@@ -304,7 +306,7 @@ class TestCursorAgentConfigDefaults:
         assert config.timeout == 300
         assert config.max_retries == 3
         assert config.retry_delay == 2.0
-        assert config.model == "opus-4.5-thinking"
+        assert config.model == DEFAULT_WORKER_MODEL
         assert config.output_format == "text"
         assert config.stream_partial_output is False
         assert config.non_interactive is True

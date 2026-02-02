@@ -1342,6 +1342,8 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetectConfig:
         """创建模拟配置对象"""
         from unittest.mock import MagicMock
 
+        from core.config import DEFAULT_PLANNER_MODEL, DEFAULT_REVIEWER_MODEL, DEFAULT_WORKER_MODEL
+
         mock_config = MagicMock()
         mock_config.cloud_agent.enabled = True
         mock_config.cloud_agent.execution_mode = "cli"
@@ -1352,9 +1354,9 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetectConfig:
         mock_config.system.worker_pool_size = 3
         mock_config.system.enable_sub_planners = True
         mock_config.system.strict_review = False
-        mock_config.models.planner = "gpt-5.2-high"
-        mock_config.models.worker = "opus-4.5-thinking"
-        mock_config.models.reviewer = "gpt-5.2-codex"
+        mock_config.models.planner = DEFAULT_PLANNER_MODEL
+        mock_config.models.worker = DEFAULT_WORKER_MODEL
+        mock_config.models.reviewer = DEFAULT_REVIEWER_MODEL
         return mock_config
 
     def test_no_decision_config_auto_detect_false_allows_mp(

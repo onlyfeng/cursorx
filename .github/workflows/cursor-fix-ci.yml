@@ -87,7 +87,9 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          agent --force --model "opus-4.5-thinking" --output-format=text --print "
+          # 从项目 config.yaml 读取默认 Worker 模型，确保单一配置点
+          WORKER_MODEL=$(python -c "from core.config import get_config; print(get_config().models.worker)")
+          agent --force --model "$WORKER_MODEL" --output-format=text --print "
           CI 构建失败。请分析失败日志并尝试修复问题。
 
           失败日志位于: ${{ steps.get-logs.outputs.logs_file }}

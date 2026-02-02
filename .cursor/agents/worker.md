@@ -1,7 +1,7 @@
 ---
 name: worker
 description: 编码执行专家。用于实现具体编码任务、修改代码、创建文件时调用。
-model: opus-4.5-thinking
+model: gpt-5.2-codex-high
 readonly: false
 ---
 

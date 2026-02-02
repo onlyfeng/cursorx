@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # cooldown_info 契约字段常量
+from core.config import DEFAULT_WORKER_MODEL
 from core.output_contract import (
     COOLDOWN_INFO_ALL_KNOWN_FIELDS,
     COOLDOWN_INFO_COMPAT_FIELDS,
@@ -45,10 +46,12 @@ class TestCursorAgentConfig:
 
     def test_default_config(self):
         """测试默认配置"""
+        from core.config import DEFAULT_WORKER_MODEL
+
         config = CursorAgentConfig()
 
         assert config.agent_path == "agent"
-        assert config.model == "opus-4.5-thinking"
+        assert config.model == DEFAULT_WORKER_MODEL
         assert config.timeout == 300
         assert config.max_retries == 3
         assert config.output_format == "text"
@@ -113,14 +116,18 @@ class TestModelPresets:
 
     def test_worker_preset(self):
         """测试执行者预设"""
+        from core.config import DEFAULT_WORKER_MODEL
+
         config = ModelPresets.WORKER
-        assert config.model == "opus-4.5-thinking"
+        assert config.model == DEFAULT_WORKER_MODEL
         assert config.timeout == 300
 
     def test_reviewer_preset(self):
         """测试评审者预设"""
+        from core.config import DEFAULT_REVIEWER_MODEL
+
         config = ModelPresets.REVIEWER
-        assert config.model == "opus-4.5-thinking"
+        assert config.model == DEFAULT_REVIEWER_MODEL
         assert config.timeout == 120
 
 
@@ -164,7 +171,7 @@ class TestCursorAgentResult:
             success=True,
             output="已修改文件",
             files_modified=["src/main.py", "tests/test_main.py"],
-            command_used="agent -p '...' --model opus-4.5-thinking",
+            command_used=f"agent -p '...' --model {DEFAULT_WORKER_MODEL}",
         )
 
         assert len(result.files_modified) == 2
@@ -214,7 +221,7 @@ class TestCursorAgentResult:
             session_id="session-uuid-abc",
             files_modified=["created.py"],
             files_edited=["modified.py"],
-            command_used="agent -p '...' --model opus-4.5-thinking",
+            command_used=f"agent -p '...' --model {DEFAULT_WORKER_MODEL}",
         )
 
         assert result.session_id == "session-uuid-abc"
@@ -570,7 +577,7 @@ class TestStreamExecute:
 
         # 模拟 stream-json 输出
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "正在分析..."}]}}',
             '{"type": "result", "duration_ms": 1234}',
         ]
@@ -623,7 +630,10 @@ class TestStreamExecute:
 
         # 模拟包含 session_id 的 stream-json 输出
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "test-session-uuid-12345"}',
+            (
+                f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}", '
+                '"session_id": "test-session-uuid-12345"}'
+            ),
             '{"type": "assistant", "message": {"content": [{"text": "完成"}]}}',
             '{"type": "result", "duration_ms": 100}',
         ]
@@ -657,7 +667,10 @@ class TestStreamExecute:
 
         # 模拟包含文件操作的 stream-json 输出
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "session-abc"}',
+            (
+                f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}", '
+                '"session_id": "session-abc"}'
+            ),
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}, "result": {"success": {}}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "existing.py", "old_string": "old", "new_string": "new"}, "result": {"success": {}}}}}',
             '{"type": "diff", "path": "another.py", "old_string": "a", "new_string": "b"}',
@@ -698,7 +711,7 @@ class TestStreamExecute:
 
         # 模拟对同一文件多次操作
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"strReplaceToolCall": {"args": {"path": "same_file.py", "old_string": "a", "new_string": "b"}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "same_file.py", "old_string": "a", "new_string": "b"}, "result": {"success": {}}}}}',
             '{"type": "diff", "path": "same_file.py", "old_string": "c", "new_string": "d"}',
@@ -738,7 +751,7 @@ class TestBuildCommand:
     async def test_build_command_basic(self):
         """测试基本命令构建"""
         config = CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             non_interactive=True,
         )
         client = CursorAgentClient(config=config)
@@ -757,7 +770,7 @@ class TestBuildCommand:
             call_args = mock_exec.call_args.args
             assert "-p" in call_args
             assert "--model" in call_args
-            assert "opus-4.5-thinking" in call_args
+            assert DEFAULT_WORKER_MODEL in call_args
 
     @pytest.mark.asyncio
     async def test_build_command_with_force(self):
@@ -1047,7 +1060,10 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 模拟 stream-json 输出，包含 session_id
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "sess-abc123"}',
+            (
+                f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}", '
+                '"session_id": "sess-abc123"}'
+            ),
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "开始处理..."}]}}',
             '{"type": "result", "duration_ms": 500}',
         ]
@@ -1081,7 +1097,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 模拟 stream-json 输出，包含写入文件的工具调用
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "src/main.py"}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "src/main.py"}, "result": {"success": {"linesCreated": 50}}}}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "src/utils.py"}}}}',
@@ -1119,7 +1135,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 模拟 stream-json 输出，包含编辑文件的工具调用
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"strReplaceToolCall": {"args": {"path": "config.yaml"}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"strReplaceToolCall": {"args": {"path": "config.yaml"}, "result": {"success": true}}}}',
             '{"type": "result", "duration_ms": 300}',
@@ -1154,7 +1170,10 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 完整的 stream-json 样本
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "combined-sess-xyz"}',
+            (
+                f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}", '
+                '"session_id": "combined-sess-xyz"}'
+            ),
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "开始创建文件..."}]}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "new_file.py"}, "result": {"success": {"linesCreated": 100}}}}}',
@@ -1194,7 +1213,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 同一文件多次写入应该去重
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}}}}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}, "result": {"success": {}}}}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"writeToolCall": {"args": {"path": "repeated.py"}}}}',
@@ -1231,7 +1250,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 事件没有 session_id
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "result", "duration_ms": 100}',
         ]
 
@@ -1264,7 +1283,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 不含 session_id，但 assistant 事件包含
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "分析中..."}]}, "session_id": "assistant-session-abc123"}',
             '{"type": "result", "duration_ms": 200}',
         ]
@@ -1298,7 +1317,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 不含 session_id，但 tool_call 事件包含
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "开始..."}]}}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "main.py"}}}, "session_id": "tool-call-session-xyz789"}',
             '{"type": "tool_call", "subtype": "completed", "tool_call": {"readToolCall": {"args": {"path": "main.py"}, "result": {"success": {}}}}}',
@@ -1334,7 +1353,10 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 和 assistant 都包含 session_id，应使用 system/init 的
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking", "session_id": "init-session-priority"}',
+            (
+                f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}", '
+                '"session_id": "init-session-priority"}'
+            ),
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "分析..."}]}, "session_id": "assistant-session-secondary"}',
             '{"type": "result", "duration_ms": 100}',
         ]
@@ -1369,7 +1391,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 不含 session_id，但 result 事件包含
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "完成"}]}}',
             '{"type": "result", "duration_ms": 100, "session_id": "result-session-final"}',
         ]
@@ -1400,7 +1422,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # system/init 不含 session_id，但 diff 事件包含
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "diff", "path": "test.py", "old_string": "a", "new_string": "b", "session_id": "diff-session-abc"}',
             '{"type": "result", "duration_ms": 50}',
         ]
@@ -1431,7 +1453,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 多个事件包含不同的 session_id，应使用第一个
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"text": "a"}]}, "session_id": "first-session"}',
             '{"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "x.py"}}}, "session_id": "second-session"}',
             '{"type": "result", "duration_ms": 10, "session_id": "third-session"}',
@@ -1470,7 +1492,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
 
         # 样本：多个 assistant 事件 + result 事件（无 result 字段）
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "第一部分内容"}]}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "第二部分内容"}]}}',
             '{"type": "result", "duration_ms": 123}',  # 无 result 字段
@@ -1507,7 +1529,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
         client = CursorAgentClient(config=config)
 
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "完成"}]}}',
             '{"type": "result"}',  # 仅 type 字段
         ]
@@ -1541,7 +1563,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
         client = CursorAgentClient(config=config)
 
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "处理完成"}]}}',
             '{"type": "result", "duration_ms": 123, "is_error": false, "extra": "x"}',
         ]
@@ -1575,7 +1597,7 @@ class TestStreamJsonFilesModifiedSessionIdExtraction:
         client = CursorAgentClient(config=config)
 
         stream_lines = [
-            '{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}',
+            f'{{"type": "system", "subtype": "init", "model": "{DEFAULT_WORKER_MODEL}"}}',
             '{"type": "assistant", "message": {"content": [{"type": "text", "text": "来自assistant的内容"}]}}',
             '{"type": "result", "duration_ms": 500, "result": "来自result字段的内容-不应出现在输出中"}',
         ]
@@ -1635,10 +1657,13 @@ class TestOutputParsing:
 
     def test_parse_stream_json_output(self):
         """测试解析 stream-json 输出"""
-        output = """{"type": "system", "subtype": "init", "model": "opus-4.5-thinking"}
-{"type": "assistant", "message": {"content": [{"text": "分析中..."}]}}
-{"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "main.py"}}}}
-{"type": "result", "duration_ms": 5000}"""
+        stream_lines = [
+            {"type": "system", "subtype": "init", "model": DEFAULT_WORKER_MODEL},
+            {"type": "assistant", "message": {"content": [{"text": "分析中..."}]}},
+            {"type": "tool_call", "subtype": "started", "tool_call": {"readToolCall": {"args": {"path": "main.py"}}}},
+            {"type": "result", "duration_ms": 5000},
+        ]
+        output = "\n".join(json.dumps(line) for line in stream_lines)
 
         events = CursorAgentClient.parse_stream_json_output(output)
 
@@ -3777,7 +3802,7 @@ class TestIntegrationScenarios:
     async def test_worker_workflow(self):
         """测试执行者工作流"""
         config = CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             mode="agent",
             output_format="text",
             force_write=True,
@@ -3813,7 +3838,7 @@ class TestIntegrationScenarios:
         实际行为为: agent 为默认模式，不传 --mode
         """
         config = CursorAgentConfig(
-            model="opus-4.5-thinking",
+            model=DEFAULT_WORKER_MODEL,
             mode="code",  # 使用旧的 code 模式
             output_format="text",
             force_write=True,

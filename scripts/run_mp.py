@@ -85,8 +85,8 @@ def parse_args() -> argparse.Namespace:
   python scripts/run_mp.py "重构 src 目录下的代码" --workers 5
 
 模型配置示例:
-  python run.py --mode iterate "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
-  python scripts/run_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model opus-4.5-thinking
+  python run.py --mode iterate "实现功能" --planner-model gpt-5.2-high --worker-model gpt-5.2-codex-high
+  python scripts/run_mp.py "实现功能" --planner-model gpt-5.2-high --worker-model gpt-5.2-codex-high
         """,
     )
 
