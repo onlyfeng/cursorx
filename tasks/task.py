@@ -1,5 +1,7 @@
 """任务定义"""
 
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 from enum import Enum

@@ -1,5 +1,7 @@
 """任务队列"""
 
+from __future__ import annotations
+
 import asyncio
 from collections import defaultdict
 from typing import Optional

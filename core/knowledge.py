@@ -10,6 +10,8 @@
     from core.knowledge import CURSOR_KEYWORDS, is_cursor_related, KnowledgeDoc
 """
 
+from __future__ import annotations
+
 from typing import Optional
 
 from pydantic import BaseModel, Field

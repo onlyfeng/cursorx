@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """规划者-执行者 多Agent系统 主入口"""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import sys

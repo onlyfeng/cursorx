@@ -3,6 +3,8 @@
 管理所有 Agent 进程的生命周期
 """
 
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 from typing import Optional

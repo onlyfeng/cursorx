@@ -3,6 +3,8 @@
 负责 Git 操作：检查状态、生成提交信息、提交、推送、回退
 """
 
+from __future__ import annotations
+
 import fnmatch
 import re
 import subprocess

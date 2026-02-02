@@ -31,6 +31,7 @@
     python scripts/pre_commit_check.py --quick --core-only --json  # CI 推荐组合
     python scripts/pre_commit_check.py --req-files requirements.txt  # 仅检查核心依赖
 """
+from __future__ import annotations
 
 import argparse
 import importlib

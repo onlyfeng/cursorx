@@ -21,6 +21,8 @@
     python scripts/check_deps.py [--format text|json|md] [--output report.txt] [--verbose]
 """
 
+from __future__ import annotations
+
 import argparse
 import ast
 import json

@@ -16,6 +16,8 @@
 6. config.yaml 中的 cloud_agent.api_key
 """
 
+from __future__ import annotations
+
 import os
 from typing import Any, Optional
 

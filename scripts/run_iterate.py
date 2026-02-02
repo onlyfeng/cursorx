@@ -92,6 +92,8 @@ fetch_policy 当前作用范围：
     python scripts/run_iterate.py --skip-online --dry-run "分析代码结构"
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import hashlib

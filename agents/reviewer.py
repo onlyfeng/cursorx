@@ -3,6 +3,8 @@
 负责评估迭代完成度，决定是否继续
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Any, Optional
 

@@ -16278,7 +16278,7 @@ knowledge_docs_update:
       allowed_url_prefixes: ["docs", "cn/docs"]  # 旧字段名
 """
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(config_content)
+        config_path.write_text(config_content, encoding="utf-8")
 
         monkeypatch.chdir(tmp_path)
         reset_deprecated_warnings()

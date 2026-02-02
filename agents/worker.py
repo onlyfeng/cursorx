@@ -5,6 +5,8 @@
 支持知识库自动搜索（Cursor 相关问题）
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger

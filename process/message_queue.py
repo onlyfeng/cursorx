@@ -3,6 +3,8 @@
 基于 multiprocessing.Queue 实现进程间通信
 """
 
+from __future__ import annotations
+
 import multiprocessing as mp
 import pickle
 import uuid

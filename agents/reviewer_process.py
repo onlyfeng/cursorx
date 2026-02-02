@@ -3,6 +3,8 @@
 作为独立进程运行的评审者
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import re

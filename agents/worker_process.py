@@ -3,6 +3,8 @@
 作为独立进程运行的执行者
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 from dataclasses import dataclass, field

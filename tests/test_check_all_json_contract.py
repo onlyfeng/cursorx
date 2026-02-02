@@ -238,6 +238,7 @@ class TestSchemaValidation:
 # ==================== 脚本存在性测试 ====================
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash 脚本测试，Windows 跳过")
 class TestScriptExists:
     """脚本存在性测试"""
 
@@ -263,6 +264,7 @@ class TestScriptExists:
 # ==================== 帮助信息测试 ====================
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash 脚本测试，Windows 跳过")
 class TestHelpMessage:
     """帮助信息测试"""
 
@@ -284,6 +286,7 @@ class TestHelpMessage:
 
 
 @pytest.mark.skipif(not CHECK_ALL_SCRIPT.exists(), reason="check_all.sh 脚本不存在")
+@pytest.mark.skipif(sys.platform == "win32", reason="bash 脚本测试，Windows 跳过")
 class TestMinimalJsonContract:
     """轻量 JSON 契约测试（非 slow，CI 必跑）。
 

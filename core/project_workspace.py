@@ -8,6 +8,8 @@
 - 根目录含参考子工程：自动发现候选参考工程子目录，并将其信息写入最终 goal
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re

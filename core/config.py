@@ -80,6 +80,8 @@
 3. 详细 Schema 定义参见: core/execution_policy.py "统一字段 Schema" 部分
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional

@@ -818,6 +818,8 @@ user_message / message_level / cooldown_info 现状对照表
     clean_prompt = sanitize_prompt_for_cli_fallback(prompt)
 """
 
+from __future__ import annotations
+
 import contextlib
 import hashlib
 import logging

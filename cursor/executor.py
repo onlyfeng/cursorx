@@ -137,6 +137,8 @@ Cloud/Auto 语义统一说明
 配置优先级: 显式参数 > agent_config > auth_config > CURSOR_API_KEY > config.yaml
 """
 
+from __future__ import annotations
+
 import asyncio
 from abc import abstractmethod
 from dataclasses import dataclass

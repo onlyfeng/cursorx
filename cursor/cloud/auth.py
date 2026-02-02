@@ -8,6 +8,8 @@
 - 认证失败友好错误提示
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os

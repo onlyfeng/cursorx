@@ -11,6 +11,8 @@ stream-json 输出格式:
 - type: "result" - 最终结果，包含耗时
 """
 
+from __future__ import annotations
+
 import asyncio
 import difflib
 import json

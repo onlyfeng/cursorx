@@ -17,6 +17,8 @@ check_all.sh JSON 输出渲染器
     - 通过项折叠展示
 """
 
+from __future__ import annotations
+
 import json
 import sys
 from collections import defaultdict

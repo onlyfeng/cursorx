@@ -3,6 +3,8 @@
 每个 Agent 作为独立进程运行
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import os
 import signal

@@ -4,6 +4,8 @@
 支持语义搜索增强的代码库探索
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger

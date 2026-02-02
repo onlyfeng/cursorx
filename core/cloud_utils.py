@@ -36,6 +36,8 @@ Cloud 请求判定规则:
 """
 
 # Cloud 前缀（& 开头表示使用 Cloud 执行）
+from __future__ import annotations
+
 CLOUD_PREFIX = "&"
 
 

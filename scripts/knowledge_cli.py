@@ -29,6 +29,8 @@
     python knowledge_cli.py refresh doc-abc123
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import sys

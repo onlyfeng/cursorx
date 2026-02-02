@@ -1,5 +1,7 @@
 """Agent 基类定义"""
 
+from __future__ import annotations
+
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
