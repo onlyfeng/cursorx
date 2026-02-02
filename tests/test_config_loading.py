@@ -12169,6 +12169,8 @@ class TestRunIteratePyConfigPrecedence:
         assert spec is not None
         assert spec.loader is not None
         run_iterate_module = importlib.util.module_from_spec(spec)
+        # 必须在 exec_module 前注册到 sys.modules，否则 @dataclass 装饰器会失败
+        sys.modules["run_iterate"] = run_iterate_module
         spec.loader.exec_module(run_iterate_module)
 
         args = run_iterate_module.parse_args()
@@ -12220,6 +12222,8 @@ class TestRunIteratePyConfigPrecedence:
         assert spec is not None
         assert spec.loader is not None
         run_iterate_module = importlib.util.module_from_spec(spec)
+        # 必须在 exec_module 前注册到 sys.modules，否则 @dataclass 装饰器会失败
+        sys.modules["run_iterate"] = run_iterate_module
         spec.loader.exec_module(run_iterate_module)
 
         args = run_iterate_module.parse_args()
@@ -13244,6 +13248,8 @@ class TestRunIteratePyPrintConfigParameter:
         assert spec is not None
         assert spec.loader is not None
         run_iterate_module = importlib.util.module_from_spec(spec)
+        # 必须在 exec_module 前注册到 sys.modules，否则 @dataclass 装饰器会失败
+        sys.modules["run_iterate"] = run_iterate_module
         spec.loader.exec_module(run_iterate_module)
 
         args = run_iterate_module.parse_args()
@@ -13284,6 +13290,8 @@ class TestRunIteratePyPrintConfigParameter:
         assert spec is not None
         assert spec.loader is not None
         run_iterate_module = importlib.util.module_from_spec(spec)
+        # 必须在 exec_module 前注册到 sys.modules，否则 @dataclass 装饰器会失败
+        sys.modules["run_iterate"] = run_iterate_module
         spec.loader.exec_module(run_iterate_module)
 
         args = run_iterate_module.parse_args()

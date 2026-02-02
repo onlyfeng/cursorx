@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
+from core.contract_fields import CooldownInfoFields
 
 # 推荐: 从 cursor 顶层包导入（统一入口）
 from cursor import (
@@ -2126,7 +2127,7 @@ class TestCursorAgentClientCloudRouting:
             # 回退到 CLI 后可能成功（mock 模式）或失败（无 CLI）
             # 关键是要验证超时信息被正确记录
             assert "超时" in result.command_used or (
-                result.cooldown_info and result.cooldown_info.get("kind") == "timeout"
+                result.cooldown_info and result.cooldown_info.get(CooldownInfoFields.KIND) == "timeout"
             )
             # 如果回退成功，success 为 True；如果 CLI 也失败，则为 False
             # 这里不强制断言 success 的值，因为依赖于 CLI 是否可用
