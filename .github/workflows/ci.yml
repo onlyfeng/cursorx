@@ -475,7 +475,7 @@ jobs:
 
       - name: 上传覆盖率报告到 Codecov
         if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
           flags: unittests
@@ -563,7 +563,7 @@ jobs:
 
       - name: 上传 E2E 覆盖率报告
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage-e2e.xml
           flags: e2e
@@ -1006,7 +1006,7 @@ jobs:
 
       - name: 上传 ML 测试覆盖率
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage-ml.xml
           flags: ml-tests
