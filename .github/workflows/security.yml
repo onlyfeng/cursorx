@@ -167,7 +167,7 @@ jobs:
 
       - name: Create issue on vulnerability (optional)
         if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
@@ -208,7 +208,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 发表安全检查评论
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pipCheckStatus = '${{ needs.dependency-audit.outputs.pip_check_status }}';

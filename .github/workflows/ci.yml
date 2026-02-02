@@ -261,7 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 发表依赖变更评论
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pipCheck = '${{ needs.dependency-check.outputs.pip_check_result }}';
