@@ -196,6 +196,12 @@ Shell 命令限制:
             if review.get("next_focus"):
                 parts.append(f"\n重点关注: {review['next_focus']}")
 
+        if context.get("iteration_assistant"):
+            parts.append(
+                "\n## 迭代上下文（.iteration / Engram / 规则）\n"
+                f"```json\n{json.dumps(context['iteration_assistant'], ensure_ascii=False, indent=2)}\n```"
+            )
+
         parts.append("\n请分析并输出任务规划:")
 
         return "\n".join(parts)

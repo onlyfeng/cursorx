@@ -61,6 +61,8 @@ class OrchestratorConfig(BaseModel):
     enable_sub_planners: bool = DEFAULT_ENABLE_SUB_PLANNERS  # 是否启用子规划者
     strict_review: bool = DEFAULT_STRICT_REVIEW  # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
+    # 迭代助手上下文（.iteration + Engram + 规则摘要）
+    iteration_context: dict[str, Any] | None = None
 
     # 各角色超时配置（秒）
     # 若为 None，则使用 config.yaml 中的配置值；若 config.yaml 也未配置，则使用默认常量
@@ -153,6 +155,7 @@ class Orchestrator:
 
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
         self._knowledge_manager: KnowledgeManager | None = knowledge_manager
+        self._iteration_context: dict[str, Any] = config.iteration_context or {}
 
         # 初始化 Agents
         planner_cursor_config = config.cursor_config.model_copy(deep=True)
@@ -609,6 +612,8 @@ class Orchestrator:
             "iteration_id": iteration_id,
             "working_directory": self.config.working_directory,
         }
+        if self._iteration_context:
+            context["iteration_assistant"] = self._iteration_context
 
         # 如果有之前的评审，添加反馈
         if self.reviewer.review_history:
@@ -629,6 +634,10 @@ class Orchestrator:
         # 处理规划结果中的任务
         tasks_data = plan_result.get("tasks", [])
         for task_data in tasks_data:
+            if self._iteration_context:
+                task_context = task_data.get("context") or {}
+                task_context.setdefault("iteration_assistant", self._iteration_context)
+                task_data["context"] = task_context
             task = self.planner.create_task_from_plan(task_data, iteration_id)
             await self.task_queue.enqueue(task)
             self.state.total_tasks_created += 1
@@ -732,6 +741,7 @@ class Orchestrator:
             iteration_id=iteration_id,
             tasks_completed=completed_tasks,
             tasks_failed=failed_tasks,
+            extra_context=self._iteration_context if self._iteration_context else None,
         )
 
         decision = review_result.get("decision", ReviewDecision.CONTINUE)

@@ -192,6 +192,7 @@ class ReviewerAgent(BaseAgent):
         tasks_completed: list[dict],
         tasks_failed: list[dict],
         previous_reviews: Optional[list[dict]] = None,
+        extra_context: Optional[dict] = None,
     ) -> dict[str, Any]:
         """评审一次迭代
 
@@ -212,6 +213,8 @@ class ReviewerAgent(BaseAgent):
             "completion_rate": len(tasks_completed) / max(len(tasks_completed) + len(tasks_failed), 1),
             "previous_reviews": previous_reviews or self.review_history,
         }
+        if extra_context:
+            context["iteration_assistant"] = extra_context
 
         return await self.execute(goal, context)
 
@@ -252,6 +255,14 @@ class ReviewerAgent(BaseAgent):
                 prev = context["previous_reviews"][-1]  # 只看上一次评审
                 parts.append(
                     f"\n## 上次评审\n- 决策: {prev.get('decision', 'N/A')}\n- 得分: {prev.get('score', 'N/A')}"
+                )
+
+            if "iteration_assistant" in context:
+                import json
+
+                parts.append(
+                    "\n## 迭代上下文（.iteration / Engram / 规则）\n"
+                    f"```json\n{json.dumps(context['iteration_assistant'], ensure_ascii=False, indent=2)}\n```"
                 )
 
         if self.reviewer_config.strict_mode:

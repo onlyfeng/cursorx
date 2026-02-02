@@ -296,6 +296,14 @@ class PlannerAgent(BaseAgent):
             if "constraints" in context:
                 parts.append(f"\n## 约束条件\n{context['constraints']}")
 
+            if "iteration_assistant" in context:
+                import json
+
+                parts.append(
+                    "\n## 迭代上下文（.iteration / Engram / 规则）\n"
+                    f"```json\n{json.dumps(context['iteration_assistant'], ensure_ascii=False, indent=2)}\n```"
+                )
+
             # 添加语义搜索结果
             if "semantic_search_results" in context:
                 search_results = context["semantic_search_results"]

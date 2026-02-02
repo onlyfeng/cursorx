@@ -1,0 +1,178 @@
+---
+description: CursorX 迭代助手：自动利用 .iteration 与 Engram MCP（如可用），并尊重目标项目规则为 SSOT
+alwaysApply: true
+---
+
+## 迭代助手（Iteration Assistant）— CursorX 辅助规则
+
+### 目标
+
+当用户在 CursorX 中发起“迭代”（规划/执行/审核的多 Agent 编排）时，系统应默认自动发现并利用：
+- 工作目录下的 `.iteration/`（若存在）：迭代需求/设计/当前进度/回归笔记等
+- Engram MCP（若可用）：可审计、可迁移的后续记录与证据引用
+
+> `.iteration/` 是否纳入 git **由具体项目自行决定**（tracked / untracked / ignored 均可），本规则不强制。若两者均不存在，则回退到通用迭代流程（CursorX 默认 Planner→Worker→Reviewer）。
+
+---
+
+## 规则优先级与冲突解决（必须遵循）
+
+- 若目标项目存在 `AGENTS.md` 或 `.cursor/rules/`：视为该项目的**权威约束（SSOT）**。
+- 本规则只负责：
+  - 自动发现上下文（`.iteration/`、Engram MCP）
+  - 组织 Planner/Worker/Reviewer 的输入输出结构
+  - 处理降级与迁移（可用则写 Engram，不可用则落到项目可见载体）
+- 若本规则与目标项目规则出现冲突：**以目标项目规则为准**。
+- “项目 SSOT 文档区”由目标项目定义，本规则不得写死固定路径。
+
+---
+
+## 一、触发条件
+
+满足任一条件则启用本规则：
+- 用户明确包含关键词：`迭代` / `iteration` / `plan+execute+review` / `多 Agent 编排`
+- CursorX 运行模式为 `iterate`（或等价“自我迭代/迭代模式”）
+
+---
+
+## 二、默认发现与优先级（必须做）
+
+### 2.1 工作目录（WORKDIR）
+
+- WORKDIR = CursorX 实际执行的目标目录（例如 `run.py --directory ...` 指定；未指定则为当前目录）。
+- 所有 `.iteration/` 检测/读写均以 WORKDIR 为根。
+
+### 2.2 `.iteration/` 检测与加载
+
+- 若 `WORKDIR/.iteration/` 存在：读取其内容作为强上下文（优先级高于用户口述零散信息）。
+- 若不存在：进入“无 `.iteration` 回退策略”（见 §五）。
+
+推荐结构：
+- `.iteration/README.md`
+- `.iteration/<ITER_ID>/plan.md`
+- `.iteration/<ITER_ID>/regression.md`
+
+`<ITER_ID>` 默认选择规则：
+- 若用户显式指定则使用之
+- 否则选择 `.iteration/` 下最大的“纯数字目录名”
+- 否则使用 `1` 或时间戳目录（实现二选一，但需稳定一致）
+
+### 2.3 Engram MCP 检测与可用性验证（必须验证）
+
+- 发现来源（任一即可）：CursorX MCP 管理模块 / Cursor CLI MCP / 配置文件（项目级或用户级）
+- 可用性判定（不可只靠配置存在）：
+  - 对候选 server 执行 `tools/list`
+  - 返回 tools 非空则视为可用（优先检查是否包含 `memory_store` / `evidence_upload`）
+
+### 2.4 `.iteration/` 的 Git 策略识别（不强制，但必须识别）
+
+不规定必须 tracked 或必须 ignore；但必须识别策略以调整协作/审核行为。建议策略：
+- `tracked`：`.iteration/` 内存在被 git 跟踪文件
+- `ignored`：`.iteration/` 被 ignore 命中
+- `untracked`：存在但未跟踪且未 ignore
+- `absent`：目录不存在
+
+行为约定：
+- `tracked`：`.iteration/<ITER_ID>/{plan,regression}.md` 可参与 PR 评审，Reviewer 应纳入评审依据
+- 非 `tracked`（ignored/untracked）：`.iteration` 仅可作为本地上下文；评审必需信息必须同步到 Engram（若可用）或 PR/项目 SSOT 文档区
+
+---
+
+## 三、编排规则（Planner / Worker / Reviewer）
+
+### 3.1 Planner（规划者）
+
+输入必须包含：
+- 用户任务描述
+- `.iteration/<ITER_ID>/plan.md`（若存在）
+- `.iteration/<ITER_ID>/regression.md`（若存在）
+- Engram MCP 可用性状态（可用/不可用 + 验证结果）
+- `.iteration` Git 策略状态（tracked/ignored/untracked/absent）
+- 目标项目规则（`AGENTS.md` / `.cursor/rules/`）的关键约束摘要（SSOT）
+
+输出必须包含：
+- 任务拆解（可并行/可串行标注）
+- 验收标准（Reviewer 用于 PASS/FAIL）
+- 记录落点（写到 `.iteration` / Engram / PR/SSOT 的哪个位置）
+
+### 3.2 Worker（执行者）
+
+- 按 Planner 拆解执行，避免写同一文件冲突
+- 每完成一个子任务必须更新进度：
+  - `.iteration` 存在：更新 `.iteration/<ITER_ID>/regression.md`
+  - Engram 可用：写入一条进度/决策/证据引用记录
+  - `.iteration` 非 tracked：把评审必需信息同步到 Engram 或 PR/SSOT（避免 Reviewer 看不到）
+
+约束：
+- 严禁把敏感信息写入 `.iteration` 或上传到 Engram（token/DSN/密码/私钥等必须脱敏）
+
+### 3.3 Reviewer（评审者）
+
+- 评审输入：
+  - 代码变更、测试/门禁结果
+  - plan 中的验收标准
+  - regression 当前进度
+  - `.iteration` 策略：
+    - `tracked`：`.iteration` 纳入评审依据
+    - 非 `tracked`：不得依赖 `.iteration` 作为评审证据，必须以 PR 可见信息与 Engram（若可用）为准
+- 评审输出：PASS/FAIL + 阻塞点 + 必要补充项（复现/证据/回滚）
+- Engram 可用时：必须写入最终结论与证据引用
+
+---
+
+## 四、记录规范（Engram 可用时）
+
+- 优先写入 Engram：计划、决策、进度、证据引用（可审计、可迁移）
+- `.iteration` 作为易编辑入口：需求/设计/回归笔记（是否纳入 git 由项目决定）
+
+`.iteration` → Engram 迁移（两者都存在时建议默认执行）：
+- 将 `.iteration/<ITER_ID>/plan.md` 与 `regression.md` 的内容（或摘要+引用）写入 Engram
+- 迁移后 `.iteration` 可继续作为编辑入口；Engram 作为共享/审计记录面
+
+---
+
+## 五、回退策略
+
+### 5.1 只有 `.iteration`，无 Engram
+
+- `tracked`：`.iteration` 文档可随 PR 评审；计划/进度/结论可在 `.iteration` 中协作
+- 非 `tracked`：除本地更新外，评审必需信息同步到 PR/SSOT
+
+### 5.2 只有 Engram，无 `.iteration`
+
+- 全部记录写 Engram
+- 可选：自动初始化 `.iteration` 作为本地草稿入口（提供开关）
+
+### 5.3 两者都没有
+
+- 走通用迭代流程
+- 输出必须包含：计划、拆解、进度点、验收标准
+- 可选：自动创建 `.iteration/<ITER_ID>/plan.md` 与 `regression.md`（是否纳入 git 由项目决定）
+
+---
+
+## 六、对 CursorX 的落地实现建议（面向开发者）
+
+建议新增 `IterationContext` 并注入到 Planner/Worker/Reviewer：
+- `detect_iteration_dir(WORKDIR)`
+- `select_iteration_id(...)`
+- `load_iteration_docs(...)`
+- `detect_iteration_git_policy(...)`  # tracked/ignored/untracked/absent
+- `detect_engram_mcp(...)` + `verify_tools_list(...)`
+- `load_target_project_rules_summary(...)`  # 读取目标项目 AGENTS.md/.cursor/rules 形成约束摘要（SSOT）
+
+可选 CLI 参数：
+- `--iteration-id <id>`
+- `--iteration-source auto|iteration|engram|none`
+- `--iteration-git-policy auto|tracked|untracked|ignored`
+- `--no-iteration-bootstrap`
+
+---
+
+## 七、验收标准（完成定义）
+
+- 有 `.iteration`：仅输入“开始迭代 + 目标”，也能自动参考 `.iteration` 生成可执行计划。
+- `.iteration` tracked：其内容可参与 PR 审核；Reviewer 可据此判定完成度。
+- `.iteration` 非 tracked：系统不会依赖其作为评审证据；关键结论会同步到 Engram（若可用）或 PR/SSOT。
+- Engram MCP 可用：完成 `tools/list` 验证，并写入计划/进度/结论（无敏感信息）。
+- Engram MCP 不可用：自动降级，不阻塞迭代，并明确说明降级原因与记录落点。

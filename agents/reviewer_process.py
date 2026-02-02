@@ -125,12 +125,13 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         iteration_id = message.payload.get("iteration_id", 0)
         tasks_completed = message.payload.get("tasks_completed", [])
         tasks_failed = message.payload.get("tasks_failed", [])
+        extra_context = message.payload.get("context") or {}
 
         logger.info(f"[{self.agent_id}] 收到评审请求: 迭代 {iteration_id}")
 
         try:
             # 构建评审 prompt
-            prompt = self._build_review_prompt(goal, iteration_id, tasks_completed, tasks_failed)
+            prompt = self._build_review_prompt(goal, iteration_id, tasks_completed, tasks_failed, extra_context)
 
             # 调用 Cursor Agent
             assert self.cursor_client is not None
@@ -176,6 +177,7 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         iteration_id: int,
         tasks_completed: list,
         tasks_failed: list,
+        extra_context: Optional[dict] = None,
     ) -> str:
         """构建评审 prompt"""
         parts = [
@@ -204,6 +206,12 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         if self.review_history:
             last = self.review_history[-1]
             parts.append(f"\n## 上次评审\n- 决策: {last.get('decision', 'N/A')}\n- 得分: {last.get('score', 'N/A')}")
+
+        if extra_context and extra_context.get("iteration_assistant"):
+            parts.append(
+                "\n## 迭代上下文（.iteration / Engram / 规则）\n"
+                f"```json\n{json.dumps(extra_context['iteration_assistant'], ensure_ascii=False, indent=2)}\n```"
+            )
 
         if self.config.get("strict_mode"):
             parts.append("\n## 评审模式\n严格模式：请使用更高的标准进行评审")

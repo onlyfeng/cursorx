@@ -96,6 +96,7 @@ import argparse
 import asyncio
 import hashlib
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -211,6 +212,7 @@ from core.project_workspace import (
     prepare_workspace,
 )
 from cursor.client import CursorAgentConfig
+from cursor.mcp import MCPManager
 from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
 from cursor.executor import ExecutionMode
 from knowledge import (
@@ -669,6 +671,343 @@ class IterationContext:
     reference_projects: list[ReferenceProject] = field(default_factory=list)
     workspace_preparation: Optional[WorkspacePreparationResult] = None
     task_analysis: Optional[TaskAnalysis] = None
+    # 迭代助手上下文（.iteration + Engram + 规则摘要）
+    iteration_assistant: Optional["IterationAssistantContext"] = None
+
+
+@dataclass
+class EngramStatus:
+    """Engram MCP 可用性状态"""
+
+    available: bool = False
+    verified: bool = False
+    server_name: str = ""
+    tools: list[str] = field(default_factory=list)
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "verified": self.verified,
+            "server_name": self.server_name,
+            "tools": self.tools,
+            "reason": self.reason,
+        }
+
+
+@dataclass
+class IterationDocs:
+    """迭代文档内容"""
+
+    iteration_id: str
+    plan_path: Optional[str] = None
+    regression_path: Optional[str] = None
+    readme_path: Optional[str] = None
+    plan_content: str = ""
+    regression_content: str = ""
+    readme_content: str = ""
+
+    def to_dict(self, max_chars: int = 2000) -> dict[str, Any]:
+        return {
+            "iteration_id": self.iteration_id,
+            "plan_path": self.plan_path,
+            "regression_path": self.regression_path,
+            "readme_path": self.readme_path,
+            "plan_excerpt": _truncate_text(self.plan_content, max_chars),
+            "regression_excerpt": _truncate_text(self.regression_content, max_chars),
+            "readme_excerpt": _truncate_text(self.readme_content, max_chars),
+        }
+
+
+@dataclass
+class IterationAssistantContext:
+    """迭代助手上下文"""
+
+    iteration_dir: Optional[str] = None
+    iteration_id: Optional[str] = None
+    git_policy: str = "absent"  # tracked/ignored/untracked/absent
+    docs: Optional[IterationDocs] = None
+    rules_summary: str = ""
+    engram: EngramStatus = field(default_factory=EngramStatus)
+    bootstrap_performed: bool = False
+    bootstrap_reason: str = ""
+
+    def to_dict(self, max_doc_chars: int = 2000, max_rules_chars: int = 2000) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "iteration_dir": self.iteration_dir,
+            "iteration_id": self.iteration_id,
+            "git_policy": self.git_policy,
+            "rules_summary": _truncate_text(self.rules_summary, max_rules_chars),
+            "engram": self.engram.to_dict(),
+            "bootstrap_performed": self.bootstrap_performed,
+            "bootstrap_reason": self.bootstrap_reason,
+        }
+        if self.docs:
+            payload["docs"] = self.docs.to_dict(max_doc_chars)
+        return payload
+
+
+def _truncate_text(text: str, max_chars: int, suffix: str = "...") -> str:
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + suffix
+
+
+def _read_text_safe(path: Path) -> str:
+    try:
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        logger.debug(f"读取文件失败: {path} - {e}")
+        return ""
+
+
+def detect_iteration_dir(working_directory: Path) -> Optional[Path]:
+    iteration_dir = working_directory / ".iteration"
+    if iteration_dir.exists() and iteration_dir.is_dir():
+        return iteration_dir
+    return None
+
+
+def select_iteration_id(iteration_dir: Path, explicit_id: Optional[str] = None) -> str:
+    if explicit_id:
+        return str(explicit_id)
+    # 选择最大纯数字目录名
+    numeric_ids: list[int] = []
+    for child in iteration_dir.iterdir():
+        if child.is_dir() and child.name.isdigit():
+            try:
+                numeric_ids.append(int(child.name))
+            except ValueError:
+                continue
+    if numeric_ids:
+        return str(max(numeric_ids))
+    # 稳定一致的默认值
+    return "1"
+
+
+def _bootstrap_iteration_docs(
+    iteration_dir: Path,
+    iteration_id: str,
+    allow_bootstrap: bool,
+    allow_write: bool,
+) -> tuple[Optional[Path], Optional[Path], bool, str]:
+    if not allow_bootstrap:
+        return None, None, False, "bootstrap_disabled"
+    if not allow_write:
+        return None, None, False, "side_effect_policy_disallow_write"
+
+    plan_path = iteration_dir / iteration_id / "plan.md"
+    regression_path = iteration_dir / iteration_id / "regression.md"
+    created = False
+
+    try:
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        if not plan_path.exists():
+            plan_path.write_text("# 计划\n\n", encoding="utf-8")
+            created = True
+        if not regression_path.exists():
+            regression_path.write_text("# 回归与进度\n\n", encoding="utf-8")
+            created = True
+        return plan_path, regression_path, created, "ok"
+    except Exception as e:
+        logger.warning(f"初始化 .iteration 文档失败: {e}")
+        return None, None, False, f"bootstrap_failed:{e}"
+
+
+def load_iteration_docs(iteration_dir: Path, iteration_id: str) -> IterationDocs:
+    plan_path = iteration_dir / iteration_id / "plan.md"
+    regression_path = iteration_dir / iteration_id / "regression.md"
+    readme_path = iteration_dir / "README.md"
+
+    return IterationDocs(
+        iteration_id=iteration_id,
+        plan_path=str(plan_path) if plan_path.exists() else None,
+        regression_path=str(regression_path) if regression_path.exists() else None,
+        readme_path=str(readme_path) if readme_path.exists() else None,
+        plan_content=_read_text_safe(plan_path),
+        regression_content=_read_text_safe(regression_path),
+        readme_content=_read_text_safe(readme_path),
+    )
+
+
+def detect_iteration_git_policy(working_directory: Path, iteration_dir: Optional[Path]) -> str:
+    if iteration_dir is None or not iteration_dir.exists():
+        return "absent"
+
+    # 检查是否为 Git 仓库
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return "untracked"
+    except Exception:
+        return "untracked"
+
+    # 检查是否被忽略
+    try:
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", str(iteration_dir)],
+            cwd=working_directory,
+            check=False,
+        )
+        if ignored.returncode == 0:
+            return "ignored"
+    except Exception:
+        pass
+
+    # 检查是否有被跟踪的文件
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", str(iteration_dir)],
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if tracked.stdout.strip():
+            return "tracked"
+    except Exception:
+        pass
+
+    return "untracked"
+
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    data: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" in line:
+            key, value = line.split(":", 1)
+            data[key.strip()] = value.strip()
+    return data
+
+
+def load_target_project_rules_summary(working_directory: Path, max_chars: int = 2000) -> str:
+    sections: list[str] = []
+
+    agents_path = working_directory / "AGENTS.md"
+    if agents_path.exists():
+        content = _read_text_safe(agents_path)
+        # 取前 80 行作为摘要
+        agents_excerpt = "\n".join(content.splitlines()[:80])
+        sections.append("## AGENTS.md (节选)\n" + agents_excerpt)
+
+    rules_dir = working_directory / ".cursor" / "rules"
+    if rules_dir.exists() and rules_dir.is_dir():
+        rule_lines = ["## .cursor/rules 摘要"]
+        for rule_file in sorted(rules_dir.glob("*.mdc")):
+            content = _read_text_safe(rule_file)
+            frontmatter = _parse_frontmatter(content)
+            desc = frontmatter.get("description", "")
+            always_apply = frontmatter.get("alwaysApply", "")
+            globs = frontmatter.get("globs", "")
+            rule_lines.append(
+                f"- {rule_file.name}: {desc}"
+                + (f" | alwaysApply={always_apply}" if always_apply else "")
+                + (f" | globs={globs}" if globs else "")
+            )
+        sections.append("\n".join(rule_lines))
+
+    summary = "\n\n".join(sections).strip()
+    return _truncate_text(summary, max_chars)
+
+
+async def detect_engram_mcp(agent_path: str = "agent") -> EngramStatus:
+    manager = MCPManager(agent_path=agent_path)
+    if not manager.check_available():
+        return EngramStatus(available=False, verified=False, reason="agent mcp 不可用")
+
+    servers = await manager.list_servers()
+    candidates = [s for s in servers if "engram" in s.name.lower()]
+    if not candidates:
+        return EngramStatus(available=False, verified=False, reason="未发现 Engram MCP 服务器")
+
+    # 优先使用第一个候选
+    server = candidates[0]
+    tools = await manager.list_tools(server.identifier)
+    tool_names = [t.name for t in tools if t.name]
+
+    if tool_names:
+        return EngramStatus(
+            available=True,
+            verified=True,
+            server_name=server.identifier,
+            tools=tool_names,
+            reason="tools/list 返回非空",
+        )
+
+    return EngramStatus(
+        available=False,
+        verified=False,
+        server_name=server.identifier,
+        tools=[],
+        reason="tools/list 返回为空或解析失败",
+    )
+
+
+async def build_iteration_assistant_context(
+    working_directory: Path,
+    side_effect_policy: "SideEffectPolicy",
+    iteration_id: Optional[str] = None,
+    iteration_source: str = "auto",
+    iteration_git_policy: str = "auto",
+    allow_bootstrap: bool = True,
+    agent_path: str = "agent",
+) -> IterationAssistantContext:
+    context = IterationAssistantContext()
+
+    use_iteration = iteration_source in ("auto", "iteration")
+    use_engram = iteration_source in ("auto", "engram")
+
+    if use_iteration:
+        iteration_dir = detect_iteration_dir(working_directory)
+        context.iteration_dir = str(iteration_dir) if iteration_dir else None
+        if iteration_dir:
+            context.iteration_id = select_iteration_id(iteration_dir, iteration_id)
+            # Git 策略检测（可被覆盖）
+            if iteration_git_policy != "auto":
+                context.git_policy = iteration_git_policy
+            else:
+                context.git_policy = detect_iteration_git_policy(working_directory, iteration_dir)
+
+            # 可选 bootstrap（仅在允许写入时）
+            plan_path, regression_path, created, reason = _bootstrap_iteration_docs(
+                iteration_dir=iteration_dir,
+                iteration_id=context.iteration_id,
+                allow_bootstrap=allow_bootstrap,
+                allow_write=side_effect_policy.allow_directory_create and side_effect_policy.allow_file_write,
+            )
+            context.bootstrap_performed = created
+            context.bootstrap_reason = reason
+
+            context.docs = load_iteration_docs(iteration_dir, context.iteration_id)
+        else:
+            context.git_policy = "absent"
+
+    if use_engram:
+        context.engram = await detect_engram_mcp(agent_path=agent_path)
+    else:
+        context.engram = EngramStatus(
+            available=False,
+            verified=False,
+            reason=f"iteration_source={iteration_source}",
+        )
+
+    context.rules_summary = load_target_project_rules_summary(working_directory)
+    return context
 
 
 # ============================================================
@@ -805,6 +1144,34 @@ def parse_args() -> argparse.Namespace:
             "(默认: https://cursor.com/cn/docs,https://cursor.com/docs,...，"
             "来自 config.yaml docs_source.allowed_doc_url_prefixes)"
         ),
+    )
+
+    # 迭代上下文配置
+    iteration_group = parser.add_argument_group("迭代上下文", "控制 .iteration 与 Engram MCP 的集成")
+    iteration_group.add_argument(
+        "--iteration-id",
+        type=str,
+        default=None,
+        help="显式指定迭代 ID（默认自动选择 .iteration 下最大数字目录）",
+    )
+    iteration_group.add_argument(
+        "--iteration-source",
+        type=str,
+        choices=["auto", "iteration", "engram", "none"],
+        default="auto",
+        help="迭代上下文来源（默认 auto：自动探测 .iteration 与 Engram MCP）",
+    )
+    iteration_group.add_argument(
+        "--iteration-git-policy",
+        type=str,
+        choices=["auto", "tracked", "untracked", "ignored"],
+        default="auto",
+        help="强制指定 .iteration 的 Git 策略（默认 auto 自动识别）",
+    )
+    iteration_group.add_argument(
+        "--no-iteration-bootstrap",
+        action="store_true",
+        help="禁用自动初始化 .iteration/<ITER_ID>/plan.md 与 regression.md",
     )
 
     # 在线抓取策略参数（tri-state 设计）
@@ -4522,6 +4889,14 @@ class IterationGoalBuilder:
             parts.append(context.user_requirement)
             parts.append("\n")
 
+        # 5.1 迭代助手上下文（.iteration + Engram + 规则摘要）
+        if context.iteration_assistant:
+            import json
+
+            parts.append("\n## 迭代上下文（.iteration / Engram / 规则）\n")
+            payload = context.iteration_assistant.to_dict()
+            parts.append("```json\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```\n")
+
         # 6. 更新分析
         if context.update_analysis and context.update_analysis.has_updates:
             update_analysis = context.update_analysis
@@ -4581,6 +4956,9 @@ class IterationGoalBuilder:
 
         if context.knowledge_context:
             parts.append(f"知识库上下文: {len(context.knowledge_context)} 个文档")
+
+        if context.iteration_assistant and context.iteration_assistant.iteration_id:
+            parts.append(f"迭代上下文: {context.iteration_assistant.iteration_id}")
 
         return "; ".join(parts) if parts else "无具体迭代目标"
 
@@ -4736,6 +5114,7 @@ class SelfIterator:
             user_requirement=user_requirement,
             dry_run=args.dry_run,
         )
+        self._iteration_context_payload: Optional[dict[str, Any]] = None
 
         # 保存 _directory_user_set 标记（用于工程准备逻辑）
         self._directory_user_set = getattr(args, "_directory_user_set", False)
@@ -4760,6 +5139,34 @@ class SelfIterator:
 
         # 统一解析配置（CLI 参数覆盖 config.yaml）
         self._resolved_settings = self._resolve_config_settings()
+
+    async def _load_iteration_assistant_context(self) -> None:
+        """加载迭代助手上下文（.iteration + Engram + 规则摘要）"""
+        iteration_id = getattr(self.args, "iteration_id", None)
+        iteration_source = getattr(self.args, "iteration_source", "auto") or "auto"
+        iteration_git_policy = getattr(self.args, "iteration_git_policy", "auto") or "auto"
+        allow_bootstrap = not getattr(self.args, "no_iteration_bootstrap", False)
+        agent_path = getattr(self._resolved_settings, "agent_path", "agent")
+
+        self.context.iteration_assistant = await build_iteration_assistant_context(
+            working_directory=self.working_directory,
+            side_effect_policy=self._side_effect_policy,
+            iteration_id=iteration_id,
+            iteration_source=iteration_source,
+            iteration_git_policy=iteration_git_policy,
+            allow_bootstrap=allow_bootstrap,
+            agent_path=agent_path,
+        )
+
+        self._iteration_context_payload = self.context.iteration_assistant.to_dict()
+
+    def _get_iteration_context_payload(self) -> Optional[dict[str, Any]]:
+        if self._iteration_context_payload:
+            return self._iteration_context_payload
+        if self.context.iteration_assistant:
+            self._iteration_context_payload = self.context.iteration_assistant.to_dict()
+            return self._iteration_context_payload
+        return None
 
     async def _prepare_workspace(self) -> bool:
         """工程准备（仅当用户显式指定 --directory 时触发）
@@ -5102,6 +5509,9 @@ class SelfIterator:
                         IterateResultFields.COOLDOWN_INFO: None,
                         **self._build_execution_decision_fields(),
                     }
+
+            # 加载迭代助手上下文（.iteration + Engram + 规则摘要）
+            await self._load_iteration_assistant_context()
 
             # 步骤 1: 分析在线更新
             # 使用 SideEffectPolicy 控制是否调用 ChangelogAnalyzer.analyze
@@ -5880,6 +6290,7 @@ class SelfIterator:
                 working_directory=str(self.working_directory),
                 max_iterations=max_iterations,
                 worker_count=settings.worker_pool_size,
+                iteration_context=self._get_iteration_context_payload(),
                 # 从 resolved settings 注入系统配置
                 enable_sub_planners=settings.enable_sub_planners,
                 strict_review=settings.strict_review,
@@ -6047,6 +6458,7 @@ class SelfIterator:
             max_iterations=max_iterations,
             worker_pool_size=settings.worker_pool_size,
             cursor_config=cursor_config,
+            iteration_context=self._get_iteration_context_payload(),
             # 从 resolved settings 注入系统配置
             enable_sub_planners=settings.enable_sub_planners,
             strict_review=settings.strict_review,
