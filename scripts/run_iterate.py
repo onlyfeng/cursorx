@@ -107,6 +107,11 @@ from typing import Any, Optional
 
 from loguru import logger
 
+# 确保以脚本方式执行时也能导入项目模块
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from agents.committer import CommitterAgent, CommitterConfig
 from coordinator import (
     MultiProcessOrchestrator,
