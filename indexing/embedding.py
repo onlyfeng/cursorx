@@ -2,13 +2,14 @@
 
 提供基于 SentenceTransformers 的本地嵌入模型实现
 """
+
 import asyncio
 import hashlib
 import pickle
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from loguru import logger
 
@@ -147,11 +148,7 @@ class EmbeddingCache:
 
         self._cache[key] = embedding
 
-    def get_batch(
-        self,
-        texts: list[str],
-        model_name: str
-    ) -> tuple[list[Optional[list[float]]], list[int]]:
+    def get_batch(self, texts: list[str], model_name: str) -> tuple[list[Optional[list[float]]], list[int]]:
         """批量获取缓存
 
         Args:
@@ -172,12 +169,7 @@ class EmbeddingCache:
 
         return results, miss_indices
 
-    def put_batch(
-        self,
-        texts: list[str],
-        model_name: str,
-        embeddings: list[list[float]]
-    ) -> None:
+    def put_batch(self, texts: list[str], model_name: str, embeddings: list[list[float]]) -> None:
         """批量存储缓存
 
         Args:
@@ -217,11 +209,14 @@ class EmbeddingCache:
         cache_path = self._get_cache_path()
         try:
             with open(cache_path, "wb") as f:
-                pickle.dump({
-                    "cache": dict(self._cache),
-                    "hits": self._hits,
-                    "misses": self._misses,
-                }, f)
+                pickle.dump(
+                    {
+                        "cache": dict(self._cache),
+                        "hits": self._hits,
+                        "misses": self._misses,
+                    },
+                    f,
+                )
             logger.info(f"已保存 {len(self._cache)} 条缓存记录到磁盘")
         except Exception as e:
             logger.error(f"保存缓存失败: {e}")
@@ -307,9 +302,7 @@ class SentenceTransformerEmbedding(EmbeddingModel):
                 import torch as _torch
                 from sentence_transformers import SentenceTransformer as _SentenceTransformer
             except ImportError as e:
-                raise ImportError(
-                    "请安装 sentence-transformers: pip install sentence-transformers"
-                ) from e
+                raise ImportError("请安装 sentence-transformers: pip install sentence-transformers") from e
             torch = _torch
             SentenceTransformer = _SentenceTransformer
 
@@ -319,8 +312,9 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         self._device = device
 
         # 获取模型配置
+        self._dimension: int | None
         if model_name in MODEL_CONFIGS:
-            self._dimension = MODEL_CONFIGS[model_name]["dimension"]
+            self._dimension = cast(int, MODEL_CONFIGS[model_name]["dimension"])
         else:
             # 对于自定义模型，稍后从模型中获取维度
             self._dimension = None
@@ -336,14 +330,12 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         # 用于异步执行的线程池
         self._executor = ThreadPoolExecutor(max_workers=2)
 
-        logger.info(
-            f"嵌入模型已加载: {model_name}, "
-            f"维度={self._dimension}, 设备={device}"
-        )
+        logger.info(f"嵌入模型已加载: {model_name}, 维度={self._dimension}, 设备={device}")
 
     @property
     def dimension(self) -> int:
         """向量维度"""
+        assert self._dimension is not None
         return self._dimension
 
     @property
@@ -390,11 +382,7 @@ class SentenceTransformerEmbedding(EmbeddingModel):
 
         # 在线程池中执行同步编码
         loop = asyncio.get_event_loop()
-        embeddings = await loop.run_in_executor(
-            self._executor,
-            self._encode_sync,
-            [text]
-        )
+        embeddings = await loop.run_in_executor(self._executor, self._encode_sync, [text])
         embedding = embeddings[0]
 
         # 存入缓存
@@ -417,9 +405,7 @@ class SentenceTransformerEmbedding(EmbeddingModel):
 
         # 检查缓存
         if self._cache is not None:
-            cached_results, miss_indices = self._cache.get_batch(
-                texts, self._model_name
-            )
+            cached_results, miss_indices = self._cache.get_batch(texts, self._model_name)
 
             # 如果全部命中缓存
             if not miss_indices:
@@ -434,18 +420,15 @@ class SentenceTransformerEmbedding(EmbeddingModel):
 
         # 在线程池中执行同步编码
         loop = asyncio.get_event_loop()
-        new_embeddings = await loop.run_in_executor(
-            self._executor,
-            self._encode_sync,
-            texts_to_encode
-        )
+        new_embeddings = await loop.run_in_executor(self._executor, self._encode_sync, texts_to_encode)
 
         # 合并结果
         results: list[list[float]] = []
         new_idx = 0
         for i in range(len(texts)):
-            if cached_results[i] is not None:
-                results.append(cached_results[i])
+            cached_embedding = cached_results[i]
+            if cached_embedding is not None:
+                results.append(cached_embedding)
             else:
                 embedding = new_embeddings[new_idx]
                 results.append(embedding)
@@ -462,7 +445,7 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         Returns:
             模型信息字典
         """
-        info = {
+        info: dict[str, Any] = {
             "model_name": self._model_name,
             "dimension": self._dimension,
             "device": self._device,
@@ -472,10 +455,12 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         # 添加预定义模型的额外信息
         if self._model_name in MODEL_CONFIGS:
             config = MODEL_CONFIGS[self._model_name]
-            info.update({
-                "description": config["description"],
-                "max_seq_length": config["max_seq_length"],
-            })
+            info.update(
+                {
+                    "description": config["description"],
+                    "max_seq_length": config["max_seq_length"],
+                }
+            )
 
         # 添加缓存统计
         if self._cache is not None:

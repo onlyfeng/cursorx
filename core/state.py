@@ -8,17 +8,18 @@
 - CommitPolicy: 提交策略配置
 - CommitContext: 提交上下文数据
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from .base import AgentRole, AgentStatus
-
 
 # =============================================================================
 # 提交策略类型定义
@@ -81,10 +82,7 @@ class CommitPolicy:
             return True
 
         # commit_on_complete 仅在 COMPLETE 时触发
-        if self.commit_on_complete and decision.lower() == "complete":
-            return True
-
-        return False
+        return bool(self.commit_on_complete and decision.lower() == "complete")
 
 
 @dataclass
@@ -165,20 +163,22 @@ class CommitContext:
 
 class IterationStatus(str, Enum):
     """迭代状态"""
-    PLANNING = "planning"      # 规划中
-    EXECUTING = "executing"    # 执行中
-    REVIEWING = "reviewing"    # 评审中
+
+    PLANNING = "planning"  # 规划中
+    EXECUTING = "executing"  # 执行中
+    REVIEWING = "reviewing"  # 评审中
     COMMITTING = "committing"  # 提交中
-    COMPLETED = "completed"    # 已完成
-    FAILED = "failed"          # 失败
+    COMPLETED = "completed"  # 已完成
+    FAILED = "failed"  # 失败
 
 
 class AgentState(BaseModel):
     """单个 Agent 的状态"""
+
     agent_id: str
     role: AgentRole
     status: AgentStatus = AgentStatus.IDLE
-    current_task_id: Optional[str] = None
+    current_task_id: str | None = None
     completed_tasks: list[str] = Field(default_factory=list)
     error_count: int = 0
     last_activity: datetime = Field(default_factory=datetime.now)
@@ -189,10 +189,11 @@ class AgentState(BaseModel):
 
 class IterationState(BaseModel):
     """单次迭代的状态"""
+
     iteration_id: int
     status: IterationStatus = IterationStatus.PLANNING
     started_at: datetime = Field(default_factory=datetime.now)
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
     # 统计信息
     tasks_created: int = 0
@@ -201,23 +202,24 @@ class IterationState(BaseModel):
 
     # 评审结果
     review_passed: bool = False
-    review_feedback: Optional[str] = None
+    review_feedback: str | None = None
 
     # 提交信息（由 Orchestrator 在提交阶段填充）
-    commit_hash: Optional[str] = None
-    commit_message: Optional[str] = None
+    commit_hash: str | None = None
+    commit_message: str | None = None
     pushed: bool = False
     commit_files: list[str] = Field(default_factory=list)
     # 提交/推送错误信息（commit 或 push 失败时记录，不中断主流程）
-    commit_error: Optional[str] = None
-    push_error: Optional[str] = None
+    commit_error: str | None = None
+    push_error: str | None = None
 
 
 class SystemState(BaseModel):
     """整个系统的状态"""
+
     # 基本信息
-    goal: str = ""                    # 用户目标
-    working_directory: str = "."      # 工作目录
+    goal: str = ""  # 用户目标
+    working_directory: str = "."  # 工作目录
 
     # 迭代信息
     current_iteration: int = 0
@@ -235,7 +237,7 @@ class SystemState(BaseModel):
     # 系统状态
     is_running: bool = False
     is_completed: bool = False
-    final_result: Optional[str] = None
+    final_result: str | None = None
 
     def start_new_iteration(self) -> IterationState:
         """开始新的迭代"""
@@ -244,7 +246,7 @@ class SystemState(BaseModel):
         self.iterations.append(iteration)
         return iteration
 
-    def get_current_iteration(self) -> Optional[IterationState]:
+    def get_current_iteration(self) -> IterationState | None:
         """获取当前迭代"""
         if self.iterations:
             return self.iterations[-1]

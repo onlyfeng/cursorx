@@ -1,4 +1,5 @@
 """索引模块抽象基类定义"""
+
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -9,13 +10,14 @@ from pydantic import BaseModel, Field
 
 class ChunkType(str, Enum):
     """代码分块类型"""
-    FUNCTION = "function"                # 函数
-    CLASS = "class"                      # 类
-    METHOD = "method"                    # 方法
-    MODULE = "module"                    # 模块级代码
-    IMPORT = "import"                    # 导入语句
-    COMMENT = "comment"                  # 注释块
-    UNKNOWN = "unknown"                  # 未知类型
+
+    FUNCTION = "function"  # 函数
+    CLASS = "class"  # 类
+    METHOD = "method"  # 方法
+    MODULE = "module"  # 模块级代码
+    IMPORT = "import"  # 导入语句
+    COMMENT = "comment"  # 注释块
+    UNKNOWN = "unknown"  # 未知类型
 
 
 class CodeChunk(BaseModel):
@@ -23,26 +25,27 @@ class CodeChunk(BaseModel):
 
     表示一个代码片段及其元数据
     """
+
     chunk_id: str = Field(default_factory=lambda: f"chunk-{uuid.uuid4().hex[:8]}")
-    content: str                                    # 代码内容
+    content: str  # 代码内容
 
     # 位置信息
-    file_path: str                                  # 文件路径
-    start_line: int = 0                             # 起始行号
-    end_line: int = 0                               # 结束行号
+    file_path: str  # 文件路径
+    start_line: int = 0  # 起始行号
+    end_line: int = 0  # 结束行号
 
     # 类型信息
-    chunk_type: ChunkType = ChunkType.UNKNOWN       # 分块类型
-    language: str = "unknown"                       # 编程语言
+    chunk_type: ChunkType = ChunkType.UNKNOWN  # 分块类型
+    language: str = "unknown"  # 编程语言
 
     # 语义信息
-    name: Optional[str] = None                      # 名称（函数名/类名等）
-    parent_name: Optional[str] = None               # 父级名称（类名等）
-    signature: Optional[str] = None                 # 签名
-    docstring: Optional[str] = None                 # 文档字符串
+    name: Optional[str] = None  # 名称（函数名/类名等）
+    parent_name: Optional[str] = None  # 父级名称（类名等）
+    signature: Optional[str] = None  # 签名
+    docstring: Optional[str] = None  # 文档字符串
 
     # 向量嵌入
-    embedding: Optional[list[float]] = None         # 向量嵌入
+    embedding: Optional[list[float]] = None  # 向量嵌入
 
     # 元数据
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -62,9 +65,10 @@ class CodeChunk(BaseModel):
 
 class SearchResult(BaseModel):
     """搜索结果"""
-    chunk: CodeChunk                                # 匹配的代码分块
-    score: float                                    # 相似度分数
-    rank: int = 0                                   # 排名
+
+    chunk: CodeChunk  # 匹配的代码分块
+    score: float  # 相似度分数
+    rank: int = 0  # 排名
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -170,7 +174,8 @@ class VectorStore(ABC):
         self,
         query_embedding: list[float],
         top_k: int = 10,
-        filter_dict: Optional[dict[str, Any]] = None
+        filter_dict: Optional[dict[str, Any]] = None,
+        threshold: Optional[float] = None,
     ) -> list[SearchResult]:
         """搜索相似的代码分块
 
@@ -231,7 +236,7 @@ class VectorStore(ABC):
         query_text: str,
         embedding_model: EmbeddingModel,
         top_k: int = 10,
-        filter_dict: Optional[dict[str, Any]] = None
+        filter_dict: Optional[dict[str, Any]] = None,
     ) -> list[SearchResult]:
         """通过文本搜索相似的代码分块
 
@@ -268,10 +273,7 @@ class CodeChunker(ABC):
 
     @abstractmethod
     async def chunk_text(
-        self,
-        text: str,
-        file_path: str = "<unknown>",
-        language: Optional[str] = None
+        self, text: str, file_path: str = "<unknown>", language: Optional[str] = None
     ) -> list[CodeChunk]:
         """分块代码文本
 

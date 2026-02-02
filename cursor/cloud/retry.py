@@ -5,12 +5,13 @@
 - 自动处理 Retry-After 头
 - 异步重试装饰器
 """
+
 import asyncio
 import functools
 import random
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, Optional, TypeVar
+from typing import Awaitable, Callable, Optional, TypeVar
 
 # ParamSpec 在 Python 3.10+ 中可用
 if sys.version_info >= (3, 10):
@@ -37,16 +38,19 @@ class RetryConfig:
         jitter: 是否添加随机抖动
         retry_on: 需要重试的异常类型列表
     """
+
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 60.0
     exponential_base: float = 2.0
     jitter: bool = True
     # 默认重试的异常类型，延迟导入避免循环依赖
-    retry_on: tuple = field(default_factory=lambda: (
-        asyncio.TimeoutError,
-        ConnectionError,
-    ))
+    retry_on: tuple = field(
+        default_factory=lambda: (
+            asyncio.TimeoutError,
+            ConnectionError,
+        )
+    )
 
     def calculate_delay(self, attempt: int, retry_after: Optional[float] = None) -> float:
         """计算重试延迟时间
@@ -67,7 +71,7 @@ class RetryConfig:
             return delay
 
         # 指数退避计算
-        delay = self.base_delay * (self.exponential_base ** attempt)
+        delay = self.base_delay * (self.exponential_base**attempt)
         delay = min(delay, self.max_delay)
 
         # 添加随机抖动（0-25%）
@@ -81,7 +85,7 @@ class RetryConfig:
 def with_retry(
     config: Optional[RetryConfig] = None,
     on_retry: Optional[Callable[[int, Exception, float], None]] = None,
-):
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """重试装饰器（用于异步函数）
 
     实现指数退避重试策略，支持 RateLimitError 的 Retry-After 头。
@@ -119,7 +123,7 @@ def with_retry(
             ),
         )
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             last_exception: Optional[Exception] = None
@@ -133,15 +137,12 @@ def with_retry(
 
                     # 最后一次尝试失败，不再重试
                     if attempt >= retry_config.max_retries:
-                        logger.error(
-                            f"重试耗尽 [{func.__name__}]: 已尝试 {attempt + 1} 次, "
-                            f"错误: {e}"
-                        )
+                        logger.error(f"重试耗尽 [{func.__name__}]: 已尝试 {attempt + 1} 次, 错误: {e}")
                         raise
 
                     # 获取 Retry-After（如果是 RateLimitError）
                     retry_after = None
-                    if isinstance(e, RateLimitError) or isinstance(e, CloudAgentError):
+                    if isinstance(e, (RateLimitError, CloudAgentError)):
                         retry_after = e.retry_after
 
                     # 计算延迟
@@ -185,7 +186,7 @@ def with_retry(
 
 
 async def retry_async(
-    func: Callable[[], T],
+    func: Callable[[], Awaitable[T]],
     config: Optional[RetryConfig] = None,
     on_retry: Optional[Callable[[int, Exception, float], None]] = None,
 ) -> T:

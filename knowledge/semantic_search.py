@@ -8,6 +8,7 @@
 - 混合搜索：结合语义和关键词的加权搜索
 - 结果去重和分数归一化
 """
+
 import asyncio
 import re
 from dataclasses import dataclass
@@ -24,10 +25,11 @@ from .vector_store import KnowledgeVectorStore, VectorSearchResult
 @dataclass
 class HybridSearchConfig:
     """混合搜索配置"""
-    semantic_weight: float = 0.7    # 语义搜索权重
-    keyword_weight: float = 0.3     # 关键词搜索权重
-    normalize_scores: bool = True   # 是否归一化分数
-    dedup_by_doc: bool = True       # 是否按文档去重（保留最高分块）
+
+    semantic_weight: float = 0.7  # 语义搜索权重
+    keyword_weight: float = 0.3  # 关键词搜索权重
+    normalize_scores: bool = True  # 是否归一化分数
+    dedup_by_doc: bool = True  # 是否按文档去重（保留最高分块）
 
 
 class KnowledgeSemanticSearch:
@@ -176,14 +178,16 @@ class KnowledgeSemanticSearch:
                 snippet = self._extract_snippet_by_terms(doc.content, query_terms)
 
             if score > 0:
-                results.append(SearchResult(
-                    doc_id=doc_id,
-                    url=doc.url,
-                    title=doc.title,
-                    score=score,
-                    snippet=snippet,
-                    match_type=match_type,
-                ))
+                results.append(
+                    SearchResult(
+                        doc_id=doc_id,
+                        url=doc.url,
+                        title=doc.title,
+                        score=score,
+                        snippet=snippet,
+                        match_type=match_type,
+                    )
+                )
 
         # 按分数排序
         results.sort(key=lambda r: r.score, reverse=True)
@@ -227,7 +231,7 @@ class KnowledgeSemanticSearch:
             semantic_task = self.semantic_search(
                 query=query,
                 top_k=top_k * 2,  # 获取更多结果用于合并
-                min_score=0.1,   # 降低阈值以获取更多候选
+                min_score=0.1,  # 降低阈值以获取更多候选
             )
             keyword_task = self.keyword_search(
                 query=query,
@@ -318,10 +322,7 @@ class KnowledgeSemanticSearch:
 
         for doc_id, scores in doc_scores.items():
             # 计算加权混合分数
-            hybrid_score = (
-                semantic_weight * scores["semantic_score"] +
-                keyword_weight * scores["keyword_score"]
-            )
+            hybrid_score = semantic_weight * scores["semantic_score"] + keyword_weight * scores["keyword_score"]
 
             # 选择最佳结果作为基础
             # 优先选择语义结果（通常包含更相关的分块内容）
@@ -333,14 +334,16 @@ class KnowledgeSemanticSearch:
                 if scores["keyword_result"] and scores["keyword_result"].snippet:
                     snippet = scores["keyword_result"].snippet
 
-                merged.append(SearchResult(
-                    doc_id=doc_id,
-                    url=base_result.url,
-                    title=base_result.title,
-                    score=hybrid_score,
-                    snippet=snippet,
-                    match_type="hybrid",
-                ))
+                merged.append(
+                    SearchResult(
+                        doc_id=doc_id,
+                        url=base_result.url,
+                        title=base_result.title,
+                        score=hybrid_score,
+                        snippet=snippet,
+                        match_type="hybrid",
+                    )
+                )
 
         # 按混合分数排序
         merged.sort(key=lambda r: r.score, reverse=True)
@@ -371,14 +374,16 @@ class KnowledgeSemanticSearch:
             # 使用分块内容作为 snippet（截断到合理长度）
             snippet = vr.content[:200] + "..." if len(vr.content) > 200 else vr.content
 
-            results.append(SearchResult(
-                doc_id=vr.doc_id,
-                url=url,
-                title=title,
-                score=vr.score,
-                snippet=snippet,
-                match_type=match_type,
-            ))
+            results.append(
+                SearchResult(
+                    doc_id=vr.doc_id,
+                    url=url,
+                    title=title,
+                    score=vr.score,
+                    snippet=snippet,
+                    match_type=match_type,
+                )
+            )
 
         return results
 
@@ -394,7 +399,7 @@ class KnowledgeSemanticSearch:
             词列表
         """
         # 移除标点符号，转小写
-        text = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text.lower())
+        text = re.sub(r"[^\w\s\u4e00-\u9fff]", " ", text.lower())
 
         # 按空格分割，过滤空字符串和短词
         terms = [t.strip() for t in text.split() if t.strip() and len(t.strip()) > 1]

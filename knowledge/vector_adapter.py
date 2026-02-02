@@ -3,6 +3,7 @@
 提供 DocumentChunk 和 CodeChunk 之间的转换，
 以及文档内容的智能分块功能
 """
+
 import re
 from typing import Any, Optional
 
@@ -15,14 +16,15 @@ from .models import Document, DocumentChunk
 
 class DocumentChunkConfig(BaseModel):
     """文档分块配置"""
-    chunk_size: int = 1000                      # 目标分块大小（字符数）
-    chunk_overlap: int = 100                    # 分块重叠大小
-    min_chunk_size: int = 50                    # 最小分块大小
-    max_chunk_size: int = 2000                  # 最大分块大小
+
+    chunk_size: int = 1000  # 目标分块大小（字符数）
+    chunk_overlap: int = 100  # 分块重叠大小
+    min_chunk_size: int = 50  # 最小分块大小
+    max_chunk_size: int = 2000  # 最大分块大小
 
     # 分块策略
-    respect_paragraph_boundary: bool = True     # 尊重段落边界
-    respect_sentence_boundary: bool = True      # 尊重句子边界
+    respect_paragraph_boundary: bool = True  # 尊重段落边界
+    respect_sentence_boundary: bool = True  # 尊重句子边界
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -34,11 +36,7 @@ class DocumentChunkAdapter:
     以便利用现有的向量索引基础设施
     """
 
-    def document_chunk_to_code_chunk(
-        self,
-        doc_chunk: DocumentChunk,
-        doc: Document
-    ) -> CodeChunk:
+    def document_chunk_to_code_chunk(self, doc_chunk: DocumentChunk, doc: Document) -> CodeChunk:
         """将 DocumentChunk 转换为 CodeChunk 格式
 
         保留必要的元数据，使其可以被现有的向量存储处理
@@ -52,13 +50,13 @@ class DocumentChunkAdapter:
         """
         # 构建元数据
         metadata: dict[str, Any] = {
-            "source_type": "document",              # 标识来源类型
-            "doc_id": doc.id,                       # 文档 ID
-            "doc_url": doc.url,                     # 文档 URL
-            "doc_title": doc.title,                 # 文档标题
+            "source_type": "document",  # 标识来源类型
+            "doc_id": doc.id,  # 文档 ID
+            "doc_url": doc.url,  # 文档 URL
+            "doc_title": doc.title,  # 文档标题
             "original_chunk_id": doc_chunk.chunk_id,  # 原始分块 ID
-            "start_index": doc_chunk.start_index,   # 在原文中的起始位置
-            "end_index": doc_chunk.end_index,       # 在原文中的结束位置
+            "start_index": doc_chunk.start_index,  # 在原文中的起始位置
+            "end_index": doc_chunk.end_index,  # 在原文中的结束位置
         }
 
         # 合并原有元数据
@@ -69,20 +67,17 @@ class DocumentChunkAdapter:
         return CodeChunk(
             chunk_id=doc_chunk.chunk_id,
             content=doc_chunk.content,
-            file_path=doc.url,                      # 使用 URL 作为文件路径
-            start_line=doc_chunk.start_index,       # 使用字符位置作为行号
+            file_path=doc.url,  # 使用 URL 作为文件路径
+            start_line=doc_chunk.start_index,  # 使用字符位置作为行号
             end_line=doc_chunk.end_index,
-            chunk_type=ChunkType.UNKNOWN,           # 文档不是代码
-            language="text",                        # 标识为文本
+            chunk_type=ChunkType.UNKNOWN,  # 文档不是代码
+            language="text",  # 标识为文本
             name=doc.title if doc.title else None,  # 使用文档标题作为名称
             embedding=doc_chunk.embedding,
-            metadata=metadata
+            metadata=metadata,
         )
 
-    def code_chunk_to_document_chunk(
-        self,
-        code_chunk: CodeChunk
-    ) -> DocumentChunk:
+    def code_chunk_to_document_chunk(self, code_chunk: CodeChunk) -> DocumentChunk:
         """将 CodeChunk 转换回 DocumentChunk 格式
 
         Args:
@@ -116,14 +111,14 @@ class DocumentChunkAdapter:
             source_doc=source_doc,
             start_index=start_index,
             end_index=end_index,
-            metadata=metadata
+            metadata=metadata,
         )
 
     def prepare_for_embedding(
         self,
         doc: Document,
         chunker: Optional["DocumentTextChunker"] = None,
-        config: Optional[DocumentChunkConfig] = None
+        config: Optional[DocumentChunkConfig] = None,
     ) -> list[CodeChunk]:
         """将文档分块并准备用于嵌入
 
@@ -145,9 +140,7 @@ class DocumentChunkAdapter:
         else:
             # 否则进行分块
             chunks = chunker.chunk_document(
-                doc,
-                chunk_size=chunker.config.chunk_size,
-                overlap=chunker.config.chunk_overlap
+                doc, chunk_size=chunker.config.chunk_size, overlap=chunker.config.chunk_overlap
             )
 
         # 转换为 CodeChunk 格式
@@ -169,10 +162,10 @@ class DocumentTextChunker:
     """
 
     # 段落分隔符模式
-    PARAGRAPH_PATTERN = re.compile(r'\n\s*\n')
+    PARAGRAPH_PATTERN = re.compile(r"\n\s*\n")
 
     # 句子结束符模式
-    SENTENCE_PATTERN = re.compile(r'(?<=[.!?。！？])\s+')
+    SENTENCE_PATTERN = re.compile(r"(?<=[.!?。！？])\s+")
 
     def __init__(self, config: Optional[DocumentChunkConfig] = None):
         """初始化分块器
@@ -183,10 +176,7 @@ class DocumentTextChunker:
         self.config = config or DocumentChunkConfig()
 
     def chunk_document(
-        self,
-        doc: Document,
-        chunk_size: Optional[int] = None,
-        overlap: Optional[int] = None
+        self, doc: Document, chunk_size: Optional[int] = None, overlap: Optional[int] = None
     ) -> list[DocumentChunk]:
         """将文档内容分块
 
@@ -227,18 +217,13 @@ class DocumentTextChunker:
                 metadata={
                     "title": doc.title,
                     "url": doc.url,
-                }
+                },
             )
             doc_chunks.append(doc_chunk)
 
         return doc_chunks
 
-    def _chunk_by_paragraph(
-        self,
-        content: str,
-        chunk_size: int,
-        overlap: int
-    ) -> list[tuple[str, int, int]]:
+    def _chunk_by_paragraph(self, content: str, chunk_size: int, overlap: int) -> list[tuple[str, int, int]]:
         """按段落边界分块
 
         优先在段落边界分割，如果单个段落过大则进一步分割
@@ -346,12 +331,7 @@ class DocumentTextChunker:
 
         return chunks
 
-    def _chunk_by_sentence(
-        self,
-        content: str,
-        chunk_size: int,
-        overlap: int
-    ) -> list[tuple[str, int, int]]:
+    def _chunk_by_sentence(self, content: str, chunk_size: int, overlap: int) -> list[tuple[str, int, int]]:
         """按句子边界分块
 
         在句子边界处分割，确保每个块包含完整的句子
@@ -438,7 +418,7 @@ class DocumentTextChunker:
                     current_length = overlap_length - 1
                     # 找到重叠部分的起始位置
                     first_overlap = overlap_parts[0]
-                    for s, sp, ep in sentence_positions:
+                    for s, sp, _ep in sentence_positions:
                         if s == first_overlap:
                             current_start = sp
                             break
@@ -461,12 +441,7 @@ class DocumentTextChunker:
 
         return chunks
 
-    def _chunk_by_sliding_window(
-        self,
-        content: str,
-        chunk_size: int,
-        overlap: int
-    ) -> list[tuple[str, int, int]]:
+    def _chunk_by_sliding_window(self, content: str, chunk_size: int, overlap: int) -> list[tuple[str, int, int]]:
         """滑动窗口分块
 
         按固定大小分割，支持重叠
@@ -495,7 +470,7 @@ class DocumentTextChunker:
             # 尝试在单词边界结束（如果不是文档末尾）
             if end < content_length and chunk_content:
                 # 查找最后一个空格
-                last_space = chunk_content.rfind(' ')
+                last_space = chunk_content.rfind(" ")
                 if last_space > chunk_size // 2:  # 确保至少保留一半内容
                     end = start + last_space
                     chunk_content = content[start:end]
@@ -508,10 +483,7 @@ class DocumentTextChunker:
         return chunks
 
     def estimate_chunks_count(
-        self,
-        content: str,
-        chunk_size: Optional[int] = None,
-        overlap: Optional[int] = None
+        self, content: str, chunk_size: Optional[int] = None, overlap: Optional[int] = None
     ) -> int:
         """估算分块数量
 

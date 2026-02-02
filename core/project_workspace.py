@@ -7,6 +7,7 @@
 - 空目录/仅文档目录：先创建最小可工作的工程骨架，再进入迭代流程
 - 根目录含参考子工程：自动发现候选参考工程子目录，并将其信息写入最终 goal
 """
+
 import json
 import os
 import re
@@ -17,7 +18,6 @@ from pathlib import Path
 from typing import Optional
 
 from loguru import logger
-
 
 # ============================================================
 # 常量定义
@@ -43,7 +43,6 @@ PROJECT_MARKERS = {
     # Java
     "pom.xml": "java",
     "build.gradle": "java",
-    "build.gradle.kts": "java",
     "settings.gradle": "java",
     "settings.gradle.kts": "java",
     # Rust
@@ -109,50 +108,134 @@ SOURCE_EXTENSIONS = {
 # 支持中文/英文关键词
 LANGUAGE_KEYWORDS = {
     "python": [
-        "python", "py", "django", "flask", "fastapi", "pytest",
-        "用python", "python写", "python项目", "python工程",
-        "用 python", "python 写", "python 项目", "python 工程",
+        "python",
+        "py",
+        "django",
+        "flask",
+        "fastapi",
+        "pytest",
+        "用python",
+        "python写",
+        "python项目",
+        "python工程",
+        "用 python",
+        "python 写",
+        "python 项目",
+        "python 工程",
     ],
     "node": [
-        "node", "nodejs", "node.js", "npm", "yarn", "pnpm",
-        "用node", "node写", "nodejs项目", "node项目",
-        "用 node", "node 写", "nodejs 项目", "node 项目",
+        "node",
+        "nodejs",
+        "node.js",
+        "npm",
+        "yarn",
+        "pnpm",
+        "用node",
+        "node写",
+        "nodejs项目",
+        "node项目",
+        "用 node",
+        "node 写",
+        "nodejs 项目",
+        "node 项目",
     ],
     "typescript": [
-        "typescript", "ts", "tsx", "tsc",
-        "用typescript", "typescript写", "ts项目", "typescript项目",
-        "用 typescript", "typescript 写", "ts 项目", "typescript 项目",
+        "typescript",
+        "ts",
+        "tsx",
+        "tsc",
+        "用typescript",
+        "typescript写",
+        "ts项目",
+        "typescript项目",
+        "用 typescript",
+        "typescript 写",
+        "ts 项目",
+        "typescript 项目",
     ],
     "javascript": [
-        "javascript", "js", "jsx", "es6", "es2015",
-        "用javascript", "javascript写", "js项目",
-        "用 javascript", "javascript 写", "js 项目",
+        "javascript",
+        "js",
+        "jsx",
+        "es6",
+        "es2015",
+        "用javascript",
+        "javascript写",
+        "js项目",
+        "用 javascript",
+        "javascript 写",
+        "js 项目",
     ],
     "go": [
-        "go", "golang", "go语言",
-        "用go", "go写", "golang项目", "go项目",
-        "用 go", "go 写", "golang 项目", "go 项目",
+        "go",
+        "golang",
+        "go语言",
+        "用go",
+        "go写",
+        "golang项目",
+        "go项目",
+        "用 go",
+        "go 写",
+        "golang 项目",
+        "go 项目",
     ],
     "java": [
-        "java", "jdk", "maven", "gradle", "spring", "springboot",
-        "用java", "java写", "java项目", "java工程",
-        "用 java", "java 写", "java 项目", "java 工程",
+        "java",
+        "jdk",
+        "maven",
+        "gradle",
+        "spring",
+        "springboot",
+        "用java",
+        "java写",
+        "java项目",
+        "java工程",
+        "用 java",
+        "java 写",
+        "java 项目",
+        "java 工程",
     ],
     "rust": [
-        "rust", "rs", "cargo", "rustc",
-        "cargo项目", "cargo 项目", "cargo工程", "cargo 工程",
-        "用rust", "rust写", "rust项目", "rust工程",
-        "用 rust", "rust 写", "rust 项目", "rust 工程",
+        "rust",
+        "rs",
+        "cargo",
+        "rustc",
+        "cargo项目",
+        "cargo 项目",
+        "cargo工程",
+        "cargo 工程",
+        "用rust",
+        "rust写",
+        "rust项目",
+        "rust工程",
+        "用 rust",
+        "rust 写",
+        "rust 项目",
+        "rust 工程",
     ],
     "cpp": [
-        "c++", "cpp", "cmake",
-        "用c++", "c++写", "c++项目", "cpp项目",
-        "用 c++", "c++ 写", "c++ 项目", "cpp 项目",
+        "c++",
+        "cpp",
+        "cmake",
+        "用c++",
+        "c++写",
+        "c++项目",
+        "cpp项目",
+        "用 c++",
+        "c++ 写",
+        "c++ 项目",
+        "cpp 项目",
     ],
     "c": [
-        "c语言", "clang", "gcc",
-        "用c写", "c项目", "c工程",
-        "用 c 写", "c 项目", "c 工程",
+        "c语言",
+        "clang",
+        "gcc",
+        "用c写",
+        "c项目",
+        "c工程",
+        "用 c 写",
+        "c 项目",
+        "c 工程",
     ],
 }
 
@@ -160,33 +243,74 @@ LANGUAGE_KEYWORDS = {
 # TypeScript 优先于 JavaScript（ts 是 js 的超集）
 # Rust 优先于 Go（避免 "cargo 项目" 被误匹配为 "go 项目"）
 LANGUAGE_PRIORITY_ORDER = [
-    "typescript", "python", "rust", "go", "java",
-    "cpp", "c", "node", "javascript",
+    "typescript",
+    "python",
+    "rust",
+    "go",
+    "java",
+    "cpp",
+    "c",
+    "node",
+    "javascript",
 ]
 
 # 仅文档类文件扩展名（不算作源码）
 DOC_EXTENSIONS = {
-    ".md", ".markdown", ".rst", ".txt", ".adoc",
-    ".pdf", ".doc", ".docx", ".odt",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".txt",
+    ".adoc",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".odt",
 }
 
 # 配置/元数据类文件名（不算作源码）
 CONFIG_FILES = {
-    ".gitignore", ".gitattributes", ".editorconfig",
-    "LICENSE", "LICENSE.md", "LICENSE.txt",
-    "README", "README.md", "README.txt", "README.rst",
-    "CHANGELOG", "CHANGELOG.md", "CONTRIBUTING.md",
-    ".env", ".env.example", ".env.local",
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+    "LICENSE",
+    "LICENSE.md",
+    "LICENSE.txt",
+    "README",
+    "README.md",
+    "README.txt",
+    "README.rst",
+    "CHANGELOG",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    ".env",
+    ".env.example",
+    ".env.local",
 }
 
 # 扫描时忽略的目录
 IGNORE_DIRS = {
-    ".git", ".svn", ".hg",
-    "node_modules", "__pycache__", ".venv", "venv", "env",
-    ".idea", ".vscode", ".cursor",
-    "target", "build", "dist", "out",
-    ".tox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    "vendor", "packages", ".bundle",
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "env",
+    ".idea",
+    ".vscode",
+    ".cursor",
+    "target",
+    "build",
+    "dist",
+    "out",
+    ".tox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "vendor",
+    "packages",
+    ".bundle",
 }
 
 
@@ -194,8 +318,10 @@ IGNORE_DIRS = {
 # 数据结构
 # ============================================================
 
+
 class ProjectState(str, Enum):
     """目录状态枚举"""
+
     EXISTING_PROJECT = "existing_project"  # 已有工程（存在工程标记文件）
     EMPTY_OR_DOCS_ONLY = "empty_or_docs_only"  # 空目录或仅文档目录
     HAS_SOURCE_FILES = "has_source_files"  # 有源码但无工程标记文件
@@ -204,6 +330,7 @@ class ProjectState(str, Enum):
 @dataclass
 class ProjectInfo:
     """工程信息"""
+
     state: ProjectState
     path: Path
     detected_language: Optional[str] = None
@@ -215,6 +342,7 @@ class ProjectInfo:
 @dataclass
 class ReferenceProject:
     """参考子工程信息"""
+
     path: Path
     relative_path: str
     detected_language: Optional[str] = None
@@ -225,6 +353,7 @@ class ReferenceProject:
 @dataclass
 class ScaffoldResult:
     """脚手架生成结果"""
+
     success: bool
     language: str
     created_files: list[str] = field(default_factory=list)
@@ -234,6 +363,7 @@ class ScaffoldResult:
 @dataclass
 class TaskAnalysis:
     """任务解析结果（由 Agent 推断）"""
+
     language: Optional[str] = None
     project_name: Optional[str] = None
     framework: Optional[str] = None
@@ -244,6 +374,7 @@ class TaskAnalysis:
 # ============================================================
 # 目录状态探测
 # ============================================================
+
 
 def inspect_project_state(
     target_dir: Path,
@@ -379,6 +510,7 @@ def _iter_files(
 # 语言推断
 # ============================================================
 
+
 def infer_language(task_text: str) -> Optional[str]:
     """从任务文本推断语言
 
@@ -419,8 +551,7 @@ def _infer_language_with_keywords(task_text: str) -> Optional[str]:
             # 仅对纯单词关键词使用 \b，避免误匹配
             # 含中文/空格/符号的关键词使用子串匹配，以兼容中文连续文本与符号语言
             use_plain_match = (
-                re.search(r"[^\x00-\x7F]", keyword) is not None
-                or re.search(r"[^\w]", keyword) is not None
+                re.search(r"[^\x00-\x7F]", keyword) is not None or re.search(r"[^\w]", keyword) is not None
             )
 
             if use_plain_match:
@@ -593,16 +724,10 @@ def _parse_task_analysis_output(output: str) -> Optional[TaskAnalysis]:
         language = None
 
     project_name = data.get("project_name")
-    if isinstance(project_name, str):
-        project_name = project_name.strip() or None
-    else:
-        project_name = None
+    project_name = project_name.strip() or None if isinstance(project_name, str) else None
 
     framework = data.get("framework")
-    if isinstance(framework, str):
-        framework = framework.strip() or None
-    else:
-        framework = None
+    framework = framework.strip() or None if isinstance(framework, str) else None
 
     params = data.get("params")
     if not isinstance(params, dict):
@@ -651,6 +776,7 @@ def get_language_hint() -> str:
 # 脚手架生成
 # ============================================================
 
+
 def scaffold(
     language: str,
     target_dir: Path,
@@ -677,7 +803,7 @@ def scaffold(
     if not project_name:
         project_name = target_dir.name
         # 规范化项目名（移除非法字符）
-        project_name = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name)
+        project_name = re.sub(r"[^a-zA-Z0-9_-]", "_", project_name)
         if not project_name or project_name[0].isdigit():
             project_name = "my_project"
 
@@ -843,7 +969,7 @@ def _scaffold_typescript(target_dir: Path, project_name: str) -> list[str]:
     created.append("package.json")
 
     # tsconfig.json
-    tsconfig_content = '''{
+    tsconfig_content = """{
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
@@ -860,7 +986,7 @@ def _scaffold_typescript(target_dir: Path, project_name: str) -> list[str]:
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }
-'''
+"""
     (target_dir / "tsconfig.json").write_text(tsconfig_content, encoding="utf-8")
     created.append("tsconfig.json")
 
@@ -885,24 +1011,24 @@ def _scaffold_go(target_dir: Path, project_name: str) -> list[str]:
     # go.mod
     # 使用 example.com 作为默认 module 路径
     module_path = f"example.com/{project_name}"
-    gomod_content = f'''module {module_path}
+    gomod_content = f"""module {module_path}
 
 go 1.21
-'''
+"""
     (target_dir / "go.mod").write_text(gomod_content, encoding="utf-8")
     created.append("go.mod")
 
     # cmd/app/main.go
     cmd_dir = target_dir / "cmd" / "app"
     cmd_dir.mkdir(parents=True, exist_ok=True)
-    main_content = '''package main
+    main_content = """package main
 
 import "fmt"
 
 func main() {
 \tfmt.Println("Hello, Go!")
 }
-'''
+"""
     (cmd_dir / "main.go").write_text(main_content, encoding="utf-8")
     created.append("cmd/app/main.go")
 
@@ -919,7 +1045,7 @@ def _scaffold_java(target_dir: Path, project_name: str) -> list[str]:
     created = []
 
     # pom.xml
-    pom_content = f'''<?xml version="1.0" encoding="UTF-8"?>
+    pom_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
@@ -937,21 +1063,21 @@ def _scaffold_java(target_dir: Path, project_name: str) -> list[str]:
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 </project>
-'''
+"""
     (target_dir / "pom.xml").write_text(pom_content, encoding="utf-8")
     created.append("pom.xml")
 
     # src/main/java/com/example/App.java
     java_dir = target_dir / "src" / "main" / "java" / "com" / "example"
     java_dir.mkdir(parents=True, exist_ok=True)
-    app_content = '''package com.example;
+    app_content = """package com.example;
 
 public class App {
     public static void main(String[] args) {
         System.out.println("Hello, Java!");
     }
 }
-'''
+"""
     (java_dir / "App.java").write_text(app_content, encoding="utf-8")
     created.append("src/main/java/com/example/App.java")
 
@@ -981,10 +1107,10 @@ edition = "2021"
     # src/main.rs
     src_dir = target_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
-    main_content = '''fn main() {
+    main_content = """fn main() {
     println!("Hello, Rust!");
 }
-'''
+"""
     (src_dir / "main.rs").write_text(main_content, encoding="utf-8")
     created.append("src/main.rs")
 
@@ -994,6 +1120,7 @@ edition = "2021"
 # ============================================================
 # 参考子工程发现
 # ============================================================
+
 
 def detect_reference_projects(
     root_dir: Path,
@@ -1060,13 +1187,15 @@ def detect_reference_projects(
                 if marker_files:
                     # 找到一个子工程
                     rel_path = item.relative_to(root_dir)
-                    candidates.append(ReferenceProject(
-                        path=item,
-                        relative_path=str(rel_path),
-                        detected_language=detected_language,
-                        marker_files=marker_files,
-                        description=f"{detected_language or 'unknown'} 工程，标记文件: {', '.join(marker_files[:3])}",
-                    ))
+                    candidates.append(
+                        ReferenceProject(
+                            path=item,
+                            relative_path=str(rel_path),
+                            detected_language=detected_language,
+                            marker_files=marker_files,
+                            description=f"{detected_language or 'unknown'} 工程，标记文件: {', '.join(marker_files[:3])}",
+                        )
+                    )
                 else:
                     # 继续递归
                     scan_dir(item, depth + 1)
@@ -1077,11 +1206,13 @@ def detect_reference_projects(
     scan_dir(root_dir, 0)
 
     # 按目录深度排序（更浅的优先），然后按语言和路径排序
-    candidates.sort(key=lambda x: (
-        x.relative_path.count("/"),
-        x.detected_language or "zzz",
-        x.relative_path,
-    ))
+    candidates.sort(
+        key=lambda x: (
+            x.relative_path.count("/"),
+            x.detected_language or "zzz",
+            x.relative_path,
+        )
+    )
 
     # 去重（同一语言只保留最浅的）
     seen_languages: set[str] = set()
@@ -1104,9 +1235,11 @@ def detect_reference_projects(
 # 高级接口
 # ============================================================
 
+
 @dataclass
 class WorkspacePreparationResult:
     """工作目录准备结果"""
+
     project_info: ProjectInfo
     reference_projects: list[ReferenceProject] = field(default_factory=list)
     scaffold_result: Optional[ScaffoldResult] = None
@@ -1160,18 +1293,11 @@ def prepare_workspace(
         result.task_analysis = task_analysis
 
     # 2. 如果是空目录/仅文档目录，尝试生成脚手架
-    needs_scaffold = (
-        project_info.state == ProjectState.EMPTY_OR_DOCS_ONLY
-        or force_scaffold
-    )
+    needs_scaffold = project_info.state == ProjectState.EMPTY_OR_DOCS_ONLY or force_scaffold
 
     if needs_scaffold:
         # 推断语言
-        language = (
-            explicit_language
-            or (task_analysis.language if task_analysis else None)
-            or infer_language(task_text)
-        )
+        language = explicit_language or (task_analysis.language if task_analysis else None) or infer_language(task_text)
 
         if not language:
             # 推断失败
@@ -1182,10 +1308,7 @@ def prepare_workspace(
             # dry-run 模式下不创建脚手架，只给出提示
             result.project_info.detected_language = language
             result.error = "dry-run 模式不会创建脚手架"
-            result.hint = (
-                f"检测到语言: {language}。"
-                "请取消 --dry-run 或先手动初始化工程后再重试。"
-            )
+            result.hint = f"检测到语言: {language}。请取消 --dry-run 或先手动初始化工程后再重试。"
             logger.info(f"dry-run 模式跳过脚手架创建: {language}, 目录: {target_dir}")
         else:
             # 生成脚手架

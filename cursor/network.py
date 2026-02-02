@@ -3,6 +3,7 @@ Cursor Cloud Agent 网络配置模块
 
 提供出口 IP 范围管理、验证和防火墙规则导出功能。
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -11,7 +12,6 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -20,6 +20,7 @@ from core.config import CloudAgentConfig, get_config
 
 class FirewallFormat(Enum):
     """防火墙规则导出格式"""
+
     IPTABLES = "iptables"
     NGINX = "nginx"
     APACHE = "apache"
@@ -42,7 +43,7 @@ class EgressIPConfig:
     version: str = ""
 
     # 缓存配置
-    cache_file: Optional[Path] = None
+    cache_file: Path | None = None
     cache_ttl: int = 3600  # 默认 1 小时
 
     def __post_init__(self):
@@ -78,10 +79,7 @@ class EgressIPConfig:
         """
         try:
             ip_addr = ipaddress.ip_address(ip)
-            for network in self._networks:
-                if ip_addr in network:
-                    return True
-            return False
+            return any(ip_addr in network for network in self._networks)
         except ValueError:
             return False
 
@@ -101,7 +99,7 @@ class EgressIPConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict, cache_file: Optional[Path] = None, cache_ttl: int = 3600) -> "EgressIPConfig":
+    def from_dict(cls, data: dict, cache_file: Path | None = None, cache_ttl: int = 3600) -> EgressIPConfig:
         """从字典创建实例"""
         return cls(
             ip_ranges=data.get("ip_ranges", []),
@@ -126,7 +124,7 @@ class EgressIPConfig:
             return False
 
     @classmethod
-    def load_cache(cls, cache_file: Path, cache_ttl: int = 3600) -> Optional["EgressIPConfig"]:
+    def load_cache(cls, cache_file: Path, cache_ttl: int = 3600) -> EgressIPConfig | None:
         """从本地缓存文件加载"""
         if not cache_file.exists():
             return None
@@ -170,16 +168,16 @@ class EgressIPConfig:
         else:
             raise ValueError(f"不支持的格式: {format}")
 
-    def _export_iptables(self, chain: str = "INPUT", port: Optional[int] = None, comment: str = "Cursor Cloud Agent") -> str:
+    def _export_iptables(
+        self, chain: str = "INPUT", port: int | None = None, comment: str = "Cursor Cloud Agent"
+    ) -> str:
         """导出为 iptables 格式"""
         lines = [f"# {comment}", f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
 
         port_spec = f"-p tcp --dport {port} " if port else ""
 
         for ip_range in self.ip_ranges:
-            lines.append(
-                f"iptables -A {chain} -s {ip_range} {port_spec}-j ACCEPT -m comment --comment \"{comment}\""
-            )
+            lines.append(f'iptables -A {chain} -s {ip_range} {port_spec}-j ACCEPT -m comment --comment "{comment}"')
 
         return "\n".join(lines)
 
@@ -215,7 +213,7 @@ class EgressIPConfig:
 
         return "\n".join(lines)
 
-    def _export_ufw(self, port: Optional[int] = None, comment: str = "Cursor Cloud Agent", **kwargs) -> str:
+    def _export_ufw(self, port: int | None = None, comment: str = "Cursor Cloud Agent", **kwargs) -> str:
         """导出为 UFW 格式"""
         lines = [
             f"# {comment}",
@@ -234,14 +232,16 @@ class EgressIPConfig:
         """导出为 Cloudflare IP Access Rules 格式（JSON）"""
         rules = []
         for ip_range in self.ip_ranges:
-            rules.append({
-                "mode": "whitelist",
-                "configuration": {
-                    "target": "ip_range",
-                    "value": ip_range,
-                },
-                "notes": "Cursor Cloud Agent",
-            })
+            rules.append(
+                {
+                    "mode": "whitelist",
+                    "configuration": {
+                        "target": "ip_range",
+                        "value": ip_range,
+                    },
+                    "notes": "Cursor Cloud Agent",
+                }
+            )
 
         return json.dumps(rules, indent=2)
 
@@ -274,17 +274,17 @@ class EgressIPManager:
     # 已知的 Cursor Cloud Agent 出口 IP 范围（备用）
     KNOWN_IP_RANGES = [
         # Cursor Cloud 基础设施（示例，实际需从 API 获取）
-        "35.192.0.0/12",      # Google Cloud
-        "34.64.0.0/10",       # Google Cloud
-        "104.196.0.0/14",     # Google Cloud
-        "35.186.0.0/16",      # Google Cloud
+        "35.192.0.0/12",  # Google Cloud
+        "34.64.0.0/10",  # Google Cloud
+        "104.196.0.0/14",  # Google Cloud
+        "35.186.0.0/16",  # Google Cloud
     ]
 
     def __init__(
         self,
-        cache_dir: Optional[Path] = None,
-        cache_ttl: Optional[int] = None,
-        cloud_config: Optional[CloudAgentConfig] = None,
+        cache_dir: Path | None = None,
+        cache_ttl: int | None = None,
+        cloud_config: CloudAgentConfig | None = None,
     ):
         """
         初始化管理器
@@ -318,7 +318,7 @@ class EgressIPManager:
 
         self.cache_file = self.cache_dir / "egress_ips.json"
 
-        self._config: Optional[EgressIPConfig] = None
+        self._config: EgressIPConfig | None = None
 
     async def fetch_egress_ip_ranges(self, force_refresh: bool = False) -> EgressIPConfig:
         """
@@ -348,7 +348,7 @@ class EgressIPManager:
         # 使用备用 IP 范围
         return self._get_fallback_config()
 
-    async def _fetch_from_api(self) -> Optional[EgressIPConfig]:
+    async def _fetch_from_api(self) -> EgressIPConfig | None:
         """从 Cursor API 获取 IP 范围"""
         urls = [self.CURSOR_API_URL, self.CURSOR_FALLBACK_URL]
 
@@ -372,7 +372,7 @@ class EgressIPManager:
 
         return None
 
-    def _load_from_cache(self) -> Optional[EgressIPConfig]:
+    def _load_from_cache(self) -> EgressIPConfig | None:
         """从本地缓存加载"""
         return EgressIPConfig.load_cache(self.cache_file, self.cache_ttl)
 
@@ -403,7 +403,7 @@ class EgressIPManager:
 
         return self._config.is_allowed_ip(ip)
 
-    def get_config(self) -> Optional[EgressIPConfig]:
+    def get_config(self) -> EgressIPConfig | None:
         """获取当前配置"""
         return self._config
 
@@ -425,13 +425,13 @@ class EgressIPManager:
 
 
 # 全局实例
-_manager: Optional[EgressIPManager] = None
+_manager: EgressIPManager | None = None
 
 
 def get_manager(
-    cache_dir: Optional[Path] = None,
-    cache_ttl: Optional[int] = None,
-    cloud_config: Optional[CloudAgentConfig] = None,
+    cache_dir: Path | None = None,
+    cache_ttl: int | None = None,
+    cloud_config: CloudAgentConfig | None = None,
 ) -> EgressIPManager:
     """
     获取全局 IP 管理器实例

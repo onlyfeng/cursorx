@@ -9,10 +9,10 @@
     # 多进程版 (coordinator/orchestrator_mp.py, agents/worker_process.py)
     from core.knowledge import CURSOR_KEYWORDS, is_cursor_related, KnowledgeDoc
 """
+
 from typing import Optional
 
 from pydantic import BaseModel, Field
-
 
 # ============================================================================
 # Cursor 关键词检测
@@ -20,9 +20,22 @@ from pydantic import BaseModel, Field
 
 # Cursor 相关关键词，用于自动检测是否需要知识库上下文
 CURSOR_KEYWORDS: list[str] = [
-    "cursor", "agent", "cli", "mcp", "hook", "subagent", "skill",
-    "stream-json", "output-format", "cursor-agent", "--force", "--print",
-    "cursor.com", "cursor api", "cursor 命令", "cursor 工具",
+    "cursor",
+    "agent",
+    "cli",
+    "mcp",
+    "hook",
+    "subagent",
+    "skill",
+    "stream-json",
+    "output-format",
+    "cursor-agent",
+    "--force",
+    "--print",
+    "cursor.com",
+    "cursor api",
+    "cursor 命令",
+    "cursor 工具",
 ]
 
 
@@ -51,6 +64,7 @@ def is_cursor_related(text: str) -> bool:
 # ============================================================================
 # 知识库文档数据结构
 # ============================================================================
+
 
 class KnowledgeDoc(BaseModel):
     """知识库文档数据结构
@@ -134,17 +148,17 @@ class KnowledgeDoc(BaseModel):
 # ============================================================================
 
 # 普通知识库文档限制
-MAX_KNOWLEDGE_DOCS: int = 3                    # 最大文档数量
-MAX_CHARS_PER_DOC: int = 1200                  # 单文档最大字符数
-MAX_TOTAL_KNOWLEDGE_CHARS: int = 3000          # 知识库总字符上限
+MAX_KNOWLEDGE_DOCS: int = 3  # 最大文档数量
+MAX_CHARS_PER_DOC: int = 1200  # 单文档最大字符数
+MAX_TOTAL_KNOWLEDGE_CHARS: int = 3000  # 知识库总字符上限
 
 # CLI Ask 模式结果限制（优先级更高，内容更精准）
-MAX_CLI_ASK_DOCS: int = 2                      # CLI ask 结果最大数量
-MAX_CLI_ASK_CHARS_PER_DOC: int = 1500          # CLI ask 单个结果最大字符
+MAX_CLI_ASK_DOCS: int = 2  # CLI ask 结果最大数量
+MAX_CLI_ASK_CHARS_PER_DOC: int = 1500  # CLI ask 单个结果最大字符
 
 # 降级策略参数
-FALLBACK_CHARS_PER_DOC: int = 600              # 超限时降级到的单文档字符数
-MIN_DOCS_ON_FALLBACK: int = 2                  # 降级后最少保留的文档数
+FALLBACK_CHARS_PER_DOC: int = 600  # 超限时降级到的单文档字符数
+MIN_DOCS_ON_FALLBACK: int = 2  # 降级后最少保留的文档数
 
 
 def truncate_knowledge_docs(

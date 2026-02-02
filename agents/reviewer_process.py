@@ -2,6 +2,7 @@
 
 作为独立进程运行的评审者
 """
+
 import asyncio
 import json
 import re
@@ -11,7 +12,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from core.config import DEFAULT_REVIEWER_MODEL, DEFAULT_REVIEW_TIMEOUT
+from core.config import DEFAULT_REVIEW_TIMEOUT, DEFAULT_REVIEWER_MODEL
 from cursor.client import CursorAgentClient, CursorAgentConfig
 from process.message_queue import ProcessMessage, ProcessMessageType
 from process.worker import AgentWorkerProcess
@@ -19,6 +20,7 @@ from process.worker import AgentWorkerProcess
 
 class ReviewDecision(str, Enum):
     """评审决策"""
+
     CONTINUE = "continue"
     COMPLETE = "complete"
     ADJUST = "adjust"
@@ -93,7 +95,7 @@ class ReviewerAgentProcess(AgentWorkerProcess):
             model=self.config.get("model", DEFAULT_REVIEWER_MODEL),
             output_format="stream-json" if stream_enabled else "json",
             non_interactive=True,
-            force_write=False,     # 不修改文件，只评审
+            force_write=False,  # 不修改文件，只评审
             stream_partial_output=stream_enabled,
             stream_events_enabled=stream_enabled,
             stream_log_console=self.config.get("stream_log_console", True),
@@ -128,17 +130,16 @@ class ReviewerAgentProcess(AgentWorkerProcess):
 
         try:
             # 构建评审 prompt
-            prompt = self._build_review_prompt(
-                goal, iteration_id, tasks_completed, tasks_failed
-            )
+            prompt = self._build_review_prompt(goal, iteration_id, tasks_completed, tasks_failed)
 
             # 调用 Cursor Agent
+            assert self.cursor_client is not None
             result = await self.cursor_client.execute(instruction=prompt)
 
             if not result.success:
                 self._send_review_result(
                     success=False,
-                    error=result.error,
+                    error=str(result.error) if result.error else None,
                     decision=ReviewDecision.CONTINUE,
                     correlation_id=message.id,
                 )
@@ -184,18 +185,14 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         ]
 
         if tasks_completed:
-            tasks_str = "\n".join(
-                f"- {t.get('title', t.get('id', 'unknown'))}"
-                for t in tasks_completed
-            )
+            tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}" for t in tasks_completed)
             parts.append(f"\n## 已完成任务 ({len(tasks_completed)} 个)\n{tasks_str}")
         else:
             parts.append("\n## 已完成任务\n无")
 
         if tasks_failed:
             tasks_str = "\n".join(
-                f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}"
-                for t in tasks_failed
+                f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}" for t in tasks_failed
             )
             parts.append(f"\n## 失败任务 ({len(tasks_failed)} 个)\n{tasks_str}")
 
@@ -218,7 +215,7 @@ class ReviewerAgentProcess(AgentWorkerProcess):
     def _parse_review_result(self, output: str) -> dict[str, Any]:
         """解析评审结果"""
         # 尝试提取 JSON 块
-        json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+        json_match = re.search(r"```json\s*(.*?)\s*```", output, re.DOTALL)
         if json_match:
             try:
                 result = json.loads(json_match.group(1))
@@ -252,13 +249,13 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         decision: ReviewDecision = ReviewDecision.CONTINUE,
         score: int = 0,
         summary: str = "",
-        completed_items: list = None,
-        pending_items: list = None,
-        issues: list = None,
-        suggestions: list = None,
+        completed_items: list[Any] | None = None,
+        pending_items: list[Any] | None = None,
+        issues: list[Any] | None = None,
+        suggestions: list[Any] | None = None,
         next_iteration_focus: str = "",
-        error: str = None,
-        correlation_id: str = None,
+        error: str | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         """发送评审结果"""
         self._send_message(

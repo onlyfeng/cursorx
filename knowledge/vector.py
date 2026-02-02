@@ -7,6 +7,7 @@
 - 语义相似度搜索
 - 混合搜索（关键词 + 语义）
 """
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -22,6 +23,7 @@ class KnowledgeVectorConfig:
 
     配置向量存储和语义搜索的参数。
     """
+
     # 是否启用向量搜索
     enabled: bool = True
 
@@ -87,6 +89,7 @@ class KnowledgeVectorConfig:
 @dataclass
 class VectorSearchResult:
     """向量搜索结果"""
+
     doc_id: str
     chunk_id: str
     url: str
@@ -270,15 +273,17 @@ class KnowledgeVectorStore:
 
                 if score >= min_score:
                     chunk_info = self._chunk_info[doc_id][chunk_id]
-                    results.append(VectorSearchResult(
-                        doc_id=doc_id,
-                        chunk_id=chunk_id,
-                        url=chunk_info["url"],
-                        title=chunk_info["title"],
-                        content=chunk_info["content"],
-                        score=score,
-                        metadata=chunk_info.get("metadata", {}),
-                    ))
+                    results.append(
+                        VectorSearchResult(
+                            doc_id=doc_id,
+                            chunk_id=chunk_id,
+                            url=chunk_info["url"],
+                            title=chunk_info["title"],
+                            content=chunk_info["content"],
+                            score=score,
+                            metadata=chunk_info.get("metadata", {}),
+                        )
+                    )
 
         # 按分数排序
         results.sort(key=lambda r: r.score, reverse=True)
@@ -327,7 +332,7 @@ class KnowledgeVectorStore:
             # 尝试在句子边界处分割
             if end < len(content):
                 # 查找最近的句子结束符
-                for sep in ['\n\n', '。', '.', '\n', ' ']:
+                for sep in ["\n\n", "。", ".", "\n", " "]:
                     last_sep = content.rfind(sep, start, end)
                     if last_sep > start + chunk_size // 2:
                         end = last_sep + len(sep)
@@ -335,13 +340,15 @@ class KnowledgeVectorStore:
 
             chunk_content = content[start:end].strip()
             if chunk_content:
-                chunks.append(DocumentChunk(
-                    chunk_id=f"{doc.id}_chunk_{chunk_index}",
-                    doc_id=doc.id,
-                    content=chunk_content,
-                    start_index=start,
-                    end_index=end,
-                ))
+                chunks.append(
+                    DocumentChunk(
+                        chunk_id=f"{doc.id}_chunk_{chunk_index}",
+                        source_doc=doc.id,
+                        content=chunk_content,
+                        start_index=start,
+                        end_index=end,
+                    )
+                )
                 chunk_index += 1
 
             start = end - overlap if end < len(content) else len(content)
@@ -362,14 +369,14 @@ class KnowledgeVectorStore:
         # 生成固定维度的伪向量
         vector = []
         for i in range(0, min(len(text_hash), self.config.embedding_dimension * 2), 2):
-            value = int(text_hash[i:i+2], 16) / 255.0 - 0.5
+            value = int(text_hash[i : i + 2], 16) / 255.0 - 0.5
             vector.append(value)
 
         # 填充到目标维度
         while len(vector) < self.config.embedding_dimension:
             vector.append(0.0)
 
-        return vector[:self.config.embedding_dimension]
+        return vector[: self.config.embedding_dimension]
 
     def _compute_similarity(
         self,
@@ -526,10 +533,7 @@ class KnowledgeSemanticSearch:
                     "semantic_score": 0.0,
                     "result": sr,
                 }
-            doc_scores[sr.doc_id]["semantic_score"] = max(
-                doc_scores[sr.doc_id]["semantic_score"],
-                sr.score
-            )
+            doc_scores[sr.doc_id]["semantic_score"] = max(doc_scores[sr.doc_id]["semantic_score"], sr.score)
             # 如果语义结果更详细，更新结果
             if isinstance(doc_scores[sr.doc_id]["result"], dict):
                 doc_scores[sr.doc_id]["result"] = sr
@@ -544,10 +548,7 @@ class KnowledgeSemanticSearch:
             keyword_normalized = min(scores["keyword_score"] / 10.0, 1.0)  # 假设关键词分数上限为 10
             semantic_normalized = scores["semantic_score"]
 
-            hybrid_score = (
-                keyword_weight * keyword_normalized +
-                semantic_weight * semantic_normalized
-            )
+            hybrid_score = keyword_weight * keyword_normalized + semantic_weight * semantic_normalized
 
             result = scores["result"]
             if isinstance(result, VectorSearchResult):
@@ -555,15 +556,17 @@ class KnowledgeSemanticSearch:
                 results.append(result)
             else:
                 # 从关键词结果创建 VectorSearchResult
-                results.append(VectorSearchResult(
-                    doc_id=doc_id,
-                    chunk_id="",
-                    url=result.get("url", ""),
-                    title=result.get("title", ""),
-                    content=result.get("snippet", ""),
-                    score=hybrid_score,
-                    metadata={},
-                ))
+                results.append(
+                    VectorSearchResult(
+                        doc_id=doc_id,
+                        chunk_id="",
+                        url=result.get("url", ""),
+                        title=result.get("title", ""),
+                        content=result.get("snippet", ""),
+                        score=hybrid_score,
+                        metadata={},
+                    )
+                )
 
         # 按混合分数排序
         results.sort(key=lambda r: r.score, reverse=True)

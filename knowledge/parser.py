@@ -2,8 +2,11 @@
 
 提供 HTML 解析、内容清理、Markdown 转换和文档分块功能
 """
+
+import hashlib
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
 
 import html2text
@@ -12,9 +15,226 @@ from bs4 import BeautifulSoup, Tag
 from .models import DocumentChunk
 
 
+def _get_available_parser() -> str:
+    """检测可用的 BeautifulSoup 解析器
+
+    优先使用 lxml（速度快），回退到 html.parser（Python 内置）。
+
+    Returns:
+        可用的解析器名称
+    """
+    try:
+        # 尝试导入 lxml
+        import lxml  # noqa: F401
+
+        return "lxml"
+    except ImportError:
+        return "html.parser"
+
+
+# 模块级别的默认解析器（启动时检测一次）
+DEFAULT_HTML_PARSER = _get_available_parser()
+
+
+class ContentCleanMode(str, Enum):
+    """内容清洗模式"""
+
+    RAW = "raw"  # 保留原始内容
+    MARKDOWN = "markdown"  # 清洗为 Markdown 格式
+    TEXT = "text"  # 清洗为纯文本
+    CHANGELOG = "changelog"  # Changelog 专用清洗（去噪 + 标准化日期格式）
+
+
+@dataclass
+class CleanedContent:
+    """清洗后的内容结构"""
+
+    content: str  # 清洗后的主内容
+    raw_content: str = ""  # 原始内容（可选保留）
+    fingerprint: str = ""  # 清洗后内容的 fingerprint
+    title: str = ""  # 提取的标题
+    clean_mode: ContentCleanMode = ContentCleanMode.RAW
+
+
+def compute_content_fingerprint(content: str) -> str:
+    """计算内容的 fingerprint（SHA256 前16位）
+
+    使用归一化后的内容计算哈希，确保比较时忽略空白差异。
+
+    Args:
+        content: 内容
+
+    Returns:
+        16字符的 SHA256 哈希前缀
+    """
+    # 归一化处理：去除多余空白、统一换行
+    normalized = re.sub(r"\s+", " ", content.strip())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def clean_content_unified(
+    content: str,
+    mode: ContentCleanMode = ContentCleanMode.MARKDOWN,
+    preserve_raw: bool = False,
+) -> CleanedContent:
+    """统一的内容清洗函数
+
+    根据不同模式清洗内容，返回清洗结果。
+
+    Args:
+        content: 原始内容（HTML 或 Markdown）
+        mode: 清洗模式
+        preserve_raw: 是否在结果中保留原始内容
+
+    Returns:
+        CleanedContent: 清洗结果
+
+    示例:
+        >>> result = clean_content_unified("<p>Hello</p>", mode=ContentCleanMode.MARKDOWN)
+        >>> print(result.content)  # "Hello"
+    """
+    if not content:
+        return CleanedContent(content="", clean_mode=mode)
+
+    raw = content if preserve_raw else ""
+    cleaner = ContentCleaner()
+    converter = MarkdownConverter()
+
+    if mode == ContentCleanMode.RAW:
+        # 保留原始内容
+        cleaned = content
+    elif mode == ContentCleanMode.TEXT:
+        # 清洗为纯文本
+        cleaned = cleaner.clean_to_text(content)
+    elif mode == ContentCleanMode.CHANGELOG:
+        # Changelog 专用清洗
+        cleaned = _clean_changelog_content(content, cleaner, converter)
+    else:
+        # 默认清洗为 Markdown
+        cleaned = converter.convert_with_cleaning(content, cleaner)
+
+    # 计算 fingerprint
+    fingerprint = compute_content_fingerprint(cleaned)
+
+    # 提取标题
+    title = _extract_title_from_content(content)
+
+    return CleanedContent(
+        content=cleaned,
+        raw_content=raw,
+        fingerprint=fingerprint,
+        title=title,
+        clean_mode=mode,
+    )
+
+
+def _clean_changelog_content(
+    content: str,
+    cleaner: "ContentCleaner",
+    converter: "MarkdownConverter",
+) -> str:
+    """Changelog 专用清洗
+
+    除了基本清洗外，还进行日期格式标准化。
+
+    Args:
+        content: 原始内容
+        cleaner: 内容清理器
+        converter: Markdown 转换器
+
+    Returns:
+        清洗后的 Markdown 内容
+    """
+    # 首先转换为 Markdown
+    markdown = converter.convert_with_cleaning(content, cleaner)
+
+    # 标准化日期格式（统一为 YYYY-MM-DD 格式便于比较）
+    # 匹配常见格式: Jan 16, 2026 / January 16, 2026 / 2026-01-16
+    month_map = {
+        "jan": "01",
+        "january": "01",
+        "feb": "02",
+        "february": "02",
+        "mar": "03",
+        "march": "03",
+        "apr": "04",
+        "april": "04",
+        "may": "05",
+        "jun": "06",
+        "june": "06",
+        "jul": "07",
+        "july": "07",
+        "aug": "08",
+        "august": "08",
+        "sep": "09",
+        "september": "09",
+        "oct": "10",
+        "october": "10",
+        "nov": "11",
+        "november": "11",
+        "dec": "12",
+        "december": "12",
+    }
+
+    def normalize_date(match: re.Match) -> str:
+        month_str = match.group(1).lower()
+        day = match.group(2).zfill(2)
+        year = match.group(3)
+        month = month_map.get(month_str, "01")
+        return f"{year}-{month}-{day}"
+
+    # 替换 "Jan 16, 2026" 或 "January 16, 2026" 格式
+    pattern = r"(?:(\w+)\s+(\d{1,2})[,\s]+(\d{4}))"
+    markdown = re.sub(pattern, normalize_date, markdown, flags=re.IGNORECASE)
+
+    # 清理多余空行
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+
+    return markdown.strip()
+
+
+def _extract_title_from_content(content: str) -> str:
+    """从内容中提取标题
+
+    Args:
+        content: HTML 或 Markdown 内容
+
+    Returns:
+        提取的标题
+    """
+    # 尝试从 HTML title 标签提取
+    match = re.search(r"<title[^>]*>([^<]+)</title>", content, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # 尝试从 Markdown h1 提取
+    match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+
+    # 尝试从 HTML h1 提取
+    match = re.search(r"<h1[^>]*>([^<]+)</h1>", content, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # 使用第一行非空内容
+    lines = content.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        # 跳过 HTML 标签行
+        if line and not line.startswith("<"):
+            # 清理 Markdown 标记
+            line = re.sub(r"^#+\s*", "", line)
+            if line and len(line) <= 200:
+                return line
+
+    return ""
+
+
 @dataclass
 class ParsedContent:
     """解析后的内容结构"""
+
     title: str = ""
     content: str = ""
     headings: list[dict[str, Any]] = field(default_factory=list)
@@ -35,13 +255,14 @@ class HTMLParser:
         print(result.content)  # "<p>Hello</p>"
     """
 
-    def __init__(self, parser: str = "lxml"):
+    def __init__(self, parser: Optional[str] = None):
         """初始化解析器
 
         Args:
             parser: BeautifulSoup 解析器类型 (lxml, html.parser, html5lib)
+                    默认自动检测可用的解析器
         """
-        self.parser = parser
+        self.parser = parser or DEFAULT_HTML_PARSER
 
     def parse(self, html: str) -> ParsedContent:
         """解析 HTML 内容
@@ -107,33 +328,33 @@ class HTMLParser:
         headings = []
         for level in range(1, 7):
             for tag in soup.find_all(f"h{level}"):
-                headings.append({
-                    "level": level,
-                    "text": tag.get_text(strip=True),
-                    "id": tag.get("id", "")
-                })
+                headings.append({"level": level, "text": tag.get_text(strip=True), "id": tag.get("id", "")})
         return headings
 
     def _extract_links(self, soup: BeautifulSoup) -> list[dict[str, str]]:
         """提取所有链接"""
         links = []
         for a_tag in soup.find_all("a", href=True):
-            links.append({
-                "href": str(a_tag["href"]),
-                "text": a_tag.get_text(strip=True),
-                "title": a_tag.get("title", "")
-            })
+            links.append(
+                {
+                    "href": str(a_tag["href"]),
+                    "text": a_tag.get_text(strip=True),
+                    "title": str(a_tag.get("title") or ""),
+                }
+            )
         return links
 
     def _extract_images(self, soup: BeautifulSoup) -> list[dict[str, str]]:
         """提取所有图片"""
         images = []
         for img_tag in soup.find_all("img"):
-            images.append({
-                "src": img_tag.get("src", ""),
-                "alt": img_tag.get("alt", ""),
-                "title": img_tag.get("title", "")
-            })
+            images.append(
+                {
+                    "src": str(img_tag.get("src") or ""),
+                    "alt": str(img_tag.get("alt") or ""),
+                    "title": str(img_tag.get("title") or ""),
+                }
+            )
         return images
 
     def _extract_metadata(self, soup: BeautifulSoup) -> dict[str, Any]:
@@ -170,10 +391,26 @@ class ContentCleaner:
 
     # 默认要移除的标签
     DEFAULT_REMOVE_TAGS = [
-        "script", "style", "noscript", "iframe", "frame",
-        "nav", "header", "footer", "aside",
-        "form", "button", "input", "select", "textarea",
-        "svg", "canvas", "video", "audio", "embed", "object"
+        "script",
+        "style",
+        "noscript",
+        "iframe",
+        "frame",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        "form",
+        "button",
+        "input",
+        "select",
+        "textarea",
+        "svg",
+        "canvas",
+        "video",
+        "audio",
+        "embed",
+        "object",
     ]
 
     # 默认要移除的 class 模式
@@ -191,26 +428,18 @@ class ContentCleaner:
         r"social",
         r"share",
         r"comment",
-        r"related"
+        r"related",
     ]
 
     # 默认要移除的 id 模式
-    DEFAULT_REMOVE_IDS = [
-        r"nav(igation)?",
-        r"menu",
-        r"sidebar",
-        r"footer",
-        r"header",
-        r"ad(vert)?",
-        r"banner"
-    ]
+    DEFAULT_REMOVE_IDS = [r"nav(igation)?", r"menu", r"sidebar", r"footer", r"header", r"ad(vert)?", r"banner"]
 
     def __init__(
         self,
         remove_tags: Optional[list[str]] = None,
         remove_classes: Optional[list[str]] = None,
         remove_ids: Optional[list[str]] = None,
-        parser: str = "lxml"
+        parser: Optional[str] = None,
     ):
         """初始化清理器
 
@@ -218,20 +447,16 @@ class ContentCleaner:
             remove_tags: 要移除的标签列表
             remove_classes: 要移除的 class 模式（正则表达式）
             remove_ids: 要移除的 id 模式（正则表达式）
-            parser: BeautifulSoup 解析器类型
+            parser: BeautifulSoup 解析器类型，默认自动检测可用的解析器
         """
         self.remove_tags = remove_tags or self.DEFAULT_REMOVE_TAGS
         self.remove_classes = remove_classes or self.DEFAULT_REMOVE_CLASSES
         self.remove_ids = remove_ids or self.DEFAULT_REMOVE_IDS
-        self.parser = parser
+        self.parser = parser or DEFAULT_HTML_PARSER
 
         # 编译正则表达式
-        self._class_patterns = [
-            re.compile(pattern, re.IGNORECASE) for pattern in self.remove_classes
-        ]
-        self._id_patterns = [
-            re.compile(pattern, re.IGNORECASE) for pattern in self.remove_ids
-        ]
+        self._class_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.remove_classes]
+        self._id_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.remove_ids]
 
     def clean(self, html: str) -> str:
         """清理 HTML 内容
@@ -290,9 +515,11 @@ class ContentCleaner:
     def _remove_by_class(self, soup: BeautifulSoup) -> None:
         """移除匹配 class 模式的元素"""
         for tag in soup.find_all(class_=True):
-            classes = tag.get("class", [])
-            if isinstance(classes, str):
-                classes = [classes]
+            raw_classes: list[str] | str = tag.get("class") or []
+            if isinstance(raw_classes, str):
+                classes = [raw_classes]
+            else:
+                classes = [str(cls) for cls in raw_classes]
 
             for cls in classes:
                 if any(pattern.search(cls) for pattern in self._class_patterns):
@@ -302,7 +529,7 @@ class ContentCleaner:
     def _remove_by_id(self, soup: BeautifulSoup) -> None:
         """移除匹配 id 模式的元素"""
         for tag in soup.find_all(id=True):
-            tag_id = tag.get("id", "")
+            tag_id = str(tag.get("id") or "")
             if any(pattern.search(tag_id) for pattern in self._id_patterns):
                 tag.decompose()
 
@@ -325,6 +552,7 @@ class ContentCleaner:
     def _remove_comments(self, soup: BeautifulSoup) -> None:
         """移除 HTML 注释"""
         from bs4 import Comment
+
         for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
             comment.extract()
 
@@ -349,7 +577,7 @@ class MarkdownConverter:
         wrap_links: bool = True,
         default_image_alt: str = "image",
         mark_code: bool = True,
-        bypass_tables: bool = False
+        bypass_tables: bool = False,
     ):
         """初始化转换器
 
@@ -376,12 +604,12 @@ class MarkdownConverter:
         self.h2t.bypass_tables = bypass_tables
 
         # 其他默认设置
-        self.h2t.unicode_snob = True          # 使用 Unicode 字符
-        self.h2t.escape_snob = True           # 转义特殊字符
+        self.h2t.unicode_snob = True  # 使用 Unicode 字符
+        self.h2t.escape_snob = True  # 转义特殊字符
         self.h2t.skip_internal_links = False  # 不跳过内部链接
-        self.h2t.inline_links = True          # 使用内联链接格式
-        self.h2t.protect_links = True         # 保护链接中的特殊字符
-        self.h2t.ignore_tables = False        # 不忽略表格
+        self.h2t.inline_links = True  # 使用内联链接格式
+        self.h2t.protect_links = True  # 保护链接中的特殊字符
+        self.h2t.ignore_tables = False  # 不忽略表格
 
     def convert(self, html: str) -> str:
         """将 HTML 转换为 Markdown
@@ -399,11 +627,7 @@ class MarkdownConverter:
 
         return markdown
 
-    def convert_with_cleaning(
-        self,
-        html: str,
-        cleaner: Optional[ContentCleaner] = None
-    ) -> str:
+    def convert_with_cleaning(self, html: str, cleaner: Optional[ContentCleaner] = None) -> str:
         """先清理 HTML 再转换为 Markdown
 
         Args:
@@ -451,7 +675,7 @@ class ChunkSplitter:
         overlap: int = 100,
         min_chunk_size: int = 100,
         separators: Optional[list[str]] = None,
-        preserve_headings: bool = True
+        preserve_headings: bool = True,
     ):
         """初始化分块器
 
@@ -470,18 +694,18 @@ class ChunkSplitter:
 
         # 默认分隔符（按优先级排序）
         self.separators = separators or [
-            "\n## ",      # Markdown 二级标题
-            "\n### ",     # Markdown 三级标题
-            "\n#### ",    # Markdown 四级标题
-            "\n\n",       # 段落分隔
-            "\n",         # 换行
-            "。",         # 中文句号
-            ".",          # 英文句号
-            "；",         # 中文分号
-            ";",          # 英文分号
-            "，",         # 中文逗号
-            ",",          # 英文逗号
-            " ",          # 空格
+            "\n## ",  # Markdown 二级标题
+            "\n### ",  # Markdown 三级标题
+            "\n#### ",  # Markdown 四级标题
+            "\n\n",  # 段落分隔
+            "\n",  # 换行
+            "。",  # 中文句号
+            ".",  # 英文句号
+            "；",  # 中文分号
+            ";",  # 英文分号
+            "，",  # 中文逗号
+            ",",  # 英文逗号
+            " ",  # 空格
         ]
 
     def split(self, text: str, source_doc: Optional[str] = None) -> list[DocumentChunk]:
@@ -521,21 +745,14 @@ class ChunkSplitter:
                 source_doc=source_doc,
                 start_index=start_index,
                 end_index=start_index + len(chunk_text),
-                metadata={
-                    "chunk_index": i,
-                    "chunk_count": len(chunks_text)
-                }
+                metadata={"chunk_index": i, "chunk_count": len(chunks_text)},
             )
             chunks.append(chunk)
             current_index = start_index + len(chunk_text) - self.overlap
 
         return chunks
 
-    def split_markdown(
-        self,
-        markdown: str,
-        source_doc: Optional[str] = None
-    ) -> list[DocumentChunk]:
+    def split_markdown(self, markdown: str, source_doc: Optional[str] = None) -> list[DocumentChunk]:
         """分割 Markdown 文档，保留标题层级信息
 
         Args:
@@ -555,19 +772,13 @@ class ChunkSplitter:
 
         for chunk in chunks:
             # 找到该块之前最近的各级标题
-            chunk_headings = self._get_context_headings(
-                chunk.start_index, headings
-            )
+            chunk_headings = self._get_context_headings(chunk.start_index, headings)
             if chunk_headings:
                 chunk.metadata["headings"] = chunk_headings
 
         return chunks
 
-    def _split_recursive(
-        self,
-        text: str,
-        separators: list[str]
-    ) -> list[str]:
+    def _split_recursive(self, text: str, separators: list[str]) -> list[str]:
         """递归分割文本"""
         if len(text) <= self.chunk_size:
             return [text] if text.strip() else []
@@ -601,9 +812,7 @@ class ChunkSplitter:
                 if current_chunk.strip():
                     # 如果当前块仍然太大，递归处理
                     if len(current_chunk) > self.chunk_size:
-                        chunks.extend(
-                            self._split_recursive(current_chunk, remaining_separators)
-                        )
+                        chunks.extend(self._split_recursive(current_chunk, remaining_separators))
                     else:
                         chunks.append(current_chunk)
                 current_chunk = part
@@ -611,9 +820,7 @@ class ChunkSplitter:
         # 处理最后一块
         if current_chunk.strip():
             if len(current_chunk) > self.chunk_size:
-                chunks.extend(
-                    self._split_recursive(current_chunk, remaining_separators)
-                )
+                chunks.extend(self._split_recursive(current_chunk, remaining_separators))
             else:
                 chunks.append(current_chunk)
 
@@ -623,7 +830,7 @@ class ChunkSplitter:
         """按固定长度分割文本"""
         chunks = []
         for i in range(0, len(text), self.chunk_size):
-            chunk = text[i:i + self.chunk_size]
+            chunk = text[i : i + self.chunk_size]
             if chunk.strip():
                 chunks.append(chunk)
         return chunks
@@ -669,7 +876,7 @@ class ChunkSplitter:
             current_chunk = chunks[i]
 
             # 获取前一块的结尾作为重叠
-            overlap_text = prev_chunk[-self.overlap:] if len(prev_chunk) >= self.overlap else prev_chunk
+            overlap_text = prev_chunk[-self.overlap :] if len(prev_chunk) >= self.overlap else prev_chunk
 
             # 尝试在合适的位置截断重叠文本
             overlap_text = self._clean_overlap_boundary(overlap_text)
@@ -687,19 +894,16 @@ class ChunkSplitter:
         for sep in ["。", ".", "！", "!", "？", "?", "；", ";", "\n"]:
             pos = text.rfind(sep)
             if pos > len(text) // 2:  # 至少保留一半
-                return text[pos + 1:]
+                return text[pos + 1 :]
 
         # 寻找最后一个空格
         pos = text.rfind(" ")
         if pos > len(text) // 2:
-            return text[pos + 1:]
+            return text[pos + 1 :]
 
         return text
 
-    def _extract_markdown_headings(
-        self,
-        markdown: str
-    ) -> list[dict[str, Any]]:
+    def _extract_markdown_headings(self, markdown: str) -> list[dict[str, Any]]:
         """提取 Markdown 标题及其位置"""
         headings = []
         pattern = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -707,19 +911,11 @@ class ChunkSplitter:
         for match in pattern.finditer(markdown):
             level = len(match.group(1))
             text = match.group(2).strip()
-            headings.append({
-                "level": level,
-                "text": text,
-                "position": match.start()
-            })
+            headings.append({"level": level, "text": text, "position": match.start()})
 
         return headings
 
-    def _get_context_headings(
-        self,
-        position: int,
-        headings: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _get_context_headings(self, position: int, headings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """获取指定位置之前的标题上下文"""
         context = {}  # level -> heading
 

@@ -10,12 +10,49 @@
 - 错误处理和重试机制
 - 自动选择最佳获取方式（JS 页面自动优先使用 Playwright）
 - Playwright 支持：等待选择器、滚动加载懒加载内容、无头模式等
+- URL 安全策略：支持 scheme 白名单、域名白名单、私网拒绝等
+
+================================================================================
+副作用控制策略 (Side Effect Control)
+================================================================================
+
+详细策略矩阵参见: core/execution_policy.py
+
+**本模块产生的副作用**:
+| 操作                    | 副作用类型     | 说明                              |
+|-------------------------|----------------|-----------------------------------|
+| fetch()                 | 网络请求       | HTTP/HTTPS 请求                   |
+| fetch_multiple()        | 网络请求       | 批量 HTTP/HTTPS 请求              |
+| _fetch_via_*()          | 进程启动       | 启动 curl/lynx/playwright 进程    |
+| _fetch_via_playwright() | 浏览器启动     | 启动 Chromium 浏览器实例          |
+
+**策略行为**:
+| 策略        | 行为                                                  |
+|-------------|-------------------------------------------------------|
+| normal      | 正常执行网络请求                                      |
+| skip-online | 禁止网络请求：返回缓存结果或 FetchResult(success=False)|
+| dry-run     | 正常执行（网络请求用于分析，不涉及持久化写入）        |
+| minimal     | 禁止网络请求：同 skip-online                          |
+
+**实现契约**:
+当调用方需要 skip-online 语义时，应：
+1. 优先查询本地缓存（由调用方实现）
+2. 若需调用 fetcher，fetcher 应识别 skip_online 标记
+3. 返回 FetchResult(success=False, content="", error="skip-online mode")
+4. 或返回缓存结果（若支持缓存）
+
+注意：skip_online 逻辑应由调用方（如 KnowledgeManager/SelfIterator）在调用前判断，
+本模块作为底层执行器，不应持有 skip_online 状态，但应支持通过参数传入。
 """
+
 import asyncio
+import ipaddress
+import re
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -24,25 +61,386 @@ _AVAILABLE_METHODS_CACHE: Optional[list["FetchMethod"]] = None
 _AVAILABLE_METHODS_LOCK = asyncio.Lock()
 
 
+def sanitize_url_for_log(url: str, max_path_len: int = 30) -> str:
+    """截断 URL 中的敏感部分用于日志输出
+
+    只保留 scheme + host，path 截断到指定长度，移除 query/fragment。
+    避免在日志中泄露敏感信息（如 token、session_id 等）。
+
+    Args:
+        url: 原始 URL
+        max_path_len: path 部分的最大长度（超过则截断并添加 ...）
+
+    Returns:
+        截断后的 URL 字符串（安全用于日志输出）
+
+    Examples:
+        >>> sanitize_url_for_log("https://example.com/very/long/path/to/resource?token=secret")
+        'https://example.com/very/long/path/to/resou...'
+        >>> sanitize_url_for_log("https://example.com/short")
+        'https://example.com/short'
+    """
+    if not url:
+        return "<empty>"
+
+    try:
+        parsed = urlparse(url)
+        # 只保留 scheme + host + 截断的 path
+        path = parsed.path or "/"
+        if len(path) > max_path_len:
+            path = path[:max_path_len] + "..."
+
+        # 重建 URL（不包含 query 和 fragment）
+        sanitized = f"{parsed.scheme}://{parsed.netloc}{path}"
+        return sanitized
+    except Exception:
+        # 解析失败时返回截断的原始字符串
+        if len(url) > 50:
+            return url[:50] + "..."
+        return url
+
+
+@dataclass
+class UrlRejectionReason:
+    """URL 拒绝原因（结构化，供上层汇总）
+
+    提供 machine-readable 的拒绝原因，便于上层进行统计和汇总。
+
+    Attributes:
+        url: 被拒绝的 URL（已截断敏感部分）
+        reason: 人类可读的拒绝原因
+        policy_type: 策略类型代码 (scheme/domain/private_network/ip_address/ipv6/hostname/empty/parse/url_prefix)
+        raw_url: 原始 URL（仅在调试时使用，默认不暴露）
+    """
+
+    url: str  # 截断后的 URL（安全用于日志）
+    reason: str
+    policy_type: str
+    raw_url: Optional[str] = field(default=None, repr=False)  # 原始 URL，repr 中不显示
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为字典（用于 JSON 序列化）"""
+        return {
+            "url": self.url,
+            "reason": self.reason,
+            "policy_type": self.policy_type,
+        }
+
+    @classmethod
+    def from_policy_error(cls, error: "UrlPolicyError") -> "UrlRejectionReason":
+        """从 UrlPolicyError 创建 UrlRejectionReason"""
+        return cls(
+            url=sanitize_url_for_log(error.url),
+            reason=error.reason,
+            policy_type=error.policy_type,
+            raw_url=error.url,
+        )
+
+
+class UrlPolicyError(Exception):
+    """URL 策略校验错误
+
+    当 URL 不满足安全策略时抛出此异常。
+    """
+
+    def __init__(self, url: str, reason: str, policy_type: str = "unknown"):
+        """初始化 URL 策略错误
+
+        Args:
+            url: 被拒绝的 URL
+            reason: 拒绝原因
+            policy_type: 策略类型 (scheme/domain/private_network/ip_address/ipv6/hostname/empty/parse/url_prefix)
+        """
+        self.url = url
+        self.reason = reason
+        self.policy_type = policy_type
+        super().__init__(f"URL 策略拒绝: {sanitize_url_for_log(url)} - {reason}")
+
+    def to_rejection_reason(self) -> UrlRejectionReason:
+        """转换为结构化的拒绝原因"""
+        return UrlRejectionReason.from_policy_error(self)
+
+
+@dataclass
+class UrlPolicy:
+    """URL 安全策略配置
+
+    控制允许访问的 URL 范围，防止 SSRF 和非预期访问。
+
+    使用示例:
+    ```python
+    # 只允许 HTTPS，禁止私网
+    policy = UrlPolicy(
+        allowed_schemes=["https"],
+        deny_private_networks=True,
+    )
+
+    # 只允许特定域名
+    policy = UrlPolicy(
+        allowed_domains=["docs.cursor.com", "cursor.com"],
+    )
+
+    # 只允许特定 URL 前缀
+    policy = UrlPolicy(
+        allowed_url_prefixes=["https://docs.cursor.com/"],
+    )
+    ```
+    """
+
+    # 允许的 URL scheme，默认 http/https
+    # 空列表表示不限制
+    allowed_schemes: list[str] = field(default_factory=lambda: ["http", "https"])
+
+    # 允许的域名列表（精确匹配或子域名匹配）
+    # 空列表表示不限制
+    # 支持通配符: *.example.com 匹配所有子域名
+    allowed_domains: list[str] = field(default_factory=list)
+
+    # 允许的 URL 前缀列表
+    # 空列表表示不限制
+    allowed_url_prefixes: list[str] = field(default_factory=list)
+
+    # 是否拒绝私有网络地址 (localhost, 127.0.0.1, 10.x.x.x, 192.168.x.x 等)
+    deny_private_networks: bool = True
+
+    # 是否拒绝 IPv6 地址
+    deny_ipv6: bool = False
+
+    # 是否拒绝纯 IP 地址（无域名）
+    deny_ip_addresses: bool = False
+
+    def validate(self, url: str) -> None:
+        """校验 URL 是否符合策略
+
+        Args:
+            url: 待校验的 URL
+
+        Raises:
+            UrlPolicyError: URL 不符合策略时抛出
+        """
+        if not url:
+            raise UrlPolicyError(url, "URL 为空", "empty")
+
+        try:
+            parsed = urlparse(url)
+        except Exception as e:
+            raise UrlPolicyError(url, f"URL 解析失败: {e}", "parse") from e
+
+        # 1. 校验 scheme
+        self._validate_scheme(url, parsed)
+
+        # 2. 校验 hostname
+        hostname = parsed.hostname or ""
+        if not hostname:
+            raise UrlPolicyError(url, "缺少主机名", "hostname")
+
+        # 3. 校验 IP 相关策略
+        self._validate_ip_policies(url, hostname)
+
+        # 4. 校验域名白名单
+        self._validate_domain(url, hostname)
+
+        # 5. 校验 URL 前缀白名单
+        self._validate_url_prefix(url)
+
+    def _validate_scheme(self, url: str, parsed) -> None:
+        """校验 URL scheme"""
+        scheme = parsed.scheme.lower()
+        if self.allowed_schemes and scheme not in self.allowed_schemes:
+            raise UrlPolicyError(
+                url,
+                f"不允许的协议: {scheme}，允许的协议: {self.allowed_schemes}",
+                "scheme",
+            )
+
+    def _validate_ip_policies(self, url: str, hostname: str) -> None:
+        """校验 IP 相关策略"""
+        # 检查是否是 IP 地址
+        is_ip = False
+        ip_obj = None
+
+        try:
+            ip_obj = ipaddress.ip_address(hostname)
+            is_ip = True
+        except ValueError:
+            # 不是 IP 地址，可能是域名
+            pass
+
+        # 拒绝纯 IP 地址
+        if self.deny_ip_addresses and is_ip:
+            raise UrlPolicyError(url, "不允许直接使用 IP 地址", "ip_address")
+
+        # 拒绝 IPv6
+        if self.deny_ipv6 and is_ip and ip_obj and ip_obj.version == 6:
+            raise UrlPolicyError(url, "不允许 IPv6 地址", "ipv6")
+
+        # 拒绝私有网络
+        if self.deny_private_networks:
+            self._check_private_network(url, hostname, ip_obj)
+
+    def _check_private_network(
+        self, url: str, hostname: str, ip_obj: Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]
+    ) -> None:
+        """检查是否为私有网络地址"""
+        # 特殊主机名
+        private_hostnames = ["localhost", "localhost.localdomain"]
+        if hostname.lower() in private_hostnames:
+            raise UrlPolicyError(url, "不允许访问 localhost", "private_network")
+
+        # IP 地址检查
+        if ip_obj:
+            if ip_obj.is_private:
+                raise UrlPolicyError(url, f"不允许访问私有网络地址: {hostname}", "private_network")
+            if ip_obj.is_loopback:
+                raise UrlPolicyError(url, f"不允许访问回环地址: {hostname}", "private_network")
+            if ip_obj.is_link_local:
+                raise UrlPolicyError(url, f"不允许访问链路本地地址: {hostname}", "private_network")
+            if ip_obj.is_reserved:
+                raise UrlPolicyError(url, f"不允许访问保留地址: {hostname}", "private_network")
+            # 检查 0.0.0.0
+            if str(ip_obj) == "0.0.0.0":
+                raise UrlPolicyError(url, "不允许访问 0.0.0.0", "private_network")
+        else:
+            # 域名情况：尝试解析并检查
+            # 注意：这里不进行 DNS 解析，因为可能会有性能问题
+            # 如果需要严格检查，可以启用 DNS 解析
+            # 只检查已知的私有域名模式
+            if self._is_likely_private_domain(hostname):
+                raise UrlPolicyError(url, f"疑似私有网络域名: {hostname}", "private_network")
+
+    def _is_likely_private_domain(self, hostname: str) -> bool:
+        """检查域名是否疑似私有网络域名"""
+        hostname_lower = hostname.lower()
+
+        # 常见私有域名模式
+        private_patterns = [
+            r"^localhost$",
+            r"^localhost\.\w+$",
+            r"^.*\.local$",
+            r"^.*\.localhost$",
+            r"^.*\.internal$",
+            r"^.*\.private$",
+            r"^.*\.corp$",
+            r"^.*\.lan$",
+            r"^.*\.home$",
+            r"^192-168-\d+-\d+\..*$",  # 192-168-x-x 形式
+            r"^10-\d+-\d+-\d+\..*$",  # 10-x-x-x 形式
+        ]
+
+        return any(re.match(pattern, hostname_lower) for pattern in private_patterns)
+
+    def _validate_domain(self, url: str, hostname: str) -> None:
+        """校验域名白名单"""
+        if not self.allowed_domains:
+            return  # 未配置域名白名单，跳过
+
+        hostname_lower = hostname.lower()
+        for allowed in self.allowed_domains:
+            allowed_lower = allowed.lower()
+            if allowed_lower.startswith("*."):
+                # 通配符匹配：*.example.com 匹配 sub.example.com
+                suffix = allowed_lower[1:]  # .example.com
+                if hostname_lower.endswith(suffix) or hostname_lower == allowed_lower[2:]:
+                    return
+            else:
+                # 精确匹配
+                if hostname_lower == allowed_lower:
+                    return
+
+        raise UrlPolicyError(
+            url,
+            f"域名不在白名单中: {hostname}，允许的域名: {self.allowed_domains}",
+            "domain",
+        )
+
+    def _validate_url_prefix(self, url: str) -> None:
+        """校验 URL 前缀白名单"""
+        if not self.allowed_url_prefixes:
+            return  # 未配置 URL 前缀白名单，跳过
+
+        url_lower = url.lower()
+        for prefix in self.allowed_url_prefixes:
+            if url_lower.startswith(prefix.lower()):
+                return
+
+        raise UrlPolicyError(
+            url,
+            f"URL 前缀不在白名单中，允许的前缀: {self.allowed_url_prefixes}",
+            "url_prefix",
+        )
+
+    def is_valid(self, url: str) -> bool:
+        """检查 URL 是否有效（不抛出异常）
+
+        Args:
+            url: 待校验的 URL
+
+        Returns:
+            是否有效
+        """
+        try:
+            self.validate(url)
+            return True
+        except UrlPolicyError:
+            return False
+
+    def get_validation_error(self, url: str) -> Optional[str]:
+        """获取 URL 校验错误信息
+
+        Args:
+            url: 待校验的 URL
+
+        Returns:
+            错误信息，如果有效则返回 None
+        """
+        try:
+            self.validate(url)
+            return None
+        except UrlPolicyError as e:
+            return str(e)
+
+    def get_rejection_reason(self, url: str) -> Optional[UrlRejectionReason]:
+        """获取 URL 拒绝的结构化原因
+
+        Args:
+            url: 待校验的 URL
+
+        Returns:
+            结构化的拒绝原因，如果有效则返回 None
+        """
+        try:
+            self.validate(url)
+            return None
+        except UrlPolicyError as e:
+            return e.to_rejection_reason()
+
+
+# 默认策略：允许 http/https，拒绝私网
+DEFAULT_URL_POLICY = UrlPolicy()
+
+
 class FetchMethod(str, Enum):
     """获取方式"""
-    MCP = "mcp"              # MCP fetch（通过 agent CLI）
-    CURL = "curl"            # curl 命令
-    LYNX = "lynx"            # lynx 命令（纯文本）
+
+    MCP = "mcp"  # MCP fetch（通过 agent CLI）
+    CURL = "curl"  # curl 命令
+    LYNX = "lynx"  # lynx 命令（纯文本）
     PLAYWRIGHT = "playwright"  # Playwright 浏览器自动化（支持 JS 渲染）
-    AUTO = "auto"            # 自动选择
+    AUTO = "auto"  # 自动选择
 
 
 class ContentFormat(str, Enum):
     """内容格式"""
-    TEXT = "text"        # 纯文本
-    HTML = "html"        # 原始 HTML
+
+    TEXT = "text"  # 纯文本
+    HTML = "html"  # 原始 HTML
     MARKDOWN = "markdown"  # Markdown
 
 
 @dataclass
 class FetchConfig:
     """获取配置"""
+
     # 获取方式（auto 自动选择）
     method: FetchMethod = FetchMethod.AUTO
 
@@ -68,16 +466,25 @@ class FetchConfig:
     user_agent: str = "Mozilla/5.0 (compatible; WebFetcher/1.0)"
 
     # Playwright 特定配置
-    playwright_headless: bool = True          # 无头模式
+    playwright_headless: bool = True  # 无头模式
     playwright_wait_for_selector: Optional[str] = None  # 等待指定选择器出现
     playwright_scroll_to_bottom: bool = False  # 滚动到页面底部（加载懒加载内容）
-    playwright_wait_after_load: float = 0.0    # 页面加载后额外等待时间（秒）
-    playwright_js_enabled: bool = True         # 是否启用 JavaScript
+    playwright_wait_after_load: float = 0.0  # 页面加载后额外等待时间（秒）
+    playwright_js_enabled: bool = True  # 是否启用 JavaScript
+
+    # URL 安全策略配置
+    # 为 None 时使用默认策略（允许 http/https，拒绝私网）
+    # 设为 UrlPolicy() 可自定义策略
+    url_policy: Optional[UrlPolicy] = None
+
+    # 是否启用 URL 策略校验（默认启用）
+    enforce_url_policy: bool = True
 
 
 @dataclass
 class FetchResult:
     """获取结果"""
+
     url: str
     success: bool
     content: str = ""
@@ -88,8 +495,14 @@ class FetchResult:
     duration: float = 0.0
     retry_count: int = 0
 
+    # 内容质量评分（0.0-1.0，None 表示未评估）
+    quality_score: Optional[float] = None
+
     # 元数据
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # URL 策略拒绝原因（结构化，仅当因策略被拒绝时设置）
+    rejection_reason: Optional[UrlRejectionReason] = None
 
 
 class WebFetcher:
@@ -115,6 +528,8 @@ class WebFetcher:
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._available_methods: list[FetchMethod] = []
         self._initialized = False
+        # URL 策略：优先使用配置中的策略，否则使用默认策略
+        self._url_policy = self.config.url_policy or DEFAULT_URL_POLICY
 
     async def initialize(self) -> None:
         """初始化获取器，检测可用的获取方式"""
@@ -161,7 +576,9 @@ class WebFetcher:
             if not shutil.which(self.config.agent_path):
                 return False
             process = await asyncio.create_subprocess_exec(
-                self.config.agent_path, "mcp", "list",
+                self.config.agent_path,
+                "mcp",
+                "list",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -183,6 +600,7 @@ class WebFetcher:
         try:
             # 尝试导入 playwright
             import importlib.util
+
             spec = importlib.util.find_spec("playwright")
             if spec is None:
                 logger.debug("Playwright 模块未安装")
@@ -190,7 +608,8 @@ class WebFetcher:
 
             # 检查浏览器是否已安装（通过异步检测）
             process = await asyncio.create_subprocess_exec(
-                "python", "-c",
+                "python",
+                "-c",
                 "from playwright.async_api import async_playwright; print('ok')",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -225,11 +644,42 @@ class WebFetcher:
         if not self._initialized:
             await self.initialize()
 
+        # URL 策略校验
+        if self.config.enforce_url_policy:
+            rejection = self._validate_url_policy(url)
+            if rejection:
+                return FetchResult(
+                    url=url,
+                    success=False,
+                    error=f"URL 策略拒绝: {rejection.reason}",
+                    method_used=FetchMethod.AUTO,
+                    rejection_reason=rejection,
+                )
+
         method = method or self.config.method
         timeout = timeout or self.config.timeout
 
         # 带重试的获取
         return await self._fetch_with_retry(url, method, timeout)
+
+    def _validate_url_policy(self, url: str) -> Optional[UrlRejectionReason]:
+        """校验 URL 是否符合策略
+
+        Args:
+            url: 待校验的 URL
+
+        Returns:
+            结构化的拒绝原因，如果有效则返回 None
+        """
+        try:
+            self._url_policy.validate(url)
+            return None
+        except UrlPolicyError as e:
+            rejection = e.to_rejection_reason()
+            logger.warning(
+                f"URL 策略拒绝: {rejection.url} | policy_type={rejection.policy_type} | reason={rejection.reason}"
+            )
+            return rejection
 
     async def fetch_many(
         self,
@@ -257,6 +707,7 @@ class WebFetcher:
         method: Optional[FetchMethod] = None,
     ) -> FetchResult:
         """带信号量限制的获取"""
+        assert self._semaphore is not None
         async with self._semaphore:
             return await self.fetch(url, method)
 
@@ -287,7 +738,7 @@ class WebFetcher:
             retry_count += 1
 
             if attempt < self.config.max_retries - 1:
-                await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+                await asyncio.sleep(self.config.retry_delay * (2**attempt))
 
         return FetchResult(
             url=url,
@@ -304,7 +755,20 @@ class WebFetcher:
     ) -> FetchResult:
         """执行实际的获取操作"""
         import time
+
         start_time = time.time()
+
+        # URL 策略校验（二次保护）
+        if self.config.enforce_url_policy:
+            rejection = self._validate_url_policy(url)
+            if rejection:
+                return FetchResult(
+                    url=url,
+                    success=False,
+                    error=f"URL 策略拒绝: {rejection.reason}",
+                    method_used=method,
+                    rejection_reason=rejection,
+                )
 
         # 选择获取方式
         if method == FetchMethod.AUTO:
@@ -369,8 +833,8 @@ class WebFetcher:
         # 常见需要 JS 渲染的网站模式
         js_patterns = [
             # SPA 框架常见路径
-            "/#/",              # Hash 路由
-            "/app/",            # 应用路径
+            "/#/",  # Hash 路由
+            "/app/",  # 应用路径
             # 动态内容平台
             "twitter.com",
             "x.com",
@@ -399,8 +863,10 @@ class WebFetcher:
 
             process = await asyncio.create_subprocess_exec(
                 self.config.agent_path,
-                "-p", prompt,
-                "--output-format", "text",
+                "-p",
+                prompt,
+                "--output-format",
+                "text",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -583,11 +1049,14 @@ class WebFetcher:
         try:
             cmd = [
                 "curl",
-                "-s",                           # 静默模式
-                "-L",                           # 跟随重定向
-                "-m", str(timeout),             # 超时
-                "-A", self.config.user_agent,   # 用户代理
-                "-w", "\n%{http_code}",         # 输出状态码
+                "-s",  # 静默模式
+                "-L",  # 跟随重定向
+                "-m",
+                str(timeout),  # 超时
+                "-A",
+                self.config.user_agent,  # 用户代理
+                "-w",
+                "\n%{http_code}",  # 输出状态码
                 url,
             ]
 
@@ -652,9 +1121,10 @@ class WebFetcher:
         try:
             cmd = [
                 "lynx",
-                "-dump",                        # 输出纯文本
-                "-nolist",                      # 不输出链接列表
-                "-connect_timeout", str(timeout),
+                "-dump",  # 输出纯文本
+                "-nolist",  # 不输出链接列表
+                "-connect_timeout",
+                str(timeout),
                 url,
             ]
 
@@ -710,22 +1180,22 @@ class WebFetcher:
         import re
 
         # 移除 script 和 style 标签
-        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
 
         # 移除 HTML 标签
-        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r"<[^>]+>", " ", text)
 
         # 解码常见 HTML 实体
-        text = text.replace('&nbsp;', ' ')
-        text = text.replace('&amp;', '&')
-        text = text.replace('&lt;', '<')
-        text = text.replace('&gt;', '>')
-        text = text.replace('&quot;', '"')
-        text = text.replace('&#39;', "'")
+        text = text.replace("&nbsp;", " ")
+        text = text.replace("&amp;", "&")
+        text = text.replace("&lt;", "<")
+        text = text.replace("&gt;", ">")
+        text = text.replace("&quot;", '"')
+        text = text.replace("&#39;", "'")
 
         # 清理空白字符
-        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r"\s+", " ", text)
         text = text.strip()
 
         return text
@@ -737,7 +1207,8 @@ class WebFetcher:
     def check_url_valid(self, url: str) -> bool:
         """检查 URL 是否有效"""
         import re
-        pattern = r'^https?://[^\s/$.?#].[^\s]*$'
+
+        pattern = r"^https?://[^\s/$.?#].[^\s]*$"
         return bool(re.match(pattern, url, re.IGNORECASE))
 
 

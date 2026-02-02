@@ -2,6 +2,7 @@
 
 基于 multiprocessing.Queue 实现进程间通信
 """
+
 import multiprocessing as mp
 import pickle
 import uuid
@@ -14,33 +15,35 @@ from typing import Optional
 
 class ProcessMessageType(str, Enum):
     """进程消息类型"""
+
     # 任务相关
-    TASK_ASSIGN = "task_assign"          # 分配任务
-    TASK_RESULT = "task_result"          # 任务结果
-    TASK_PROGRESS = "task_progress"      # 任务进度
+    TASK_ASSIGN = "task_assign"  # 分配任务
+    TASK_RESULT = "task_result"  # 任务结果
+    TASK_PROGRESS = "task_progress"  # 任务进度
 
     # 控制相关
-    SHUTDOWN = "shutdown"                # 关闭进程
-    HEARTBEAT = "heartbeat"              # 心跳
-    STATUS_REQUEST = "status_request"    # 请求状态
+    SHUTDOWN = "shutdown"  # 关闭进程
+    HEARTBEAT = "heartbeat"  # 心跳
+    STATUS_REQUEST = "status_request"  # 请求状态
     STATUS_RESPONSE = "status_response"  # 状态响应
 
     # 规划相关
-    PLAN_REQUEST = "plan_request"        # 请求规划
-    PLAN_RESULT = "plan_result"          # 规划结果
+    PLAN_REQUEST = "plan_request"  # 请求规划
+    PLAN_RESULT = "plan_result"  # 规划结果
 
     # 评审相关
-    REVIEW_REQUEST = "review_request"    # 请求评审
-    REVIEW_RESULT = "review_result"      # 评审结果
+    REVIEW_REQUEST = "review_request"  # 请求评审
+    REVIEW_RESULT = "review_result"  # 评审结果
 
 
 @dataclass
 class ProcessMessage:
     """进程间消息"""
+
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     type: ProcessMessageType = ProcessMessageType.HEARTBEAT
-    sender: str = ""                     # 发送者进程 ID
-    receiver: str = ""                   # 接收者进程 ID（空表示广播）
+    sender: str = ""  # 发送者进程 ID
+    receiver: str = ""  # 接收者进程 ID（空表示广播）
     payload: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     correlation_id: Optional[str] = None  # 关联消息 ID
@@ -79,7 +82,7 @@ class MessageQueue:
 
     def create_agent_queue(self, agent_id: str) -> Queue:
         """为 Agent 创建专用队列"""
-        queue = mp.Queue()
+        queue: Queue = mp.Queue()
         self._agent_queues[agent_id] = queue
         return queue
 

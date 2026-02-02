@@ -2,6 +2,7 @@
 
 作为独立进程运行的执行者
 """
+
 import asyncio
 import time
 from dataclasses import dataclass, field
@@ -11,24 +12,25 @@ from typing import Any, Optional
 from loguru import logger
 
 from core.config import DEFAULT_WORKER_MODEL, DEFAULT_WORKER_TIMEOUT
-from cursor.client import CursorAgentClient, CursorAgentConfig
-from process.message_queue import ProcessMessage, ProcessMessageType
-from process.worker import AgentWorkerProcess
 
 # 从共享模块导入知识库常量和工具函数（避免重复定义）
 from core.knowledge import (
+    MAX_CHARS_PER_DOC,
     MAX_CLI_ASK_CHARS_PER_DOC,
     MAX_CLI_ASK_DOCS,
-    MAX_CHARS_PER_DOC,
     MAX_KNOWLEDGE_DOCS,
     MAX_TOTAL_KNOWLEDGE_CHARS,
     truncate_knowledge_docs,
 )
+from cursor.client import CursorAgentClient, CursorAgentConfig
+from process.message_queue import ProcessMessage, ProcessMessageType
+from process.worker import AgentWorkerProcess
 
 
 @dataclass
 class KnowledgeIntegrationStats:
     """知识库集成统计数据"""
+
     # 搜索统计
     total_searches: int = 0
     total_search_time_ms: float = 0.0
@@ -176,7 +178,7 @@ Shell 命令限制（重要）:
             model=self.config.get("model", DEFAULT_WORKER_MODEL),
             output_format="stream-json" if stream_enabled else "text",
             non_interactive=True,  # 非交互模式
-            force_write=True,      # --force 允许直接修改文件
+            force_write=True,  # --force 允许直接修改文件
             stream_partial_output=stream_enabled,
             stream_events_enabled=stream_enabled,
             stream_log_console=self.config.get("stream_log_console", True),
@@ -193,10 +195,15 @@ Shell 命令限制（重要）:
         self._init_knowledge_integration()
 
     def _init_knowledge_integration(self) -> None:
-        """初始化知识库集成（可选路径）
+        """初始化知识库集成（只读模式）
 
         当配置启用时，在 worker 进程启动时初始化 KnowledgeStorage。
         这是一个轻量级组合，仅用于搜索，不需要完整的 KnowledgeManager。
+
+        使用只读模式：
+        - Worker 知识库注入仅用于搜索相关文档
+        - 不进行任何写入操作（符合 minimal 策略）
+        - 避免多 Worker 并发写入冲突
         """
         # 从配置获取知识库集成设置
         ki_config = self.config.get("knowledge_integration", {})
@@ -208,20 +215,17 @@ Shell 命令限制（重要）:
 
         try:
             # 延迟导入，避免在不需要时加载依赖
-            from knowledge.storage import KnowledgeStorage, StorageConfig
+            from knowledge.storage import KnowledgeStorage
 
             storage_path = ki_config.get("storage_path", ".cursor/knowledge")
             enable_vector = ki_config.get("enable_vector_index", False)
             working_dir = self.config.get("working_directory", ".")
 
-            storage_config = StorageConfig(
+            # 使用只读模式：Worker 仅搜索，不写入知识库
+            self._knowledge_storage = KnowledgeStorage.create_read_only(
+                workspace_root=working_dir,
                 storage_root=storage_path,
                 enable_vector_index=enable_vector,
-            )
-
-            self._knowledge_storage = KnowledgeStorage(
-                config=storage_config,
-                workspace_root=working_dir,
             )
 
             # 同步初始化（进程启动时）
@@ -232,7 +236,7 @@ Shell 命令限制（重要）:
             doc_count = stats.get("document_count", 0)
 
             logger.info(
-                f"[{self.agent_id}] 知识库集成已启用 "
+                f"[{self.agent_id}] 知识库集成已启用 (只读模式) "
                 f"(文档数: {doc_count}, 搜索模式: {ki_config.get('search_mode', 'keyword')}, "
                 f"向量索引: {enable_vector})"
             )
@@ -370,7 +374,7 @@ Shell 命令限制（重要）:
             elif not low_overhead:
                 conclusion_parts.append(f"注意: 搜索耗时较高 ({avg_time:.1f}ms)")
             elif not good_hit_rate:
-                conclusion_parts.append(f"注意: 命中率较低 ({hit_rate*100:.1f}%)")
+                conclusion_parts.append(f"注意: 命中率较低 ({hit_rate * 100:.1f}%)")
 
             if not reasonable_payload and stats.tasks_with_knowledge > 0:
                 conclusion_parts.append(f"注意: 平均 payload 较大 ({avg_payload:.0f} 字符)")
@@ -388,11 +392,14 @@ Shell 命令限制（重要）:
             logger.info(f"[{self.agent_id}] 结论: {verdict}")
 
             # 发送统计消息到协调器（可选）
-            self._send_message(ProcessMessageType.STATUS_RESPONSE, {
-                "type": "knowledge_stats",
-                "stats": stats.to_dict(),
-                "verdict": verdict,
-            })
+            self._send_message(
+                ProcessMessageType.STATUS_RESPONSE,
+                {
+                    "type": "knowledge_stats",
+                    "stats": stats.to_dict(),
+                    "verdict": verdict,
+                },
+            )
 
     def handle_message(self, message: ProcessMessage) -> None:
         """处理业务消息
@@ -445,14 +452,18 @@ Shell 命令限制（重要）:
             }
 
             # 发送进度消息
-            self._send_message(ProcessMessageType.TASK_PROGRESS, {
-                "task_id": task_id,
-                "status": "executing",
-                "progress": 0,
-                "knowledge_docs_count": len(existing_knowledge_docs),  # 添加知识库文档计数
-            })
+            self._send_message(
+                ProcessMessageType.TASK_PROGRESS,
+                {
+                    "task_id": task_id,
+                    "status": "executing",
+                    "progress": 0,
+                    "knowledge_docs_count": len(existing_knowledge_docs),  # 添加知识库文档计数
+                },
+            )
 
             # 调用 Cursor Agent 执行
+            assert self.cursor_client is not None
             result = await self.cursor_client.execute(
                 instruction=prompt,
                 context=context,
@@ -460,32 +471,44 @@ Shell 命令限制（重要）:
 
             if result.success:
                 self.completed_tasks.append(task_id)
-                self._send_message(ProcessMessageType.TASK_RESULT, {
-                    "task_id": task_id,
-                    "success": True,
-                    "output": result.output,
-                    "duration": result.duration,
-                    "files_modified": result.files_modified,
-                }, correlation_id=message.id)
+                self._send_message(
+                    ProcessMessageType.TASK_RESULT,
+                    {
+                        "task_id": task_id,
+                        "success": True,
+                        "output": result.output,
+                        "duration": result.duration,
+                        "files_modified": result.files_modified,
+                    },
+                    correlation_id=message.id,
+                )
                 logger.info(f"[{self.agent_id}] 任务完成: {task_id}")
             else:
                 self.failed_tasks.append(task_id)
-                self._send_message(ProcessMessageType.TASK_RESULT, {
-                    "task_id": task_id,
-                    "success": False,
-                    "error": result.error,
-                    "output": result.output,
-                }, correlation_id=message.id)
+                self._send_message(
+                    ProcessMessageType.TASK_RESULT,
+                    {
+                        "task_id": task_id,
+                        "success": False,
+                        "error": result.error,
+                        "output": result.output,
+                    },
+                    correlation_id=message.id,
+                )
                 logger.error(f"[{self.agent_id}] 任务失败: {task_id} - {result.error}")
 
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 任务执行异常: {e}")
             self.failed_tasks.append(task_id)
-            self._send_message(ProcessMessageType.TASK_RESULT, {
-                "task_id": task_id,
-                "success": False,
-                "error": str(e),
-            }, correlation_id=message.id)
+            self._send_message(
+                ProcessMessageType.TASK_RESULT,
+                {
+                    "task_id": task_id,
+                    "success": False,
+                    "error": str(e),
+                },
+                correlation_id=message.id,
+            )
         finally:
             self.current_task_id = None
 
@@ -538,11 +561,7 @@ Shell 命令限制（重要）:
                     content = doc.get("content", "")[:MAX_CLI_ASK_CHARS_PER_DOC]
                     if len(doc.get("content", "")) > MAX_CLI_ASK_CHARS_PER_DOC:
                         content += "..."
-                    parts.append(
-                        f"\n### 查询: {doc.get('query', 'N/A')}"
-                        f"\n{context_info}"
-                        f"\n```\n{content}\n```"
-                    )
+                    parts.append(f"\n### 查询: {doc.get('query', 'N/A')}\n{context_info}\n```\n{content}\n```")
                 if len(cli_ask_docs) > MAX_CLI_ASK_DOCS:
                     parts.append(f"\n... 还有 {len(cli_ask_docs) - MAX_CLI_ASK_DOCS} 个智能回答未显示")
 
@@ -568,13 +587,16 @@ Shell 命令限制（重要）:
                         f"\n```\n{doc.get('content', '')}\n```"
                     )
                 if original_count > shown_count:
-                    parts.append(f"\n... 还有 {original_count - shown_count} 个参考文档未显示（总字符限制: {MAX_TOTAL_KNOWLEDGE_CHARS}）")
+                    parts.append(
+                        f"\n... 还有 {original_count - shown_count} 个参考文档未显示（总字符限制: {MAX_TOTAL_KNOWLEDGE_CHARS}）"
+                    )
 
         # 添加其他上下文（排除已处理的字段）
         exclude_keys = ("task_id", "task_type", "target_files", "reference_code", "knowledge_docs")
         other_context = {k: v for k, v in context.items() if k not in exclude_keys}
         if other_context:
             import json
+
             parts.append(f"\n## 上下文信息\n```json\n{json.dumps(other_context, ensure_ascii=False, indent=2)}\n```")
 
         parts.append("\n请开始执行任务:")

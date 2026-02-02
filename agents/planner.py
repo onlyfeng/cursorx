@@ -3,6 +3,7 @@
 负责探索代码库、分解任务、派生子规划者
 支持语义搜索增强的代码库探索
 """
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
@@ -26,21 +27,22 @@ if TYPE_CHECKING:
 
 class PlannerConfig(BaseModel):
     """规划者配置"""
+
     name: str = "planner"
     working_directory: str = "."
-    max_sub_planners: int = 3          # 最大子规划者数量
-    max_tasks_per_plan: int = 10       # 单次规划最大任务数
-    exploration_depth: int = 3          # 探索深度
+    max_sub_planners: int = 3  # 最大子规划者数量
+    max_tasks_per_plan: int = 10  # 单次规划最大任务数
+    exploration_depth: int = 3  # 探索深度
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
     cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
     # Plan 模式配置
-    use_plan_mode: bool = True         # 是否使用 --mode=plan（仅分析不修改文件）
+    use_plan_mode: bool = True  # 是否使用 --mode=plan（仅分析不修改文件）
     # 语义搜索配置（可选增强）
-    enable_semantic_search: bool = False       # 是否启用语义搜索
-    semantic_search_top_k: int = 10            # 搜索返回结果数
-    semantic_search_min_score: float = 0.3     # 最低相似度阈值
+    enable_semantic_search: bool = False  # 是否启用语义搜索
+    semantic_search_top_k: int = 10  # 搜索返回结果数
+    semantic_search_min_score: float = 0.3  # 最低相似度阈值
 
 
 class PlannerAgent(BaseAgent):
@@ -117,12 +119,13 @@ class PlannerAgent(BaseAgent):
         else:
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
+
             self.cursor_client = CursorAgentClient(config.cursor_config)
 
-        self.sub_planners: list["PlannerAgent"] = []
+        self.sub_planners: list[PlannerAgent] = []
 
         # 语义搜索增强（可选）
-        self._semantic_search: Optional["SemanticSearch"] = semantic_search
+        self._semantic_search: Optional[SemanticSearch] = semantic_search
         self._search_enabled = config.enable_semantic_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 语义搜索已启用")
@@ -204,7 +207,10 @@ class PlannerAgent(BaseAgent):
             )
 
             if not result.success:
-                error_detail = result.error or f"exit_code={result.exit_code}, output={result.output[:200] if result.output else 'empty'}"
+                error_detail = (
+                    result.error
+                    or f"exit_code={result.exit_code}, output={result.output[:200] if result.output else 'empty'}"
+                )
                 logger.error(f"[{self.id}] 规划失败: {error_detail}")
                 self.update_status(AgentStatus.FAILED)
                 return {"success": False, "error": error_detail, "tasks": []}
@@ -252,15 +258,19 @@ class PlannerAgent(BaseAgent):
             related_code = []
             for result in results:
                 chunk = result.chunk
-                related_code.append({
-                    "file_path": chunk.file_path,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "name": chunk.name,
-                    "chunk_type": chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
-                    "content_preview": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
-                    "score": result.score,
-                })
+                related_code.append(
+                    {
+                        "file_path": chunk.file_path,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "name": chunk.name,
+                        "chunk_type": chunk.chunk_type.value
+                        if hasattr(chunk.chunk_type, "value")
+                        else str(chunk.chunk_type),
+                        "content_preview": chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
+                        "score": result.score,
+                    }
+                )
 
             return {
                 "related_code": related_code,
@@ -331,7 +341,7 @@ class PlannerAgent(BaseAgent):
             pass
 
         # 尝试提取 JSON 块（Markdown 代码块格式）
-        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))

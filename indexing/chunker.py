@@ -2,13 +2,13 @@
 
 提供基于语义的代码分块功能，支持多种编程语言
 """
+
 from __future__ import annotations
 
 import ast
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import aiofiles
 import tiktoken
@@ -68,9 +68,10 @@ class ChunkContext:
 
     用于在分块过程中传递上下文信息
     """
-    imports: list[str] = field(default_factory=list)      # 导入语句
-    class_context: Optional[str] = None                    # 当前类名
-    file_header: Optional[str] = None                      # 文件头部（模块文档、license 等）
+
+    imports: list[str] = field(default_factory=list)  # 导入语句
+    class_context: str | None = None  # 当前类名
+    file_header: str | None = None  # 文件头部（模块文档、license 等）
 
 
 class SemanticCodeChunker(CodeChunker):
@@ -82,7 +83,7 @@ class SemanticCodeChunker(CodeChunker):
     - 启发式分块（其他语言）
     """
 
-    def __init__(self, config: Optional[ChunkConfig] = None):
+    def __init__(self, config: ChunkConfig | None = None):
         """初始化分块器
 
         Args:
@@ -91,6 +92,7 @@ class SemanticCodeChunker(CodeChunker):
         self.config = config or ChunkConfig()
 
         # 初始化 tiktoken 编码器（使用 cl100k_base，GPT-4/ChatGPT 使用的编码）
+        self._tokenizer: tiktoken.Encoding | None = None
         try:
             self._tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
@@ -141,18 +143,13 @@ class SemanticCodeChunker(CodeChunker):
         Returns:
             代码分块列表
         """
-        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+        async with aiofiles.open(file_path, encoding="utf-8") as f:
             content = await f.read()
 
         language = self.detect_language(file_path)
         return await self.chunk_text(content, file_path, language)
 
-    async def chunk_text(
-        self,
-        text: str,
-        file_path: str = "<unknown>",
-        language: Optional[str] = None
-    ) -> list[CodeChunk]:
+    async def chunk_text(self, text: str, file_path: str = "<unknown>", language: str | None = None) -> list[CodeChunk]:
         """分块代码文本
 
         Args:
@@ -184,12 +181,7 @@ class SemanticCodeChunker(CodeChunker):
 
         return chunks
 
-    async def _chunk_by_semantic(
-        self,
-        text: str,
-        file_path: str,
-        language: str
-    ) -> list[CodeChunk]:
+    async def _chunk_by_semantic(self, text: str, file_path: str, language: str) -> list[CodeChunk]:
         """基于语义的分块
 
         根据代码结构（函数、类等）进行分块
@@ -239,7 +231,7 @@ class SemanticCodeChunker(CodeChunker):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 start_line = node.lineno - 1
                 end_line = getattr(node, "end_lineno", node.lineno) - 1
-                import_text = "\n".join(lines[start_line:end_line + 1])
+                import_text = "\n".join(lines[start_line : end_line + 1])
                 imports.append(import_text)
                 import_lines.extend(range(start_line, end_line + 1))
 
@@ -249,37 +241,33 @@ class SemanticCodeChunker(CodeChunker):
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.ClassDef):
                 # 类定义
-                chunk = self._create_python_class_chunk(
-                    node, lines, file_path, import_block
-                )
+                chunk = self._create_python_class_chunk(node, lines, file_path, import_block)
                 if chunk:
                     chunks.append(chunk)
 
                     # 处理类方法（如果配置要求按方法分块）
                     if self.config.split_functions:
-                        method_chunks = self._extract_python_methods(
-                            node, lines, file_path, import_block, node.name
-                        )
+                        method_chunks = self._extract_python_methods(node, lines, file_path, import_block, node.name)
                         chunks.extend(method_chunks)
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # 顶层函数
-                chunk = self._create_python_function_chunk(
-                    node, lines, file_path, import_block
-                )
+                chunk = self._create_python_function_chunk(node, lines, file_path, import_block)
                 if chunk:
                     chunks.append(chunk)
 
         # 如果没有提取到任何块，将整个文件作为一个块
         if not chunks:
-            chunks.append(CodeChunk(
-                content=text,
-                file_path=file_path,
-                start_line=1,
-                end_line=len(lines),
-                chunk_type=ChunkType.MODULE,
-                language="python"
-            ))
+            chunks.append(
+                CodeChunk(
+                    content=text,
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=len(lines),
+                    chunk_type=ChunkType.MODULE,
+                    language="python",
+                )
+            )
 
         return chunks
 
@@ -289,8 +277,8 @@ class SemanticCodeChunker(CodeChunker):
         lines: list[str],
         file_path: str,
         import_block: str,
-        parent_name: Optional[str] = None
-    ) -> Optional[CodeChunk]:
+        parent_name: str | None = None,
+    ) -> CodeChunk | None:
         """创建 Python 函数分块
 
         Args:
@@ -306,7 +294,7 @@ class SemanticCodeChunker(CodeChunker):
         start_line = node.lineno - 1
         end_line = getattr(node, "end_lineno", node.lineno) - 1
 
-        func_lines = lines[start_line:end_line + 1]
+        func_lines = lines[start_line : end_line + 1]
         func_content = "\n".join(func_lines)
         if not func_content.strip():
             return None
@@ -336,16 +324,12 @@ class SemanticCodeChunker(CodeChunker):
             name=node.name,
             parent_name=parent_name,
             signature=signature,
-            docstring=docstring
+            docstring=docstring,
         )
 
     def _create_python_class_chunk(
-        self,
-        node: ast.ClassDef,
-        lines: list[str],
-        file_path: str,
-        import_block: str
-    ) -> Optional[CodeChunk]:
+        self, node: ast.ClassDef, lines: list[str], file_path: str, import_block: str
+    ) -> CodeChunk | None:
         """创建 Python 类分块
 
         Args:
@@ -360,7 +344,7 @@ class SemanticCodeChunker(CodeChunker):
         start_line = node.lineno - 1
         end_line = getattr(node, "end_lineno", node.lineno) - 1
 
-        class_lines = lines[start_line:end_line + 1]
+        class_lines = lines[start_line : end_line + 1]
         class_content = "\n".join(class_lines)
 
         # 组装完整内容
@@ -384,16 +368,11 @@ class SemanticCodeChunker(CodeChunker):
             language="python",
             name=node.name,
             signature=signature,
-            docstring=docstring
+            docstring=docstring,
         )
 
     def _extract_python_methods(
-        self,
-        class_node: ast.ClassDef,
-        lines: list[str],
-        file_path: str,
-        import_block: str,
-        class_name: str
+        self, class_node: ast.ClassDef, lines: list[str], file_path: str, import_block: str, class_name: str
     ) -> list[CodeChunk]:
         """提取 Python 类中的方法
 
@@ -418,17 +397,12 @@ class SemanticCodeChunker(CodeChunker):
                 first_method_line = item.lineno - 1
                 break
 
-        if first_method_line:
-            class_header = "\n".join(lines[class_start:first_method_line])
-        else:
-            class_header = lines[class_start]
+        class_header = "\n".join(lines[class_start:first_method_line]) if first_method_line else lines[class_start]
 
         # 提取每个方法
         for item in class_node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                chunk = self._create_python_function_chunk(
-                    item, lines, file_path, import_block, class_name
-                )
+                chunk = self._create_python_function_chunk(item, lines, file_path, import_block, class_name)
                 if chunk:
                     # 在方法内容前添加类头部上下文
                     if self.config.include_imports:
@@ -446,10 +420,7 @@ class SemanticCodeChunker(CodeChunker):
 
         return chunks
 
-    def _get_python_function_signature(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> str:
+    def _get_python_function_signature(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
         """获取 Python 函数签名
 
         Args:
@@ -486,12 +457,7 @@ class SemanticCodeChunker(CodeChunker):
 
         return f"{async_prefix}def {node.name}({', '.join(args)}){return_type}"
 
-    def _chunk_javascript(
-        self,
-        text: str,
-        file_path: str,
-        language: str
-    ) -> list[CodeChunk]:
+    def _chunk_javascript(self, text: str, file_path: str, language: str) -> list[CodeChunk]:
         """JavaScript/TypeScript 代码分块
 
         使用正则表达式识别函数和类定义
@@ -511,7 +477,7 @@ class SemanticCodeChunker(CodeChunker):
         import_pattern = r'^(?:import\s+.*?(?:from\s+[\'"].*?[\'"])?;?|const\s+.*?=\s*require\([\'"].*?[\'"]\);?|export\s+.*?from\s+[\'"].*?[\'"];?)$'
         imports: list[str] = []
 
-        for i, line in enumerate(lines):
+        for line in lines:
             if re.match(import_pattern, line.strip()):
                 imports.append(line)
 
@@ -520,17 +486,22 @@ class SemanticCodeChunker(CodeChunker):
         # 定义模式
         patterns = [
             # 普通函数: function name(...) { 或 async function name(...)
-            (r'^(\s*)((?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{)',
-             ChunkType.FUNCTION),
+            (
+                r"^(\s*)((?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{)",
+                ChunkType.FUNCTION,
+            ),
             # 类定义: class Name { 或 export class Name
-            (r'^(\s*)((?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+\w+)?(?:\s+implements\s+[\w,\s]+)?\s*\{)',
-             ChunkType.CLASS),
+            (
+                r"^(\s*)((?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+\w+)?(?:\s+implements\s+[\w,\s]+)?\s*\{)",
+                ChunkType.CLASS,
+            ),
             # 箭头函数变量: const name = (...) => 或 export const name = async () =>
-            (r'^(\s*)((?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*(?::\s*\w+)?\s*=>)',
-             ChunkType.FUNCTION),
+            (
+                r"^(\s*)((?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*(?::\s*\w+)?\s*=>)",
+                ChunkType.FUNCTION,
+            ),
             # 对象方法简写: name(...) { 或 async name(...)
-            (r'^(\s+)((?:async\s+)?(\w+)\s*\([^)]*\)\s*\{)',
-             ChunkType.METHOD),
+            (r"^(\s+)((?:async\s+)?(\w+)\s*\([^)]*\)\s*\{)", ChunkType.METHOD),
         ]
 
         # 查找所有定义的起始位置
@@ -547,11 +518,11 @@ class SemanticCodeChunker(CodeChunker):
                     break
 
         # 为每个定义找到结束位置
-        for idx, (start_line, signature, chunk_type, name) in enumerate(definitions):
+        for _idx, (start_line, signature, chunk_type, name) in enumerate(definitions):
             # 找到匹配的闭合括号
             end_line = self._find_js_block_end(lines, start_line)
 
-            chunk_lines = lines[start_line:end_line + 1]
+            chunk_lines = lines[start_line : end_line + 1]
             chunk_content = "\n".join(chunk_lines)
             if not chunk_content.strip():
                 continue
@@ -562,16 +533,18 @@ class SemanticCodeChunker(CodeChunker):
             else:
                 full_content = chunk_content
 
-            chunks.append(CodeChunk(
-                content=full_content,
-                file_path=file_path,
-                start_line=start_line + 1,
-                end_line=end_line + 1,
-                chunk_type=chunk_type,
-                language=language,
-                name=name,
-                signature=signature.strip()
-            ))
+            chunks.append(
+                CodeChunk(
+                    content=full_content,
+                    file_path=file_path,
+                    start_line=start_line + 1,
+                    end_line=end_line + 1,
+                    chunk_type=chunk_type,
+                    language=language,
+                    name=name,
+                    signature=signature.strip(),
+                )
+            )
 
         # 如果没有找到任何定义，使用启发式分块
         if not chunks:
@@ -602,7 +575,7 @@ class SemanticCodeChunker(CodeChunker):
                 char = line[j]
 
                 # 处理字符串
-                if char in ('"', "'", "`") and (j == 0 or line[j-1] != "\\"):
+                if char in ('"', "'", "`") and (j == 0 or line[j - 1] != "\\"):
                     if not in_string:
                         in_string = True
                         string_char = char
@@ -624,12 +597,7 @@ class SemanticCodeChunker(CodeChunker):
         # 如果没找到匹配的闭合括号，返回文件末尾
         return len(lines) - 1
 
-    def _chunk_heuristic(
-        self,
-        text: str,
-        file_path: str,
-        language: str
-    ) -> list[CodeChunk]:
+    def _chunk_heuristic(self, text: str, file_path: str, language: str) -> list[CodeChunk]:
         """启发式分块
 
         基于缩进和空行的通用分块方法，适用于未专门支持的语言
@@ -657,22 +625,37 @@ class SemanticCodeChunker(CodeChunker):
             # 空行可能是分块边界（如果已经积累了足够的内容）
             if not stripped and current_chunk_lines:
                 current_content = "\n".join(current_chunk_lines)
-                if len(current_content) >= self.config.min_chunk_size:
+                if len(current_content) >= self.config.min_chunk_size and i + 1 < len(lines):
                     # 检查下一行是否是顶层定义
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1]
-                        if next_line and not next_line[0].isspace():
-                            is_boundary = True
+                    next_line = lines[i + 1]
+                    if next_line and not next_line[0].isspace():
+                        is_boundary = True
 
             # 顶层定义开始（无缩进的非空行）
             if stripped and i > 0 and (not line or not line[0].isspace()):
                 # 常见的定义关键字
                 definition_keywords = [
-                    "def ", "class ", "async def ",  # Python
-                    "function ", "const ", "let ", "var ", "export ",  # JS/TS
-                    "func ", "type ", "struct ", "interface ",  # Go
-                    "fn ", "impl ", "struct ", "enum ", "trait ",  # Rust
-                    "public ", "private ", "protected ", "static ",  # Java/C#
+                    "def ",
+                    "class ",
+                    "async def ",  # Python
+                    "function ",
+                    "const ",
+                    "let ",
+                    "var ",
+                    "export ",  # JS/TS
+                    "func ",
+                    "type ",
+                    "struct ",
+                    "interface ",  # Go
+                    "fn ",
+                    "impl ",
+                    "struct ",
+                    "enum ",
+                    "trait ",  # Rust
+                    "public ",
+                    "private ",
+                    "protected ",
+                    "static ",  # Java/C#
                 ]
                 for keyword in definition_keywords:
                     if stripped.startswith(keyword):
@@ -683,14 +666,16 @@ class SemanticCodeChunker(CodeChunker):
                 # 保存当前块
                 chunk_content = "\n".join(current_chunk_lines)
                 if len(chunk_content) >= self.config.min_chunk_size:
-                    chunks.append(CodeChunk(
-                        content=chunk_content,
-                        file_path=file_path,
-                        start_line=current_start_line + 1,
-                        end_line=i,
-                        chunk_type=ChunkType.UNKNOWN,
-                        language=language
-                    ))
+                    chunks.append(
+                        CodeChunk(
+                            content=chunk_content,
+                            file_path=file_path,
+                            start_line=current_start_line + 1,
+                            end_line=i,
+                            chunk_type=ChunkType.UNKNOWN,
+                            language=language,
+                        )
+                    )
                 current_chunk_lines = []
                 current_start_line = i
 
@@ -700,14 +685,16 @@ class SemanticCodeChunker(CodeChunker):
             current_content = "\n".join(current_chunk_lines)
             if len(current_content) >= self.config.max_chunk_size:
                 # 强制分割
-                chunks.append(CodeChunk(
-                    content=current_content,
-                    file_path=file_path,
-                    start_line=current_start_line + 1,
-                    end_line=i + 1,
-                    chunk_type=ChunkType.UNKNOWN,
-                    language=language
-                ))
+                chunks.append(
+                    CodeChunk(
+                        content=current_content,
+                        file_path=file_path,
+                        start_line=current_start_line + 1,
+                        end_line=i + 1,
+                        chunk_type=ChunkType.UNKNOWN,
+                        language=language,
+                    )
+                )
                 current_chunk_lines = []
                 current_start_line = i + 1
 
@@ -715,34 +702,33 @@ class SemanticCodeChunker(CodeChunker):
         if current_chunk_lines:
             chunk_content = "\n".join(current_chunk_lines)
             if len(chunk_content) >= self.config.min_chunk_size:
-                chunks.append(CodeChunk(
-                    content=chunk_content,
-                    file_path=file_path,
-                    start_line=current_start_line + 1,
-                    end_line=len(lines),
-                    chunk_type=ChunkType.UNKNOWN,
-                    language=language
-                ))
+                chunks.append(
+                    CodeChunk(
+                        content=chunk_content,
+                        file_path=file_path,
+                        start_line=current_start_line + 1,
+                        end_line=len(lines),
+                        chunk_type=ChunkType.UNKNOWN,
+                        language=language,
+                    )
+                )
 
         # 如果没有块或者只有很少内容，将整个文件作为一个块
         if not chunks:
-            chunks.append(CodeChunk(
-                content=text,
-                file_path=file_path,
-                start_line=1,
-                end_line=len(lines),
-                chunk_type=ChunkType.MODULE,
-                language=language
-            ))
+            chunks.append(
+                CodeChunk(
+                    content=text,
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=len(lines),
+                    chunk_type=ChunkType.MODULE,
+                    language=language,
+                )
+            )
 
         return chunks
 
-    def _chunk_by_sliding_window(
-        self,
-        text: str,
-        file_path: str,
-        language: str
-    ) -> list[CodeChunk]:
+    def _chunk_by_sliding_window(self, text: str, file_path: str, language: str) -> list[CodeChunk]:
         """滑动窗口分块
 
         按固定大小进行分块，支持重叠
@@ -781,26 +767,23 @@ class SemanticCodeChunker(CodeChunker):
                     tokens = self.count_tokens(chunk_content)
 
             if len(chunk_content) >= self.config.min_chunk_size:
-                chunks.append(CodeChunk(
-                    content=chunk_content,
-                    file_path=file_path,
-                    start_line=start + 1,
-                    end_line=start + len(chunk_lines),
-                    chunk_type=ChunkType.UNKNOWN,
-                    language=language,
-                    metadata={"is_sliding_window": True}
-                ))
+                chunks.append(
+                    CodeChunk(
+                        content=chunk_content,
+                        file_path=file_path,
+                        start_line=start + 1,
+                        end_line=start + len(chunk_lines),
+                        chunk_type=ChunkType.UNKNOWN,
+                        language=language,
+                        metadata={"is_sliding_window": True},
+                    )
+                )
 
             start += step
 
         return chunks
 
-    def _split_large_chunks(
-        self,
-        chunks: list[CodeChunk],
-        file_path: str,
-        language: str
-    ) -> list[CodeChunk]:
+    def _split_large_chunks(self, chunks: list[CodeChunk], file_path: str, language: str) -> list[CodeChunk]:
         """拆分过大的分块
 
         对超过最大大小的块使用滑动窗口进行拆分
@@ -818,9 +801,7 @@ class SemanticCodeChunker(CodeChunker):
         for chunk in chunks:
             if len(chunk.content) > self.config.max_chunk_size:
                 # 对过大的块进行滑动窗口分割
-                sub_chunks = self._chunk_by_sliding_window(
-                    chunk.content, file_path, language
-                )
+                sub_chunks = self._chunk_by_sliding_window(chunk.content, file_path, language)
                 # 保留原始块的元数据
                 for sub_chunk in sub_chunks:
                     sub_chunk.chunk_type = chunk.chunk_type
@@ -837,10 +818,7 @@ class SemanticCodeChunker(CodeChunker):
 
 
 # 便捷函数
-async def chunk_file(
-    file_path: str,
-    config: Optional[ChunkConfig] = None
-) -> list[CodeChunk]:
+async def chunk_file(file_path: str, config: ChunkConfig | None = None) -> list[CodeChunk]:
     """便捷函数：分块单个文件
 
     Args:
@@ -855,10 +833,7 @@ async def chunk_file(
 
 
 async def chunk_text(
-    text: str,
-    file_path: str = "<unknown>",
-    language: Optional[str] = None,
-    config: Optional[ChunkConfig] = None
+    text: str, file_path: str = "<unknown>", language: str | None = None, config: ChunkConfig | None = None
 ) -> list[CodeChunk]:
     """便捷函数：分块代码文本
 

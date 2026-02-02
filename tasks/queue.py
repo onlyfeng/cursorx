@@ -1,4 +1,5 @@
 """任务队列"""
+
 import asyncio
 from collections import defaultdict
 from typing import Optional
@@ -89,9 +90,7 @@ class TaskQueue:
         queue = self._queues[iteration_id]
         try:
             if timeout:
-                priority, timestamp, task_id = await asyncio.wait_for(
-                    queue.get(), timeout=timeout
-                )
+                priority, timestamp, task_id = await asyncio.wait_for(queue.get(), timeout=timeout)
             else:
                 priority, timestamp, task_id = await queue.get()
 
@@ -125,30 +124,28 @@ class TaskQueue:
     def get_pending_count(self, iteration_id: int) -> int:
         """获取待处理任务数量"""
         return sum(
-            1 for t in self._tasks.values()
+            1
+            for t in self._tasks.values()
             if t.iteration_id == iteration_id and t.status in (TaskStatus.PENDING, TaskStatus.QUEUED)
         )
 
     def get_in_progress_count(self, iteration_id: int) -> int:
         """获取执行中任务数量"""
         return sum(
-            1 for t in self._tasks.values()
+            1
+            for t in self._tasks.values()
             if t.iteration_id == iteration_id and t.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
         )
 
     def get_completed_count(self, iteration_id: int) -> int:
         """获取已完成任务数量"""
         return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id and t.status == TaskStatus.COMPLETED
+            1 for t in self._tasks.values() if t.iteration_id == iteration_id and t.status == TaskStatus.COMPLETED
         )
 
     def get_failed_count(self, iteration_id: int) -> int:
         """获取失败任务数量"""
-        return sum(
-            1 for t in self._tasks.values()
-            if t.iteration_id == iteration_id and t.status == TaskStatus.FAILED
-        )
+        return sum(1 for t in self._tasks.values() if t.iteration_id == iteration_id and t.status == TaskStatus.FAILED)
 
     def is_iteration_complete(self, iteration_id: int) -> bool:
         """检查迭代是否完成（所有任务都处于终态）"""
@@ -251,8 +248,7 @@ class TaskQueue:
                 if task.id not in queued_ids:
                     result["orphaned_pending"].append(task)
                     logger.debug(
-                        f"[reconcile] 发现 orphaned_pending: {task.id} "
-                        f"(status={task.status.value}, not in queue)"
+                        f"[reconcile] 发现 orphaned_pending: {task.id} (status={task.status.value}, not in queue)"
                     )
 
             # 检测 orphaned_assigned: ASSIGNED 但无 in-flight 记录
@@ -260,18 +256,13 @@ class TaskQueue:
                 if task.id not in in_flight_task_ids:
                     result["orphaned_assigned"].append(task)
                     logger.debug(
-                        f"[reconcile] 发现 orphaned_assigned: {task.id} "
-                        f"(status=ASSIGNED, no in-flight record)"
+                        f"[reconcile] 发现 orphaned_assigned: {task.id} (status=ASSIGNED, no in-flight record)"
                     )
 
             # 检测 stale_in_progress: IN_PROGRESS 但无对应 active future
-            elif task.status == TaskStatus.IN_PROGRESS:
-                if task.id not in active_future_task_ids:
-                    result["stale_in_progress"].append(task)
-                    logger.debug(
-                        f"[reconcile] 发现 stale_in_progress: {task.id} "
-                        f"(status=IN_PROGRESS, no active future)"
-                    )
+            elif task.status == TaskStatus.IN_PROGRESS and task.id not in active_future_task_ids:
+                result["stale_in_progress"].append(task)
+                logger.debug(f"[reconcile] 发现 stale_in_progress: {task.id} (status=IN_PROGRESS, no active future)")
 
         # 记录 reconcile 结果
         total_issues = sum(len(v) for v in result.values())

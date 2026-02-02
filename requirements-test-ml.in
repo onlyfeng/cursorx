@@ -1,0 +1,18 @@
+# ============================================================
+# ML 测试依赖源文件
+# 使用 pip-compile 生成锁定的 requirements-test-ml.txt
+# 命令: pip-compile requirements-test-ml.in -o requirements-test-ml.txt
+# ============================================================
+
+# 引用基础测试依赖
+-r requirements-test.in
+
+# ============================================================
+# ML 测试依赖 (知识库和向量测试需要)
+# 注意: 这些依赖不进入默认 CI，仅在需要时安装
+# ============================================================
+torch>=1.11.0                 # PyTorch (sentence-transformers 依赖)
+sentence-transformers>=2.2.0  # 文本嵌入向量生成
+chromadb>=0.4.0               # 向量数据库
+tiktoken>=0.5.0               # OpenAI 分词器
+hnswlib>=0.7.0                # 轻量级向量索引

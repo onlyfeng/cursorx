@@ -2,6 +2,7 @@
 
 负责 Git 操作：检查状态、生成提交信息、提交、推送、回退
 """
+
 import fnmatch
 import re
 import subprocess
@@ -17,6 +18,7 @@ from cursor.client import CursorAgentClient, CursorAgentConfig
 
 class CommitterConfig(BaseModel):
     """提交者配置"""
+
     name: str = "committer"
     working_directory: str = "."
     auto_push: bool = False  # 是否自动推送
@@ -29,6 +31,7 @@ class CommitterConfig(BaseModel):
 @dataclass
 class CommitResult:
     """提交结果"""
+
     success: bool
     commit_hash: str = ""
     message: str = ""
@@ -264,8 +267,8 @@ class CommitterAgent(BaseAgent):
             if result.success and result.output:
                 # 清理输出，去除可能的代码块标记
                 message = result.output.strip()
-                message = re.sub(r'^```\w*\n?', '', message)
-                message = re.sub(r'\n?```$', '', message)
+                message = re.sub(r"^```\w*\n?", "", message)
+                message = re.sub(r"\n?```$", "", message)
                 return message.strip()
             else:
                 logger.warning(f"[{self.id}] 生成提交信息失败，使用默认信息")
@@ -330,14 +333,16 @@ class CommitterAgent(BaseAgent):
 
             if not status.get("has_changes"):
                 # 记录失败的提交到历史
-                self._commit_history.append({
-                    "commit_hash": "",
-                    "message": message,
-                    "files_changed": [],
-                    "success": False,
-                    "pushed": False,
-                    "error": "没有需要提交的变更",
-                })
+                self._commit_history.append(
+                    {
+                        "commit_hash": "",
+                        "message": message,
+                        "files_changed": [],
+                        "success": False,
+                        "pushed": False,
+                        "error": "没有需要提交的变更",
+                    }
+                )
                 return CommitResult(
                     success=False,
                     error="没有需要提交的变更",
@@ -368,14 +373,16 @@ class CommitterAgent(BaseAgent):
 
             if commit_result.returncode != 0:
                 # 记录失败的提交
-                self._commit_history.append({
-                    "commit_hash": "",
-                    "message": message,
-                    "files_changed": files_to_add,
-                    "success": False,
-                    "pushed": False,
-                    "error": commit_result.stderr.strip(),
-                })
+                self._commit_history.append(
+                    {
+                        "commit_hash": "",
+                        "message": message,
+                        "files_changed": files_to_add,
+                        "success": False,
+                        "pushed": False,
+                        "error": commit_result.stderr.strip(),
+                    }
+                )
                 return CommitResult(
                     success=False,
                     error=commit_result.stderr.strip(),
@@ -389,13 +396,15 @@ class CommitterAgent(BaseAgent):
             logger.info(f"[{self.id}] 提交成功: {commit_hash[:8]} - {message[:50]}")
 
             # 记录提交历史
-            self._commit_history.append({
-                "commit_hash": commit_hash,
-                "message": message,
-                "files_changed": files_to_add,
-                "success": True,
-                "pushed": False,
-            })
+            self._commit_history.append(
+                {
+                    "commit_hash": commit_hash,
+                    "message": message,
+                    "files_changed": files_to_add,
+                    "success": True,
+                    "pushed": False,
+                }
+            )
 
             return CommitResult(
                 success=True,
@@ -701,12 +710,7 @@ class CommitterAgent(BaseAgent):
             for task in tasks_completed:
                 task_id = task.get("task_id", task.get("id", "unknown"))
                 # description 回退策略：description -> title -> name -> 空
-                description = (
-                    task.get("description")
-                    or task.get("title")
-                    or task.get("name")
-                    or ""
-                )
+                description = task.get("description") or task.get("title") or task.get("name") or ""
                 if description:
                     task_descriptions.append(f"  - [{task_id}] {description}")
                 else:
@@ -724,11 +728,7 @@ class CommitterAgent(BaseAgent):
             commit_message += f"\n\n评审决策: {review_decision}"
 
             # 4. 收集变更文件
-            all_files = (
-                status.get("staged", []) +
-                status.get("modified", []) +
-                status.get("untracked", [])
-            )
+            all_files = status.get("staged", []) + status.get("modified", []) + status.get("untracked", [])
             files_to_commit = self._filter_files(all_files)
 
             # 5. 调用现有的 commit() 方法执行提交
@@ -787,8 +787,7 @@ class CommitterAgent(BaseAgent):
 
             self.update_status(AgentStatus.COMPLETED)
             logger.info(
-                f"[{self.id}] 迭代 {iteration_id} 提交成功: "
-                f"{commit_result.commit_hash[:8]} - {tasks_count} 个任务"
+                f"[{self.id}] 迭代 {iteration_id} 提交成功: {commit_result.commit_hash[:8]} - {tasks_count} 个任务"
             )
 
             # 8. 返回结果
@@ -856,9 +855,7 @@ class CommitterAgent(BaseAgent):
             all_files.update(files)
 
         # 收集迭代提交记录（仅包含 iteration_id 的记录）
-        iteration_commits = [
-            r for r in self._commit_history if r.get("iteration_id") is not None
-        ]
+        iteration_commits = [r for r in self._commit_history if r.get("iteration_id") is not None]
 
         return {
             "total_commits": len(self._commit_history),

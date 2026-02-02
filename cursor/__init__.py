@@ -1,4 +1,5 @@
 """Cursor Agent 集成层"""
+
 from .client import CursorAgentClient, CursorAgentConfig, CursorAgentPool, CursorAgentResult, ModelPresets
 from .cloud_client import (
     AuthError,
@@ -84,7 +85,7 @@ from .streaming import (
 
 # 别名（兼容性，统一命名风格）
 CloudAgentClient = CursorCloudClient  # Cloud Agent 客户端别名
-CloudAgentConfig = CloudAuthConfig    # Cloud Agent 配置别名
+CloudAgentConfig = CloudAuthConfig  # Cloud Agent 配置别名
 
 __all__ = [
     # 客户端

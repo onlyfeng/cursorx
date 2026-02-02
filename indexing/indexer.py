@@ -2,6 +2,7 @@
 
 提供代码库的索引、更新和管理功能
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Callable, Optional, Set
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -25,11 +26,12 @@ class FileState:
 
     用于追踪文件的修改状态，支持增量索引
     """
-    file_path: str                              # 文件路径
-    mtime: float                                # 修改时间戳
-    content_hash: str                           # 内容哈希
+
+    file_path: str  # 文件路径
+    mtime: float  # 修改时间戳
+    content_hash: str  # 内容哈希
     chunk_ids: list[str] = field(default_factory=list)  # 关联的分块 ID
-    indexed_at: Optional[datetime] = None       # 索引时间
+    indexed_at: datetime | None = None  # 索引时间
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
@@ -42,7 +44,7 @@ class FileState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FileState":
+    def from_dict(cls, data: dict[str, Any]) -> FileState:
         """从字典创建"""
         indexed_at = None
         if data.get("indexed_at"):
@@ -59,11 +61,12 @@ class FileState:
 @dataclass
 class IndexProgress:
     """索引进度信息"""
-    total_files: int = 0                        # 总文件数
-    processed_files: int = 0                    # 已处理文件数
-    total_chunks: int = 0                       # 总分块数
-    current_file: str = ""                      # 当前处理的文件
-    status: str = "pending"                     # 状态: pending/indexing/completed/failed
+
+    total_files: int = 0  # 总文件数
+    processed_files: int = 0  # 已处理文件数
+    total_chunks: int = 0  # 总分块数
+    current_file: str = ""  # 当前处理的文件
+    status: str = "pending"  # 状态: pending/indexing/completed/failed
     errors: list[str] = field(default_factory=list)  # 错误列表
 
     @property
@@ -84,7 +87,7 @@ class IndexStateManager:
     管理文件索引状态，支持持久化和增量索引
     """
 
-    def __init__(self, state_file: Optional[Path] = None):
+    def __init__(self, state_file: Path | None = None):
         """初始化状态管理器
 
         Args:
@@ -99,6 +102,7 @@ class IndexStateManager:
 
     def _load_state(self) -> None:
         """从文件加载状态"""
+        assert self._state_file is not None
         try:
             with open(self._state_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -119,10 +123,7 @@ class IndexStateManager:
             data = {
                 "version": 1,
                 "updated_at": datetime.now().isoformat(),
-                "files": {
-                    fp: state.to_dict()
-                    for fp, state in self._file_states.items()
-                }
+                "files": {fp: state.to_dict() for fp, state in self._file_states.items()},
             }
             with open(self._state_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -130,7 +131,7 @@ class IndexStateManager:
         except Exception as e:
             logger.error(f"保存索引状态失败: {e}")
 
-    def get_file_state(self, file_path: str) -> Optional[FileState]:
+    def get_file_state(self, file_path: str) -> FileState | None:
         """获取文件状态"""
         return self._file_states.get(file_path)
 
@@ -138,11 +139,11 @@ class IndexStateManager:
         """设置文件状态"""
         self._file_states[state.file_path] = state
 
-    def remove_file_state(self, file_path: str) -> Optional[FileState]:
+    def remove_file_state(self, file_path: str) -> FileState | None:
         """移除文件状态"""
         return self._file_states.pop(file_path, None)
 
-    def get_all_indexed_files(self) -> Set[str]:
+    def get_all_indexed_files(self) -> set[str]:
         """获取所有已索引的文件路径"""
         return set(self._file_states.keys())
 
@@ -201,10 +202,10 @@ class CodebaseIndexer:
         vector_store: VectorStore,
         chunker: CodeChunker,
         *,
-        include_patterns: Optional[list[str]] = None,
-        exclude_patterns: Optional[list[str]] = None,
+        include_patterns: list[str] | None = None,
+        exclude_patterns: list[str] | None = None,
         respect_gitignore: bool = True,
-        state_file: Optional[Path | str] = None,
+        state_file: Path | str | None = None,
         max_concurrent: int = 4,
     ):
         """初始化代码库索引器
@@ -250,16 +251,13 @@ class CodebaseIndexer:
 
         # 进度追踪
         self._progress = IndexProgress()
-        self._progress_callback: Optional[ProgressCallback] = None
+        self._progress_callback: ProgressCallback | None = None
 
         # 加载 .gitignore 规则
         if self._respect_gitignore:
             self._load_gitignore()
 
-        logger.info(
-            f"CodebaseIndexer 初始化完成: root={self.root_path}, "
-            f"max_concurrent={max_concurrent}"
-        )
+        logger.info(f"CodebaseIndexer 初始化完成: root={self.root_path}, max_concurrent={max_concurrent}")
 
     def _load_gitignore(self) -> None:
         """加载 .gitignore 规则"""
@@ -275,10 +273,7 @@ class CodebaseIndexer:
                     if not line or line.startswith("#"):
                         continue
                     # 转换为 glob 模式
-                    if not line.startswith("/"):
-                        line = "**/" + line
-                    else:
-                        line = line[1:]  # 移除开头的 /
+                    line = "**/" + line if not line.startswith("/") else line[1:]
                     # 目录模式
                     if line.endswith("/"):
                         line = line + "**"
@@ -316,11 +311,7 @@ class CodebaseIndexer:
                     return False
 
         # 检查包含模式
-        for pattern in self._include_patterns:
-            if fnmatch(rel_path_str, pattern):
-                return True
-
-        return False
+        return any(fnmatch(rel_path_str, pattern) for pattern in self._include_patterns)
 
     def _compute_file_hash(self, file_path: Path) -> str:
         """计算文件内容哈希
@@ -349,7 +340,7 @@ class CodebaseIndexer:
             except Exception as e:
                 logger.warning(f"进度回调执行失败: {e}")
 
-    def set_progress_callback(self, callback: Optional[ProgressCallback]) -> None:
+    def set_progress_callback(self, callback: ProgressCallback | None) -> None:
         """设置进度回调函数
 
         Args:
@@ -369,11 +360,7 @@ class CodebaseIndexer:
             root_path = Path(root)
 
             # 过滤目录（原地修改以跳过子目录）
-            dirs[:] = [
-                d for d in dirs
-                if not d.startswith(".")
-                and not self._is_excluded_dir(root_path / d)
-            ]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and not self._is_excluded_dir(root_path / d)]
 
             for filename in filenames:
                 file_path = root_path / filename
@@ -463,15 +450,11 @@ class CodebaseIndexer:
             chunks = await self.index_file(file_path)
             self._update_progress(
                 processed_files=self._progress.processed_files + 1,
-                total_chunks=self._progress.total_chunks + len(chunks)
+                total_chunks=self._progress.total_chunks + len(chunks),
             )
             return chunks
 
-    async def index_directory(
-        self,
-        directory: Path | str,
-        recursive: bool = True
-    ) -> list[CodeChunk]:
+    async def index_directory(self, directory: Path | str, recursive: bool = True) -> list[CodeChunk]:
         """索引目录中的文件
 
         Args:
@@ -507,12 +490,7 @@ class CodebaseIndexer:
                     files.append(file_path)
 
         # 初始化进度
-        self._progress = IndexProgress(
-            total_files=len(files),
-            processed_files=0,
-            total_chunks=0,
-            status="indexing"
-        )
+        self._progress = IndexProgress(total_files=len(files), processed_files=0, total_chunks=0, status="indexing")
         self._update_progress()
 
         # 并发索引
@@ -522,23 +500,18 @@ class CodebaseIndexer:
         # 收集结果
         all_chunks: list[CodeChunk] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"索引任务异常: {result}")
-            elif result:
+            elif isinstance(result, list) and result:
                 all_chunks.extend(result)
 
         self._update_progress(status="completed")
-        logger.info(
-            f"目录索引完成: {directory}, "
-            f"{len(files)} 个文件, {len(all_chunks)} 个分块"
-        )
+        logger.info(f"目录索引完成: {directory}, {len(files)} 个文件, {len(all_chunks)} 个分块")
 
         return all_chunks
 
     async def index_codebase(
-        self,
-        incremental: bool = True,
-        progress_callback: Optional[ProgressCallback] = None
+        self, incremental: bool = True, progress_callback: ProgressCallback | None = None
     ) -> list[CodeChunk]:
         """索引整个代码库
 
@@ -564,26 +537,19 @@ class CodebaseIndexer:
                 try:
                     mtime = file_path.stat().st_mtime
                     content_hash = self._compute_file_hash(file_path)
-                    if self._state_manager.is_file_changed(
-                        str(file_path), mtime, content_hash
-                    ):
+                    if self._state_manager.is_file_changed(str(file_path), mtime, content_hash):
                         files_to_index.append(file_path)
                 except Exception as e:
                     logger.warning(f"检查文件变更失败 {file_path}: {e}")
                     files_to_index.append(file_path)
 
-            logger.info(
-                f"增量索引: {len(files_to_index)}/{len(all_files)} 个文件需要更新"
-            )
+            logger.info(f"增量索引: {len(files_to_index)}/{len(all_files)} 个文件需要更新")
         else:
             files_to_index = all_files
 
         # 初始化进度
         self._progress = IndexProgress(
-            total_files=len(files_to_index),
-            processed_files=0,
-            total_chunks=0,
-            status="indexing"
+            total_files=len(files_to_index), processed_files=0, total_chunks=0, status="indexing"
         )
         self._update_progress()
 
@@ -594,9 +560,9 @@ class CodebaseIndexer:
         # 收集结果
         all_chunks: list[CodeChunk] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"索引任务异常: {result}")
-            elif result:
+            elif isinstance(result, list) and result:
                 all_chunks.extend(result)
 
         # 检测并删除已删除文件的索引
@@ -608,10 +574,7 @@ class CodebaseIndexer:
         await self.vector_store.persist()
 
         self._update_progress(status="completed")
-        logger.info(
-            f"代码库索引完成: {len(files_to_index)} 个文件, "
-            f"{len(all_chunks)} 个分块"
-        )
+        logger.info(f"代码库索引完成: {len(files_to_index)} 个文件, {len(all_chunks)} 个分块")
 
         return all_chunks
 
@@ -656,9 +619,7 @@ class CodebaseIndexer:
             mtime = file_path.stat().st_mtime
             content_hash = self._compute_file_hash(file_path)
 
-            if not self._state_manager.is_file_changed(
-                str(file_path), mtime, content_hash
-            ):
+            if not self._state_manager.is_file_changed(str(file_path), mtime, content_hash):
                 logger.debug(f"文件未变更，跳过: {file_path}")
                 return []
         except Exception as e:

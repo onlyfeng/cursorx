@@ -2,13 +2,18 @@
 
 基于多进程架构的编排器，每个 Agent 作为独立进程运行
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from knowledge.storage import KnowledgeStorage
 from pydantic import BaseModel
 
 from agents.committer import CommitterAgent, CommitterConfig
@@ -47,6 +52,7 @@ class MultiProcessOrchestratorConfig(BaseModel):
 
     默认值从 config.yaml 加载，通过 core.config 模块统一管理。
     """
+
     working_directory: str = "."
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     worker_count: int = DEFAULT_WORKER_POOL_SIZE  # Worker 进程数量
@@ -54,49 +60,49 @@ class MultiProcessOrchestratorConfig(BaseModel):
     strict_review: bool = False
 
     # 超时设置 - 默认值从 core.config 获取
-    planning_timeout: float = DEFAULT_PLANNING_TIMEOUT    # 规划超时
-    execution_timeout: float = DEFAULT_WORKER_TIMEOUT     # 单任务执行超时
-    review_timeout: float = DEFAULT_REVIEW_TIMEOUT        # 评审超时
+    planning_timeout: float = DEFAULT_PLANNING_TIMEOUT  # 规划超时
+    execution_timeout: float = DEFAULT_WORKER_TIMEOUT  # 单任务执行超时
+    review_timeout: float = DEFAULT_REVIEW_TIMEOUT  # 评审超时
 
     # 模型配置 - 默认值从 core.config 获取
     # 可用模型: gpt-5.2-high, opus-4.5-thinking, gpt-5.2-codex, sonnet-4.5-thinking 等
     # 使用 `agent models` 查看完整列表
-    planner_model: str = DEFAULT_PLANNER_MODEL    # 规划者模型
-    worker_model: str = DEFAULT_WORKER_MODEL      # 执行者模型
+    planner_model: str = DEFAULT_PLANNER_MODEL  # 规划者模型
+    worker_model: str = DEFAULT_WORKER_MODEL  # 执行者模型
     reviewer_model: str = DEFAULT_REVIEWER_MODEL  # 评审者模型
 
     # 执行模式配置（MP 模式主要使用 CLI，但支持配置以便与 basic 编排器保持一致）
     # 注意：MP 编排器内部子进程始终使用 CLI 执行，这些配置主要用于透传和兼容性
-    execution_mode: str = "cli"                   # 全局执行模式: cli, cloud, auto
+    execution_mode: str = "cli"  # 全局执行模式: cli, cloud, auto
     # 角色级执行模式配置（默认继承全局 execution_mode）
     # 若为 None，则使用全局 execution_mode
     # 注意：MP 子进程实际使用 CLI 执行，这些配置用于记录和透传
-    planner_execution_mode: Optional[str] = None  # 规划者执行模式
-    worker_execution_mode: Optional[str] = None   # 执行者执行模式
-    reviewer_execution_mode: Optional[str] = None # 评审者执行模式
+    planner_execution_mode: str | None = None  # 规划者执行模式
+    worker_execution_mode: str | None = None  # 执行者执行模式
+    reviewer_execution_mode: str | None = None  # 评审者执行模式
 
     # 流式日志配置 - tri-state 设计
     # None 表示使用 config.yaml 中的值（通过 get_config().logging.stream_json 获取）
     # 显式传入的值优先（最高优先级）
     # 解析在 MultiProcessOrchestrator._resolve_stream_config() 中进行
-    stream_events_enabled: Optional[bool] = None   # 是否启用流式日志
-    stream_log_console: Optional[bool] = None      # 是否输出到控制台
-    stream_log_detail_dir: Optional[str] = None    # 详细日志目录
-    stream_log_raw_dir: Optional[str] = None       # 原始日志目录
+    stream_events_enabled: bool | None = None  # 是否启用流式日志
+    stream_log_console: bool | None = None  # 是否输出到控制台
+    stream_log_detail_dir: str | None = None  # 详细日志目录
+    stream_log_raw_dir: str | None = None  # 原始日志目录
     # 流式控制台渲染配置（默认关闭，避免噪声）
-    stream_console_renderer: bool = False      # 启用流式控制台渲染器
-    stream_advanced_renderer: bool = False     # 使用高级终端渲染器
-    stream_typing_effect: bool = False         # 启用打字机效果
-    stream_typing_delay: float = 0.02          # 打字延迟（秒）
-    stream_word_mode: bool = True              # 逐词输出模式
-    stream_color_enabled: bool = True          # 启用颜色输出
-    stream_show_word_diff: bool = False        # 显示逐词差异
+    stream_console_renderer: bool = False  # 启用流式控制台渲染器
+    stream_advanced_renderer: bool = False  # 使用高级终端渲染器
+    stream_typing_effect: bool = False  # 启用打字机效果
+    stream_typing_delay: float = 0.02  # 打字延迟（秒）
+    stream_word_mode: bool = True  # 逐词输出模式
+    stream_color_enabled: bool = True  # 启用颜色输出
+    stream_show_word_diff: bool = False  # 显示逐词差异
 
     # 自动提交配置（与 OrchestratorConfig 对齐）
-    enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
-    auto_push: bool = False            # 是否自动推送
-    commit_on_complete: bool = True    # 仅在完成时提交
-    commit_per_iteration: bool = False # 每次迭代都提交
+    enable_auto_commit: bool = False  # 默认禁用自动提交（需显式开启）
+    auto_push: bool = False  # 是否自动推送
+    commit_on_complete: bool = True  # 仅在完成时提交
+    commit_per_iteration: bool = False  # 每次迭代都提交
 
     # 知识库配置（Cursor 相关问题自动搜索）
     # 注意: 实际的 payload 上限常量定义在 core/knowledge.py 中
@@ -104,40 +110,40 @@ class MultiProcessOrchestratorConfig(BaseModel):
     # - MAX_CHARS_PER_DOC: 单文档最大字符 (默认 1200)
     # - MAX_TOTAL_KNOWLEDGE_CHARS: 总字符上限 (默认 3000)
     # - 降级策略: truncate_knowledge_docs() 函数
-    enable_knowledge_search: bool = True                      # 是否启用知识库搜索
-    knowledge_search_top_k: int = MAX_KNOWLEDGE_DOCS + 2      # 搜索返回数（略多于展示数，供降级选择）
-    knowledge_doc_max_chars: int = MAX_CHARS_PER_DOC          # 单文档截断字符数（与 worker 对齐）
+    enable_knowledge_search: bool = True  # 是否启用知识库搜索
+    knowledge_search_top_k: int = MAX_KNOWLEDGE_DOCS + 2  # 搜索返回数（略多于展示数，供降级选择）
+    knowledge_doc_max_chars: int = MAX_CHARS_PER_DOC  # 单文档截断字符数（与 worker 对齐）
 
     # 知识库注入配置（任务级知识库上下文增强）
     # 当任务触发关键词命中时，自动搜索并注入知识库文档
-    enable_knowledge_injection: bool = True                   # 是否启用知识库注入
-    knowledge_top_k: int = MAX_KNOWLEDGE_DOCS                 # 注入时使用的最大文档数
-    knowledge_max_chars_per_doc: int = MAX_CHARS_PER_DOC      # 注入时单文档最大字符数
+    enable_knowledge_injection: bool = True  # 是否启用知识库注入
+    knowledge_top_k: int = MAX_KNOWLEDGE_DOCS  # 注入时使用的最大文档数
+    knowledge_max_chars_per_doc: int = MAX_CHARS_PER_DOC  # 注入时单文档最大字符数
     knowledge_max_total_chars: int = MAX_TOTAL_KNOWLEDGE_CHARS  # 注入时总字符上限
-    knowledge_trigger_keywords: list[str] = CURSOR_KEYWORDS   # 触发知识库注入的关键词列表
+    knowledge_trigger_keywords: list[str] = CURSOR_KEYWORDS  # 触发知识库注入的关键词列表
 
     # 健康检查配置
     # 注意：Worker 在执行任务期间可能无法立即响应心跳，需要合理配置容忍度
-    health_check_interval: float = 45.0       # 健康检查间隔（秒）- 增加间隔减少干扰
-    health_check_timeout: float = 10.0        # 健康检查超时（秒）- 增加超时容忍任务执行
+    health_check_interval: float = 45.0  # 健康检查间隔（秒）- 增加间隔减少干扰
+    health_check_timeout: float = 10.0  # 健康检查超时（秒）- 增加超时容忍任务执行
     execution_health_check_interval: float = 30.0  # 执行阶段健康检查间隔（秒）- 不低于 30s 避免频繁检查
-    max_unhealthy_workers: int = -1           # 允许的最大不健康 Worker 数量（-1 表示动态计算为 worker_count-1）
-    requeue_on_worker_death: bool = True      # Worker 死亡时是否重新入队任务（False 则标记失败）
-    fallback_on_critical_failure: bool = True # 关键进程（planner/reviewer）不健康时是否降级终止
+    max_unhealthy_workers: int = -1  # 允许的最大不健康 Worker 数量（-1 表示动态计算为 worker_count-1）
+    requeue_on_worker_death: bool = True  # Worker 死亡时是否重新入队任务（False 则标记失败）
+    fallback_on_critical_failure: bool = True  # 关键进程（planner/reviewer）不健康时是否降级终止
     skip_busy_workers_in_health_check: bool = True  # 跳过正在执行任务的 Worker（避免误判）
-    consecutive_unresponsive_threshold: int = 3    # 连续未响应次数阈值，超过才告警（避免短暂抖动）
+    consecutive_unresponsive_threshold: int = 3  # 连续未响应次数阈值，超过才告警（避免短暂抖动）
 
     # 卡死恢复配置
-    stall_recovery_interval: float = 30.0     # 卡死检测/恢复间隔（秒）
-    max_recovery_attempts: int = 3            # 单次迭代最大恢复尝试次数
-    max_no_progress_time: float = 120.0       # 最大无进展时间（秒），超过触发降级
+    stall_recovery_interval: float = 30.0  # 卡死检测/恢复间隔（秒）
+    max_recovery_attempts: int = 3  # 单次迭代最大恢复尝试次数
+    max_no_progress_time: float = 120.0  # 最大无进展时间（秒），超过触发降级
 
     # 卡死诊断日志配置
     # 控制卡死检测时输出的诊断信息详细程度
     # 设计目的：默认关闭避免刷屏，疑似卡死时通过 --stall-diagnostics 启用排查
-    stall_diagnostics_enabled: bool = False   # 是否启用卡死诊断日志（默认关闭）
-    stall_diagnostics_detail: bool = False    # 是否输出详细诊断（逐任务状态）
-    stall_diagnostics_max_tasks: int = 5      # 详细诊断时最大输出任务条数
+    stall_diagnostics_enabled: bool = False  # 是否启用卡死诊断日志（默认关闭）
+    stall_diagnostics_detail: bool = False  # 是否输出详细诊断（逐任务状态）
+    stall_diagnostics_max_tasks: int = 5  # 详细诊断时最大输出任务条数
     stall_diagnostics_level: str = "warning"  # 诊断日志级别: debug, info, warning, error
 
     # 健康检查告警冷却时间（秒）
@@ -152,9 +158,9 @@ class MultiProcessOrchestratorConfig(BaseModel):
 
     # 日志配置（透传到子进程）
     # 这些配置会传递给 planner/worker/reviewer 子进程，控制其日志输出行为
-    verbose: bool = False                     # 是否启用详细模式（等价于 log_level=DEBUG）
-    log_level: str = "INFO"                   # 日志级别: DEBUG, INFO, WARNING, ERROR
-    heartbeat_debug: bool = False             # 是否输出心跳调试日志（默认 False，避免刷屏）
+    verbose: bool = False  # 是否启用详细模式（等价于 log_level=DEBUG）
+    log_level: str = "INFO"  # 日志级别: DEBUG, INFO, WARNING, ERROR
+    heartbeat_debug: bool = False  # 是否输出心跳调试日志（默认 False，避免刷屏）
 
 
 class MultiProcessOrchestrator:
@@ -187,15 +193,15 @@ class MultiProcessOrchestrator:
         self.process_manager = AgentProcessManager()
 
         # Agent ID
-        self.planner_id: Optional[str] = None
+        self.planner_id: str | None = None
         self.worker_ids: list[str] = []
-        self.reviewer_id: Optional[str] = None
+        self.reviewer_id: str | None = None
 
         # 待处理的消息响应
         self._pending_responses: dict[str, asyncio.Future] = {}
 
         # 初始化 CommitterAgent（运行在 orchestrator 主进程中，避免新增子进程复杂度）
-        self.committer: Optional[CommitterAgent] = None
+        self.committer: CommitterAgent | None = None
         if config.enable_auto_commit:
             # 使用解析后的流式日志配置
             committer_cursor_config = CursorAgentConfig(
@@ -204,31 +210,33 @@ class MultiProcessOrchestrator:
                 stream_log_detail_dir=self._resolved_stream_config["stream_log_detail_dir"],
                 stream_log_raw_dir=self._resolved_stream_config["stream_log_raw_dir"],
             )
-            self.committer = CommitterAgent(CommitterConfig(
-                working_directory=config.working_directory,
-                auto_push=config.auto_push,
-                cursor_config=committer_cursor_config,
-            ))
+            self.committer = CommitterAgent(
+                CommitterConfig(
+                    working_directory=config.working_directory,
+                    auto_push=config.auto_push,
+                    cursor_config=committer_cursor_config,
+                )
+            )
             # 注册 Committer 到系统状态
             self.state.register_agent("committer", AgentRole.COMMITTER)
             logger.info(f"CommitterAgent 已初始化 (auto_push={config.auto_push})")
 
         # 初始化知识库存储（延迟初始化，用于 Cursor 相关任务的上下文增强）
-        self._knowledge_storage = None
+        self._knowledge_storage: KnowledgeStorage | None = None
         self._knowledge_initialized = False
 
         # 健康检查状态
         self._last_health_check_time: float = 0.0
         self._unhealthy_worker_count: int = 0
         self._degraded: bool = False  # 是否已降级
-        self._degradation_reason: Optional[str] = None
+        self._degradation_reason: str | None = None
 
         # 心跳收集机制（方案 A：_message_loop 作为唯一消费者）
         # {agent_id: last_heartbeat_timestamp}
         self._heartbeat_responses: dict[str, float] = {}
         # {agent_id: heartbeat_payload} 存储心跳响应的详细信息（如 busy 状态）
         self._heartbeat_payloads: dict[str, dict] = {}
-        self._heartbeat_request_id: Optional[str] = None  # 当前心跳请求的 ID
+        self._heartbeat_request_id: str | None = None  # 当前心跳请求的 ID
         self._heartbeat_pending: set[str] = set()  # 等待心跳响应的 agent_id
 
         # 健康检查告警 cooldown 机制
@@ -260,13 +268,13 @@ class MultiProcessOrchestrator:
 
         # 卡死恢复状态
         self._recovery_attempts: dict[int, int] = {}  # {iteration_id: attempt_count}
-        self._last_progress_time: float = 0.0         # 最后有进展的时间戳（用于 max_no_progress_time 计算）
-        self._last_recovery_time: float = 0.0         # 最后恢复尝试的时间戳
-        self._last_stall_diagnostic_time: float = 0.0 # 最后输出卡死诊断的时间戳
-        self._last_stall_check_time: float = 0.0      # 最后卡死检测的时间戳（用于检测间隔冷却）
+        self._last_progress_time: float = 0.0  # 最后有进展的时间戳（用于 max_no_progress_time 计算）
+        self._last_recovery_time: float = 0.0  # 最后恢复尝试的时间戳
+        self._last_stall_diagnostic_time: float = 0.0  # 最后输出卡死诊断的时间戳
+        self._last_stall_check_time: float = 0.0  # 最后卡死检测的时间戳（用于检测间隔冷却）
 
     @staticmethod
-    def _resolve_stream_config(config: "MultiProcessOrchestratorConfig") -> dict[str, Any]:
+    def _resolve_stream_config(config: MultiProcessOrchestratorConfig) -> dict[str, Any]:
         """解析流式日志配置（优先级: 显式传入 > config.yaml > DEFAULT_STREAM_* 常量）
 
         tri-state 设计: None 表示使用 config.yaml 值，显式传入优先。
@@ -285,25 +293,13 @@ class MultiProcessOrchestrator:
         stream_json = yaml_config.logging.stream_json
 
         stream_events_enabled = (
-            config.stream_events_enabled
-            if config.stream_events_enabled is not None
-            else stream_json.enabled
+            config.stream_events_enabled if config.stream_events_enabled is not None else stream_json.enabled
         )
-        stream_log_console = (
-            config.stream_log_console
-            if config.stream_log_console is not None
-            else stream_json.console
-        )
+        stream_log_console = config.stream_log_console if config.stream_log_console is not None else stream_json.console
         stream_log_detail_dir = (
-            config.stream_log_detail_dir
-            if config.stream_log_detail_dir is not None
-            else stream_json.detail_dir
+            config.stream_log_detail_dir if config.stream_log_detail_dir is not None else stream_json.detail_dir
         )
-        stream_log_raw_dir = (
-            config.stream_log_raw_dir
-            if config.stream_log_raw_dir is not None
-            else stream_json.raw_dir
-        )
+        stream_log_raw_dir = config.stream_log_raw_dir if config.stream_log_raw_dir is not None else stream_json.raw_dir
 
         return {
             "stream_events_enabled": stream_events_enabled,
@@ -336,10 +332,9 @@ class MultiProcessOrchestrator:
             True 表示应该执行健康检查
         """
         import time
+
         now = time.time()
-        if now - self._last_health_check_time >= self.config.health_check_interval:
-            return True
-        return False
+        return now - self._last_health_check_time >= self.config.health_check_interval
 
     def _should_emit_health_warning(self, agent_id: str) -> bool:
         """检查是否应该发出健康检查警告（cooldown 机制）
@@ -353,6 +348,7 @@ class MultiProcessOrchestrator:
             True 表示应该发出警告，False 表示在 cooldown 内
         """
         import time
+
         now = time.time()
         last_warning = self._health_warning_cooldown.get(agent_id, 0)
         if now - last_warning >= self._health_warning_cooldown_seconds:
@@ -463,15 +459,14 @@ class MultiProcessOrchestrator:
                             busy_workers.append(agent_id)
                             # busy worker 的未响应仅输出 debug 日志，不告警
                             if self.config.heartbeat_debug:
-                                logger.debug(
-                                    f"健康检查: {agent_id} 无心跳响应但有任务分配，假定为忙碌"
-                                )
+                                logger.debug(f"健康检查: {agent_id} 无心跳响应但有任务分配，假定为忙碌")
                             continue
 
                     # 无任务分配但也无响应 - 可能有问题
                     # 递增连续未响应计数
-                    self._consecutive_unresponsive_count[agent_id] = \
+                    self._consecutive_unresponsive_count[agent_id] = (
                         self._consecutive_unresponsive_count.get(agent_id, 0) + 1
+                    )
                     consecutive_count = self._consecutive_unresponsive_count[agent_id]
                     threshold = self.config.consecutive_unresponsive_threshold
 
@@ -487,19 +482,15 @@ class MultiProcessOrchestrator:
                         # 使用 cooldown 机制防止刷屏（仅 warning 级别）
                         if self._should_emit_health_warning(agent_id):
                             logger.warning(
-                                f"健康检查警告: {agent_id} (无心跳响应，进程存活，"
-                                f"连续 {consecutive_count} 次)"
+                                f"健康检查警告: {agent_id} (无心跳响应，进程存活，连续 {consecutive_count} 次)"
                             )
                         else:
                             if self.config.heartbeat_debug:
-                                logger.debug(
-                                    f"健康检查: {agent_id} 无心跳响应（cooldown 中，跳过告警）"
-                                )
+                                logger.debug(f"健康检查: {agent_id} 无心跳响应（cooldown 中，跳过告警）")
                     else:
                         if self.config.heartbeat_debug:
                             logger.debug(
-                                f"健康检查: {agent_id} 无心跳响应 "
-                                f"({consecutive_count}/{threshold}，未达阈值，暂不告警)"
+                                f"健康检查: {agent_id} 无心跳响应 ({consecutive_count}/{threshold}，未达阈值，暂不告警)"
                             )
                 else:
                     # 进程已死亡 - 始终使用 ERROR 级别，不受 cooldown 限制
@@ -526,10 +517,7 @@ class MultiProcessOrchestrator:
                     f"busy_workers={len(busy_workers)}"
                 )
             else:
-                logger.debug(
-                    f"健康检查完成: healthy={len(result.healthy)}, "
-                    f"unhealthy={len(result.unhealthy)}"
-                )
+                logger.debug(f"健康检查完成: healthy={len(result.healthy)}, unhealthy={len(result.unhealthy)}")
 
         if result.all_healthy:
             if self.config.heartbeat_debug:
@@ -539,22 +527,21 @@ class MultiProcessOrchestrator:
 
         # 检查关键进程（planner/reviewer）- 只在进程真正死亡时降级
         if self.config.fallback_on_critical_failure:
-            planner_detail = result.details.get(self.planner_id, {})
-            if self.planner_id in result.unhealthy and not planner_detail.get("is_alive", True):
-                self._trigger_degradation("Planner 进程已死亡")
-                return result
+            if self.planner_id:
+                planner_detail = result.details.get(self.planner_id, {})
+                if self.planner_id in result.unhealthy and not planner_detail.get("is_alive", True):
+                    self._trigger_degradation("Planner 进程已死亡")
+                    return result
 
-            reviewer_detail = result.details.get(self.reviewer_id, {})
-            if self.reviewer_id in result.unhealthy and not reviewer_detail.get("is_alive", True):
-                self._trigger_degradation("Reviewer 进程已死亡")
-                return result
+            if self.reviewer_id:
+                reviewer_detail = result.details.get(self.reviewer_id, {})
+                if self.reviewer_id in result.unhealthy and not reviewer_detail.get("is_alive", True):
+                    self._trigger_degradation("Reviewer 进程已死亡")
+                    return result
 
         # 统计真正不健康的 Worker 数量（排除进程存活的）
         unhealthy_workers = result.get_unhealthy_workers()
-        dead_workers = [
-            wid for wid in unhealthy_workers
-            if not result.details.get(wid, {}).get("is_alive", True)
-        ]
+        dead_workers = [wid for wid in unhealthy_workers if not result.details.get(wid, {}).get("is_alive", True)]
         self._unhealthy_worker_count = len(dead_workers)
 
         # 动态计算 max_unhealthy_workers（如果配置为 -1）
@@ -565,9 +552,7 @@ class MultiProcessOrchestrator:
 
         # 检查是否超过允许的不健康 Worker 数量（仅统计已死亡的）
         if self._unhealthy_worker_count > max_unhealthy:
-            self._trigger_degradation(
-                f"已死亡 Worker 数量超过阈值: {self._unhealthy_worker_count} > {max_unhealthy}"
-            )
+            self._trigger_degradation(f"已死亡 Worker 数量超过阈值: {self._unhealthy_worker_count} > {max_unhealthy}")
             return result
 
         # 只处理真正死亡的 Worker 的在途任务
@@ -625,7 +610,7 @@ class MultiProcessOrchestrator:
 
             for task_id in task_ids:
                 # 取消跟踪
-                assignment_info = self.process_manager.untrack_task(task_id)
+                self.process_manager.untrack_task(task_id)
 
                 # 获取任务
                 task = self.task_queue.get_task(task_id)
@@ -668,7 +653,7 @@ class MultiProcessOrchestrator:
         self,
         iteration_id: int,
         reason: str,
-        active_futures: dict[str, "asyncio.Task"],
+        active_futures: dict[str, asyncio.Task],
         worker_task_mapping: dict[str, str],
     ) -> dict[str, Any]:
         """恢复卡死的迭代
@@ -696,7 +681,7 @@ class MultiProcessOrchestrator:
         """
         import time
 
-        result = {
+        result: dict[str, Any] = {
             "recovered": 0,
             "failed": 0,
             "requeued": 0,
@@ -709,9 +694,7 @@ class MultiProcessOrchestrator:
         self._recovery_attempts[iteration_id] += 1
 
         if self._recovery_attempts[iteration_id] > self.config.max_recovery_attempts:
-            self._trigger_degradation(
-                f"迭代 {iteration_id} 恢复尝试超过上限 ({self.config.max_recovery_attempts})"
-            )
+            self._trigger_degradation(f"迭代 {iteration_id} 恢复尝试超过上限 ({self.config.max_recovery_attempts})")
             result["degraded"] = True
             result["reason"] = "max_recovery_attempts_exceeded"
             return result
@@ -754,12 +737,10 @@ class MultiProcessOrchestrator:
             )
         else:
             # 节流中，仅输出 debug 日志
-            logger.debug(
-                f"[恢复] 迭代 {iteration_id} 开始恢复 (节流中，跳过详细日志)"
-            )
+            logger.debug(f"[恢复] 迭代 {iteration_id} 开始恢复 (节流中，跳过详细日志)")
 
         # 构建活跃 future 对应的任务 ID 集合
-        active_future_task_ids = set(worker_task_mapping.get(wid, "") for wid in active_futures.keys())
+        active_future_task_ids = {worker_task_mapping.get(wid, "") for wid in active_futures}
         active_future_task_ids.discard("")  # 移除空字符串
 
         # 获取 in-flight 任务 ID 集合
@@ -820,11 +801,13 @@ class MultiProcessOrchestrator:
                 # Worker 存活但无 active future，可能是异步任务丢失
                 task.retry_count += 1
                 if task.can_retry():
-                    await self.task_queue.requeue(task, reason=f"stale_in_progress (worker {worker_id} alive, no future)")
+                    await self.task_queue.requeue(
+                        task, reason=f"stale_in_progress (worker {worker_id} alive, no future)"
+                    )
                     result["requeued"] += 1
                     logger.info(f"[恢复] stale_in_progress 任务 {task.id} 重新入队 (worker 存活)")
                 else:
-                    task.fail(f"stale_in_progress 且超过重试上限")
+                    task.fail("stale_in_progress 且超过重试上限")
                     self.task_queue.update_task(task)
                     result["failed"] += 1
                     logger.warning(f"[恢复] stale_in_progress 任务 {task.id} 标记失败 (超过重试上限)")
@@ -843,10 +826,7 @@ class MultiProcessOrchestrator:
 
         result["recovered"] = result["requeued"] + result["failed"]
 
-        logger.info(
-            f"[恢复] 迭代 {iteration_id} 恢复完成: "
-            f"requeued={result['requeued']}, failed={result['failed']}"
-        )
+        logger.info(f"[恢复] 迭代 {iteration_id} 恢复完成: requeued={result['requeued']}, failed={result['failed']}")
 
         return result
 
@@ -870,10 +850,7 @@ class MultiProcessOrchestrator:
 
         # 检查恢复次数
         attempts = self._recovery_attempts.get(iteration_id, 0)
-        if attempts >= self.config.max_recovery_attempts:
-            return False
-
-        return True
+        return not attempts >= self.config.max_recovery_attempts
 
     def is_degraded(self) -> bool:
         """检查系统是否已降级
@@ -883,7 +860,7 @@ class MultiProcessOrchestrator:
         """
         return self._degraded
 
-    def get_degradation_reason(self) -> Optional[str]:
+    def get_degradation_reason(self) -> str | None:
         """获取降级原因
 
         Returns:
@@ -892,7 +869,13 @@ class MultiProcessOrchestrator:
         return self._degradation_reason
 
     async def _init_knowledge_storage(self) -> bool:
-        """延迟初始化知识库存储
+        """延迟初始化知识库存储（只读模式）
+
+        多进程编排器中的知识库仅用于搜索/检索，不进行写入操作。
+        使用只读模式可以：
+        1. 避免并发写入冲突
+        2. 符合 minimal 策略要求
+        3. 提高安全性
 
         Returns:
             是否初始化成功
@@ -906,17 +889,16 @@ class MultiProcessOrchestrator:
             return False
 
         try:
-            from knowledge.storage import KnowledgeStorage, StorageConfig
+            from knowledge.storage import KnowledgeStorage
 
-            storage_config = StorageConfig(
+            # 使用只读模式：多进程编排器仅搜索，不写入
+            self._knowledge_storage = KnowledgeStorage.create_read_only(
+                workspace_root=self.config.working_directory,
                 enable_vector_index=False,  # 多进程场景下禁用向量索引，使用关键词搜索
             )
-            self._knowledge_storage = KnowledgeStorage(
-                config=storage_config,
-                workspace_root=self.config.working_directory,
-            )
+            assert self._knowledge_storage is not None
             await self._knowledge_storage.initialize()
-            logger.info("知识库存储已初始化")
+            logger.info("知识库存储已初始化 (只读模式)")
             return True
         except Exception as e:
             logger.warning(f"知识库存储初始化失败，将跳过知识库检索: {e}")
@@ -953,11 +935,11 @@ class MultiProcessOrchestrator:
         """
         # 初始化统计指标
         metrics: dict[str, Any] = {
-            "triggered": False,      # 是否触发了关键词检测
-            "matched": 0,            # 搜索命中的原始文档数
-            "injected": 0,           # 实际注入的文档数
-            "truncated": False,      # 是否发生了截断
-            "total_chars": 0,        # 注入的总字符数
+            "triggered": False,  # 是否触发了关键词检测
+            "matched": 0,  # 搜索命中的原始文档数
+            "injected": 0,  # 实际注入的文档数
+            "truncated": False,  # 是否发生了截断
+            "total_chars": 0,  # 注入的总字符数
             "keywords_matched": [],  # 命中的关键词列表
         }
 
@@ -987,10 +969,7 @@ class MultiProcessOrchestrator:
         # 记录触发状态和命中的关键词
         metrics["triggered"] = True
         query_lower = query.lower()
-        metrics["keywords_matched"] = [
-            kw for kw in self.config.knowledge_trigger_keywords
-            if kw.lower() in query_lower
-        ]
+        metrics["keywords_matched"] = [kw for kw in self.config.knowledge_trigger_keywords if kw.lower() in query_lower]
 
         try:
             logger.debug(f"[任务 {task.id}] 知识库注入触发，关键词: {metrics['keywords_matched']}")
@@ -1016,13 +995,15 @@ class MultiProcessOrchestrator:
                 try:
                     doc = await self._knowledge_storage.load_document(result.doc_id)
                     if doc:
-                        raw_docs.append({
-                            "title": doc.title or result.title,
-                            "url": doc.url or result.url,
-                            "content": doc.content,
-                            "score": result.score,
-                            "source": "cursor-docs",
-                        })
+                        raw_docs.append(
+                            {
+                                "title": doc.title or result.title,
+                                "url": doc.url or result.url,
+                                "content": doc.content,
+                                "score": result.score,
+                                "source": "cursor-docs",
+                            }
+                        )
                 except Exception as e:
                     logger.debug(f"加载文档 {result.doc_id} 失败: {e}")
                     continue
@@ -1101,8 +1082,11 @@ class MultiProcessOrchestrator:
         reviewer_exec_mode = self.config.reviewer_execution_mode or self.config.execution_mode
 
         # 记录角色级执行模式（如果有配置差异）
-        if (self.config.planner_execution_mode or self.config.worker_execution_mode
-                or self.config.reviewer_execution_mode):
+        if (
+            self.config.planner_execution_mode
+            or self.config.worker_execution_mode
+            or self.config.reviewer_execution_mode
+        ):
             logger.info(
                 f"角色级执行模式 - Planner: {planner_exec_mode}, "
                 f"Worker: {worker_exec_mode}, Reviewer: {reviewer_exec_mode}"
@@ -1114,8 +1098,8 @@ class MultiProcessOrchestrator:
             "working_directory": self.config.working_directory,
             "timeout": int(self.config.planning_timeout),
             "model": self.config.planner_model,
-            "mode": "plan",           # 规划模式（只读）
-            "force_write": False,     # 确保不会修改文件
+            "mode": "plan",  # 规划模式（只读）
+            "force_write": False,  # 确保不会修改文件
             "execution_mode": planner_exec_mode,  # 角色执行模式
             "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
             "stream_log_console": self._resolved_stream_config["stream_log_console"],
@@ -1143,8 +1127,8 @@ class MultiProcessOrchestrator:
             "working_directory": self.config.working_directory,
             "task_timeout": int(self.config.execution_timeout),
             "model": self.config.worker_model,
-            "mode": "agent",          # 完整代理模式
-            "force_write": True,      # 允许修改文件
+            "mode": "agent",  # 完整代理模式
+            "force_write": True,  # 允许修改文件
             "execution_mode": worker_exec_mode,  # 角色执行模式
             "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
             "stream_log_console": self._resolved_stream_config["stream_log_console"],
@@ -1173,8 +1157,8 @@ class MultiProcessOrchestrator:
             "working_directory": self.config.working_directory,
             "timeout": int(self.config.review_timeout),
             "model": self.config.reviewer_model,
-            "mode": "ask",            # 问答模式（只读）
-            "force_write": False,     # 确保不会修改文件
+            "mode": "ask",  # 问答模式（只读）
+            "force_write": False,  # 确保不会修改文件
             "execution_mode": reviewer_exec_mode,  # 角色执行模式
             "strict_mode": self.config.strict_review,
             "stream_events_enabled": self._resolved_stream_config["stream_events_enabled"],
@@ -1233,19 +1217,20 @@ class MultiProcessOrchestrator:
             # 4. 执行主循环（max_iterations == -1 表示无限迭代）
             try:
                 import time
+
                 self._last_health_check_time = time.time()  # 初始化健康检查时间
 
                 while self._should_continue_iteration():
                     # 周期性健康检查
                     if self._should_run_health_check():
-                        health_result = await self._perform_health_check()
+                        await self._perform_health_check()
                         if self._degraded:
                             logger.error(f"系统降级，终止迭代: {self._degradation_reason}")
                             break
 
                     # 开始新迭代
                     iteration = self.state.start_new_iteration()
-                    logger.info(f"\n{'='*50}")
+                    logger.info(f"\n{'=' * 50}")
                     logger.info(f"迭代 {iteration.iteration_id} 开始")
 
                     # 规划阶段
@@ -1286,10 +1271,8 @@ class MultiProcessOrchestrator:
 
             finally:
                 message_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await message_task
-                except asyncio.CancelledError:
-                    pass
 
             return self._generate_final_result()
 
@@ -1344,7 +1327,7 @@ class MultiProcessOrchestrator:
 
         # 更新消息统计（用于验证消息不丢失）
         self._message_stats["total_received"] += 1
-        msg_type = message.type.value if hasattr(message.type, 'value') else str(message.type)
+        msg_type = message.type.value if hasattr(message.type, "value") else str(message.type)
         if msg_type in self._message_stats:
             self._message_stats[msg_type] += 1
         elif message.type == ProcessMessageType.PLAN_RESULT:
@@ -1372,8 +1355,7 @@ class MultiProcessOrchestrator:
             if self.config.heartbeat_debug:
                 is_busy = message.payload.get("busy", False) if message.payload else False
                 logger.debug(
-                    f"心跳响应收到: sender={sender}, busy={is_busy}, "
-                    f"remaining_pending={len(self._heartbeat_pending)}"
+                    f"心跳响应收到: sender={sender}, busy={is_busy}, remaining_pending={len(self._heartbeat_pending)}"
                 )
             return
 
@@ -1434,9 +1416,7 @@ class MultiProcessOrchestrator:
             task_info = self.process_manager.get_task_by_message_id(correlation_id)
             if task_info:
                 task_id, assignment_info = task_info
-                logger.debug(
-                    f"Late result: 通过 correlation_id={correlation_id} 反查到 task_id={task_id}"
-                )
+                logger.debug(f"Late result: 通过 correlation_id={correlation_id} 反查到 task_id={task_id}")
 
         # 如果仍然无法确定 task_id，记录并忽略
         if not task_id:
@@ -1452,8 +1432,7 @@ class MultiProcessOrchestrator:
         task = self.task_queue.get_task(task_id)
         if not task:
             logger.debug(
-                f"Late result ignored: task_id={task_id} 不在 TaskQueue 中, "
-                f"type={message.type.value}, sender={sender}"
+                f"Late result ignored: task_id={task_id} 不在 TaskQueue 中, type={message.type.value}, sender={sender}"
             )
             self._message_stats["late_result_ignored"] += 1
             return
@@ -1473,8 +1452,7 @@ class MultiProcessOrchestrator:
         # 情况2: 任务已完成/失败（终态）
         if current_status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
             logger.debug(
-                f"Late result ignored: task_id={task_id} 已处于终态 (status={current_status.value}), "
-                f"sender={sender}"
+                f"Late result ignored: task_id={task_id} 已处于终态 (status={current_status.value}), sender={sender}"
             )
             self._message_stats["late_result_ignored"] += 1
             return
@@ -1482,14 +1460,13 @@ class MultiProcessOrchestrator:
         # 情况3: 任务仍处于 IN_PROGRESS，检查 assigned_to 是否匹配
         if current_status == TaskStatus.IN_PROGRESS:
             # 获取分配信息验证 sender
-            assignment_info = self.process_manager.get_task_assignment(task_id)
+            assignment_info = self.process_manager.get_task_assignment(task_id) or {}
             assigned_to = task.assigned_to or (assignment_info.get("agent_id") if assignment_info else None)
 
             if assigned_to and assigned_to != sender:
                 # 发送者不匹配，可能是旧 worker 的响应
                 logger.info(
-                    f"Late result ignored: task_id={task_id} assigned_to={assigned_to} "
-                    f"但 sender={sender} 不匹配"
+                    f"Late result ignored: task_id={task_id} assigned_to={assigned_to} 但 sender={sender} 不匹配"
                 )
                 self._message_stats["late_result_ignored"] += 1
                 return
@@ -1536,7 +1513,7 @@ class MultiProcessOrchestrator:
         agent_id: str,
         message: ProcessMessage,
         timeout: float,
-    ) -> Optional[ProcessMessage]:
+    ) -> ProcessMessage | None:
         """发送消息并等待响应
 
         超时告警策略：
@@ -1578,41 +1555,38 @@ class MultiProcessOrchestrator:
             now = time.time()
             if is_critical_agent and consecutive_count >= threshold:
                 # 关键阶段连续超时 → ERROR 级别
-                logger.error(
-                    f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, 关键阶段)"
-                )
+                logger.error(f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, 关键阶段)")
             elif consecutive_count >= threshold:
                 # 达到阈值后 → WARNING 级别（带 cooldown）
                 last_warning = self._timeout_warning_cooldown.get(agent_id, 0)
                 if now - last_warning >= self.config.timeout_warning_cooldown_seconds:
                     self._timeout_warning_cooldown[agent_id] = now
-                    logger.warning(
-                        f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次)"
-                    )
+                    logger.warning(f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次)")
                 else:
                     # cooldown 中，降级为 DEBUG
                     if self.config.heartbeat_debug:
-                        logger.debug(
-                            f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, cooldown 中)"
-                        )
+                        logger.debug(f"等待 {agent_id} 响应超时 (连续 {consecutive_count} 次, cooldown 中)")
             elif consecutive_count == 1:
                 # 单次超时 → INFO 级别
                 logger.info(f"等待 {agent_id} 响应超时 (首次)")
             else:
                 # 偶发超时（未达阈值）→ DEBUG 级别
                 if self.config.heartbeat_debug:
-                    logger.debug(
-                        f"等待 {agent_id} 响应超时 ({consecutive_count}/{threshold})"
-                    )
+                    logger.debug(f"等待 {agent_id} 响应超时 ({consecutive_count}/{threshold})")
 
             return None
 
     async def _planning_phase(self, goal: str, iteration_id: int) -> None:
         """规划阶段"""
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入规划阶段")
         iteration.status = IterationStatus.PLANNING
 
         logger.info(f"[迭代 {iteration_id}] 规划阶段")
+
+        if self.planner_id is None:
+            raise RuntimeError("Planner 进程未初始化")
 
         # 构建上下文
         context = {
@@ -1642,16 +1616,12 @@ class MultiProcessOrchestrator:
             error = response.payload.get("error") if response else "规划超时"
             logger.error(f"规划失败: {error}")
             # 记录消息统计（验证消息不丢失）
-            logger.debug(
-                f"[迭代 {iteration_id}] 规划失败时消息统计: "
-                f"plan_result={self._message_stats['plan_result']}"
-            )
+            logger.debug(f"[迭代 {iteration_id}] 规划失败时消息统计: plan_result={self._message_stats['plan_result']}")
             return
 
         # 记录成功收到 PLAN_RESULT（验证消息不丢失）
         logger.debug(
-            f"[迭代 {iteration_id}] PLAN_RESULT 已收到并处理: "
-            f"total_plan_results={self._message_stats['plan_result']}"
+            f"[迭代 {iteration_id}] PLAN_RESULT 已收到并处理: total_plan_results={self._message_stats['plan_result']}"
         )
 
         # 处理规划结果
@@ -1672,6 +1642,8 @@ class MultiProcessOrchestrator:
         import time
 
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入执行阶段")
         iteration.status = IterationStatus.EXECUTING
 
         pending = self.task_queue.get_pending_count(iteration_id)
@@ -1758,7 +1730,7 @@ class MultiProcessOrchestrator:
                         f"available_workers={len(available_workers)}, "
                         f"active_tasks={len(active_tasks)}, "
                         f"in_flight={len(in_flight_tasks)}, "
-                        f"stall_reason=\"{stall_reason}\""
+                        f'stall_reason="{stall_reason}"'
                     )
                     log_fn(summary)
 
@@ -1789,10 +1761,10 @@ class MultiProcessOrchestrator:
                         task_count = len(tasks_in_iteration)
                         tasks_to_show = tasks_in_iteration[:max_tasks]
 
-                        for task in tasks_to_show:
+                        for diagnostic_task in tasks_to_show:
                             log_fn(
-                                f"[诊断] Task {task.id}: status={task.status.value}, "
-                                f"retry_count={task.retry_count}, assigned_to={task.assigned_to}"
+                                f"[诊断] Task {diagnostic_task.id}: status={diagnostic_task.status.value}, "
+                                f"retry_count={diagnostic_task.retry_count}, assigned_to={diagnostic_task.assigned_to}"
                             )
 
                         if task_count > max_tasks:
@@ -1835,10 +1807,10 @@ class MultiProcessOrchestrator:
 
                 # 从可用 Worker 中移除不健康的
                 unhealthy_workers = health_result.get_unhealthy_workers()
-                for worker_id in unhealthy_workers:
-                    if worker_id in available_workers:
-                        available_workers.remove(worker_id)
-                        logger.warning(f"从可用 Worker 列表中移除: {worker_id}")
+                for unhealthy_worker_id in unhealthy_workers:
+                    if unhealthy_worker_id in available_workers:
+                        available_workers.remove(unhealthy_worker_id)
+                        logger.warning(f"从可用 Worker 列表中移除: {unhealthy_worker_id}")
 
             # 分配任务给空闲 Worker（跳过不健康的）
             while available_workers:
@@ -1849,8 +1821,8 @@ class MultiProcessOrchestrator:
                     logger.warning(f"Worker {worker_id} 进程已死亡，跳过")
                     continue
 
-                task = await self.task_queue.dequeue(iteration_id, timeout=0.1)
-                if not task:
+                task: Task | None = await self.task_queue.dequeue(iteration_id, timeout=0.1)
+                if task is None:
                     break
 
                 available_workers.pop(0)
@@ -1893,9 +1865,7 @@ class MultiProcessOrchestrator:
                 worker_task_mapping[worker_id] = task.id
 
                 # 创建异步等待任务
-                async_task = asyncio.create_task(
-                    self._send_and_wait(worker_id, request, self.config.execution_timeout)
-                )
+                async_task = asyncio.create_task(self._send_and_wait(worker_id, request, self.config.execution_timeout))
                 active_tasks[worker_id] = async_task
 
                 logger.debug(f"任务 {task.id} 分配给 {worker_id}")
@@ -1917,8 +1887,7 @@ class MultiProcessOrchestrator:
                     if not alive_workers:
                         # 无可用 worker，触发降级退出
                         degradation_msg = (
-                            f"无可用 Worker 且仍有 {pending_count} 个待处理 + "
-                            f"{in_progress_count} 个进行中任务"
+                            f"无可用 Worker 且仍有 {pending_count} 个待处理 + {in_progress_count} 个进行中任务"
                         )
                         self._trigger_degradation(degradation_msg)
                         logger.error(f"[迭代 {iteration_id}] 兜底退出: {degradation_msg}")
@@ -1937,23 +1906,23 @@ class MultiProcessOrchestrator:
             # 处理完成的任务
             for completed in done:
                 # 找到对应的 worker
-                worker_id = None
+                completed_worker_id: str | None = None
                 for wid, atask in active_tasks.items():
                     if atask == completed:
-                        worker_id = wid
+                        completed_worker_id = wid
                         break
 
-                if worker_id:
-                    del active_tasks[worker_id]
+                if completed_worker_id:
+                    del active_tasks[completed_worker_id]
 
                     # 取消任务跟踪
-                    task_id = worker_task_mapping.pop(worker_id, None)
+                    task_id = worker_task_mapping.pop(completed_worker_id, None)
                     if task_id:
                         self.process_manager.untrack_task(task_id)
 
                     # 只有健康的 Worker 才重新加入可用列表
-                    if self.process_manager.is_alive(worker_id):
-                        available_workers.append(worker_id)
+                    if self.process_manager.is_alive(completed_worker_id):
+                        available_workers.append(completed_worker_id)
 
                     # 重置进度计时器（有任务完成说明有进展）
                     self._last_progress_time = time.time()
@@ -1966,34 +1935,33 @@ class MultiProcessOrchestrator:
                             success = response.payload.get("success", False)
 
                             # 更新任务状态
-                            task = self.task_queue.get_task(resp_task_id)
-                            if task:
-                                if success:
-                                    task.complete(response.payload)
-                                    iteration.tasks_completed += 1
-                                    self.state.total_tasks_completed += 1
-                                else:
-                                    task.fail(response.payload.get("error", "未知错误"))
-                                    iteration.tasks_failed += 1
-                                    self.state.total_tasks_failed += 1
-                                self.task_queue.update_task(task)
+                            result_task = self.task_queue.get_task(resp_task_id)
+                            if result_task is None:
+                                continue
+                            if success:
+                                result_task.complete(response.payload)
+                                iteration.tasks_completed += 1
+                                self.state.total_tasks_completed += 1
+                            else:
+                                result_task.fail(response.payload.get("error", "未知错误"))
+                                iteration.tasks_failed += 1
+                                self.state.total_tasks_failed += 1
+                                self.task_queue.update_task(result_task)
                         else:
                             # 响应为 None（超时），检查任务是否需要重新入队
                             if task_id:
-                                task = self.task_queue.get_task(task_id)
-                                if task and task.status == TaskStatus.IN_PROGRESS:
+                                timeout_task = self.task_queue.get_task(task_id)
+                                if timeout_task and timeout_task.status == TaskStatus.IN_PROGRESS:
                                     if self.config.requeue_on_worker_death:
                                         # 关键修复：必须调用 requeue 而不只是改状态
                                         # 只改状态会导致任务卡在 PENDING 但不在优先级队列中
                                         logger.warning(f"任务 {task_id} 响应超时，重新入队")
-                                        await self.task_queue.requeue(
-                                            task, reason="Worker 响应超时"
-                                        )
+                                        await self.task_queue.requeue(timeout_task, reason="Worker 响应超时")
                                     else:
-                                        task.fail("Worker 响应超时")
+                                        timeout_task.fail("Worker 响应超时")
                                         iteration.tasks_failed += 1
                                         self.state.total_tasks_failed += 1
-                                        self.task_queue.update_task(task)
+                                        self.task_queue.update_task(timeout_task)
                     except Exception as e:
                         logger.error(f"处理任务结果异常: {e}")
 
@@ -2011,20 +1979,19 @@ class MultiProcessOrchestrator:
     async def _review_phase(self, goal: str, iteration_id: int) -> ReviewDecision:
         """评审阶段"""
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入评审阶段")
         iteration.status = IterationStatus.REVIEWING
 
         logger.info(f"[迭代 {iteration_id}] 评审阶段")
 
+        if self.reviewer_id is None:
+            raise RuntimeError("Reviewer 进程未初始化")
+
         # 收集任务信息（使用统一的 to_commit_entry 格式）
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
-        completed = [
-            t.to_commit_entry()
-            for t in tasks if t.status == TaskStatus.COMPLETED
-        ]
-        failed = [
-            {"id": t.id, "title": t.title, "error": t.error}
-            for t in tasks if t.status == TaskStatus.FAILED
-        ]
+        completed = [t.to_commit_entry() for t in tasks if t.status == TaskStatus.COMPLETED]
+        failed = [{"id": t.id, "title": t.title, "error": t.error} for t in tasks if t.status == TaskStatus.FAILED]
 
         # 发送评审请求
         request = ProcessMessage(
@@ -2151,6 +2118,8 @@ class MultiProcessOrchestrator:
             return {"success": False, "error": "Committer not initialized"}
 
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入提交阶段")
         iteration.status = IterationStatus.COMMITTING
 
         logger.info(f"[迭代 {iteration_id}] 提交阶段开始")
@@ -2158,10 +2127,7 @@ class MultiProcessOrchestrator:
         # 收集已完成的任务（使用统一的 to_commit_entry 格式）
         # to_commit_entry() 返回: {"id", "title", "description", "result"}
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
-        completed_tasks = [
-            t.to_commit_entry()
-            for t in tasks if t.status == TaskStatus.COMPLETED
-        ]
+        completed_tasks = [t.to_commit_entry() for t in tasks if t.status == TaskStatus.COMPLETED]
 
         # 构建 CommitContext（用于文档化和验证）
         commit_context = CommitContext(
@@ -2185,17 +2151,17 @@ class MultiProcessOrchestrator:
         )
 
         # 记录提交结果到 iteration（填充 IterationState 字段）
-        iteration.commit_hash = commit_result.get('commit_hash', '')
-        iteration.commit_message = commit_result.get('message', '')
-        iteration.pushed = commit_result.get('pushed', False)
-        iteration.commit_files = commit_result.get('files_changed', [])
+        iteration.commit_hash = commit_result.get("commit_hash", "")
+        iteration.commit_message = commit_result.get("message", "")
+        iteration.pushed = commit_result.get("pushed", False)
+        iteration.commit_files = commit_result.get("files_changed", [])
 
         # 记录错误信息到 iteration（commit 失败或 push 失败均不中断主流程）
         success = commit_result.get("success", False)
         if not success:
-            iteration.commit_error = commit_result.get('error', 'Unknown commit error')
+            iteration.commit_error = commit_result.get("error", "Unknown commit error")
         if commit_result.get("push_error"):
-            iteration.push_error = commit_result.get('push_error')
+            iteration.push_error = commit_result.get("push_error")
 
         result_status = "success" if success else "failed"
 

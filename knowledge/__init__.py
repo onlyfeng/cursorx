@@ -2,14 +2,62 @@
 
 提供文档管理、分块、向量化和检索功能
 """
+
+from .doc_sources import (
+    DEFAULT_ALLOWED_DOC_URL_PREFIXES,
+    DEFAULT_DOC_SOURCE_FILES,
+    is_valid_doc_url,
+    load_core_docs,
+    load_core_docs_with_fallback,
+    parse_url_list_file,
+)
+from .doc_url_strategy import (
+    VALID_EXECUTION_MODES,
+    VALID_EXTERNAL_LINK_MODES,
+    DocURLStrategyConfig,
+    # 外链白名单校验
+    ExternalLinkAllowlist,
+    FetchPolicyResult,
+    apply_fetch_policy,
+    deduplicate_urls,
+    # 外链判定与策略
+    derive_primary_domains,
+    extract_domain,
+    filter_urls_by_keywords,
+    is_allowed_doc_url,
+    is_external_link,
+    # 校验函数（契约级公共 API）
+    is_full_url_prefix,
+    is_path_prefix,
+    is_valid_execution_mode,
+    is_valid_external_link_mode,
+    normalize_url,
+    parse_llms_txt_urls,
+    # 测试辅助（重置 deprecated 警告状态）
+    reset_deprecated_func_warnings,
+    select_urls_to_fetch,
+    validate_execution_mode,
+    validate_external_link_allowlist,
+    validate_external_link_mode,
+    validate_fetch_policy_path_prefixes,
+    # [DEPRECATED] 兼容别名，将在 v2.0 移除
+    # 新名: validate_fetch_policy_path_prefixes
+    validate_fetch_policy_prefixes,
+    validate_url_strategy_prefixes,
+)
 from .fetcher import (
+    DEFAULT_URL_POLICY,
     ContentFormat,
     FetchConfig,
     FetchMethod,
     FetchResult,
+    UrlPolicy,
+    UrlPolicyError,
+    UrlRejectionReason,
     WebFetcher,
     fetch_url,
     fetch_urls,
+    sanitize_url_for_log,
 )
 from .manager import AskResult, KnowledgeManager
 from .models import (
@@ -25,12 +73,18 @@ from .models import (
 )
 from .parser import (
     ChunkSplitter,
+    # 内容清洗
+    CleanedContent,
     ContentCleaner,
+    ContentCleanMode,
     # 解析器
     HTMLParser,
     MarkdownConverter,
     # 数据结构
     ParsedContent,
+    # 清洗函数
+    clean_content_unified,
+    compute_content_fingerprint,
 )
 from .semantic_search import (
     HybridSearchConfig,
@@ -39,6 +93,7 @@ from .semantic_search import (
 from .storage import (
     IndexEntry,
     KnowledgeStorage,
+    ReadOnlyStorageError,
     SearchResult,
     StorageConfig,
 )
@@ -65,29 +120,41 @@ __all__ = [
     "FetchPriority",
     "FetchMethod",
     "ContentFormat",
+    "ContentCleanMode",
     # 数据模型
     "DocumentChunk",
     "Document",
     "KnowledgeBase",
     "KnowledgeBaseStats",
     "FetchTask",
+    "CleanedContent",
     # 解析器
     "ParsedContent",
     "HTMLParser",
     "ContentCleaner",
     "MarkdownConverter",
     "ChunkSplitter",
+    # 清洗函数
+    "clean_content_unified",
+    "compute_content_fingerprint",
     # 存储管理
     "IndexEntry",
     "StorageConfig",
     "SearchResult",
     "KnowledgeStorage",
+    "ReadOnlyStorageError",
     # 获取器
     "WebFetcher",
     "FetchConfig",
     "FetchResult",
     "fetch_url",
     "fetch_urls",
+    # URL 安全策略
+    "UrlPolicy",
+    "UrlPolicyError",
+    "UrlRejectionReason",
+    "DEFAULT_URL_POLICY",
+    "sanitize_url_for_log",
     # 向量搜索
     "KnowledgeVectorConfig",
     "KnowledgeVectorStore",
@@ -106,6 +173,46 @@ __all__ = [
     "AskResult",
     # 便捷函数
     "semantic_search",
+    # 文档源加载 (doc_sources)
+    "DEFAULT_DOC_SOURCE_FILES",
+    "DEFAULT_ALLOWED_DOC_URL_PREFIXES",
+    "parse_url_list_file",
+    "is_valid_doc_url",
+    "load_core_docs",
+    "load_core_docs_with_fallback",
+    # URL 策略 (doc_url_strategy)
+    "DocURLStrategyConfig",
+    "normalize_url",
+    "is_allowed_doc_url",
+    "deduplicate_urls",
+    "parse_llms_txt_urls",
+    "select_urls_to_fetch",
+    "filter_urls_by_keywords",
+    "extract_domain",
+    # 外链判定与策略
+    "derive_primary_domains",
+    "is_external_link",
+    "FetchPolicyResult",
+    "apply_fetch_policy",
+    # 校验函数（契约级公共 API）
+    "is_full_url_prefix",
+    "is_path_prefix",
+    "is_valid_execution_mode",
+    "is_valid_external_link_mode",
+    "validate_execution_mode",
+    "validate_external_link_mode",
+    "validate_fetch_policy_path_prefixes",
+    "validate_url_strategy_prefixes",
+    "VALID_EXECUTION_MODES",
+    "VALID_EXTERNAL_LINK_MODES",
+    # 外链白名单校验
+    "ExternalLinkAllowlist",
+    "validate_external_link_allowlist",
+    # 测试辅助
+    "reset_deprecated_func_warnings",
+    # [DEPRECATED] 兼容别名，将在 v2.0 移除
+    # 新名: validate_fetch_policy_path_prefixes
+    "validate_fetch_policy_prefixes",
 ]
 
 

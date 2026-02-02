@@ -1,4 +1,5 @@
 """Agent 基类定义"""
+
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -10,24 +11,27 @@ from pydantic import BaseModel, Field
 
 class AgentRole(str, Enum):
     """Agent 角色类型"""
-    PLANNER = "planner"          # 规划者
+
+    PLANNER = "planner"  # 规划者
     SUB_PLANNER = "sub_planner"  # 子规划者
-    WORKER = "worker"            # 执行者
-    REVIEWER = "reviewer"        # 评审者
-    COMMITTER = "committer"      # 提交者
+    WORKER = "worker"  # 执行者
+    REVIEWER = "reviewer"  # 评审者
+    COMMITTER = "committer"  # 提交者
 
 
 class AgentStatus(str, Enum):
     """Agent 状态"""
-    IDLE = "idle"                # 空闲
-    RUNNING = "running"          # 执行中
-    WAITING = "waiting"          # 等待中
-    COMPLETED = "completed"      # 已完成
-    FAILED = "failed"            # 失败
+
+    IDLE = "idle"  # 空闲
+    RUNNING = "running"  # 执行中
+    WAITING = "waiting"  # 等待中
+    COMPLETED = "completed"  # 已完成
+    FAILED = "failed"  # 失败
 
 
 class AgentConfig(BaseModel):
     """Agent 配置"""
+
     role: AgentRole
     name: str = Field(default_factory=lambda: f"agent-{uuid.uuid4().hex[:8]}")
     max_retries: int = 3

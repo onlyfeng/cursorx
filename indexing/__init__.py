@@ -2,6 +2,7 @@
 
 提供代码库的语义索引和检索功能
 """
+
 from .base import (
     ChunkType,
     CodeChunk,
@@ -60,7 +61,9 @@ from .vector_store import (
 def run_cli():
     """运行命令行接口"""
     from .cli import run
+
     run()
+
 
 __all__ = [
     # 基类

@@ -2,9 +2,10 @@
 
 管理所有 Agent 进程的生命周期
 """
+
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Type
+from typing import Optional
 
 from loguru import logger
 
@@ -22,12 +23,13 @@ class HealthCheckResult:
         all_healthy: 是否所有进程都健康
         details: 每个进程的详细状态 {agent_id: {"healthy": bool, "reason": str}}
     """
-    healthy: List[str] = field(default_factory=list)
-    unhealthy: List[str] = field(default_factory=list)
-    all_healthy: bool = True
-    details: Dict[str, dict] = field(default_factory=dict)
 
-    def get_unhealthy_workers(self) -> List[str]:
+    healthy: list[str] = field(default_factory=list)
+    unhealthy: list[str] = field(default_factory=list)
+    all_healthy: bool = True
+    details: dict[str, dict] = field(default_factory=dict)
+
+    def get_unhealthy_workers(self) -> list[str]:
         """获取不健康的 worker 进程 ID 列表"""
         return [aid for aid in self.unhealthy if "worker" in aid.lower()]
 
@@ -45,17 +47,17 @@ class AgentProcessManager:
 
     def __init__(self):
         self.message_queue = MessageQueue()
-        self._processes: Dict[str, AgentWorkerProcess] = {}
-        self._process_info: Dict[str, dict] = {}
+        self._processes: dict[str, AgentWorkerProcess] = {}
+        self._process_info: dict[str, dict] = {}
         self._running = False
         # 跟踪任务分配：{task_id: {"agent_id": str, "assigned_at": float, "message_id": str}}
-        self._task_assignments: Dict[str, dict] = {}
+        self._task_assignments: dict[str, dict] = {}
         # 反向索引：{message_id: task_id}，用于通过消息 ID 快速查找任务 ID
-        self._message_to_task: Dict[str, str] = {}
+        self._message_to_task: dict[str, str] = {}
 
     def spawn_agent(
         self,
-        agent_class: Type[AgentWorkerProcess],
+        agent_class: type[AgentWorkerProcess],
         agent_id: str,
         agent_type: str,
         config: dict,
@@ -126,13 +128,16 @@ class AgentProcessManager:
         while time.time() - start_time < timeout:
             message = self.receive_message(timeout=1.0)
 
-            if message and message.sender == agent_id:
-                if message.type == ProcessMessageType.STATUS_RESPONSE:
-                    if message.payload.get("status") == "ready":
-                        self._process_info[agent_id]["status"] = "ready"
-                        self._process_info[agent_id]["pid"] = message.payload.get("pid")
-                        logger.info(f"Agent 就绪: {agent_id}")
-                        return True
+            if (
+                message
+                and message.sender == agent_id
+                and message.type == ProcessMessageType.STATUS_RESPONSE
+                and message.payload.get("status") == "ready"
+            ):
+                self._process_info[agent_id]["status"] = "ready"
+                self._process_info[agent_id]["pid"] = message.payload.get("pid")
+                logger.info(f"Agent 就绪: {agent_id}")
+                return True
 
         logger.warning(f"Agent 就绪超时: {agent_id}")
         return False
@@ -145,13 +150,16 @@ class AgentProcessManager:
         while pending and time.time() - start_time < timeout:
             message = self.receive_message(timeout=1.0)
 
-            if message and message.sender in pending:
-                if message.type == ProcessMessageType.STATUS_RESPONSE:
-                    if message.payload.get("status") == "ready":
-                        self._process_info[message.sender]["status"] = "ready"
-                        self._process_info[message.sender]["pid"] = message.payload.get("pid")
-                        pending.remove(message.sender)
-                        logger.info(f"Agent 就绪: {message.sender} (剩余 {len(pending)})")
+            if (
+                message
+                and message.sender in pending
+                and message.type == ProcessMessageType.STATUS_RESPONSE
+                and message.payload.get("status") == "ready"
+            ):
+                self._process_info[message.sender]["status"] = "ready"
+                self._process_info[message.sender]["pid"] = message.payload.get("pid")
+                pending.remove(message.sender)
+                logger.info(f"Agent 就绪: {message.sender} (剩余 {len(pending)})")
 
         if pending:
             logger.warning(f"以下 Agent 未就绪: {pending}")
@@ -169,7 +177,7 @@ class AgentProcessManager:
         """获取进程信息"""
         return self._process_info.get(agent_id)
 
-    def get_all_process_info(self) -> Dict[str, dict]:
+    def get_all_process_info(self) -> dict[str, dict]:
         """获取所有进程信息"""
         # 更新存活状态
         for agent_id in self._processes:
@@ -189,10 +197,13 @@ class AgentProcessManager:
 
         if graceful:
             # 发送关闭消息
-            self.send_to_agent(agent_id, ProcessMessage(
-                type=ProcessMessageType.SHUTDOWN,
-                sender="manager",
-            ))
+            self.send_to_agent(
+                agent_id,
+                ProcessMessage(
+                    type=ProcessMessageType.SHUTDOWN,
+                    sender="manager",
+                ),
+            )
             # 等待进程退出
             process.join(timeout=10.0)
 
@@ -214,10 +225,12 @@ class AgentProcessManager:
 
         if graceful:
             # 广播关闭消息
-            self.broadcast(ProcessMessage(
-                type=ProcessMessageType.SHUTDOWN,
-                sender="manager",
-            ))
+            self.broadcast(
+                ProcessMessage(
+                    type=ProcessMessageType.SHUTDOWN,
+                    sender="manager",
+                )
+            )
 
             # 等待所有进程退出
             for agent_id, process in self._processes.items():
@@ -278,7 +291,7 @@ class AgentProcessManager:
             self._message_to_task.pop(info["message_id"], None)
         return info
 
-    def get_tasks_by_agent(self, agent_id: str) -> List[str]:
+    def get_tasks_by_agent(self, agent_id: str) -> list[str]:
         """获取分配给指定 Agent 的所有任务 ID
 
         Args:
@@ -287,13 +300,9 @@ class AgentProcessManager:
         Returns:
             任务 ID 列表
         """
-        return [
-            task_id
-            for task_id, info in self._task_assignments.items()
-            if info["agent_id"] == agent_id
-        ]
+        return [task_id for task_id, info in self._task_assignments.items() if info["agent_id"] == agent_id]
 
-    def get_all_in_flight_tasks(self) -> Dict[str, dict]:
+    def get_all_in_flight_tasks(self) -> dict[str, dict]:
         """获取所有在途任务的分配信息
 
         Returns:
@@ -385,12 +394,9 @@ class AgentProcessManager:
         Returns:
             {agent_id: is_alive} 字典
         """
-        return {
-            agent_id: (process.is_alive() if process else False)
-            for agent_id, process in self._processes.items()
-        }
+        return {agent_id: (process.is_alive() if process else False) for agent_id, process in self._processes.items()}
 
-    def health_check_simple(self) -> Dict[str, bool]:
+    def health_check_simple(self) -> dict[str, bool]:
         """简单健康检查（向后兼容）
 
         直接调用 check_processes_alive()，仅检查进程存活状态。

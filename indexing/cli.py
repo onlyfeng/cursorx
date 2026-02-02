@@ -11,19 +11,21 @@
     python -m indexing.cli clear [--confirm]
     python -m indexing.cli info
 """
+
 import argparse
 import asyncio
 import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
+from indexing.base import SearchResult
 from indexing.chunker import SemanticCodeChunker
 from indexing.config import (
     ChunkConfig,
@@ -42,7 +44,7 @@ from indexing.embedding import (
     get_available_models,
 )
 from indexing.indexer import CodebaseIndexer, IndexProgress
-from indexing.search import SearchOptions, SemanticSearch
+from indexing.search import SearchOptions, SearchResultWithContext, SemanticSearch
 from indexing.vector_store import ChromaVectorStore
 
 # 默认配置
@@ -67,10 +69,7 @@ class ProgressBar:
 
     def _render(self, current_file: str = ""):
         """渲染进度条"""
-        if self.total == 0:
-            percent = 100
-        else:
-            percent = int((self.current / self.total) * 100)
+        percent = 100 if self.total == 0 else int(self.current / self.total * 100)
 
         filled = int(self.width * self.current / max(self.total, 1))
         bar = "█" * filled + "░" * (self.width - filled)
@@ -132,6 +131,7 @@ def load_config(config_file: Optional[str] = None) -> IndexConfig:
     else:
         # 未指定时使用与 ConfigManager 相同的查找策略
         from core.config import find_config_file
+
         resolved_config_path = find_config_file()
         if resolved_config_path:
             logger.debug(f"自动发现配置文件: {resolved_config_path}")
@@ -139,6 +139,7 @@ def load_config(config_file: Optional[str] = None) -> IndexConfig:
     # 获取 core.config 中的 indexing 默认值作为回退
     # 这确保与 config.yaml 中定义的默认值一致
     from core.config import get_config
+
     core_indexing = get_config().indexing
 
     # 从 core.config.IndexingConfig 获取回退默认值
@@ -152,6 +153,7 @@ def load_config(config_file: Optional[str] = None) -> IndexConfig:
     if resolved_config_path and resolved_config_path.exists():
         try:
             import yaml
+
             with open(resolved_config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
 
@@ -218,11 +220,7 @@ def load_config(config_file: Optional[str] = None) -> IndexConfig:
     )
 
 
-async def create_indexer(
-    root_path: Path,
-    config: IndexConfig,
-    show_progress: bool = True
-) -> CodebaseIndexer:
+async def create_indexer(root_path: Path, config: IndexConfig, show_progress: bool = True) -> CodebaseIndexer:
     """创建索引器实例
 
     Args:
@@ -407,11 +405,12 @@ async def cmd_search(args: argparse.Namespace) -> int:
         query = args.query
         top_k = args.top_k
 
-        print(f"搜索: \"{query}\"")
+        print(f'搜索: "{query}"')
         print(f"返回前 {top_k} 个结果\n")
 
         start_time = time.time()
 
+        results: Sequence[SearchResult | SearchResultWithContext]
         if args.context:
             # 带上下文的搜索
             options = SearchOptions(
@@ -431,11 +430,11 @@ async def cmd_search(args: argparse.Namespace) -> int:
             return 0
 
         # 显示结果
-        print(f"找到 {len(results)} 个结果 (耗时: {elapsed*1000:.1f}ms)\n")
+        print(f"找到 {len(results)} 个结果 (耗时: {elapsed * 1000:.1f}ms)\n")
         print("=" * 80)
 
         for i, result in enumerate(results, 1):
-            if hasattr(result, 'content'):
+            if isinstance(result, SearchResultWithContext):
                 # SearchResultWithContext
                 print(f"\n[{i}] {result.file_path}:{result.start_line}-{result.end_line}")
                 print(f"    分数: {result.score:.4f} | 类型: {result.chunk_type} | 语言: {result.language}")
@@ -452,7 +451,7 @@ async def cmd_search(args: argparse.Namespace) -> int:
                     print(f"    {line}")
                 if content.count("\n") > 15:
                     print("    ... (更多内容)")
-            else:
+            elif isinstance(result, SearchResult):
                 # SearchResult
                 chunk = result.chunk
                 print(f"\n[{i}] {chunk.file_path}:{chunk.start_line}-{chunk.end_line}")
@@ -473,24 +472,28 @@ async def cmd_search(args: argparse.Namespace) -> int:
             # JSON 输出
             output = []
             for result in results:
-                if hasattr(result, 'content'):
-                    output.append({
-                        "file_path": result.file_path,
-                        "start_line": result.start_line,
-                        "end_line": result.end_line,
-                        "score": result.score,
-                        "name": result.name,
-                        "content": result.content[:500],
-                    })
-                else:
-                    output.append({
-                        "file_path": result.chunk.file_path,
-                        "start_line": result.chunk.start_line,
-                        "end_line": result.chunk.end_line,
-                        "score": result.score,
-                        "name": result.chunk.name,
-                        "content": result.chunk.content[:500],
-                    })
+                if isinstance(result, SearchResultWithContext):
+                    output.append(
+                        {
+                            "file_path": result.file_path,
+                            "start_line": result.start_line,
+                            "end_line": result.end_line,
+                            "score": result.score,
+                            "name": result.name,
+                            "content": result.content[:500],
+                        }
+                    )
+                elif isinstance(result, SearchResult):
+                    output.append(
+                        {
+                            "file_path": result.chunk.file_path,
+                            "start_line": result.chunk.start_line,
+                            "end_line": result.chunk.end_line,
+                            "score": result.score,
+                            "name": result.chunk.name,
+                            "content": result.chunk.content[:500],
+                        }
+                    )
             print("\nJSON 输出:")
             print(json.dumps(output, ensure_ascii=False, indent=2))
 
@@ -536,7 +539,7 @@ async def cmd_status(args: argparse.Namespace) -> int:
             if files:
                 # 计算统计信息
                 total_chunks = sum(len(f.get("chunk_ids", [])) for f in files.values())
-                languages = {}
+                languages: dict[str, int] = {}
                 for fp in files:
                     ext = Path(fp).suffix
                     languages[ext] = languages.get(ext, 0) + 1
@@ -612,12 +615,14 @@ async def cmd_clear(args: argparse.Namespace) -> int:
     # 清除向量存储
     if persist_dir.exists():
         import shutil
+
         shutil.rmtree(persist_dir)
         cleared.append("向量存储")
 
     # 清除嵌入缓存
     if cache_dir.exists():
         import shutil
+
         shutil.rmtree(cache_dir)
         cleared.append("嵌入缓存")
 
@@ -722,17 +727,20 @@ def create_parser() -> argparse.ArgumentParser:
 
     # 全局参数
     parser.add_argument(
-        "-p", "--path",
+        "-p",
+        "--path",
         default=".",
         help="代码库路径 (默认: 当前目录)",
     )
     parser.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         default=None,
         help="配置文件路径",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="显示详细日志",
     )
@@ -758,7 +766,8 @@ def create_parser() -> argparse.ArgumentParser:
         help="搜索查询",
     )
     search_parser.add_argument(
-        "-k", "--top-k",
+        "-k",
+        "--top-k",
         type=int,
         default=10,
         help="返回结果数量 (默认: 10)",

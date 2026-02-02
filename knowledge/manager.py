@@ -10,7 +10,9 @@
 - 文档刷新和删除
 - 向量索引管理
 - 支持 CLI ask 模式只读查询
+- 支持内容清洗选项（raw/markdown/text/changelog）
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,13 +21,25 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Sequence
 
 from loguru import logger
 from pydantic import BaseModel
 
-from .fetcher import FetchConfig, FetchResult, WebFetcher
+from .fetcher import (
+    DEFAULT_URL_POLICY,
+    FetchConfig,
+    FetchResult,
+    UrlPolicy,
+    UrlPolicyError,
+    UrlRejectionReason,
+    WebFetcher,
+)
 from .models import Document, KnowledgeBase, KnowledgeBaseStats
+from .parser import (
+    ContentCleanMode,
+    clean_content_unified,
+)
 from .storage import SearchResult
 from .vector import (
     KnowledgeSemanticSearch,
@@ -36,9 +50,10 @@ from .vector import (
 
 class AskResult(BaseModel):
     """CLI ask 模式查询结果"""
+
     success: bool
     answer: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     duration: float = 0.0
     query: str = ""
     context_used: list[str] = []  # 使用的上下文文档标题/URL
@@ -80,8 +95,9 @@ class KnowledgeManager:
     def __init__(
         self,
         name: str = "default",
-        fetch_config: Optional[FetchConfig] = None,
-        vector_config: Optional[KnowledgeVectorConfig] = None,
+        fetch_config: FetchConfig | None = None,
+        vector_config: KnowledgeVectorConfig | None = None,
+        url_policy: UrlPolicy | None = None,
     ):
         """初始化知识库管理器
 
@@ -89,22 +105,52 @@ class KnowledgeManager:
             name: 知识库名称
             fetch_config: 网页获取配置
             vector_config: 向量搜索配置（None 表示禁用向量搜索）
+            url_policy: URL 安全策略配置（None 使用默认策略）
         """
         self._knowledge_base = KnowledgeBase(name=name)
-        self._fetcher = WebFetcher(fetch_config or FetchConfig())
         self._initialized = False
         self._url_to_doc_id: dict[str, str] = {}  # URL 到文档 ID 的映射
 
+        # URL 安全策略
+        self._url_policy = url_policy or DEFAULT_URL_POLICY
+
+        # 构建 WebFetcher 的配置，确保 url_policy 一致
+        effective_fetch_config = fetch_config or FetchConfig()
+        # 如果 fetch_config 没有设置 url_policy，使用 manager 级别的策略
+        if effective_fetch_config.url_policy is None:
+            effective_fetch_config.url_policy = self._url_policy
+        self._fetcher = WebFetcher(effective_fetch_config)
+
         # 向量搜索相关
         self._vector_config = vector_config
-        self._vector_store: Optional[KnowledgeVectorStore] = None
-        self._semantic_search: Optional[KnowledgeSemanticSearch] = None
+        self._vector_store: KnowledgeVectorStore | None = None
+        self._semantic_searcher: KnowledgeSemanticSearch | None = None
         self._use_vector_search: bool = vector_config is not None and vector_config.enabled
 
     @property
     def name(self) -> str:
         """知识库名称"""
         return self._knowledge_base.name
+
+    @property
+    def url_policy(self) -> UrlPolicy:
+        """URL 安全策略"""
+        return self._url_policy
+
+    def _validate_url_policy(self, url: str) -> UrlRejectionReason | None:
+        """校验 URL 是否符合安全策略
+
+        Args:
+            url: 待校验的 URL
+
+        Returns:
+            结构化的拒绝原因，如果有效则返回 None
+        """
+        try:
+            self._url_policy.validate(url)
+            return None
+        except UrlPolicyError as e:
+            return e.to_rejection_reason()
 
     @property
     def stats(self) -> KnowledgeBaseStats:
@@ -125,7 +171,7 @@ class KnowledgeManager:
         if self._use_vector_search and self._vector_config:
             self._vector_store = KnowledgeVectorStore(self._vector_config)
             await self._vector_store.initialize()
-            self._semantic_search = KnowledgeSemanticSearch(
+            self._semantic_searcher = KnowledgeSemanticSearch(
                 self._vector_store,
                 self._vector_config,
             )
@@ -137,21 +183,36 @@ class KnowledgeManager:
     async def add_url(
         self,
         url: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         force_refresh: bool = False,
-    ) -> Optional[Document]:
+        clean_mode: ContentCleanMode = ContentCleanMode.MARKDOWN,
+        preserve_raw: bool = False,
+    ) -> Document | None:
         """添加单个 URL 到知识库
 
         Args:
             url: 目标 URL
             metadata: 附加元数据
             force_refresh: 如果 URL 已存在，是否强制刷新
+            clean_mode: 内容清洗模式 (raw/markdown/text/changelog)
+            preserve_raw: 是否在 metadata 中保留原始内容
 
         Returns:
             创建或更新的文档，失败返回 None
+
+        Raises:
+            UrlPolicyError: URL 不符合安全策略时抛出（仅当配置为严格模式）
         """
         if not self._initialized:
             await self.initialize()
+
+        # URL 安全策略校验
+        rejection = self._validate_url_policy(url)
+        if rejection:
+            logger.warning(
+                f"URL 策略拒绝: {rejection.url} | policy_type={rejection.policy_type} | reason={rejection.reason}"
+            )
+            return None
 
         # 检查 URL 是否已存在
         if url in self._url_to_doc_id and not force_refresh:
@@ -161,7 +222,7 @@ class KnowledgeManager:
                 logger.info(f"URL 已存在: {url} (doc_id={doc_id})")
                 return existing_doc
 
-        # 验证 URL
+        # 验证 URL 基本格式
         if not self._fetcher.check_url_valid(url):
             logger.warning(f"无效的 URL: {url}")
             return None
@@ -174,8 +235,13 @@ class KnowledgeManager:
             logger.error(f"获取失败: {url} - {result.error}")
             return None
 
-        # 创建文档
-        doc = self._create_document_from_result(result, metadata)
+        # 创建文档（带清洗选项）
+        doc = self._create_document_from_result(
+            result,
+            metadata,
+            clean_mode=clean_mode,
+            preserve_raw=preserve_raw,
+        )
 
         # 添加到知识库
         self._knowledge_base.add_document(doc)
@@ -191,8 +257,10 @@ class KnowledgeManager:
     async def add_urls(
         self,
         urls: list[str],
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         force_refresh: bool = False,
+        clean_mode: ContentCleanMode = ContentCleanMode.MARKDOWN,
+        preserve_raw: bool = False,
     ) -> list[Document]:
         """批量添加 URL 到知识库
 
@@ -200,6 +268,8 @@ class KnowledgeManager:
             urls: URL 列表
             metadata: 附加元数据（应用于所有文档）
             force_refresh: 是否强制刷新已存在的 URL
+            clean_mode: 内容清洗模式 (raw/markdown/text/changelog)
+            preserve_raw: 是否在 metadata 中保留原始内容
 
         Returns:
             成功添加的文档列表
@@ -212,6 +282,15 @@ class KnowledgeManager:
         existing_docs = []
 
         for url in urls:
+            # URL 安全策略校验
+            rejection = self._validate_url_policy(url)
+            if rejection:
+                logger.warning(
+                    f"跳过 URL（策略拒绝）: {rejection.url} | "
+                    f"policy_type={rejection.policy_type} | reason={rejection.reason}"
+                )
+                continue
+
             if not self._fetcher.check_url_valid(url):
                 logger.warning(f"跳过无效 URL: {url}")
                 continue
@@ -237,7 +316,12 @@ class KnowledgeManager:
         new_docs = []
         for result in results:
             if result.success:
-                doc = self._create_document_from_result(result, metadata)
+                doc = self._create_document_from_result(
+                    result,
+                    metadata,
+                    clean_mode=clean_mode,
+                    preserve_raw=preserve_raw,
+                )
                 self._knowledge_base.add_document(doc)
                 self._url_to_doc_id[result.url] = doc.id
                 new_docs.append(doc)
@@ -258,10 +342,10 @@ class KnowledgeManager:
 
     async def add_file(
         self,
-        file_path: Union[str, Path],
-        metadata: Optional[dict[str, Any]] = None,
+        file_path: str | Path,
+        metadata: dict[str, Any] | None = None,
         encoding: str = "utf-8",
-    ) -> Optional[Document]:
+    ) -> Document | None:
         """添加本地文件到知识库
 
         支持 .txt, .md, .rst 等文本格式文件。
@@ -295,9 +379,7 @@ class KnowledgeManager:
         # 检查文件扩展名
         suffix = path.suffix.lower()
         if suffix not in self.SUPPORTED_FILE_EXTENSIONS:
-            logger.warning(
-                f"不支持的文件格式: {suffix}，支持的格式: {', '.join(self.SUPPORTED_FILE_EXTENSIONS)}"
-            )
+            logger.warning(f"不支持的文件格式: {suffix}，支持的格式: {', '.join(self.SUPPORTED_FILE_EXTENSIONS)}")
             return None
 
         # 读取文件内容
@@ -368,15 +450,15 @@ class KnowledgeManager:
         """
         import re
 
-        lines = content.strip().split('\n')
+        lines = content.strip().split("\n")
         if not lines:
             return path.stem  # 使用文件名（不含扩展名）
 
         first_line = lines[0].strip()
 
         # Markdown 标题 (# Title)
-        if first_line.startswith('#'):
-            title = re.sub(r'^#+\s*', '', first_line)
+        if first_line.startswith("#"):
+            title = re.sub(r"^#+\s*", "", first_line)
             if title:
                 return title[:200]
 
@@ -384,9 +466,8 @@ class KnowledgeManager:
         if len(lines) >= 2:
             second_line = lines[1].strip()
             # RST 使用 =, -, ~ 等作为标题下划线
-            if second_line and all(c in '=-~^"' for c in second_line):
-                if first_line:
-                    return first_line[:200]
+            if second_line and all(c in '=-~^"' for c in second_line) and first_line:
+                return first_line[:200]
 
         # 普通文本：使用第一行非空内容
         if first_line and len(first_line) <= 200:
@@ -395,10 +476,99 @@ class KnowledgeManager:
         # 回退：使用文件名
         return path.stem
 
+    async def add_content(
+        self,
+        url: str,
+        content: str,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        force_refresh: bool = False,
+        clean_mode: ContentCleanMode = ContentCleanMode.MARKDOWN,
+        preserve_raw: bool = False,
+    ) -> Document | None:
+        """添加已有内容到知识库（不需要 fetch）
+
+        适用于 changelog 等已获取的内容，支持清洗选项。
+
+        Args:
+            url: 文档来源 URL（用作唯一标识）
+            content: 原始内容（HTML 或 Markdown）
+            title: 文档标题（可选，为空时自动提取）
+            metadata: 附加元数据
+            force_refresh: 如果 URL 已存在，是否强制刷新
+            clean_mode: 内容清洗模式 (raw/markdown/text/changelog)
+            preserve_raw: 是否在 metadata 中保留原始内容
+
+        Returns:
+            创建或更新的文档，失败返回 None
+
+        示例:
+            >>> doc = await manager.add_content(
+            ...     url="https://cursor.com/changelog",
+            ...     content="<html>...</html>",
+            ...     clean_mode=ContentCleanMode.CHANGELOG,
+            ...     preserve_raw=True,
+            ... )
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        if not content:
+            logger.warning(f"内容为空，跳过: {url}")
+            return None
+
+        # 检查 URL 是否已存在
+        if url in self._url_to_doc_id and not force_refresh:
+            doc_id = self._url_to_doc_id[url]
+            existing_doc = self._knowledge_base.get_document(doc_id)
+            if existing_doc:
+                logger.info(f"URL 已存在: {url} (doc_id={doc_id})")
+                return existing_doc
+
+        # 使用统一清洗函数处理内容
+        cleaned = clean_content_unified(
+            content,
+            mode=clean_mode,
+            preserve_raw=preserve_raw,
+        )
+
+        doc_metadata: dict[str, Any] = {
+            "source_type": "content",
+            "clean_mode": clean_mode.value,
+            "cleaned_fingerprint": cleaned.fingerprint,
+            **(metadata or {}),
+        }
+
+        # 如果需要保留原始内容，存入 metadata
+        if preserve_raw and cleaned.raw_content:
+            doc_metadata["raw_content"] = cleaned.raw_content
+
+        # 使用提供的标题，或从清洗结果提取，或从原始内容提取
+        doc_title = title or cleaned.title or self._extract_title(content)
+
+        # 创建文档
+        doc = Document(
+            url=url,
+            title=doc_title,
+            content=cleaned.content,
+            metadata=doc_metadata,
+        )
+
+        # 添加到知识库
+        self._knowledge_base.add_document(doc)
+        self._url_to_doc_id[url] = doc.id
+
+        # 索引到向量存储
+        if self._use_vector_search and self._vector_store:
+            await self._vector_store.index_document(doc)
+
+        logger.info(f"内容添加成功: {doc.id} ({url})")
+        return doc
+
     async def refresh(
         self,
         url_or_doc_id: str,
-    ) -> Optional[Document]:
+    ) -> Document | None:
         """刷新指定文档
 
         重新获取 URL 内容并更新文档
@@ -511,19 +681,19 @@ class KnowledgeManager:
 
         for doc in self._knowledge_base.documents.values():
             # 计算匹配分数
-            score, matched_content = self._calculate_match_score(
-                doc, query_terms, query_lower
-            )
+            score, matched_content = self._calculate_match_score(doc, query_terms, query_lower)
 
             if score >= min_score:
-                results.append(SearchResult(
-                    doc_id=doc.id,
-                    url=doc.url,
-                    title=doc.title,
-                    score=score,
-                    snippet=matched_content[:200] if matched_content else "",
-                    match_type="exact" if query_lower in doc.content.lower() else "partial",
-                ))
+                results.append(
+                    SearchResult(
+                        doc_id=doc.id,
+                        url=doc.url,
+                        title=doc.title,
+                        score=score,
+                        snippet=matched_content[:200] if matched_content else "",
+                        match_type="exact" if query_lower in doc.content.lower() else "partial",
+                    )
+                )
 
         # 按分数排序
         results.sort(key=lambda r: r.score, reverse=True)
@@ -537,10 +707,10 @@ class KnowledgeManager:
         min_score: float = 0.0,
     ) -> list[SearchResult]:
         """语义搜索（向量相似度）"""
-        if not self._semantic_search or not self._vector_store:
+        if not self._semantic_searcher or not self._vector_store:
             return []
 
-        vector_results = await self._semantic_search.semantic_search(
+        vector_results = await self._semantic_searcher.semantic_search(
             query=query,
             top_k=max_results,
             min_score=min_score,
@@ -549,14 +719,16 @@ class KnowledgeManager:
         # 转换为 SearchResult
         results: list[SearchResult] = []
         for vr in vector_results:
-            results.append(SearchResult(
-                doc_id=vr.doc_id,
-                url=vr.url,
-                title=vr.title,
-                score=vr.score,
-                snippet=vr.content[:200] if vr.content else "",
-                match_type="semantic",
-            ))
+            results.append(
+                SearchResult(
+                    doc_id=vr.doc_id,
+                    url=vr.url,
+                    title=vr.title,
+                    score=vr.score,
+                    snippet=vr.content[:200] if vr.content else "",
+                    match_type="semantic",
+                )
+            )
 
         return results
 
@@ -567,7 +739,7 @@ class KnowledgeManager:
         min_score: float = 0.0,
     ) -> list[SearchResult]:
         """混合搜索（关键词 + 语义）"""
-        if not self._semantic_search or not self._vector_store:
+        if not self._semantic_searcher or not self._vector_store:
             return self._keyword_search(query, max_results, min_score)
 
         # 获取关键词搜索结果
@@ -586,7 +758,7 @@ class KnowledgeManager:
         ]
 
         # 执行混合搜索
-        vector_results = await self._semantic_search.hybrid_search(
+        vector_results = await self._semantic_searcher.hybrid_search(
             query=query,
             keyword_results=keyword_dicts,
             top_k=max_results,
@@ -595,20 +767,22 @@ class KnowledgeManager:
         # 转换为 SearchResult
         results: list[SearchResult] = []
         for vr in vector_results:
-            results.append(SearchResult(
-                doc_id=vr.doc_id,
-                url=vr.url,
-                title=vr.title,
-                score=vr.score,
-                snippet=vr.content[:200] if vr.content else "",
-                match_type="hybrid",
-            ))
+            results.append(
+                SearchResult(
+                    doc_id=vr.doc_id,
+                    url=vr.url,
+                    title=vr.title,
+                    score=vr.score,
+                    snippet=vr.content[:200] if vr.content else "",
+                    match_type="hybrid",
+                )
+            )
 
         return results
 
     def list(
         self,
-        limit: Optional[int] = None,
+        limit: int | None = None,
         offset: int = 0,
     ) -> list[Document]:
         """列出所有文档
@@ -684,7 +858,7 @@ class KnowledgeManager:
         logger.info(f"文档已删除: {doc_id}")
         return True
 
-    def get_document(self, doc_id: str) -> Optional[Document]:
+    def get_document(self, doc_id: str) -> Document | None:
         """获取指定文档
 
         Args:
@@ -695,7 +869,7 @@ class KnowledgeManager:
         """
         return self._knowledge_base.get_document(doc_id)
 
-    def get_document_by_url(self, url: str) -> Optional[Document]:
+    def get_document_by_url(self, url: str) -> Document | None:
         """根据 URL 获取文档
 
         Args:
@@ -706,7 +880,7 @@ class KnowledgeManager:
         """
         return self._knowledge_base.get_document_by_url(url)
 
-    def _find_document(self, url_or_doc_id: str) -> Optional[Document]:
+    def _find_document(self, url_or_doc_id: str) -> Document | None:
         """查找文档（支持 URL 或文档 ID）"""
         # 尝试作为文档 ID 查找
         doc = self._knowledge_base.get_document(url_or_doc_id)
@@ -719,22 +893,47 @@ class KnowledgeManager:
     def _create_document_from_result(
         self,
         result: FetchResult,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
+        clean_mode: ContentCleanMode = ContentCleanMode.MARKDOWN,
+        preserve_raw: bool = False,
     ) -> Document:
-        """从获取结果创建文档"""
-        doc_metadata = {
+        """从获取结果创建文档
+
+        Args:
+            result: 获取结果
+            metadata: 附加元数据
+            clean_mode: 内容清洗模式
+            preserve_raw: 是否保留原始内容到 metadata
+        """
+        # 使用统一清洗函数处理内容
+        cleaned = clean_content_unified(
+            result.content,
+            mode=clean_mode,
+            preserve_raw=preserve_raw,
+        )
+
+        doc_metadata: dict[str, Any] = {
             "fetch_method": result.method_used.value,
             "fetch_duration": result.duration,
             "status_code": result.status_code,
             "content_type": result.content_type,
+            "clean_mode": clean_mode.value,
+            "cleaned_fingerprint": cleaned.fingerprint,
             **(result.metadata or {}),
             **(metadata or {}),
         }
 
+        # 如果需要保留原始内容，存入 metadata
+        if preserve_raw and cleaned.raw_content:
+            doc_metadata["raw_content"] = cleaned.raw_content
+
+        # 使用清洗后的标题，若为空则回退到自动提取
+        title = cleaned.title or self._extract_title(result.content)
+
         return Document(
             url=result.url,
-            title=self._extract_title(result.content),
-            content=result.content,
+            title=title,
+            content=cleaned.content,
             metadata=doc_metadata,
         )
 
@@ -743,16 +942,16 @@ class KnowledgeManager:
         import re
 
         # 尝试从 HTML title 标签提取
-        match = re.search(r'<title[^>]*>([^<]+)</title>', content, re.IGNORECASE)
+        match = re.search(r"<title[^>]*>([^<]+)</title>", content, re.IGNORECASE)
         if match:
             return match.group(1).strip()
 
         # 尝试从第一行提取
-        lines = content.strip().split('\n')
+        lines = content.strip().split("\n")
         if lines:
             first_line = lines[0].strip()
             # 清理可能的标记符号
-            first_line = re.sub(r'^[#\-*=]+\s*', '', first_line)
+            first_line = re.sub(r"^[#\-*=]+\s*", "", first_line)
             if first_line and len(first_line) <= 200:
                 return first_line
 
@@ -761,7 +960,7 @@ class KnowledgeManager:
     def _calculate_match_score(
         self,
         doc: Document,
-        query_terms: list[str],
+        query_terms: Sequence[str],
         query_lower: str,
     ) -> tuple[float, str]:
         """计算文档与查询的匹配分数
@@ -890,10 +1089,7 @@ class KnowledgeManager:
         return len(self._knowledge_base.documents)
 
     def __repr__(self) -> str:
-        return (
-            f"KnowledgeManager(name='{self.name}', "
-            f"documents={len(self)})"
-        )
+        return f"KnowledgeManager(name='{self.name}', documents={len(self)})"
 
     # ========== CLI Ask 模式查询 ==========
 
@@ -902,8 +1098,8 @@ class KnowledgeManager:
         question: str,
         max_context_docs: int = 3,
         timeout: int = 60,
-        model: Optional[str] = None,
-        working_directory: Optional[str] = None,
+        model: str | None = None,
+        working_directory: str | None = None,
     ) -> AskResult:
         """使用 CLI ask 模式执行只读查询
 
@@ -950,9 +1146,7 @@ class KnowledgeManager:
                     # 限制每个文档内容长度
                     content_preview = doc.content[:1500] if doc.content else ""
                     context_parts.append(
-                        f"### {i}. {doc.title or '未命名'}\n"
-                        f"来源: {doc.url}\n"
-                        f"```\n{content_preview}\n```\n"
+                        f"### {i}. {doc.title or '未命名'}\n来源: {doc.url}\n```\n{content_preview}\n```\n"
                     )
             context_content = "\n".join(context_parts)
 
@@ -968,9 +1162,12 @@ class KnowledgeManager:
         # 构建 CLI 命令
         cmd = [
             agent_path,
-            "-p", full_prompt,
-            "--mode", "ask",
-            "--output-format", "text",
+            "-p",
+            full_prompt,
+            "--mode",
+            "ask",
+            "--output-format",
+            "text",
         ]
 
         if model:
@@ -1045,7 +1242,7 @@ class KnowledgeManager:
                 query=question,
             )
 
-    def _find_agent_cli(self) -> Optional[str]:
+    def _find_agent_cli(self) -> str | None:
         """查找 agent CLI 可执行文件"""
         # 尝试常见路径
         possible_paths = [
@@ -1070,8 +1267,8 @@ class KnowledgeManager:
         question: str,
         max_context_docs: int = 3,
         timeout: int = 60,
-        model: Optional[str] = None,
-        working_directory: Optional[str] = None,
+        model: str | None = None,
+        working_directory: str | None = None,
     ) -> AskResult:
         """同步版本：使用 CLI ask 模式执行只读查询
 
@@ -1110,9 +1307,7 @@ class KnowledgeManager:
                     context_used.append(doc.title or doc.url)
                     content_preview = doc.content[:1500] if doc.content else ""
                     context_parts.append(
-                        f"### {i}. {doc.title or '未命名'}\n"
-                        f"来源: {doc.url}\n"
-                        f"```\n{content_preview}\n```\n"
+                        f"### {i}. {doc.title or '未命名'}\n来源: {doc.url}\n```\n{content_preview}\n```\n"
                     )
             context_content = "\n".join(context_parts)
 
@@ -1127,16 +1322,19 @@ class KnowledgeManager:
 
         cmd = [
             agent_path,
-            "-p", full_prompt,
-            "--mode", "ask",
-            "--output-format", "text",
+            "-p",
+            full_prompt,
+            "--mode",
+            "ask",
+            "--output-format",
+            "text",
         ]
 
         if model:
             cmd.extend(["--model", model])
 
         try:
-            result = subprocess.run(
+            cli_result = subprocess.run(
                 cmd,
                 cwd=working_directory or ".",
                 capture_output=True,
@@ -1147,21 +1345,21 @@ class KnowledgeManager:
 
             duration = (datetime.now() - start_time).total_seconds()
 
-            if result.returncode == 0:
+            if cli_result.returncode == 0:
                 logger.info(f"CLI ask 查询成功，耗时 {duration:.2f}s")
                 return AskResult(
                     success=True,
-                    answer=result.stdout.strip(),
+                    answer=cli_result.stdout.strip(),
                     query=question,
                     duration=duration,
                     context_used=context_used,
                 )
             else:
-                error_msg = result.stderr.strip() or f"exit_code: {result.returncode}"
+                error_msg = cli_result.stderr.strip() or f"exit_code: {cli_result.returncode}"
                 logger.warning(f"CLI ask 查询失败: {error_msg}")
                 return AskResult(
                     success=False,
-                    answer=result.stdout.strip(),
+                    answer=cli_result.stdout.strip(),
                     error=error_msg,
                     query=question,
                     duration=duration,

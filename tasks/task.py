@@ -1,4 +1,5 @@
 """任务定义"""
+
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -9,17 +10,19 @@ from pydantic import BaseModel, Field
 
 class TaskStatus(str, Enum):
     """任务状态"""
-    PENDING = "pending"          # 待处理
-    QUEUED = "queued"            # 已入队
-    ASSIGNED = "assigned"        # 已分配
+
+    PENDING = "pending"  # 待处理
+    QUEUED = "queued"  # 已入队
+    ASSIGNED = "assigned"  # 已分配
     IN_PROGRESS = "in_progress"  # 执行中
-    COMPLETED = "completed"      # 已完成
-    FAILED = "failed"            # 失败
-    CANCELLED = "cancelled"      # 已取消
+    COMPLETED = "completed"  # 已完成
+    FAILED = "failed"  # 失败
+    CANCELLED = "cancelled"  # 已取消
 
 
 class TaskPriority(int, Enum):
     """任务优先级"""
+
     LOW = 0
     NORMAL = 1
     HIGH = 2
@@ -28,15 +31,16 @@ class TaskPriority(int, Enum):
 
 class TaskType(str, Enum):
     """任务类型"""
-    EXPLORE = "explore"          # 探索代码库
-    ANALYZE = "analyze"          # 分析代码
-    IMPLEMENT = "implement"      # 实现功能
-    REFACTOR = "refactor"        # 重构代码
-    FIX = "fix"                  # 修复问题
-    TEST = "test"                # 编写测试
-    DOCUMENT = "document"        # 编写文档
-    REVIEW = "review"            # 代码评审
-    CUSTOM = "custom"            # 自定义任务
+
+    EXPLORE = "explore"  # 探索代码库
+    ANALYZE = "analyze"  # 分析代码
+    IMPLEMENT = "implement"  # 实现功能
+    REFACTOR = "refactor"  # 重构代码
+    FIX = "fix"  # 修复问题
+    TEST = "test"  # 编写测试
+    DOCUMENT = "document"  # 编写文档
+    REVIEW = "review"  # 代码评审
+    CUSTOM = "custom"  # 自定义任务
 
 
 class Task(BaseModel):
@@ -44,22 +48,23 @@ class Task(BaseModel):
 
     规划者创建任务，执行者领取并完成任务
     """
+
     # 基本信息
     id: str = Field(default_factory=lambda: f"task-{uuid.uuid4().hex[:8]}")
     type: TaskType = TaskType.CUSTOM
     title: str
     description: str
-    instruction: str              # 给 Cursor Agent 的具体指令
+    instruction: str  # 给 Cursor Agent 的具体指令
 
     # 状态信息
     status: TaskStatus = TaskStatus.PENDING
     priority: TaskPriority = TaskPriority.NORMAL
 
     # 关联信息
-    parent_task_id: Optional[str] = None     # 父任务 ID
+    parent_task_id: Optional[str] = None  # 父任务 ID
     sub_task_ids: list[str] = Field(default_factory=list)  # 子任务 ID 列表
-    created_by: Optional[str] = None         # 创建者 Agent ID
-    assigned_to: Optional[str] = None        # 分配给的 Agent ID
+    created_by: Optional[str] = None  # 创建者 Agent ID
+    assigned_to: Optional[str] = None  # 分配给的 Agent ID
 
     # 上下文
     context: dict[str, Any] = Field(default_factory=dict)

@@ -35,13 +35,11 @@ Cloud 请求判定规则:
     True
 """
 
-from typing import Optional
-
 # Cloud 前缀（& 开头表示使用 Cloud 执行）
 CLOUD_PREFIX = "&"
 
 
-def is_cloud_request(prompt: Optional[str]) -> bool:
+def is_cloud_request(prompt: object | None) -> bool:
     """检测是否为 Cloud 请求（以 & 开头）
 
     这是检测 Cloud 请求的**权威实现**，所有其他模块应代理到此函数。
@@ -85,11 +83,11 @@ def is_cloud_request(prompt: Optional[str]) -> bool:
         return False
 
     # 确保 & 后面有实际内容（不只是空白）
-    content_after_prefix = stripped[len(CLOUD_PREFIX):].strip()
+    content_after_prefix = stripped[len(CLOUD_PREFIX) :].strip()
     return len(content_after_prefix) > 0
 
 
-def strip_cloud_prefix(prompt: Optional[str]) -> str:
+def strip_cloud_prefix(prompt: object | None) -> str:
     """去除 Cloud 前缀 &
 
     这是剥离 Cloud 前缀的**权威实现**，所有其他模块应代理到此函数。
@@ -114,15 +112,15 @@ def strip_cloud_prefix(prompt: Optional[str]) -> str:
         '普通任务'
     """
     if not prompt or not isinstance(prompt, str):
-        return prompt or ""
+        return ""
 
     stripped = prompt.strip()
     if stripped.startswith(CLOUD_PREFIX):
-        return stripped[len(CLOUD_PREFIX):].strip()
+        return stripped[len(CLOUD_PREFIX) :].strip()
     return prompt
 
 
-def parse_cloud_request(prompt: Optional[str]) -> tuple[bool, str]:
+def parse_cloud_request(prompt: object | None) -> tuple[bool, str]:
     """解析 Cloud 请求，返回是否为 Cloud 请求及剥离后的 prompt
 
     这是一个便捷函数，组合了 is_cloud_request 和 strip_cloud_prefix 的功能，
@@ -147,6 +145,7 @@ def parse_cloud_request(prompt: Optional[str]) -> tuple[bool, str]:
     is_cloud = is_cloud_request(prompt)
     if is_cloud:
         return True, strip_cloud_prefix(prompt)
-    else:
-        # 非 Cloud 请求时，返回原始 prompt（处理 None 情况）
-        return False, prompt if prompt else ""
+    # 非 Cloud 请求时，返回原始 prompt（处理 None / 非字符串情况）
+    if isinstance(prompt, str):
+        return False, prompt
+    return False, ""

@@ -1,4 +1,5 @@
 """Worker 池管理"""
+
 import asyncio
 from typing import TYPE_CHECKING, Optional
 
@@ -28,7 +29,7 @@ class WorkerPool:
         self.workers: list[WorkerAgent] = []
         self._running = False
         self._worker_tasks: list[asyncio.Task] = []
-        self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
+        self._knowledge_manager: Optional[KnowledgeManager] = knowledge_manager
 
     def initialize(self) -> None:
         """初始化 Worker 池"""
@@ -75,8 +76,7 @@ class WorkerPool:
 
         # 为每个 Worker 创建工作协程
         self._worker_tasks = [
-            asyncio.create_task(self._worker_loop(worker, task_queue, iteration_id))
-            for worker in self.workers
+            asyncio.create_task(self._worker_loop(worker, task_queue, iteration_id)) for worker in self.workers
         ]
 
         # 等待所有 Worker 完成

@@ -15,6 +15,7 @@
 5. 环境变量 CURSOR_CLOUD_API_KEY（备选）
 6. config.yaml 中的 cloud_agent.api_key
 """
+
 import os
 from typing import Any, Optional
 
@@ -139,7 +140,7 @@ class CloudClientFactory:
             return explicit_api_key
 
         # 2. agent_config.api_key
-        if agent_config and hasattr(agent_config, 'api_key') and agent_config.api_key:
+        if agent_config and hasattr(agent_config, "api_key") and agent_config.api_key:
             logger.debug("使用 agent_config.api_key")
             return agent_config.api_key
 
@@ -219,25 +220,17 @@ class CloudClientFactory:
 
         # 解析其他配置项，遵循优先级
         resolved_auth_timeout = (
-            auth_timeout
-            if auth_timeout is not None
-            else (auth_config.auth_timeout if auth_config else None)
+            auth_timeout if auth_timeout is not None else (auth_config.auth_timeout if auth_config else None)
         )
         if resolved_auth_timeout is None:
             resolved_auth_timeout = cloud_config.get("auth_timeout", 30)
 
-        resolved_base_url = (
-            base_url
-            if base_url is not None
-            else (auth_config.api_base_url if auth_config else None)
-        )
+        resolved_base_url = base_url if base_url is not None else (auth_config.api_base_url if auth_config else None)
         if resolved_base_url is None:
             resolved_base_url = cloud_config.get("base_url", "https://api.cursor.com")
 
         resolved_max_retries = (
-            max_retries
-            if max_retries is not None
-            else (auth_config.max_retries if auth_config else None)
+            max_retries if max_retries is not None else (auth_config.max_retries if auth_config else None)
         )
         if resolved_max_retries is None:
             resolved_max_retries = cloud_config.get("max_retries", 3)
@@ -245,12 +238,14 @@ class CloudClientFactory:
         # 创建新的配置，合并参数
         if auth_config:
             # 基于现有配置创建，覆盖解析后的值
-            new_config = auth_config.model_copy(update={
-                "api_key": resolved_api_key,
-                "auth_timeout": resolved_auth_timeout,
-                "api_base_url": resolved_base_url,
-                "max_retries": resolved_max_retries,
-            })
+            new_config = auth_config.model_copy(
+                update={
+                    "api_key": resolved_api_key,
+                    "auth_timeout": resolved_auth_timeout,
+                    "api_base_url": resolved_base_url,
+                    "max_retries": resolved_max_retries,
+                }
+            )
             return new_config
         else:
             # 创建新配置
@@ -375,10 +370,10 @@ class CloudClientFactory:
         default_allow_write = False
 
         if agent_config:
-            default_model = getattr(agent_config, 'model', None)
-            default_working_directory = getattr(agent_config, 'working_directory', ".")
-            default_timeout = getattr(agent_config, 'timeout', 300)
-            default_allow_write = getattr(agent_config, 'force_write', False)
+            default_model = getattr(agent_config, "model", None)
+            default_working_directory = getattr(agent_config, "working_directory", ".")
+            default_timeout = getattr(agent_config, "timeout", 300)
+            default_allow_write = getattr(agent_config, "force_write", False)
 
         return CloudTaskOptions(
             model=model or default_model,
@@ -438,10 +433,13 @@ class CloudClientFactory:
         auth_status = await auth_manager.authenticate()
         if not auth_status.authenticated:
             error_msg = auth_status.error.user_friendly_message if auth_status.error else "未认证"
-            logger.warning(f"Cloud 认证失败: {error_msg}")
+            # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+            error_code = auth_status.error.code.value if auth_status.error else "unknown"
+            logger.debug(f"Cloud 认证失败: code={error_code}")
             return CloudAgentResult(
                 success=False,
                 error=error_msg,
+                error_type="auth",
             )
 
         # 构建任务选项
@@ -497,10 +495,13 @@ class CloudClientFactory:
         auth_status = await auth_manager.authenticate()
         if not auth_status.authenticated:
             error_msg = auth_status.error.user_friendly_message if auth_status.error else "未认证"
-            logger.warning(f"Cloud 认证失败: {error_msg}")
+            # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+            error_code = auth_status.error.code.value if auth_status.error else "unknown"
+            logger.debug(f"Cloud 认证失败: code={error_code}")
             return CloudAgentResult(
                 success=False,
                 error=error_msg,
+                error_type="auth",
             )
 
         # 构建任务选项

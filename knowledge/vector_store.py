@@ -11,23 +11,29 @@
 - 增量索引：基于内容哈希避免重复索引
 - 索引状态跟踪：记录索引进度和统计信息
 """
+
 import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
 
 from .models import Document, DocumentChunk
 from .vector import KnowledgeVectorConfig
 
+if TYPE_CHECKING:
+    from indexing.embedding import EmbeddingCache as EmbeddingCacheType
+    from indexing.embedding import SentenceTransformerEmbedding as SentenceTransformerEmbeddingType
+    from indexing.vector_store import ChromaVectorStore as ChromaVectorStoreType
+
 # 为单元测试提供可 patch 的模块级依赖占位符
 # 测试会 patch `knowledge.vector_store.ChromaVectorStore`
-ChromaVectorStore = None
-SentenceTransformerEmbedding = None
-EmbeddingCache = None
+ChromaVectorStore: type["ChromaVectorStoreType"] | None = None
+SentenceTransformerEmbedding: type["SentenceTransformerEmbeddingType"] | None = None
+EmbeddingCache: type["EmbeddingCacheType"] | None = None
 
 
 # 类型别名：进度回调函数
@@ -47,13 +53,14 @@ class IndexingStats:
 
     记录索引操作的统计信息和状态
     """
-    last_index_time: Optional[datetime] = None    # 最后索引时间
-    indexed_doc_count: int = 0                     # 已索引文档数
-    indexed_chunk_count: int = 0                   # 已索引分块数
-    pending_queue_size: int = 0                    # 待索引队列大小
-    total_index_operations: int = 0                # 总索引操作次数
-    failed_index_count: int = 0                    # 失败索引次数
-    skipped_count: int = 0                         # 跳过（无需重索引）次数
+
+    last_index_time: Optional[datetime] = None  # 最后索引时间
+    indexed_doc_count: int = 0  # 已索引文档数
+    indexed_chunk_count: int = 0  # 已索引分块数
+    pending_queue_size: int = 0  # 待索引队列大小
+    total_index_operations: int = 0  # 总索引操作次数
+    failed_index_count: int = 0  # 失败索引次数
+    skipped_count: int = 0  # 跳过（无需重索引）次数
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
@@ -74,6 +81,7 @@ class VectorSearchResult:
 
     包含文档分块的搜索结果信息
     """
+
     doc_id: str
     chunk_id: str
     content: str
@@ -124,13 +132,13 @@ class KnowledgeVectorStore:
         self._lock = asyncio.Lock()
 
         # ChromaDB 向量存储实例
-        self._vector_store = None
+        self._vector_store: "ChromaVectorStoreType | None" = None
 
         # SentenceTransformer 嵌入模型实例
-        self._embedding_model = None
+        self._embedding_model: "SentenceTransformerEmbeddingType | None" = None
 
         # EmbeddingCache 实例
-        self._embedding_cache = None
+        self._embedding_cache: "EmbeddingCacheType | None" = None
 
         # 文档 ID 到分块 ID 的映射
         self._doc_chunk_mapping: dict[str, list[str]] = {}
@@ -162,6 +170,7 @@ class KnowledgeVectorStore:
                 global ChromaVectorStore, SentenceTransformerEmbedding, EmbeddingCache
                 if ChromaVectorStore is None:
                     from indexing.vector_store import ChromaVectorStore as _ChromaVectorStore
+
                     ChromaVectorStore = _ChromaVectorStore
                 if SentenceTransformerEmbedding is None or EmbeddingCache is None:
                     from indexing.embedding import (
@@ -170,6 +179,7 @@ class KnowledgeVectorStore:
                     from indexing.embedding import (
                         SentenceTransformerEmbedding as _SentenceTransformerEmbedding,
                     )
+
                     SentenceTransformerEmbedding = _SentenceTransformerEmbedding
                     EmbeddingCache = _EmbeddingCache
 
@@ -220,9 +230,7 @@ class KnowledgeVectorStore:
 
             except ImportError as e:
                 logger.error(f"初始化失败，缺少依赖: {e}")
-                raise ImportError(
-                    "请安装必要依赖: pip install chromadb sentence-transformers"
-                ) from e
+                raise ImportError("请安装必要依赖: pip install chromadb sentence-transformers") from e
             except Exception as e:
                 logger.error(f"初始化向量存储失败: {e}")
                 raise
@@ -242,6 +250,9 @@ class KnowledgeVectorStore:
         """
         if not self._initialized:
             await self.initialize()
+
+        assert self._embedding_model is not None
+        assert self._vector_store is not None
 
         async with self._lock:
             try:
@@ -442,8 +453,7 @@ class KnowledgeVectorStore:
         duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
         logger.info(
-            f"批量并发索引完成: 成功={success_count}, 失败={failed_count}, "
-            f"跳过={skipped_count}, 耗时={duration_ms}ms"
+            f"批量并发索引完成: 成功={success_count}, 失败={failed_count}, 跳过={skipped_count}, 耗时={duration_ms}ms"
         )
 
         return {
@@ -463,6 +473,8 @@ class KnowledgeVectorStore:
         Returns:
             是否索引成功
         """
+        assert self._embedding_model is not None
+        assert self._vector_store is not None
         try:
             # 创建或使用现有分块
             chunks = doc.chunks if doc.chunks else self._create_chunks(doc)
@@ -555,6 +567,8 @@ class KnowledgeVectorStore:
         if not self._initialized:
             await self.initialize()
 
+        assert self._vector_store is not None
+
         async with self._lock:
             try:
                 # 获取该文档的所有分块 ID
@@ -600,6 +614,9 @@ class KnowledgeVectorStore:
         if not self._initialized:
             await self.initialize()
 
+        assert self._embedding_model is not None
+        assert self._vector_store is not None
+
         try:
             # 生成查询向量
             query_embedding = await self._embedding_model.embed_text(query)
@@ -617,19 +634,20 @@ class KnowledgeVectorStore:
                 # 从元数据中提取文档信息
                 doc_id = sr.chunk.metadata.get("doc_id", "")
 
-                results.append(VectorSearchResult(
-                    doc_id=doc_id,
-                    chunk_id=sr.chunk.chunk_id,
-                    content=sr.chunk.content,
-                    score=sr.score,
-                    metadata={
-                        "title": sr.chunk.metadata.get("title", ""),
-                        "url": sr.chunk.file_path,
-                        "rank": sr.rank,
-                        **{k: v for k, v in sr.chunk.metadata.items()
-                           if k not in ("doc_id", "title")},
-                    },
-                ))
+                results.append(
+                    VectorSearchResult(
+                        doc_id=doc_id,
+                        chunk_id=sr.chunk.chunk_id,
+                        content=sr.chunk.content,
+                        score=sr.score,
+                        metadata={
+                            "title": sr.chunk.metadata.get("title", ""),
+                            "url": sr.chunk.file_path,
+                            "rank": sr.rank,
+                            **{k: v for k, v in sr.chunk.metadata.items() if k not in ("doc_id", "title")},
+                        },
+                    )
+                )
 
             # 二次过滤：即使底层存储没有应用阈值，也确保按 min_score 过滤
             if min_score > 0:
@@ -653,6 +671,9 @@ class KnowledgeVectorStore:
         """
         if not self._initialized:
             await self.initialize()
+
+        assert self._vector_store is not None
+        assert self._embedding_model is not None
 
         try:
             # 获取向量存储统计
@@ -813,7 +834,7 @@ class KnowledgeVectorStore:
             # 尝试在自然边界处分割
             if end < len(content):
                 # 查找最近的段落或句子结束符
-                for sep in ['\n\n', '。', '.', '！', '!', '？', '?', '\n', ' ']:
+                for sep in ["\n\n", "。", ".", "！", "!", "？", "?", "\n", " "]:
                     last_sep = content.rfind(sep, start, end)
                     if last_sep > start + chunk_size // 2:
                         end = last_sep + len(sep)
@@ -874,6 +895,8 @@ class KnowledgeVectorStore:
         """
         if not self._initialized:
             await self.initialize()
+
+        assert self._vector_store is not None
 
         # 清空现有索引
         await self._vector_store.clear()

@@ -8,22 +8,28 @@ Cloud Agent 客户端，用于将任务推送到云端执行。
     client = CursorCloudClient()
     result = await client.execute("& 实现功能")
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from loguru import logger
 
 # 从 core.cloud_utils 导入统一的 cloud request 检测函数
 from core.cloud_utils import (
     CLOUD_PREFIX,
+)
+from core.cloud_utils import (
     is_cloud_request as _is_cloud_request_util,
+)
+from core.cloud_utils import (
     strip_cloud_prefix as _strip_cloud_prefix_util,
 )
 
@@ -43,19 +49,37 @@ from .task import (
 
 # ========== 数据类 ==========
 
+
 @dataclass
 class CloudAgentResult:
-    """云端 Agent 执行结果"""
+    """云端 Agent 执行结果
+
+    Attributes:
+        success: 是否成功
+        task: 关联的 CloudTask 对象
+        output: 输出内容
+        error: 错误消息
+        error_type: 结构化错误类型 (auth, rate_limit, timeout, network, etc.)
+        retry_after: 建议重试等待时间（秒），用于限流错误
+        duration: 执行时长（秒）
+        files_modified: 修改的文件列表
+    """
+
     success: bool
-    task: Optional[CloudTask] = None
+    task: CloudTask | None = None
     output: str = ""
-    error: Optional[str] = None
+    error: str | None = None
+    error_type: str | None = None  # 结构化错误类型
+    retry_after: float | None = None  # 建议重试等待时间（秒）
     duration: float = 0.0
     files_modified: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为字典"""
-        return {
+        """转换为字典
+
+        包含所有字段，error_type 和 retry_after 仅在非空时包含。
+        """
+        result = {
             "success": self.success,
             "task": self.task.to_dict() if self.task else None,
             "output": self.output,
@@ -63,9 +87,16 @@ class CloudAgentResult:
             "duration": self.duration,
             "files_modified": self.files_modified,
         }
+        # 仅在非空时添加结构化错误字段，保持向后兼容
+        if self.error_type is not None:
+            result["error_type"] = self.error_type
+        if self.retry_after is not None:
+            result["retry_after"] = self.retry_after
+        return result
 
 
 # ========== Cloud Agent 客户端 ==========
+
 
 class CursorCloudClient:
     """Cursor Cloud Agent 客户端
@@ -101,7 +132,7 @@ class CursorCloudClient:
         self,
         api_base: str = "https://api.cursor.com",
         agents_endpoint: str = "/v1/agents",
-        auth_manager: Optional[CloudAuthManager] = None,
+        auth_manager: CloudAuthManager | None = None,
     ):
         self.api_base = api_base.rstrip("/")
         self.agents_endpoint = agents_endpoint
@@ -114,6 +145,7 @@ class CursorCloudClient:
     def _find_agent_executable(self) -> str:
         """查找 agent 可执行文件"""
         import shutil
+
         possible_paths = [
             shutil.which("agent"),
             "/usr/local/bin/agent",
@@ -128,7 +160,7 @@ class CursorCloudClient:
         return "agent"
 
     @staticmethod
-    def is_cloud_request(prompt: str) -> bool:
+    def is_cloud_request(prompt: object | None) -> bool:
         """检测是否是云端请求（以 & 开头）
 
         **代理方法**: 委托给 core.cloud_utils.is_cloud_request 实现。
@@ -149,7 +181,7 @@ class CursorCloudClient:
         return _is_cloud_request_util(prompt)
 
     @staticmethod
-    def strip_cloud_prefix(prompt: str) -> str:
+    def strip_cloud_prefix(prompt: object | None) -> str:
         """移除云端前缀 &
 
         **代理方法**: 委托给 core.cloud_utils.strip_cloud_prefix 实现。
@@ -166,10 +198,10 @@ class CursorCloudClient:
     async def execute(
         self,
         prompt: str,
-        options: Optional[CloudTaskOptions] = None,
+        options: CloudTaskOptions | None = None,
         wait: bool = True,
-        timeout: Optional[int] = None,
-        session_id: Optional[str] = None,
+        timeout: int | None = None,
+        session_id: str | None = None,
         switch_to_cloud: bool = False,
         force_cloud: bool = False,
     ) -> CloudAgentResult:
@@ -222,22 +254,28 @@ class CursorCloudClient:
             clean_prompt = self.strip_cloud_prefix(prompt) if is_cloud else prompt
 
             if force_cloud and not is_cloud:
-                logger.debug(f"强制云端执行: 自动为 prompt 启用云端模式")
+                logger.debug("强制云端执行: 自动为 prompt 启用云端模式")
 
             # 如果有 session_id，使用恢复模式并推送到云端
             if session_id:
                 return await self.push_to_cloud(session_id, clean_prompt, options)
 
-            return await self.submit_and_wait(clean_prompt, options, timeout) if wait else await self.submit_task(clean_prompt, options)
+            return (
+                await self.submit_and_wait(clean_prompt, options, timeout)
+                if wait
+                else await self.submit_task(clean_prompt, options)
+            )
         else:
             # 本地执行（使用现有的 CursorAgentClient）
             from cursor.client import CursorAgentClient, CursorAgentConfig
 
+            model = options.model if options and options.model else CursorAgentConfig().model
+            working_directory = options.working_directory if options and options.working_directory else "."
             config = CursorAgentConfig(
-                model=options.model if options else None,
-                working_directory=options.working_directory if options else ".",
+                model=model,
+                working_directory=working_directory,
                 force_write=options.allow_write if options else True,
-                timeout=timeout or (options.timeout if options else 300),
+                timeout=timeout or (options.timeout if options and options.timeout else 300),
             )
 
             client = CursorAgentClient(config)
@@ -259,7 +297,7 @@ class CursorCloudClient:
     async def submit_task(
         self,
         prompt: str,
-        options: Optional[CloudTaskOptions] = None,
+        options: CloudTaskOptions | None = None,
     ) -> CloudAgentResult:
         """提交任务到云端（不等待完成）
 
@@ -277,10 +315,13 @@ class CursorCloudClient:
         auth_status = await self.auth_manager.authenticate()
         if not auth_status.authenticated:
             error_msg = auth_status.error.user_friendly_message if auth_status.error else "未认证"
-            logger.warning(f"提交任务失败: {error_msg}")
+            # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+            error_code = auth_status.error.code.value if auth_status.error else "unknown"
+            logger.debug(f"提交任务认证失败: code={error_code}")
             return CloudAgentResult(
                 success=False,
                 error=error_msg,
+                error_type="auth",
             )
 
         options = options or CloudTaskOptions()
@@ -332,10 +373,12 @@ class CursorCloudClient:
                         message=error_text or "认证失败",
                         code=AuthErrorCode.INVALID_API_KEY,
                     )
-                    logger.warning(auth_error.user_friendly_message)
+                    # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+                    logger.debug(f"Cloud 认证失败: {auth_error.user_friendly_message}")
                     return CloudAgentResult(
                         success=False,
                         error=auth_error.user_friendly_message,
+                        error_type="auth",
                     )
 
                 if "forbidden" in error_lower or "403" in error_lower:
@@ -343,19 +386,41 @@ class CursorCloudClient:
                         message=error_text or "权限不足",
                         code=AuthErrorCode.INSUFFICIENT_PERMISSIONS,
                     )
-                    logger.warning(auth_error.user_friendly_message)
+                    # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+                    logger.debug(f"Cloud 权限不足: {auth_error.user_friendly_message}")
                     return CloudAgentResult(
                         success=False,
                         error=auth_error.user_friendly_message,
+                        error_type="auth",
                     )
 
                 # 限流错误检测
                 if "rate limit" in error_lower or "429" in error_lower:
-                    rate_error = RateLimitError(message=error_text)
-                    logger.warning(rate_error.user_friendly_message)
+                    # 尝试从错误文本中提取 retry_after
+                    import re
+
+                    retry_after: float | None = None
+                    retry_patterns = [
+                        r"retry[- ]?after[:\s]+(\d+)",
+                        r"wait\s+(\d+)\s*(?:second|sec|s)",
+                    ]
+                    for pattern in retry_patterns:
+                        match = re.search(pattern, error_lower)
+                        if match:
+                            with contextlib.suppress(ValueError, IndexError):
+                                retry_after = float(match.group(1))
+                            break
+                    if retry_after is None:
+                        retry_after = 60.0  # 默认 60 秒
+
+                    rate_error = RateLimitError(message=error_text, retry_after=retry_after)
+                    # 降级为 debug 日志，用户提示通过 error/retry_after 字段透传给入口脚本
+                    logger.debug(f"Cloud 限流: {rate_error.user_friendly_message}")
                     return CloudAgentResult(
                         success=False,
                         error=rate_error.user_friendly_message,
+                        error_type="rate_limit",
+                        retry_after=retry_after,
                     )
 
                 # 通用错误
@@ -363,6 +428,7 @@ class CursorCloudClient:
                 return CloudAgentResult(
                     success=False,
                     error=error_text or f"提交失败 (exit code: {process.returncode})",
+                    error_type="unknown",
                 )
 
             # 解析返回的 task_id
@@ -394,10 +460,13 @@ class CursorCloudClient:
                 error_type="timeout",
                 retry_after=5.0,
             )
-            logger.warning(timeout_error.user_friendly_message)
+            # 降级为 debug 日志，用户提示通过 error/error_type 字段透传给入口脚本
+            logger.debug(f"Cloud 超时: {timeout_error.user_friendly_message}")
             return CloudAgentResult(
                 success=False,
                 error=timeout_error.user_friendly_message,
+                error_type="timeout",
+                retry_after=timeout_error.retry_after,
             )
         except FileNotFoundError:
             not_found_error = NetworkError(
@@ -412,6 +481,7 @@ class CursorCloudClient:
             return CloudAgentResult(
                 success=False,
                 error=f"{not_found_error.message}\n提示: 请安装 Cursor CLI",
+                error_type="not_found",
             )
         except OSError as e:
             os_error = NetworkError.from_exception(e, context="提交任务")
@@ -419,15 +489,18 @@ class CursorCloudClient:
             return CloudAgentResult(
                 success=False,
                 error=os_error.user_friendly_message,
+                error_type=os_error.error_type,
+                retry_after=os_error.retry_after,
             )
         except Exception as e:
             logger.error(f"提交云端任务失败: {e}", exc_info=True)
             return CloudAgentResult(
                 success=False,
                 error=str(e),
+                error_type="unknown",
             )
 
-    def _parse_task_id(self, output: str) -> Optional[str]:
+    def _parse_task_id(self, output: str) -> str | None:
         """从输出中解析 task_id"""
         try:
             # 尝试解析 JSON 输出
@@ -440,20 +513,20 @@ class CursorCloudClient:
         import re
 
         # 匹配 UUID 格式
-        uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        uuid_pattern = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
         match = re.search(uuid_pattern, output, re.IGNORECASE)
         if match:
             return match.group(0)
 
         # 匹配 session_id 格式
-        session_pattern = r'session[_-]?id[:\s]+([a-zA-Z0-9_-]+)'
+        session_pattern = r"session[_-]?id[:\s]+([a-zA-Z0-9_-]+)"
         match = re.search(session_pattern, output, re.IGNORECASE)
         if match:
             return match.group(1)
 
         return None
 
-    async def get_task_status(self, task_id: str) -> Optional[CloudTask]:
+    async def get_task_status(self, task_id: str) -> CloudTask | None:
         """获取任务状态
 
         Args:
@@ -483,7 +556,8 @@ class CursorCloudClient:
                 env["CURSOR_API_KEY"] = api_key
 
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "ls",
+                self._agent_path,
+                "ls",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -508,7 +582,7 @@ class CursorCloudClient:
         except Exception as e:
             logger.debug(f"刷新任务状态失败: {e}")
 
-    async def _fetch_task_from_cloud(self, task_id: str) -> Optional[CloudTask]:
+    async def _fetch_task_from_cloud(self, task_id: str) -> CloudTask | None:
         """从云端获取任务信息
 
         通过 `agent ls` 命令获取任务列表与状态，优先使用 JSON 输出格式。
@@ -551,7 +625,7 @@ class CursorCloudClient:
         self,
         task_id: str,
         env: dict[str, str],
-    ) -> Optional[CloudTask]:
+    ) -> CloudTask | None:
         """通过 agent ls --output-format json 获取任务
 
         Args:
@@ -563,7 +637,10 @@ class CursorCloudClient:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "ls", "--output-format", "json",
+                self._agent_path,
+                "ls",
+                "--output-format",
+                "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -584,7 +661,8 @@ class CursorCloudClient:
                         message="获取任务列表失败: 认证无效",
                         code=AuthErrorCode.INVALID_API_KEY,
                     )
-                    logger.warning(auth_error.user_friendly_message)
+                    # 降级为 debug 日志，避免用户提示刷屏
+                    logger.debug(f"获取任务列表认证失败: {auth_error.user_friendly_message}")
                     return None
 
                 # JSON 格式可能不支持，回退到文本
@@ -603,7 +681,8 @@ class CursorCloudClient:
                 error_type="timeout",
                 retry_after=5.0,
             )
-            logger.warning(timeout_error.user_friendly_message)
+            # 降级为 debug 日志，避免用户提示刷屏
+            logger.debug(f"获取任务列表超时: {timeout_error.user_friendly_message}")
             return None
 
         except FileNotFoundError:
@@ -611,12 +690,14 @@ class CursorCloudClient:
                 message=f"找不到 agent CLI: {self._agent_path}",
                 error_type="not_found",
             )
-            logger.error(not_found_error.message)
+            # 保持 debug 级别，CLI 未安装的错误由入口脚本处理
+            logger.debug(f"agent CLI 未找到: {not_found_error.message}")
             return None
 
         except OSError as e:
             os_error = NetworkError.from_exception(e, context="获取任务列表")
-            logger.error(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
+            # 降级为 debug 日志
+            logger.debug(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
             return None
 
         except Exception as e:
@@ -627,7 +708,7 @@ class CursorCloudClient:
         self,
         task_id: str,
         env: dict[str, str],
-    ) -> Optional[CloudTask]:
+    ) -> CloudTask | None:
         """通过 agent ls 文本输出获取任务
 
         Args:
@@ -639,7 +720,8 @@ class CursorCloudClient:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "ls",
+                self._agent_path,
+                "ls",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -660,7 +742,8 @@ class CursorCloudClient:
                         message="获取任务列表失败: 认证无效",
                         code=AuthErrorCode.INVALID_API_KEY,
                     )
-                    logger.warning(auth_error.user_friendly_message)
+                    # 降级为 debug 日志，避免用户提示刷屏
+                    logger.debug(f"获取任务列表认证失败: {auth_error.user_friendly_message}")
                     return None
 
                 logger.debug(f"agent ls 失败: {error_output[:100]}")
@@ -678,7 +761,8 @@ class CursorCloudClient:
                 error_type="timeout",
                 retry_after=5.0,
             )
-            logger.warning(timeout_error.user_friendly_message)
+            # 降级为 debug 日志，避免用户提示刷屏
+            logger.debug(f"获取任务列表超时: {timeout_error.user_friendly_message}")
             return None
 
         except FileNotFoundError:
@@ -686,12 +770,14 @@ class CursorCloudClient:
                 message=f"找不到 agent CLI: {self._agent_path}",
                 error_type="not_found",
             )
-            logger.error(not_found_error.message)
+            # 保持 debug 级别
+            logger.debug(f"agent CLI 未找到: {not_found_error.message}")
             return None
 
         except OSError as e:
             os_error = NetworkError.from_exception(e, context="获取任务列表")
-            logger.error(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
+            # 降级为 debug 日志
+            logger.debug(f"获取任务列表 OS 错误: {os_error.user_friendly_message}")
             return None
 
         except Exception as e:
@@ -702,7 +788,7 @@ class CursorCloudClient:
         self,
         task_id: str,
         output: str,
-    ) -> Optional[CloudTask]:
+    ) -> CloudTask | None:
         """从 JSON 格式输出解析任务
 
         支持多种 JSON 格式:
@@ -757,12 +843,7 @@ class CursorCloudClient:
                 continue
 
             # 支持多种 ID 字段名
-            item_id = (
-                item.get("session_id") or
-                item.get("task_id") or
-                item.get("id") or
-                item.get("chat_id")
-            )
+            item_id = item.get("session_id") or item.get("task_id") or item.get("id") or item.get("chat_id")
 
             if item_id == task_id:
                 return self._create_task_from_dict(task_id, item)
@@ -773,7 +854,7 @@ class CursorCloudClient:
         self,
         task_id: str,
         output: str,
-    ) -> Optional[CloudTask]:
+    ) -> CloudTask | None:
         """从文本格式输出解析任务
 
         支持多种文本格式:
@@ -794,7 +875,7 @@ class CursorCloudClient:
         if task_id not in output:
             return None
 
-        output_lower = output.lower()
+        output.lower()
 
         # 找到包含 task_id 的行
         task_line = None
@@ -838,7 +919,7 @@ class CursorCloudClient:
 
         # 格式2: 括号后的内容
         elif ")" in task_line:
-            match = re.search(r'\)\s*[-:]\s*(.+)$', task_line)
+            match = re.search(r"\)\s*[-:]\s*(.+)$", task_line)
             if match:
                 prompt = match.group(1).strip()
 
@@ -851,8 +932,8 @@ class CursorCloudClient:
         # 尝试提取创建时间
         created_at = datetime.now()
         time_patterns = [
-            r'(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})',  # ISO 格式
-            r'(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2})',  # 常见日期格式
+            r"(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})",  # ISO 格式
+            r"(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2})",  # 常见日期格式
         ]
         for pattern in time_patterns:
             match = re.search(pattern, task_line)
@@ -910,10 +991,8 @@ class CursorCloudClient:
         # 解析时间
         created_at = datetime.now()
         if data.get("created_at"):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 created_at = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
         elif data.get("timestamp"):
             try:
                 # Unix 时间戳
@@ -927,11 +1006,11 @@ class CursorCloudClient:
 
         # 提取 prompt
         prompt = (
-            data.get("prompt") or
-            data.get("message") or
-            data.get("description") or
-            data.get("title") or
-            f"[任务 {task_id[:8]}...]"
+            data.get("prompt")
+            or data.get("message")
+            or data.get("description")
+            or data.get("title")
+            or f"[任务 {task_id[:8]}...]"
         )
 
         # 提取输出和错误
@@ -966,9 +1045,9 @@ class CursorCloudClient:
     async def wait_for_completion(
         self,
         task_id: str,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
         poll_interval: float = 2.0,
-        on_progress: Optional[Callable[[CloudTask], None]] = None,
+        on_progress: Callable[[CloudTask], None] | None = None,
     ) -> CloudAgentResult:
         """等待任务完成
 
@@ -991,6 +1070,7 @@ class CursorCloudClient:
                 return CloudAgentResult(
                     success=False,
                     error=f"等待任务完成超时 ({timeout}s)",
+                    error_type="timeout",
                 )
 
             # 获取任务状态
@@ -999,6 +1079,7 @@ class CursorCloudClient:
                 return CloudAgentResult(
                     success=False,
                     error=f"任务不存在: {task_id}",
+                    error_type="not_found",
                 )
 
             # 回调进度
@@ -1022,9 +1103,9 @@ class CursorCloudClient:
     async def submit_and_wait(
         self,
         prompt: str,
-        options: Optional[CloudTaskOptions] = None,
-        timeout: Optional[int] = None,
-        on_progress: Optional[Callable[[CloudTask], None]] = None,
+        options: CloudTaskOptions | None = None,
+        timeout: int | None = None,
+        on_progress: Callable[[CloudTask], None] | None = None,
     ) -> CloudAgentResult:
         """提交任务并等待完成
 
@@ -1074,7 +1155,7 @@ class CursorCloudClient:
 
     async def list_tasks(
         self,
-        status: Optional[TaskStatus] = None,
+        status: TaskStatus | None = None,
         limit: int = 50,
     ) -> list[CloudTask]:
         """列出任务
@@ -1097,15 +1178,15 @@ class CursorCloudClient:
 
         return tasks[:limit]
 
-    def get_cached_task(self, task_id: str) -> Optional[CloudTask]:
+    def get_cached_task(self, task_id: str) -> CloudTask | None:
         """获取缓存的任务（同步方法）"""
         return self._tasks.get(task_id)
 
     async def push_to_cloud(
         self,
         session_id: str,
-        prompt: Optional[str] = None,
-        options: Optional[CloudTaskOptions] = None,
+        prompt: str | None = None,
+        options: CloudTaskOptions | None = None,
     ) -> CloudAgentResult:
         """将现有会话推送到云端继续执行
 
@@ -1124,10 +1205,13 @@ class CursorCloudClient:
         auth_status = await self.auth_manager.authenticate()
         if not auth_status.authenticated:
             error_msg = auth_status.error.user_friendly_message if auth_status.error else "未认证"
-            logger.warning(f"推送到云端失败: {error_msg}")
+            # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+            error_code = auth_status.error.code.value if auth_status.error else "unknown"
+            logger.debug(f"推送到云端认证失败: code={error_code}")
             return CloudAgentResult(
                 success=False,
                 error=error_msg,
+                error_type="auth",
             )
 
         options = options or CloudTaskOptions()
@@ -1172,10 +1256,42 @@ class CursorCloudClient:
 
             if process.returncode != 0:
                 error_text = error_output or output
+                error_lower = error_text.lower()
+                error_type = "unknown"
+                retry_after = None
+
+                # 分析错误类型
+                if (
+                    "unauthorized" in error_lower
+                    or "401" in error_lower
+                    or "forbidden" in error_lower
+                    or "403" in error_lower
+                ):
+                    error_type = "auth"
+                elif "rate limit" in error_lower or "429" in error_lower:
+                    error_type = "rate_limit"
+                    # 尝试从错误文本中提取 retry_after
+                    import re
+
+                    retry_patterns = [
+                        r"retry[- ]?after[:\s]+(\d+)",
+                        r"wait\s+(\d+)\s*(?:second|sec|s)",
+                    ]
+                    for pattern in retry_patterns:
+                        match = re.search(pattern, error_lower)
+                        if match:
+                            with contextlib.suppress(ValueError, IndexError):
+                                retry_after = float(match.group(1))
+                            break
+                    if retry_after is None:
+                        retry_after = 60.0  # 默认 60 秒
+
                 logger.error(f"推送失败 (exit_code={process.returncode}): {error_text[:200]}")
                 return CloudAgentResult(
                     success=False,
                     error=error_text or f"推送失败 (exit code: {process.returncode})",
+                    error_type=error_type,
+                    retry_after=retry_after,
                 )
 
             # 解析返回的云端 task_id
@@ -1206,34 +1322,41 @@ class CursorCloudClient:
                 error_type="timeout",
                 retry_after=5.0,
             )
-            logger.warning(timeout_error.user_friendly_message)
+            # 降级为 debug 日志，用户提示通过 error/error_type 字段透传给入口脚本
+            logger.debug(f"推送到云端超时: {timeout_error.user_friendly_message}")
             return CloudAgentResult(
                 success=False,
                 error=timeout_error.user_friendly_message,
+                error_type="timeout",
+                retry_after=timeout_error.retry_after,
             )
         except FileNotFoundError:
             not_found_error = NetworkError(
                 message=f"找不到 agent CLI: {self._agent_path}",
                 error_type="not_found",
             )
-            logger.error(not_found_error.message)
+            # 降级为 debug 日志，用户提示通过 error 字段透传
+            logger.debug(f"agent CLI 未找到: {not_found_error.message}")
             return CloudAgentResult(
                 success=False,
                 error=f"{not_found_error.message}\n提示: 请安装 Cursor CLI",
+                error_type="not_found",
             )
         except Exception as e:
-            logger.error(f"推送到云端失败: {e}", exc_info=True)
+            # 保持 error 级别用于技术性日志，用户提示通过 error 字段透传
+            logger.debug(f"推送到云端失败: {e}")
             return CloudAgentResult(
                 success=False,
                 error=str(e),
+                error_type="unknown",
             )
 
     async def resume_from_cloud(
         self,
         task_id: str,
         local: bool = True,
-        prompt: Optional[str] = None,
-        options: Optional[CloudTaskOptions] = None,
+        prompt: str | None = None,
+        options: CloudTaskOptions | None = None,
     ) -> CloudAgentResult:
         """从云端恢复会话到本地
 
@@ -1252,10 +1375,13 @@ class CursorCloudClient:
         auth_status = await self.auth_manager.authenticate()
         if not auth_status.authenticated:
             error_msg = auth_status.error.user_friendly_message if auth_status.error else "未认证"
-            logger.warning(f"从云端恢复失败: {error_msg}")
+            # 降级为 debug 日志，用户提示通过 error 字段透传给入口脚本
+            error_code = auth_status.error.code.value if auth_status.error else "unknown"
+            logger.debug(f"从云端恢复认证失败: code={error_code}")
             return CloudAgentResult(
                 success=False,
                 error=error_msg,
+                error_type="auth",
             )
 
         options = options or CloudTaskOptions()
@@ -1315,12 +1441,43 @@ class CursorCloudClient:
                     return CloudAgentResult(
                         success=False,
                         error=f"云端会话不存在: {task_id}",
+                        error_type="not_found",
                     )
+
+                # 分析其他错误类型
+                error_type = "unknown"
+                retry_after = None
+                if (
+                    "unauthorized" in error_lower
+                    or "401" in error_lower
+                    or "forbidden" in error_lower
+                    or "403" in error_lower
+                ):
+                    error_type = "auth"
+                elif "rate limit" in error_lower or "429" in error_lower:
+                    error_type = "rate_limit"
+                    # 尝试从错误文本中提取 retry_after
+                    import re
+
+                    retry_patterns = [
+                        r"retry[- ]?after[:\s]+(\d+)",
+                        r"wait\s+(\d+)\s*(?:second|sec|s)",
+                    ]
+                    for pattern in retry_patterns:
+                        match = re.search(pattern, error_lower)
+                        if match:
+                            with contextlib.suppress(ValueError, IndexError):
+                                retry_after = float(match.group(1))
+                            break
+                    if retry_after is None:
+                        retry_after = 60.0  # 默认 60 秒
 
                 logger.error(f"恢复失败 (exit_code={process.returncode}): {error_text[:200]}")
                 return CloudAgentResult(
                     success=False,
                     error=error_text or f"恢复失败 (exit code: {process.returncode})",
+                    error_type=error_type,
+                    retry_after=retry_after,
                 )
 
             # 更新或创建任务记录
@@ -1354,27 +1511,35 @@ class CursorCloudClient:
             timeout_error = NetworkError(
                 message=f"从云端恢复超时 ({options.timeout or 300}s)",
                 error_type="timeout",
+                retry_after=5.0,
             )
-            logger.warning(timeout_error.user_friendly_message)
+            # 降级为 debug 日志，用户提示通过 error/error_type 字段透传给入口脚本
+            logger.debug(f"从云端恢复超时: {timeout_error.user_friendly_message}")
             return CloudAgentResult(
                 success=False,
                 error=timeout_error.user_friendly_message,
+                error_type="timeout",
+                retry_after=timeout_error.retry_after,
             )
         except FileNotFoundError:
             not_found_error = NetworkError(
                 message=f"找不到 agent CLI: {self._agent_path}",
                 error_type="not_found",
             )
-            logger.error(not_found_error.message)
+            # 降级为 debug 日志，用户提示通过 error 字段透传
+            logger.debug(f"agent CLI 未找到: {not_found_error.message}")
             return CloudAgentResult(
                 success=False,
                 error=f"{not_found_error.message}\n提示: 请安装 Cursor CLI",
+                error_type="not_found",
             )
         except Exception as e:
-            logger.error(f"从云端恢复失败: {e}", exc_info=True)
+            # 降级为 debug 日志，用户提示通过 error 字段透传
+            logger.debug(f"从云端恢复失败: {e}")
             return CloudAgentResult(
                 success=False,
                 error=str(e),
+                error_type="unknown",
             )
 
     def _extract_modified_files(self, output: str) -> list[str]:

@@ -4,6 +4,7 @@
 支持语义搜索增强的上下文获取
 支持知识库自动搜索（Cursor 相关问题）
 """
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
@@ -31,28 +32,29 @@ from core.knowledge import is_cursor_related
 
 class WorkerConfig(BaseModel):
     """执行者配置"""
+
     name: str = "worker"
     working_directory: str = "."
-    max_concurrent_tasks: int = 1      # 同时处理的任务数（通常为1）
-    task_timeout: int = 500            # 任务超时时间
+    max_concurrent_tasks: int = 1  # 同时处理的任务数（通常为1）
+    task_timeout: int = 500  # 任务超时时间
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
     cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
     # 语义搜索配置（可选增强）
-    enable_context_search: bool = False        # 是否启用上下文搜索
-    context_search_top_k: int = 5              # 上下文搜索返回结果数
-    context_search_min_score: float = 0.4      # 最低相似度阈值
+    enable_context_search: bool = False  # 是否启用上下文搜索
+    context_search_top_k: int = 5  # 上下文搜索返回结果数
+    context_search_min_score: float = 0.4  # 最低相似度阈值
     # 知识库配置（Cursor 相关问题自动搜索）
-    enable_knowledge_search: bool = True       # 是否启用知识库搜索
-    knowledge_search_top_k: int = 5            # 知识库搜索返回结果数
+    enable_knowledge_search: bool = True  # 是否启用知识库搜索
+    knowledge_search_top_k: int = 5  # 知识库搜索返回结果数
     # CLI ask 模式配置（用于知识库增强查询）
-    enable_cli_ask_mode: bool = False          # 是否启用 CLI ask 模式查询
-    cli_ask_timeout: int = 60                  # CLI ask 查询超时时间
-    cli_ask_model: Optional[str] = None        # CLI ask 使用的模型（默认使用系统默认）
+    enable_cli_ask_mode: bool = False  # 是否启用 CLI ask 模式查询
+    cli_ask_timeout: int = 60  # CLI ask 查询超时时间
+    cli_ask_model: Optional[str] = None  # CLI ask 使用的模型（默认使用系统默认）
     # 中间提交配置
-    enable_intermediate_commit: bool = False   # 是否启用中间提交建议
-    intermediate_commit_threshold: int = 5     # 更改文件数阈值，超过则建议提交
+    enable_intermediate_commit: bool = False  # 是否启用中间提交建议
+    intermediate_commit_threshold: int = 5  # 更改文件数阈值，超过则建议提交
 
 
 class WorkerAgent(BaseAgent):
@@ -109,19 +111,20 @@ class WorkerAgent(BaseAgent):
         else:
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
+
             self.cursor_client = CursorAgentClient(config.cursor_config)
 
         self.current_task: Optional[Task] = None
         self.completed_tasks: list[str] = []
 
         # 语义搜索增强（可选）
-        self._semantic_search: Optional["SemanticSearch"] = semantic_search
+        self._semantic_search: Optional[SemanticSearch] = semantic_search
         self._search_enabled = config.enable_context_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 上下文搜索已启用")
 
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
-        self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
+        self._knowledge_manager: Optional[KnowledgeManager] = knowledge_manager
         self._knowledge_search_enabled = config.enable_knowledge_search and knowledge_manager is not None
         if self._knowledge_search_enabled:
             logger.info(f"[{config.name}] 知识库搜索已启用")
@@ -250,13 +253,15 @@ class WorkerAgent(BaseAgent):
             # 检查是否需要建议中间提交
             suggest_commit, changed_files_count = await self._should_suggest_commit()
 
-            task.complete({
-                "output": result.get("output", ""),
-                "duration": result.get("duration", 0),
-                "worker_id": self.id,
-                "suggest_commit": suggest_commit,
-                "changed_files_count": changed_files_count,
-            })
+            task.complete(
+                {
+                    "output": result.get("output", ""),
+                    "duration": result.get("duration", 0),
+                    "worker_id": self.id,
+                    "suggest_commit": suggest_commit,
+                    "changed_files_count": changed_files_count,
+                }
+            )
             self.completed_tasks.append(task.id)
 
             if suggest_commit:
@@ -308,14 +313,16 @@ class WorkerAgent(BaseAgent):
             reference_code = []
             for result in results:
                 chunk = result.chunk
-                reference_code.append({
-                    "file_path": chunk.file_path,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "name": chunk.name,
-                    "content": chunk.content,
-                    "score": result.score,
-                })
+                reference_code.append(
+                    {
+                        "file_path": chunk.file_path,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "name": chunk.name,
+                        "content": chunk.content,
+                        "score": result.score,
+                    }
+                )
 
             return reference_code
 
@@ -368,13 +375,15 @@ class WorkerAgent(BaseAgent):
             for result in results:
                 doc = self._knowledge_manager.get_document(result.doc_id)
                 if doc:
-                    knowledge_docs.append({
-                        "title": doc.title or result.url,
-                        "url": doc.url,
-                        "content": doc.content[:1500],  # 限制内容长度
-                        "score": result.score,
-                        "source": "cursor-docs",
-                    })
+                    knowledge_docs.append(
+                        {
+                            "title": doc.title or result.url,
+                            "url": doc.url,
+                            "content": doc.content[:1500],  # 限制内容长度
+                            "score": result.score,
+                            "source": "cursor-docs",
+                        }
+                    )
 
             if knowledge_docs:
                 logger.info(f"[{self.id}] 从知识库找到 {len(knowledge_docs)} 个相关文档/回答")
@@ -466,9 +475,7 @@ class WorkerAgent(BaseAgent):
             should_commit = changed_files_count >= threshold
 
             if should_commit:
-                logger.info(
-                    f"[{self.id}] 更改文件数 ({changed_files_count}) 达到阈值 ({threshold})，建议提交"
-                )
+                logger.info(f"[{self.id}] 更改文件数 ({changed_files_count}) 达到阈值 ({threshold})，建议提交")
 
             return should_commit, changed_files_count
 
@@ -545,7 +552,10 @@ class WorkerAgent(BaseAgent):
             other_context = {k: v for k, v in context.items() if k not in exclude_keys}
             if other_context:
                 import json
-                parts.append(f"\n## 上下文信息\n```json\n{json.dumps(other_context, ensure_ascii=False, indent=2)}\n```")
+
+                parts.append(
+                    f"\n## 上下文信息\n```json\n{json.dumps(other_context, ensure_ascii=False, indent=2)}\n```"
+                )
 
         parts.append("\n请开始执行任务:")
 

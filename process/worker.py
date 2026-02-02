@@ -2,6 +2,7 @@
 
 每个 Agent 作为独立进程运行
 """
+
 import concurrent.futures
 import os
 import signal
@@ -11,11 +12,12 @@ import time
 from abc import abstractmethod
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
 from core.platform import register_signal_handler
+
 from .message_queue import ProcessMessage, ProcessMessageType
 
 
@@ -43,8 +45,8 @@ class AgentWorkerProcess(Process):
         super().__init__(name=f"Agent-{agent_type}-{agent_id[:8]}", daemon=True)
         self.agent_id = agent_id
         self.agent_type = agent_type
-        self.inbox = inbox      # 接收消息的队列
-        self.outbox = outbox    # 发送消息的队列（到协调器）
+        self.inbox = inbox  # 接收消息的队列
+        self.outbox = outbox  # 发送消息的队列（到协调器）
         self.config = config
         self._running = False
 
@@ -52,8 +54,8 @@ class AgentWorkerProcess(Process):
         # 注意：这些对象在 run() 方法中初始化，以支持 macOS 的 spawn 启动方式
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._current_task_future: Optional[concurrent.futures.Future] = None
-        self._last_heartbeat_time: float = 0.0           # 最后心跳响应时间
-        self._is_busy: bool = False                      # 是否正在执行任务
+        self._last_heartbeat_time: float = 0.0  # 最后心跳响应时间
+        self._is_busy: bool = False  # 是否正在执行任务
         # 锁对象在 run() 中初始化，避免 pickle 序列化问题
         # macOS 默认使用 spawn 方式启动子进程，需要序列化所有对象
         # threading.Lock 无法被 pickle 序列化
@@ -84,8 +86,7 @@ class AgentWorkerProcess(Process):
 
         # 初始化工作线程池（单线程，确保任务串行执行）
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix=f"worker-{self.agent_id[:8]}"
+            max_workers=1, thread_name_prefix=f"worker-{self.agent_id[:8]}"
         )
 
         try:
@@ -93,10 +94,13 @@ class AgentWorkerProcess(Process):
             self.on_start()
 
             # 发送就绪消息
-            self._send_message(ProcessMessageType.STATUS_RESPONSE, {
-                "status": "ready",
-                "pid": os.getpid(),
-            })
+            self._send_message(
+                ProcessMessageType.STATUS_RESPONSE,
+                {
+                    "status": "ready",
+                    "pid": os.getpid(),
+                },
+            )
 
             # 主循环 - 快速处理消息，保持响应性
             while self._running:
@@ -109,9 +113,8 @@ class AgentWorkerProcess(Process):
                     # 检查工作线程是否完成（清理状态）
                     self._check_task_completion()
                 except Exception as e:
-                    if self._running:
-                        if "Empty" not in str(type(e)):
-                            logger.error(f"[{self.agent_id}] 消息处理异常: {e}")
+                    if self._running and "Empty" not in str(type(e)):
+                        logger.error(f"[{self.agent_id}] 消息处理异常: {e}")
 
         except Exception as e:
             logger.exception(f"[{self.agent_id}] 进程异常: {e}")
@@ -125,6 +128,7 @@ class AgentWorkerProcess(Process):
 
     def _check_task_completion(self) -> None:
         """检查工作线程是否完成任务"""
+        assert self._task_lock is not None
         with self._task_lock:
             if self._current_task_future and self._current_task_future.done():
                 try:
@@ -174,7 +178,7 @@ class AgentWorkerProcess(Process):
             message: 心跳请求消息
         """
         self._last_heartbeat_time = time.time()
-        payload = {
+        payload: dict[str, Any] = {
             "alive": True,
             "busy": self._is_busy,
             "pid": os.getpid(),
@@ -224,12 +228,12 @@ class AgentWorkerProcess(Process):
         Args:
             message: 业务消息
         """
+        assert self._task_lock is not None
+        assert self._executor is not None
         with self._task_lock:
             if self._is_busy:
                 # 已有任务在执行，记录警告
-                logger.warning(
-                    f"[{self.agent_id}] 收到新任务但当前正忙，消息将排队: {message.type.value}"
-                )
+                logger.warning(f"[{self.agent_id}] 收到新任务但当前正忙，消息将排队: {message.type.value}")
 
             self._is_busy = True
 
@@ -239,6 +243,7 @@ class AgentWorkerProcess(Process):
                 except Exception as e:
                     logger.exception(f"[{self.agent_id}] 任务执行异常: {e}")
                 finally:
+                    assert self._task_lock is not None
                     with self._task_lock:
                         self._is_busy = False
                         self._current_task_future = None

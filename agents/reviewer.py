@@ -2,6 +2,7 @@
 
 负责评估迭代完成度，决定是否继续
 """
+
 from enum import Enum
 from typing import Any, Optional
 
@@ -21,19 +22,21 @@ from cursor.executor import (
 
 class ReviewDecision(str, Enum):
     """评审决策"""
-    CONTINUE = "continue"        # 继续下一轮迭代
-    COMPLETE = "complete"        # 目标已完成
-    ADJUST = "adjust"            # 需要调整方向
-    ABORT = "abort"              # 终止（无法完成）
-    COMMIT = "commit"            # 建议提交当前更改
-    ROLLBACK = "rollback"        # 建议回退更改
+
+    CONTINUE = "continue"  # 继续下一轮迭代
+    COMPLETE = "complete"  # 目标已完成
+    ADJUST = "adjust"  # 需要调整方向
+    ABORT = "abort"  # 终止（无法完成）
+    COMMIT = "commit"  # 建议提交当前更改
+    ROLLBACK = "rollback"  # 建议回退更改
 
 
 class ReviewerConfig(BaseModel):
     """评审者配置"""
+
     name: str = "reviewer"
     working_directory: str = "."
-    strict_mode: bool = False          # 严格模式（更高的完成标准）
+    strict_mode: bool = False  # 严格模式（更高的完成标准）
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
@@ -119,6 +122,7 @@ class ReviewerAgent(BaseAgent):
         else:
             # 对于其他执行器类型，创建一个备用客户端（用于非执行操作）
             from cursor.client import CursorAgentClient
+
             self.cursor_client = CursorAgentClient(config.cursor_config)
 
         self.review_history: list[dict] = []
@@ -225,8 +229,10 @@ class ReviewerAgent(BaseAgent):
             if "tasks_completed" in context:
                 completed = context["tasks_completed"]
                 if completed:
-                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('result', {}).get('output', '')[:100]}"
-                                         for t in completed)
+                    tasks_str = "\n".join(
+                        f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('result', {}).get('output', '')[:100]}"
+                        for t in completed
+                    )
                     parts.append(f"\n## 已完成任务 ({len(completed)} 个)\n{tasks_str}")
                 else:
                     parts.append("\n## 已完成任务\n无")
@@ -234,8 +240,9 @@ class ReviewerAgent(BaseAgent):
             if "tasks_failed" in context:
                 failed = context["tasks_failed"]
                 if failed:
-                    tasks_str = "\n".join(f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}"
-                                         for t in failed)
+                    tasks_str = "\n".join(
+                        f"- {t.get('title', t.get('id', 'unknown'))}: {t.get('error', '未知错误')}" for t in failed
+                    )
                     parts.append(f"\n## 失败任务 ({len(failed)} 个)\n{tasks_str}")
 
             if "completion_rate" in context:
@@ -243,7 +250,9 @@ class ReviewerAgent(BaseAgent):
 
             if "previous_reviews" in context and context["previous_reviews"]:
                 prev = context["previous_reviews"][-1]  # 只看上一次评审
-                parts.append(f"\n## 上次评审\n- 决策: {prev.get('decision', 'N/A')}\n- 得分: {prev.get('score', 'N/A')}")
+                parts.append(
+                    f"\n## 上次评审\n- 决策: {prev.get('decision', 'N/A')}\n- 得分: {prev.get('score', 'N/A')}"
+                )
 
         if self.reviewer_config.strict_mode:
             parts.append("\n## 评审模式\n严格模式：请使用更高的标准进行评审")
@@ -258,7 +267,7 @@ class ReviewerAgent(BaseAgent):
         import re
 
         # 尝试提取 JSON 块
-        json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+        json_match = re.search(r"```json\s*(.*?)\s*```", output, re.DOTALL)
         if json_match:
             try:
                 result = json.loads(json_match.group(1))

@@ -7,6 +7,7 @@
 - CloudTask: 云端任务
 - CloudTaskClient: 任务管理客户端（轮询、WebSocket、SSE）
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,13 +17,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from .auth import CloudAuthManager
     from ..streaming import StreamEvent
+    from .auth import CloudAuthManager
 
 # 导入异常类和错误处理工具
 from .exceptions import (
@@ -38,12 +39,14 @@ from .retry import RetryConfig
 
 try:
     import websockets
+
     WEBSOCKETS_AVAILABLE = True
 except ImportError:
     WEBSOCKETS_AVAILABLE = False
 
 try:
     import httpx
+
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
@@ -54,22 +57,24 @@ class TaskStatus(str, Enum):
 
     参考: https://cursor.com/cn/docs/cloud-agent
     """
-    PENDING = "pending"      # 等待执行
-    QUEUED = "queued"        # 已加入队列
-    RUNNING = "running"      # 执行中
+
+    PENDING = "pending"  # 等待执行
+    QUEUED = "queued"  # 已加入队列
+    RUNNING = "running"  # 执行中
     COMPLETED = "completed"  # 已完成
-    FAILED = "failed"        # 失败
+    FAILED = "failed"  # 失败
     CANCELLED = "cancelled"  # 已取消
-    TIMEOUT = "timeout"      # 超时
+    TIMEOUT = "timeout"  # 超时
 
 
 @dataclass
 class TaskResult:
     """任务执行结果"""
+
     task_id: str
     status: TaskStatus
-    result: Optional[str] = None
-    error: Optional[str] = None
+    result: str | None = None
+    error: str | None = None
     duration_ms: int = 0
     events: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
@@ -105,11 +110,12 @@ class TaskResult:
 @dataclass
 class CloudTaskOptions:
     """云端任务选项"""
+
     # 模型选择
-    model: Optional[str] = None
+    model: str | None = None
 
     # 工作目录
-    working_directory: Optional[str] = None
+    working_directory: str | None = None
 
     # 是否允许写入文件
     allow_write: bool = True
@@ -130,7 +136,7 @@ class CloudTaskOptions:
     env: dict[str, str] = field(default_factory=dict)
 
     # 回调 URL（任务完成时通知）
-    callback_url: Optional[str] = None
+    callback_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
@@ -150,6 +156,7 @@ class CloudTaskOptions:
 @dataclass
 class CloudTask:
     """云端任务"""
+
     # 任务 ID（由云端分配）
     task_id: str
 
@@ -160,22 +167,22 @@ class CloudTask:
     prompt: str = ""
 
     # 任务选项
-    options: Optional[CloudTaskOptions] = None
+    options: CloudTaskOptions | None = None
 
     # 创建时间
     created_at: datetime = field(default_factory=datetime.now)
 
     # 开始执行时间
-    started_at: Optional[datetime] = None
+    started_at: datetime | None = None
 
     # 完成时间
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
     # 任务输出
-    output: Optional[str] = None
+    output: str | None = None
 
     # 错误信息
-    error: Optional[str] = None
+    error: str | None = None
 
     # 修改的文件列表
     files_modified: list[str] = field(default_factory=list)
@@ -184,7 +191,7 @@ class CloudTask:
     progress: int = 0
 
     # 当前执行的步骤描述
-    current_step: Optional[str] = None
+    current_step: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -202,7 +209,7 @@ class CloudTask:
         return self.status == TaskStatus.COMPLETED
 
     @property
-    def duration(self) -> Optional[float]:
+    def duration(self) -> float | None:
         """任务执行时长（秒）"""
         if self.started_at:
             end_time = self.completed_at or datetime.now()
@@ -227,7 +234,7 @@ class CloudTask:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CloudTask":
+    def from_dict(cls, data: dict[str, Any]) -> CloudTask:
         """从字典创建"""
         options = None
         if data.get("options"):
@@ -286,14 +293,15 @@ class CloudTaskClient:
 
     def __init__(
         self,
-        auth_manager: Optional["CloudAuthManager"] = None,
+        auth_manager: CloudAuthManager | None = None,
         agent_path: str = "agent",
         api_base_url: str = "https://api.cursor.com",
-        retry_config: Optional[RetryConfig] = None,
+        retry_config: RetryConfig | None = None,
     ):
         # 延迟导入避免循环依赖
         if auth_manager is None:
             from .auth import CloudAuthManager
+
             auth_manager = CloudAuthManager()
         self.auth_manager = auth_manager
         self.agent_path = agent_path
@@ -308,7 +316,7 @@ class CloudTaskClient:
         task_id: str,
         timeout: float = 300.0,
         interval: float = 2.0,
-        on_status_change: Optional[Callable[[TaskStatus], None]] = None,
+        on_status_change: Callable[[TaskStatus], None] | None = None,
     ) -> TaskResult:
         """长轮询等待任务完成
 
@@ -326,10 +334,9 @@ class CloudTaskClient:
             asyncio.TimeoutError: 轮询超时
         """
         # 延迟导入流式事件类型
-        from ..streaming import StreamEvent
 
         start_time = time.time()
-        last_status: Optional[TaskStatus] = None
+        last_status: TaskStatus | None = None
         collected_events: list[StreamEvent] = []
 
         logger.info(f"开始轮询任务状态: {task_id}, 超时={timeout}s, 间隔={interval}s")
@@ -404,7 +411,7 @@ class CloudTaskClient:
             status=TaskStatus.RUNNING,
         )
 
-    async def _query_via_cli(self, task_id: str) -> Optional[TaskResult]:
+    async def _query_via_cli(self, task_id: str) -> TaskResult | None:
         """通过 CLI 查询任务状态"""
         # 尝试使用 agent 命令查询（如果支持）
         # 注意: 这是预留接口，实际命令可能需要调整
@@ -415,7 +422,10 @@ class CloudTaskClient:
                 env["CURSOR_API_KEY"] = api_key
 
             process = await asyncio.create_subprocess_exec(
-                self.agent_path, "status", "--task", task_id,
+                self.agent_path,
+                "status",
+                "--task",
+                task_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -435,7 +445,7 @@ class CloudTaskClient:
 
         return None
 
-    async def _query_via_http(self, task_id: str) -> Optional[TaskResult]:
+    async def _query_via_http(self, task_id: str) -> TaskResult | None:
         """通过 HTTP API 查询任务状态
 
         使用增强的错误处理和重试机制。
@@ -483,16 +493,17 @@ class CloudTaskClient:
 
                     # 认证错误
                     if isinstance(error, AuthError):
-                        logger.warning(error.user_friendly_message)
+                        # 降级为 debug 日志，用户提示通过 TaskResult.error 透传
+                        logger.debug(f"查询任务认证失败: {error.user_friendly_message}")
                         return TaskResult(
                             task_id=task_id,
                             status=TaskStatus.FAILED,
                             error=error.user_friendly_message,
                         )
 
-                    # 限流错误 - 记录但不抛出
+                    # 限流错误 - 降级为 debug 日志
                     if isinstance(error, RateLimitError):
-                        logger.warning(f"查询限流: {error.user_friendly_message}")
+                        logger.debug(f"查询限流: {error.user_friendly_message}")
 
                     # 其他错误
                     logger.debug(f"HTTP API 错误: {error}")
@@ -551,8 +562,8 @@ class CloudTaskClient:
         self,
         task_id: str,
         timeout: float = 300.0,
-        on_event: Optional[Callable[["StreamEvent"], None]] = None,
-    ) -> AsyncIterator["StreamEvent"]:
+        on_event: Callable[[StreamEvent], None] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """通过 WebSocket 实时监听任务事件
 
         如果 API 提供 /ws/tasks/{task_id} 端点，则使用 WebSocket 连接
@@ -578,9 +589,7 @@ class CloudTaskClient:
 
         if not WEBSOCKETS_AVAILABLE:
             logger.warning("websockets 未安装，无法使用 WebSocket 连接")
-            raise ImportError(
-                "需要安装 websockets: pip install websockets"
-            )
+            raise ImportError("需要安装 websockets: pip install websockets")
 
         api_key = self.auth_manager.get_api_key()
         if not api_key:
@@ -608,23 +617,21 @@ class CloudTaskClient:
                 self._ws_connections[task_id] = websocket
 
                 try:
-                    async for message in asyncio.wait_for(
-                        self._ws_receive_messages(websocket),
-                        timeout=timeout,
-                    ):
-                        event = parse_stream_event(message)
-                        if event:
-                            if on_event:
-                                on_event(event)
-                            yield event
+                    async with asyncio.timeout(timeout):
+                        async for message in self._ws_receive_messages(websocket):
+                            event = parse_stream_event(message)
+                            if event:
+                                if on_event:
+                                    on_event(event)
+                                yield event
 
-                            # 检查是否结束
-                            if event.type in (
-                                StreamEventType.RESULT,
-                                StreamEventType.COMPLETE,
-                                StreamEventType.ERROR,
-                            ):
-                                break
+                                # 检查是否结束
+                                if event.type in (
+                                    StreamEventType.RESULT,
+                                    StreamEventType.COMPLETE,
+                                    StreamEventType.ERROR,
+                                ):
+                                    break
 
                 except asyncio.TimeoutError:
                     error_event = StreamEvent(
@@ -638,7 +645,7 @@ class CloudTaskClient:
 
         except websockets.exceptions.WebSocketException as e:
             logger.error(f"WebSocket 连接失败: {e}")
-            raise ConnectionError(f"WebSocket 连接失败: {e}")
+            raise ConnectionError(f"WebSocket 连接失败: {e}") from e
 
     async def _ws_receive_messages(self, websocket) -> AsyncIterator[str]:
         """从 WebSocket 接收消息"""
@@ -669,8 +676,8 @@ class CloudTaskClient:
         self,
         task_id: str,
         timeout: float = 300.0,
-        on_event: Optional[Callable[["StreamEvent"], None]] = None,
-    ) -> AsyncIterator["StreamEvent"]:
+        on_event: Callable[[StreamEvent], None] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """通过 Server-Sent Events (SSE) 监听任务事件
 
         使用增强的错误处理，包括认证错误和限流处理。
@@ -712,55 +719,63 @@ class CloudTaskClient:
         logger.info(f"连接 SSE: {url}")
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("GET", url, headers=headers) as response:
-                    # 处理非成功响应
-                    if response.status_code != 200:
-                        error_text = await response.aread()
-                        error_text = error_text.decode("utf-8", errors="replace")
-                        response_headers = dict(response.headers)
-                        error = handle_http_error(
-                            response.status_code,
-                            response_headers,
-                            error_text,
-                            context=f"SSE 连接 {task_id}",
-                        )
+            async with (
+                httpx.AsyncClient(timeout=timeout) as client,
+                client.stream(
+                    "GET",
+                    url,
+                    headers=headers,
+                ) as response,
+            ):
+                # 处理非成功响应
+                if response.status_code != 200:
+                    error_bytes = await response.aread()
+                    error_text = error_bytes.decode("utf-8", errors="replace")
+                    response_headers = dict(response.headers)
+                    error = handle_http_error(
+                        response.status_code,
+                        response_headers,
+                        error_text,
+                        context=f"SSE 连接 {task_id}",
+                    )
 
-                        # 认证错误
-                        if isinstance(error, AuthError):
-                            logger.error(error.user_friendly_message)
-                            error_event = StreamEvent(
-                                type=StreamEventType.ERROR,
-                                data={
-                                    "error": error.user_friendly_message,
-                                    "error_type": "auth",
-                                    "hint": "请检查 CURSOR_API_KEY",
-                                },
-                            )
-                            yield error_event
-                            return
-
-                        # 限流错误
-                        if isinstance(error, RateLimitError):
-                            logger.warning(error.user_friendly_message)
-                            error_event = StreamEvent(
-                                type=StreamEventType.ERROR,
-                                data={
-                                    "error": error.user_friendly_message,
-                                    "error_type": "rate_limit",
-                                    "retry_after": error.retry_after,
-                                },
-                            )
-                            yield error_event
-                            return
-
-                        # 其他错误
+                    # 认证错误
+                    if isinstance(error, AuthError):
+                        # 降级为 debug 日志，用户提示通过 StreamEvent 透传
+                        logger.debug(f"SSE 连接认证失败: {error.user_friendly_message}")
                         error_event = StreamEvent(
                             type=StreamEventType.ERROR,
-                            data={"error": str(error), "status_code": response.status_code},
+                            data={
+                                "error": error.user_friendly_message,
+                                "error_type": "auth",
+                                "hint": "请检查 CURSOR_API_KEY",
+                            },
                         )
                         yield error_event
                         return
+
+                    # 限流错误
+                    if isinstance(error, RateLimitError):
+                        # 降级为 debug 日志，用户提示通过 StreamEvent 透传
+                        logger.debug(f"SSE 连接限流: {error.user_friendly_message}")
+                        error_event = StreamEvent(
+                            type=StreamEventType.ERROR,
+                            data={
+                                "error": error.user_friendly_message,
+                                "error_type": "rate_limit",
+                                "retry_after": error.retry_after,
+                            },
+                        )
+                        yield error_event
+                        return
+
+                    # 其他错误
+                    error_event = StreamEvent(
+                        type=StreamEventType.ERROR,
+                        data={"error": str(error), "status_code": response.status_code},
+                    )
+                    yield error_event
+                    return
 
                     # 读取 SSE 事件流
                     async for event in self._parse_sse_stream(response, parse_stream_event):
@@ -777,6 +792,7 @@ class CloudTaskClient:
 
         except asyncio.TimeoutError:
             from ..streaming import StreamEvent, StreamEventType
+
             logger.warning(f"SSE 连接超时: {timeout}s")
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
@@ -786,8 +802,10 @@ class CloudTaskClient:
 
         except httpx.RequestError as e:
             from ..streaming import StreamEvent, StreamEventType
+
             error = NetworkError.from_exception(e, context=f"SSE 连接 {task_id}")
-            logger.error(f"SSE 连接错误: {error.user_friendly_message}")
+            # 降级为 debug 日志，用户提示通过 StreamEvent 透传
+            logger.debug(f"SSE 连接错误: {error.user_friendly_message}")
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
                 data={
@@ -799,12 +817,11 @@ class CloudTaskClient:
 
     async def _parse_sse_stream(
         self,
-        response: "httpx.Response",
-        parse_func: Callable[[str], Optional["StreamEvent"]],
-    ) -> AsyncIterator["StreamEvent"]:
+        response: httpx.Response,
+        parse_func: Callable[[str], StreamEvent | None],
+    ) -> AsyncIterator[StreamEvent]:
         """解析 SSE 事件流"""
         buffer = ""
-        event_type = ""
         event_data = ""
 
         async for chunk in response.aiter_bytes():
@@ -821,11 +838,10 @@ class CloudTaskClient:
                         if event:
                             yield event
                         event_data = ""
-                        event_type = ""
                     continue
 
                 if line.startswith("event:"):
-                    event_type = line[6:].strip()
+                    line[6:].strip()
                 elif line.startswith("data:"):
                     event_data = line[5:].strip()
                 elif line.startswith(":"):
@@ -836,8 +852,8 @@ class CloudTaskClient:
         self,
         task_id: str,
         timeout: float,
-        on_event: Optional[Callable[["StreamEvent"], None]] = None,
-    ) -> AsyncIterator["StreamEvent"]:
+        on_event: Callable[[StreamEvent], None] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """回退到轮询模式"""
         from ..streaming import StreamEvent, StreamEventType
 
@@ -849,7 +865,7 @@ class CloudTaskClient:
                 data={"status": status.value},
             )
 
-        last_status: Optional[TaskStatus] = None
+        last_status: TaskStatus | None = None
 
         async def on_status_change(status: TaskStatus) -> None:
             nonlocal last_status
@@ -859,13 +875,14 @@ class CloudTaskClient:
                     on_event(event)
                 last_status = status
 
+        def handle_status_change(status: TaskStatus) -> None:
+            asyncio.create_task(on_status_change(status))
+
         result = await self.poll_task_status(
             task_id=task_id,
             timeout=timeout,
             interval=2.0,
-            on_status_change=lambda s: asyncio.create_task(
-                asyncio.coroutine(lambda: on_status_change(s))()
-            ) if on_event else None,
+            on_status_change=handle_status_change if on_event else None,
         )
 
         # 生成最终事件
@@ -891,10 +908,10 @@ class CloudTaskClient:
         model: str,
         working_directory: str = ".",
         timeout: float = 300.0,
-        on_event: Optional[Callable[["StreamEvent"], None]] = None,
+        on_event: Callable[[StreamEvent], None] | None = None,
         force: bool = False,
-        extra_args: Optional[list[str]] = None,
-    ) -> AsyncIterator["StreamEvent"]:
+        extra_args: list[str] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """流式执行 Agent 任务
 
         使用 agent CLI 的 stream-json 输出格式执行任务，
@@ -935,9 +952,12 @@ class CloudTaskClient:
         # 构建命令
         cmd = [
             self.agent_path,
-            "-p", prompt,
-            "--model", model,
-            "--output-format", "stream-json",
+            "-p",
+            prompt,
+            "--model",
+            model,
+            "--output-format",
+            "stream-json",
             "--stream-partial-output",
         ]
 
@@ -963,17 +983,21 @@ class CloudTaskClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
+            stdout_stream = process.stdout
+            stderr_stream = process.stderr
+            if stdout_stream is None or stderr_stream is None:
+                raise RuntimeError("流式输出不可用: stdout/stderr 为空")
         except FileNotFoundError:
-            error = NetworkError(
+            init_error = NetworkError(
                 message=f"找不到 agent CLI: {self.agent_path}",
                 error_type="not_found",
                 details={"path": self.agent_path},
             )
-            logger.error(error.message)
+            logger.error(init_error.message)
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
                 data={
-                    "error": error.message,
+                    "error": init_error.message,
                     "error_type": "not_found",
                     "hint": "请安装 Cursor CLI: curl https://cursor.com/install -fsS | bash",
                 },
@@ -981,10 +1005,10 @@ class CloudTaskClient:
             yield error_event
             return
         except OSError as e:
-            error = NetworkError.from_exception(e, context="启动 agent 进程")
+            os_error = NetworkError.from_exception(e, context="启动 agent 进程")
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
-                data={"error": error.message, "error_type": error.error_type},
+                data={"error": os_error.message, "error_type": os_error.error_type},
             )
             yield error_event
             return
@@ -993,7 +1017,7 @@ class CloudTaskClient:
 
         try:
             # 逐行读取流式输出
-            async for line in self._read_stream_lines(process.stdout, timeout):
+            async for line in self._read_stream_lines(stdout_stream, timeout):
                 event = parse_stream_event(line)
                 if event:
                     # 检测错误事件中的认证/限流问题
@@ -1007,13 +1031,15 @@ class CloudTaskClient:
                                 message="认证失败",
                                 code=AuthErrorCode.INVALID_API_KEY,
                             )
-                            logger.warning(auth_error.user_friendly_message)
+                            # 降级为 debug 日志，用户提示通过 event.data 透传
+                            logger.debug(f"SSE 流认证失败: {auth_error.user_friendly_message}")
                             event.data["hint"] = "请检查 CURSOR_API_KEY 环境变量"
                             event.data["error_type"] = "auth"
 
                         # 检测限流错误
                         elif "rate limit" in error_msg or "429" in error_msg:
-                            logger.warning("检测到限流错误")
+                            # 降级为 debug 日志，用户提示通过 event.data 透传
+                            logger.debug("SSE 流检测到限流错误")
                             event.data["error_type"] = "rate_limit"
                             event.data["hint"] = "请求过于频繁，请稍后重试"
 
@@ -1028,7 +1054,7 @@ class CloudTaskClient:
             await process.wait()
 
             # 读取 stderr（如果有）
-            stderr_data = await process.stderr.read()
+            stderr_data = await stderr_stream.read()
             if stderr_data and process.returncode != 0:
                 error_text = stderr_data.decode("utf-8", errors="replace")
                 error_lower = error_text.lower()
@@ -1113,18 +1139,19 @@ class CloudTaskClient:
                 pass
 
             # 根据异常类型创建对应的错误
+            stream_error: CloudAgentError
             if isinstance(e, CloudAgentError):
-                error = e
+                stream_error = e
             else:
-                error = NetworkError.from_exception(e, context="流式执行")
+                stream_error = NetworkError.from_exception(e, context="流式执行")
 
-            logger.error(f"流式执行失败: {error}")
+            logger.error(f"流式执行失败: {stream_error}")
 
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
                 data={
-                    "error": str(error),
-                    "error_type": getattr(error, "error_type", "unknown"),
+                    "error": str(stream_error),
+                    "error_type": getattr(stream_error, "error_type", "unknown"),
                 },
             )
             yield error_event
@@ -1174,7 +1201,7 @@ class CloudTaskClient:
         Returns:
             TaskResult: 包含所有事件的任务结果
         """
-        from ..streaming import StreamEvent, StreamEventType
+        from ..streaming import StreamEventType
 
         events: list[StreamEvent] = []
         result_content = ""
@@ -1206,7 +1233,7 @@ class CloudTaskClient:
 
     # ========== 上下文管理器 ==========
 
-    async def __aenter__(self) -> "CloudTaskClient":
+    async def __aenter__(self) -> CloudTaskClient:
         """异步上下文管理器入口"""
         await self.auth_manager.authenticate()
         return self

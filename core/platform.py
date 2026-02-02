@@ -5,6 +5,7 @@
 - 多进程启动方式检测
 - 信号处理适配
 """
+
 import multiprocessing as mp
 import signal
 import sys
@@ -14,6 +15,7 @@ from typing import Callable, Optional
 
 class Platform(str, Enum):
     """平台类型枚举"""
+
     LINUX = "linux"
     MACOS = "macos"
     WINDOWS = "windows"
@@ -22,6 +24,7 @@ class Platform(str, Enum):
 
 class MPStartMethod(str, Enum):
     """多进程启动方式枚举"""
+
     FORK = "fork"
     SPAWN = "spawn"
     FORKSERVER = "forkserver"
@@ -121,9 +124,9 @@ def supports_signal(sig: signal.Signals) -> bool:
             signal.SIGSEGV,
         }
         # SIGTERM 在 Windows 上可用但行为不同
-        if hasattr(signal, 'SIGTERM'):
+        if hasattr(signal, "SIGTERM"):
             windows_supported.add(signal.SIGTERM)
-        if hasattr(signal, 'SIGBREAK'):
+        if hasattr(signal, "SIGBREAK"):
             windows_supported.add(signal.SIGBREAK)
         return sig in windows_supported
 

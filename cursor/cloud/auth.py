@@ -7,6 +7,7 @@
 - Token 刷新机制
 - 认证失败友好错误提示
 """
+
 import asyncio
 import json
 import os
@@ -26,6 +27,7 @@ from .exceptions import (
 
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
@@ -33,9 +35,11 @@ except ImportError:
 
 # ========== 数据类 ==========
 
+
 @dataclass
 class AuthToken:
     """认证 Token"""
+
     access_token: str
     token_type: str = "Bearer"
     expires_at: Optional[datetime] = None
@@ -89,6 +93,7 @@ class AuthToken:
 @dataclass
 class AuthStatus:
     """认证状态"""
+
     authenticated: bool = False
     user_id: Optional[str] = None
     email: Optional[str] = None
@@ -119,6 +124,7 @@ class AuthStatus:
 
 # ========== 配置类 ==========
 
+
 def _safe_home_dir() -> Path:
     """获取用户目录，缺失时回退到当前目录。"""
     try:
@@ -129,6 +135,7 @@ def _safe_home_dir() -> Path:
 
 class CloudAuthConfig(BaseModel):
     """Cloud 认证配置"""
+
     # API Key（优先从环境变量读取）
     api_key: Optional[str] = None
 
@@ -136,14 +143,10 @@ class CloudAuthConfig(BaseModel):
     config_file: str = "config.yaml"
 
     # 全局配置文件路径
-    global_config_file: str = Field(
-        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "config.json")
-    )
+    global_config_file: str = Field(default_factory=lambda: str(_safe_home_dir() / ".cursor" / "config.json"))
 
     # CLI 配置文件路径
-    cli_config_file: str = Field(
-        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "cli-config.json")
-    )
+    cli_config_file: str = Field(default_factory=lambda: str(_safe_home_dir() / ".cursor" / "cli-config.json"))
 
     # API 端点
     api_base_url: str = "https://api.cursor.com"
@@ -157,23 +160,22 @@ class CloudAuthConfig(BaseModel):
 
     # 缓存配置
     cache_token: bool = True
-    token_cache_file: str = Field(
-        default_factory=lambda: str(_safe_home_dir() / ".cursor" / "token_cache.json")
-    )
+    token_cache_file: str = Field(default_factory=lambda: str(_safe_home_dir() / ".cursor" / "token_cache.json"))
 
     # 超时配置
     auth_timeout: int = 30  # 秒
     refresh_before_expiry: int = 300  # 提前 5 分钟刷新
 
     # 指数退避重试配置
-    max_retries: int = 3           # 最大重试次数
-    base_delay: float = 1.0        # 基础延迟时间（秒）
-    max_delay: float = 60.0        # 最大延迟时间（秒）
+    max_retries: int = 3  # 最大重试次数
+    base_delay: float = 1.0  # 基础延迟时间（秒）
+    max_delay: float = 60.0  # 最大延迟时间（秒）
     exponential_base: float = 2.0  # 指数基数
-    retry_jitter: bool = True      # 是否添加随机抖动
+    retry_jitter: bool = True  # 是否添加随机抖动
 
 
 # ========== 认证管理器 ==========
+
 
 class CloudAuthManager:
     """Cloud 认证管理器
@@ -208,6 +210,7 @@ class CloudAuthManager:
     def _find_agent_executable(self) -> str:
         """查找 agent 可执行文件"""
         import shutil
+
         possible_paths = [
             shutil.which("agent"),
             "/usr/local/bin/agent",
@@ -389,14 +392,16 @@ class CloudAuthManager:
         api_key = self.get_api_key()
 
         if not api_key:
+            error = AuthError(
+                "未找到 API Key",
+                AuthErrorCode.CONFIG_NOT_FOUND,
+            )
             self._status = AuthStatus(
                 authenticated=False,
-                error=AuthError(
-                    "未找到 API Key",
-                    AuthErrorCode.CONFIG_NOT_FOUND,
-                ),
+                error=error,
             )
-            logger.warning(self._status.error.user_friendly_message)
+            # 降级为 debug 日志，用户提示通过 AuthStatus.error 透传给入口脚本
+            logger.debug(f"Cloud 认证失败: {error.user_friendly_message}")
             return self._status
 
         # 使用 agent CLI 验证认证状态
@@ -443,7 +448,8 @@ class CloudAuthManager:
                 env["CURSOR_API_KEY"] = api_key
 
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "status",
+                self._agent_path,
+                "status",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -468,16 +474,16 @@ class CloudAuthManager:
                     error_code,
                 )
 
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             raise AuthError(
                 "找不到 agent CLI，请先安装: curl https://cursor.com/install -fsS | bash",
                 AuthErrorCode.CONFIG_NOT_FOUND,
-            )
-        except asyncio.TimeoutError:
+            ) from exc
+        except asyncio.TimeoutError as exc:
             raise AuthError(
                 "认证请求超时",
                 AuthErrorCode.NETWORK_ERROR,
-            )
+            ) from exc
 
     def _parse_auth_output(self, output: str) -> AuthStatus:
         """解析 agent status 输出"""
@@ -635,7 +641,8 @@ class CloudAuthManager:
         try:
             # 调用 agent logout
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "logout",
+                self._agent_path,
+                "logout",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -680,7 +687,8 @@ class CloudAuthManager:
         # 使用 agent login 启动 OAuth 流程
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "login",
+                self._agent_path,
+                "login",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -691,7 +699,7 @@ class CloudAuthManager:
                 timeout=120,  # OAuth 流程可能需要更长时间
             )
 
-            output = stdout.decode("utf-8", errors="replace")
+            stdout.decode("utf-8", errors="replace")
 
             if process.returncode == 0:
                 # 登录成功，验证状态
@@ -702,11 +710,11 @@ class CloudAuthManager:
                     AuthErrorCode.OAUTH_FAILED,
                 )
 
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             raise AuthError(
                 "OAuth 认证超时",
                 AuthErrorCode.OAUTH_FAILED,
-            )
+            ) from exc
 
     def get_authorization_url(self) -> str:
         """生成 OAuth 授权 URL（用于自定义 OAuth 流程）"""
@@ -717,6 +725,7 @@ class CloudAuthManager:
             )
 
         import secrets
+
         state = secrets.token_urlsafe(32)
 
         params = {
@@ -742,15 +751,11 @@ class CloudAuthManager:
 
     def authenticate_sync(self, force: bool = False) -> AuthStatus:
         """同步版本的认证验证"""
-        return asyncio.get_event_loop().run_until_complete(
-            self.authenticate(force=force)
-        )
+        return asyncio.get_event_loop().run_until_complete(self.authenticate(force=force))
 
     def refresh_token_sync(self) -> AuthStatus:
         """同步版本的 Token 刷新"""
-        return asyncio.get_event_loop().run_until_complete(
-            self.refresh_token()
-        )
+        return asyncio.get_event_loop().run_until_complete(self.refresh_token())
 
     # ========== 上下文管理器 ==========
 
@@ -765,6 +770,7 @@ class CloudAuthManager:
 
 
 # ========== 便捷函数 ==========
+
 
 def get_api_key() -> Optional[str]:
     """快速获取 API Key"""
@@ -785,6 +791,7 @@ def verify_auth_sync() -> AuthStatus:
 
 
 # ========== 装饰器 ==========
+
 
 def require_auth(func: Callable) -> Callable:
     """装饰器：要求认证

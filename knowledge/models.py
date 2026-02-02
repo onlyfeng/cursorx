@@ -1,4 +1,5 @@
 """知识库数据模型定义"""
+
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -9,15 +10,17 @@ from pydantic import BaseModel, Field
 
 class FetchStatus(str, Enum):
     """抓取任务状态"""
-    PENDING = "pending"          # 待抓取
-    FETCHING = "fetching"        # 抓取中
-    COMPLETED = "completed"      # 已完成
-    FAILED = "failed"            # 失败
-    CANCELLED = "cancelled"      # 已取消
+
+    PENDING = "pending"  # 待抓取
+    FETCHING = "fetching"  # 抓取中
+    COMPLETED = "completed"  # 已完成
+    FAILED = "failed"  # 失败
+    CANCELLED = "cancelled"  # 已取消
 
 
 class FetchPriority(int, Enum):
     """抓取优先级"""
+
     LOW = 0
     NORMAL = 1
     HIGH = 2
@@ -29,14 +32,15 @@ class DocumentChunk(BaseModel):
 
     将文档内容分割成小块，便于向量化和检索
     """
+
     chunk_id: str = Field(default_factory=lambda: f"chunk-{uuid.uuid4().hex[:8]}")
-    content: str                                    # 分块内容
-    embedding: Optional[list[float]] = None         # 向量嵌入（可选）
-    source_doc: Optional[str] = None                # 来源文档 ID
+    content: str  # 分块内容
+    embedding: Optional[list[float]] = None  # 向量嵌入（可选）
+    source_doc: Optional[str] = None  # 来源文档 ID
 
     # 位置信息
-    start_index: int = 0                            # 在原文档中的起始位置
-    end_index: int = 0                              # 在原文档中的结束位置
+    start_index: int = 0  # 在原文档中的起始位置
+    end_index: int = 0  # 在原文档中的结束位置
 
     # 元数据
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -51,10 +55,11 @@ class Document(BaseModel):
 
     表示从网页或其他来源获取的文档
     """
+
     id: str = Field(default_factory=lambda: f"doc-{uuid.uuid4().hex[:8]}")
-    url: str                                        # 来源 URL
-    title: str = ""                                 # 文档标题
-    content: str = ""                               # 原始内容
+    url: str  # 来源 URL
+    title: str = ""  # 文档标题
+    content: str = ""  # 原始内容
     chunks: list[DocumentChunk] = Field(default_factory=list)  # 文档分块
 
     # 元数据
@@ -92,10 +97,11 @@ class Document(BaseModel):
 
 class KnowledgeBaseStats(BaseModel):
     """知识库统计信息"""
+
     document_count: int = 0
     chunk_count: int = 0
     embedding_count: int = 0
-    total_content_size: int = 0                     # 总内容字符数
+    total_content_size: int = 0  # 总内容字符数
     last_updated: Optional[datetime] = None
 
 
@@ -104,9 +110,10 @@ class KnowledgeBase(BaseModel):
 
     管理多个文档，提供索引和检索功能
     """
+
     id: str = Field(default_factory=lambda: f"kb-{uuid.uuid4().hex[:8]}")
-    name: str                                       # 知识库名称
-    description: str = ""                           # 描述
+    name: str  # 知识库名称
+    description: str = ""  # 描述
     documents: dict[str, Document] = Field(default_factory=dict)  # 文档集合
     index: dict[str, Any] = Field(default_factory=dict)  # 索引数据
     stats: KnowledgeBaseStats = Field(default_factory=KnowledgeBaseStats)
@@ -144,11 +151,7 @@ class KnowledgeBase(BaseModel):
         """更新统计信息"""
         doc_count = len(self.documents)
         chunk_count = sum(len(doc.chunks) for doc in self.documents.values())
-        embedding_count = sum(
-            1 for doc in self.documents.values()
-            for chunk in doc.chunks
-            if chunk.has_embedding()
-        )
+        embedding_count = sum(1 for doc in self.documents.values() for chunk in doc.chunks if chunk.has_embedding())
         total_size = sum(len(doc.content) for doc in self.documents.values())
 
         self.stats = KnowledgeBaseStats(
@@ -156,7 +159,7 @@ class KnowledgeBase(BaseModel):
             chunk_count=chunk_count,
             embedding_count=embedding_count,
             total_content_size=total_size,
-            last_updated=datetime.now()
+            last_updated=datetime.now(),
         )
 
     def get_all_chunks(self) -> list[DocumentChunk]:
@@ -172,11 +175,12 @@ class FetchTask(BaseModel):
 
     用于管理 URL 抓取队列
     """
+
     id: str = Field(default_factory=lambda: f"fetch-{uuid.uuid4().hex[:8]}")
-    url: str                                        # 目标 URL
-    status: FetchStatus = FetchStatus.PENDING       # 任务状态
+    url: str  # 目标 URL
+    status: FetchStatus = FetchStatus.PENDING  # 任务状态
     priority: FetchPriority = FetchPriority.NORMAL  # 优先级
-    result: Optional[Document] = None               # 抓取结果（文档）
+    result: Optional[Document] = None  # 抓取结果（文档）
 
     # 错误信息
     error: Optional[str] = None
@@ -185,7 +189,7 @@ class FetchTask(BaseModel):
 
     # 配置
     headers: dict[str, str] = Field(default_factory=dict)  # 自定义请求头
-    timeout: int = 30                               # 超时时间（秒）
+    timeout: int = 30  # 超时时间（秒）
 
     # 时间戳
     created_at: datetime = Field(default_factory=datetime.now)

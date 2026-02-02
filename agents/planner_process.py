@@ -2,6 +2,7 @@
 
 作为独立进程运行的规划者
 """
+
 import asyncio
 import json
 import re
@@ -96,7 +97,7 @@ Shell 命令限制:
             model=self.config.get("model", "gpt-5.2-high"),
             output_format="stream-json" if stream_enabled else "json",
             non_interactive=True,
-            force_write=False,     # 不修改文件，只分析
+            force_write=False,  # 不修改文件，只分析
             stream_partial_output=stream_enabled,
             stream_events_enabled=stream_enabled,
             stream_log_console=self.config.get("stream_log_console", True),
@@ -134,6 +135,7 @@ Shell 命令限制:
             prompt = self._build_planning_prompt(goal, context)
 
             # 调用 Cursor Agent
+            assert self.cursor_client is not None
             result = await self.cursor_client.execute(
                 instruction=prompt,
                 context=context,
@@ -142,7 +144,7 @@ Shell 命令限制:
             if not result.success:
                 self._send_plan_result(
                     success=False,
-                    error=result.error,
+                    error=str(result.error) if result.error else None,
                     correlation_id=message.id,
                 )
                 return
@@ -201,7 +203,7 @@ Shell 命令限制:
     def _parse_planning_result(self, output: str) -> dict[str, Any]:
         """解析规划结果"""
         # 尝试提取 JSON 块
-        json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+        json_match = re.search(r"```json\s*(.*?)\s*```", output, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1))
@@ -256,10 +258,10 @@ Shell 命令限制:
         self,
         success: bool,
         analysis: str = "",
-        tasks: list = None,
-        sub_planners_needed: list = None,
-        error: str = None,
-        correlation_id: str = None,
+        tasks: list[Any] | None = None,
+        sub_planners_needed: list[Any] | None = None,
+        error: str | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         """发送规划结果"""
         self._send_message(

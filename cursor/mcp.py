@@ -3,6 +3,7 @@
 通过 agent mcp 命令管理 MCP 服务器
 参考: https://cursor.com/cn/docs/cli/mcp
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +16,7 @@ from loguru import logger
 @dataclass
 class MCPServer:
     """MCP 服务器信息"""
+
     name: str
     identifier: str
     status: str  # connected, disconnected
@@ -25,6 +27,7 @@ class MCPServer:
 @dataclass
 class MCPTool:
     """MCP 工具信息"""
+
     name: str
     description: str
     parameters: list
@@ -145,18 +148,20 @@ class MCPManager:
             # 假设格式: name | status | source | transport
             parts = [p.strip() for p in line.split("|")]
             if len(parts) >= 4:
-                servers.append(MCPServer(
-                    name=parts[0],
-                    identifier=parts[0],
-                    status=parts[1],
-                    source=parts[2],
-                    transport=parts[3],
-                ))
+                servers.append(
+                    MCPServer(
+                        name=parts[0],
+                        identifier=parts[0],
+                        status=parts[1],
+                        source=parts[2],
+                        transport=parts[3],
+                    )
+                )
         return servers
 
     def _parse_tool_list(self, output: str) -> list[MCPTool]:
         """解析工具列表输出"""
-        tools = []
+        tools: list[MCPTool] = []
         # TODO: 根据实际 CLI 输出格式解析
         return tools
 

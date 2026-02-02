@@ -10,23 +10,25 @@ stream-json 输出格式:
 - type: "diff" - 差异事件，包含文件编辑的差异信息
 - type: "result" - 最终结果，包含耗时
 """
+
 import asyncio
 import difflib
 import json
 import shutil
 import sys
 import time
-from collections.abc import AsyncIterator
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Optional, TextIO
 
 from loguru import logger
 
 # ============== 差异格式化工具函数 ==============
+
 
 def format_diff(
     old_string: str,
@@ -49,10 +51,10 @@ def format_diff(
     new_lines = new_string.splitlines(keepends=True)
 
     # 确保最后一行有换行符
-    if old_lines and not old_lines[-1].endswith('\n'):
-        old_lines[-1] += '\n'
-    if new_lines and not new_lines[-1].endswith('\n'):
-        new_lines[-1] += '\n'
+    if old_lines and not old_lines[-1].endswith("\n"):
+        old_lines[-1] += "\n"
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
 
     from_file = f"a/{file_path}" if file_path else "a/file"
     to_file = f"b/{file_path}" if file_path else "b/file"
@@ -81,7 +83,7 @@ def format_inline_diff(old_string: str, new_string: str) -> str:
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
 
-    result: List[str] = []
+    result: list[str] = []
 
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
 
@@ -123,7 +125,7 @@ def format_colored_diff(old_string: str, new_string: str, use_ansi: bool = True)
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
 
-    result: List[str] = []
+    result: list[str] = []
 
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
 
@@ -167,12 +169,12 @@ def get_diff_stats(old_string: str, new_string: str) -> dict:
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "delete":
-            deletions += (i2 - i1)
+            deletions += i2 - i1
         elif tag == "insert":
-            insertions += (j2 - j1)
+            insertions += j2 - j1
         elif tag == "replace":
-            deletions += (i2 - i1)
-            insertions += (j2 - j1)
+            deletions += i2 - i1
+            insertions += j2 - j1
             modifications += 1
 
     return {
@@ -187,7 +189,8 @@ def get_diff_stats(old_string: str, new_string: str) -> dict:
 
 # ============== Token/Word-Level Diff 函数 ==============
 
-def _tokenize_line(line: str) -> List[str]:
+
+def _tokenize_line(line: str) -> list[str]:
     """将行分割为 token（词和空白符）
 
     Args:
@@ -197,8 +200,9 @@ def _tokenize_line(line: str) -> List[str]:
         token 列表
     """
     import re
+
     # 分割为词和非词字符（保留空白符和标点作为独立 token）
-    tokens = re.findall(r'\S+|\s+', line)
+    tokens = re.findall(r"\S+|\s+", line)
     return tokens
 
 
@@ -218,8 +222,6 @@ def format_word_diff_line(old_line: str, new_line: str, use_ansi: bool = True) -
     # ANSI 颜色码
     RED = "\033[31m" if use_ansi else ""
     GREEN = "\033[32m" if use_ansi else ""
-    RED_BG = "\033[41m" if use_ansi else ""      # 红色背景（删除高亮）
-    GREEN_BG = "\033[42m" if use_ansi else ""    # 绿色背景（插入高亮）
     RESET = "\033[0m" if use_ansi else ""
     STRIKETHROUGH = "\033[9m" if use_ansi else ""  # 删除线
 
@@ -234,7 +236,7 @@ def format_word_diff_line(old_line: str, new_line: str, use_ansi: bool = True) -
 
     matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens)
 
-    result_parts: List[str] = []
+    result_parts: list[str] = []
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -293,7 +295,7 @@ def format_word_diff(old_string: str, new_string: str, use_ansi: bool = True) ->
     old_lines = old_string.splitlines()
     new_lines = new_string.splitlines()
 
-    result: List[str] = []
+    result: list[str] = []
 
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
 
@@ -328,9 +330,7 @@ def format_word_diff(old_string: str, new_string: str, use_ansi: bool = True) ->
             max_pairs = min(len(old_block), len(new_block))
 
             for idx in range(max_pairs):
-                word_diff = format_word_diff_line(
-                    old_block[idx], new_block[idx], use_ansi
-                )
+                word_diff = format_word_diff_line(old_block[idx], new_block[idx], use_ansi)
                 result.append(f"~ {word_diff}")
 
             # 处理剩余的删除行
@@ -352,25 +352,26 @@ def format_word_diff(old_string: str, new_string: str, use_ansi: bool = True) ->
 
 class StreamEventType(str, Enum):
     """流式事件类型"""
+
     # 系统事件
-    SYSTEM_INIT = "system_init"       # 系统初始化
+    SYSTEM_INIT = "system_init"  # 系统初始化
 
     # 助手消息
-    ASSISTANT = "assistant"           # 助手消息（增量文本）
+    ASSISTANT = "assistant"  # 助手消息（增量文本）
 
     # 工具调用
-    TOOL_STARTED = "tool_started"     # 工具调用开始
-    TOOL_COMPLETED = "tool_completed" # 工具调用完成
+    TOOL_STARTED = "tool_started"  # 工具调用开始
+    TOOL_COMPLETED = "tool_completed"  # 工具调用完成
 
     # 差异/编辑事件
-    DIFF = "diff"                     # 差异事件（通用）
-    DIFF_STARTED = "diff_started"     # 差异操作开始
-    DIFF_COMPLETED = "diff_completed" # 差异操作完成
-    EDIT = "edit"                     # 编辑事件
+    DIFF = "diff"  # 差异事件（通用）
+    DIFF_STARTED = "diff_started"  # 差异操作开始
+    DIFF_COMPLETED = "diff_completed"  # 差异操作完成
+    EDIT = "edit"  # 编辑事件
 
     # 结果
-    RESULT = "result"                 # 最终结果
-    ERROR = "error"                   # 错误
+    RESULT = "result"  # 最终结果
+    ERROR = "error"  # 错误
 
     # 兼容旧类型
     MESSAGE = "message"
@@ -381,27 +382,29 @@ class StreamEventType(str, Enum):
 @dataclass
 class ToolCallInfo:
     """工具调用信息"""
-    tool_type: str = ""       # write, read, shell, edit, str_replace 等
-    path: str = ""            # 文件路径
+
+    tool_type: str = ""  # write, read, shell, edit, str_replace 等
+    path: str = ""  # 文件路径
     args: dict = field(default_factory=dict)
     result: dict = field(default_factory=dict)
     success: bool = False
 
     # 差异相关字段
-    old_string: str = ""      # 替换前的内容
-    new_string: str = ""      # 替换后的内容
-    is_diff: bool = False     # 是否为差异/编辑操作
+    old_string: str = ""  # 替换前的内容
+    new_string: str = ""  # 替换后的内容
+    is_diff: bool = False  # 是否为差异/编辑操作
 
 
 @dataclass
 class DiffInfo:
     """差异信息"""
-    path: str = ""            # 文件路径
-    old_string: str = ""      # 原内容
-    new_string: str = ""      # 新内容
-    line_start: int = 0       # 起始行号
-    line_end: int = 0         # 结束行号
-    operation: str = "replace" # 操作类型: replace, insert, delete
+
+    path: str = ""  # 文件路径
+    old_string: str = ""  # 原内容
+    new_string: str = ""  # 新内容
+    line_start: int = 0  # 起始行号
+    line_end: int = 0  # 结束行号
+    operation: str = "replace"  # 操作类型: replace, insert, delete
 
     def get_unified_diff(self) -> str:
         """生成统一差异格式"""
@@ -415,17 +418,18 @@ class DiffInfo:
 @dataclass
 class StreamEvent:
     """流式事件"""
+
     type: StreamEventType
     subtype: str = ""
     data: dict = field(default_factory=dict)
     timestamp: Optional[float] = None
 
     # 具体信息
-    model: str = ""                           # 模型名称 (system_init)
-    content: str = ""                         # 文本内容 (assistant)
+    model: str = ""  # 模型名称 (system_init)
+    content: str = ""  # 文本内容 (assistant)
     tool_call: Optional[ToolCallInfo] = None  # 工具调用 (tool_*)
-    diff_info: Optional[DiffInfo] = None      # 差异信息 (diff_*)
-    duration_ms: int = 0                      # 耗时毫秒 (result)
+    diff_info: Optional[DiffInfo] = None  # 差异信息 (diff_*)
+    duration_ms: int = 0  # 耗时毫秒 (result)
 
     def get_formatted_diff(self, colored: bool = False) -> str:
         """获取格式化的差异输出
@@ -733,9 +737,12 @@ class StreamingClient:
         """
         cmd = [
             self.agent_path,
-            "-p", prompt,
-            "--model", model,
-            "--output-format", "stream-json",
+            "-p",
+            prompt,
+            "--model",
+            model,
+            "--output-format",
+            "stream-json",
             "--stream-partial-output",
         ]
 
@@ -749,6 +756,9 @@ class StreamingClient:
         )
 
         try:
+            if process.stdout is None:
+                raise RuntimeError("流式输出不可用: stdout 为空")
+
             # 逐行读取流式输出
             async for line in self._read_lines(process.stdout, timeout):
                 event = self._parse_stream_line(line)
@@ -800,7 +810,7 @@ class StreamingClient:
         deadline = asyncio.get_event_loop().time() + timeout
 
         # 设置更大的缓冲区限制（32MB），避免超长行导致异常
-        if hasattr(stream, '_limit'):
+        if hasattr(stream, "_limit"):
             stream._limit = 32 * 1024 * 1024  # 32MB
 
         while True:
@@ -808,7 +818,7 @@ class StreamingClient:
             if remaining <= 0:
                 raise asyncio.TimeoutError()
 
-            line: bytes = b''
+            line: bytes = b""
             long_line_handled = False  # 标记是否通过超长行处理获取了内容
 
             try:
@@ -827,7 +837,7 @@ class StreamingClient:
                 logger.warning(f"检测到超长行 (LimitOverrunError): consumed={e.consumed} bytes")
                 try:
                     # 读取超出的数据直到换行符
-                    line = await stream.readuntil(b'\n')
+                    line = await stream.readuntil(b"\n")
                     long_line_handled = True
                     logger.debug(f"超长行读取成功 (readuntil): {len(line)} bytes")
                     yield line.decode("utf-8", errors="replace").strip()
@@ -936,7 +946,7 @@ class StreamingClient:
             chunks.append(chunk)
 
             # 检查是否包含换行符
-            if b'\n' in chunk:
+            if b"\n" in chunk:
                 break
 
             # 防止内存溢出
@@ -945,7 +955,7 @@ class StreamingClient:
                 logger.warning(f"超长行超过最大限制 ({max_line_size} bytes)，截断处理")
                 break
 
-        return b''.join(chunks)
+        return b"".join(chunks)
 
     def _parse_stream_line(self, line: str) -> Optional[StreamEvent]:
         """解析流式输出行"""
@@ -1121,17 +1131,16 @@ class TerminalStreamRenderer(StreamRenderer):
                     print("   ─────────────────")
         else:
             # 非 verbose 模式：当启用逐词差异时，也显示简化的逐词差异输出
-            if show_diff and self.show_word_diff and diff_info:
-                if diff_info.old_string and diff_info.new_string:
-                    word_diff = format_word_diff(
-                        diff_info.old_string,
-                        diff_info.new_string,
-                        use_ansi=True,
-                    )
-                    print("─── 逐词差异 ───", flush=True)
-                    for line in word_diff.split("\n"):
-                        print(line, flush=True)
-                    print("─────────────────", flush=True)
+            if show_diff and self.show_word_diff and diff_info and diff_info.old_string and diff_info.new_string:
+                word_diff = format_word_diff(
+                    diff_info.old_string,
+                    diff_info.new_string,
+                    use_ansi=True,
+                )
+                print("─── 逐词差异 ───", flush=True)
+                for line in word_diff.split("\n"):
+                    print(line, flush=True)
+                print("─────────────────", flush=True)
 
     def render_diff(
         self,
@@ -1164,17 +1173,16 @@ class TerminalStreamRenderer(StreamRenderer):
             if diff_info.path:
                 print(f"[差异] {diff_info.path}", flush=True)
             # 非 verbose 模式：当启用逐词差异时，也显示简化的逐词差异输出
-            if show_diff and self.show_word_diff:
-                if diff_info.old_string and diff_info.new_string:
-                    word_diff = format_word_diff(
-                        diff_info.old_string,
-                        diff_info.new_string,
-                        use_ansi=True,
-                    )
-                    print("─── 逐词差异 ───", flush=True)
-                    for line in word_diff.split("\n"):
-                        print(line, flush=True)
-                    print("─────────────────", flush=True)
+            if show_diff and self.show_word_diff and diff_info.old_string and diff_info.new_string:
+                word_diff = format_word_diff(
+                    diff_info.old_string,
+                    diff_info.new_string,
+                    use_ansi=True,
+                )
+                print("─── 逐词差异 ───", flush=True)
+                for line in word_diff.split("\n"):
+                    print(line, flush=True)
+                print("─────────────────", flush=True)
 
     def render_result(self, duration_ms: int, tool_count: int, text_length: int) -> None:
         """渲染结果事件"""
@@ -1329,8 +1337,8 @@ class StreamEventLogger:
         self.raw_dir = raw_dir
         self.aggregate_assistant_messages = aggregate_assistant_messages
 
-        self._raw_file = None
-        self._detail_file = None
+        self._raw_file: TextIO | None = None
+        self._detail_file: TextIO | None = None
         self._prefix = self._build_prefix()
         self._pending_assistant_text: str = ""  # ASSISTANT 消息聚合缓冲区
         self._prepare_files()
@@ -1563,14 +1571,14 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
     # 控制序列
     CTRL = {
-        "clear_line": "\033[2K",      # 清除整行
-        "cursor_up": "\033[1A",       # 光标上移一行
-        "cursor_down": "\033[1B",     # 光标下移一行
-        "cursor_start": "\033[0G",    # 光标移到行首
-        "save_cursor": "\033[s",      # 保存光标位置
-        "restore_cursor": "\033[u",   # 恢复光标位置
-        "hide_cursor": "\033[?25l",   # 隐藏光标
-        "show_cursor": "\033[?25h",   # 显示光标
+        "clear_line": "\033[2K",  # 清除整行
+        "cursor_up": "\033[1A",  # 光标上移一行
+        "cursor_down": "\033[1B",  # 光标下移一行
+        "cursor_start": "\033[0G",  # 光标移到行首
+        "save_cursor": "\033[s",  # 保存光标位置
+        "restore_cursor": "\033[u",  # 恢复光标位置
+        "hide_cursor": "\033[?25l",  # 隐藏光标
+        "show_cursor": "\033[?25h",  # 显示光标
     }
 
     def __init__(
@@ -1582,7 +1590,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         status_bar_position: str = "bottom",
         min_width: int = 40,
         max_width: Optional[int] = None,
-        output: Optional["sys.stdout"] = None,
+        output: TextIO | None = None,
         show_word_diff: bool = False,
     ) -> None:
         """初始化终端流式渲染器
@@ -1663,10 +1671,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         if tool:
             tool_icon = self._get_tool_icon(tool.tool_type)
             path_info = f" {tool.path}" if tool.path else ""
-            msg = self._color(
-                f"\n{tool_icon} {tool.tool_type}{path_info}...",
-                "yellow"
-            )
+            msg = self._color(f"\n{tool_icon} {tool.tool_type}{path_info}...", "yellow")
             self._write(msg)
         self._update_status_bar()
 
@@ -1714,30 +1719,23 @@ class AdvancedTerminalRenderer(StreamRenderer):
             show_diff: 是否显示差异详情
         """
         if diff_info and show_diff:
-            stats = get_diff_stats(
-                diff_info.old_string,
-                diff_info.new_string
-            )
-            stats_msg = self._color(
-                f" (+{stats['insertions']} -{stats['deletions']})",
-                "dim"
-            )
+            stats = get_diff_stats(diff_info.old_string, diff_info.new_string)
+            stats_msg = self._color(f" (+{stats['insertions']} -{stats['deletions']})", "dim")
             self._write(stats_msg)
         self._write(self._color(" ✓\n", "green"))
         self.current_line_len = 0
 
         # 展示逐词差异内容（可选）
-        if show_diff and self.show_word_diff and diff_info:
-            if diff_info.old_string and diff_info.new_string:
-                word_diff = format_word_diff(
-                    diff_info.old_string,
-                    diff_info.new_string,
-                    use_ansi=self.use_color,
-                )
-                self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
-                for line in word_diff.split("\n"):
-                    self._write(f"   {line}\n")
-                self._write(self._color("   ─────────────────\n", "dim"))
+        if show_diff and self.show_word_diff and diff_info and diff_info.old_string and diff_info.new_string:
+            word_diff = format_word_diff(
+                diff_info.old_string,
+                diff_info.new_string,
+                use_ansi=self.use_color,
+            )
+            self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
+            for line in word_diff.split("\n"):
+                self._write(f"   {line}\n")
+            self._write(self._color("   ─────────────────\n", "dim"))
 
     def render_diff(
         self,
@@ -1763,26 +1761,22 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
             if show_diff:
                 stats = get_diff_stats(diff_info.old_string, diff_info.new_string)
-                stats_msg = self._color(
-                    f" (+{stats['insertions']} -{stats['deletions']})",
-                    "dim"
-                )
+                stats_msg = self._color(f" (+{stats['insertions']} -{stats['deletions']})", "dim")
                 self._write(stats_msg)
             self._write(self._color(" ✓\n", "green"))
             self.current_line_len = 0
 
             # 展示逐词差异内容（可选）
-            if show_diff and self.show_word_diff:
-                if diff_info.old_string and diff_info.new_string:
-                    word_diff = format_word_diff(
-                        diff_info.old_string,
-                        diff_info.new_string,
-                        use_ansi=self.use_color,
-                    )
-                    self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
-                    for line in word_diff.split("\n"):
-                        self._write(f"   {line}\n")
-                    self._write(self._color("   ─────────────────\n", "dim"))
+            if show_diff and self.show_word_diff and diff_info.old_string and diff_info.new_string:
+                word_diff = format_word_diff(
+                    diff_info.old_string,
+                    diff_info.new_string,
+                    use_ansi=self.use_color,
+                )
+                self._write(self._color("   ─── 逐词差异 ───\n", "dim"))
+                for line in word_diff.split("\n"):
+                    self._write(f"   {line}\n")
+                self._write(self._color("   ─────────────────\n", "dim"))
 
         self._update_status_bar()
 
@@ -1794,10 +1788,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
             tool_count: 工具调用总数
             text_length: 生成文本长度
         """
-        self._write(self._color(
-            f"\n\n✨ 完成 ({duration_ms}ms)\n",
-            "green", "bold"
-        ))
+        self._write(self._color(f"\n\n✨ 完成 ({duration_ms}ms)\n", "green", "bold"))
         self.finish()
 
     def render_error(self, error: str) -> None:
@@ -1910,9 +1901,9 @@ class AdvancedTerminalRenderer(StreamRenderer):
             处理后的文本
         """
         width = self._get_terminal_width()
-        result: List[str] = []
+        result: list[str] = []
 
-        for line in text.split('\n'):
+        for line in text.split("\n"):
             if len(line) <= width:
                 result.append(line)
                 self.current_line_len = len(line)
@@ -1920,7 +1911,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
                 # 需要换行
                 while len(line) > width:
                     # 尝试在空格处断行
-                    break_point = line.rfind(' ', 0, width)
+                    break_point = line.rfind(" ", 0, width)
                     if break_point == -1:
                         break_point = width
 
@@ -1931,7 +1922,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
                     result.append(line)
                     self.current_line_len = len(line)
 
-        return '\n'.join(result)
+        return "\n".join(result)
 
     def _build_status_bar(self) -> str:
         """构建状态栏内容
@@ -1942,7 +1933,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         width = self._get_terminal_width()
 
         # 构建各部分
-        parts: List[str] = []
+        parts: list[str] = []
 
         # 模型信息
         if self.model:
@@ -1998,8 +1989,9 @@ class AdvancedTerminalRenderer(StreamRenderer):
             纯文本
         """
         import re
-        ansi_pattern = re.compile(r'\033\[[0-9;]*m')
-        return ansi_pattern.sub('', text)
+
+        ansi_pattern = re.compile(r"\033\[[0-9;]*m")
+        return ansi_pattern.sub("", text)
 
     def _update_status_bar(self) -> None:
         """更新状态栏显示"""
@@ -2037,18 +2029,10 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
         if self.status_bar_position == "bottom":
             self._write(
-                f"{self._ctrl('save_cursor')}"
-                f"\033[999;1H"
-                f"{self._ctrl('clear_line')}"
-                f"{self._ctrl('restore_cursor')}"
+                f"{self._ctrl('save_cursor')}\033[999;1H{self._ctrl('clear_line')}{self._ctrl('restore_cursor')}"
             )
         else:
-            self._write(
-                f"{self._ctrl('save_cursor')}"
-                f"\033[1;1H"
-                f"{self._ctrl('clear_line')}"
-                f"{self._ctrl('restore_cursor')}"
-            )
+            self._write(f"{self._ctrl('save_cursor')}\033[1;1H{self._ctrl('clear_line')}{self._ctrl('restore_cursor')}")
 
         self._status_visible = False
 
@@ -2060,7 +2044,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
         # 隐藏光标（可选，减少闪烁）
         if self.use_color:
-            self._write(self._ctrl('hide_cursor'))
+            self._write(self._ctrl("hide_cursor"))
 
         # 初始状态栏
         if self.show_status_bar:
@@ -2075,7 +2059,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
         # 显示光标
         if self.use_color:
-            self._write(self._ctrl('show_cursor'))
+            self._write(self._ctrl("show_cursor"))
 
         # 确保换行
         self._write("\n")
@@ -2099,8 +2083,9 @@ class AdvancedTerminalRenderer(StreamRenderer):
         if self.word_mode and self.typing_delay > 0:
             # 逐词模式
             import re
+
             # 分割成词和非词部分
-            tokens = re.findall(r'\S+|\s+', text)
+            tokens = re.findall(r"\S+|\s+", text)
             for token in tokens:
                 if token.strip():
                     # 处理换行
@@ -2108,7 +2093,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
                     self._write_with_delay(token, is_word=True)
                 else:
                     self._write(token)
-                    if '\n' in token:
+                    if "\n" in token:
                         self.current_line_len = 0
         else:
             # 直接输出或逐字符
@@ -2159,10 +2144,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
                 tool = event.tool_call
                 tool_icon = self._get_tool_icon(tool.tool_type)
                 path_info = f" {tool.path}" if tool.path else ""
-                msg = self._color(
-                    f"\n{tool_icon} {tool.tool_type}{path_info}...",
-                    "yellow"
-                )
+                msg = self._color(f"\n{tool_icon} {tool.tool_type}{path_info}...", "yellow")
                 self._write(msg)
             self._update_status_bar()
 
@@ -2188,24 +2170,15 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
         elif event.type == StreamEventType.DIFF_COMPLETED:
             if event.diff_info:
-                stats = get_diff_stats(
-                    event.diff_info.old_string,
-                    event.diff_info.new_string
-                )
-                stats_msg = self._color(
-                    f" (+{stats['insertions']} -{stats['deletions']})",
-                    "dim"
-                )
+                stats = get_diff_stats(event.diff_info.old_string, event.diff_info.new_string)
+                stats_msg = self._color(f" (+{stats['insertions']} -{stats['deletions']})", "dim")
                 self._write(stats_msg)
             self._write(self._color(" ✓\n", "green"))
             self.current_line_len = 0
 
         elif event.type == StreamEventType.RESULT:
             duration = event.duration_ms
-            self._write(self._color(
-                f"\n\n✨ 完成 ({duration}ms)\n",
-                "green", "bold"
-            ))
+            self._write(self._color(f"\n\n✨ 完成 ({duration}ms)\n", "green", "bold"))
             self.finish()
 
         elif event.type == StreamEventType.ERROR:
@@ -2261,7 +2234,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
             self._write(self._color(f"\n📄 {file_path}\n", "cyan", "bold"))
 
         # 显示差异内容（带缩进）
-        for line in diff_text.split('\n'):
+        for line in diff_text.split("\n"):
             self._write(f"  {line}\n")
 
         self.current_line_len = 0
@@ -2278,12 +2251,14 @@ class AdvancedTerminalRenderer(StreamRenderer):
         if self.model:
             summary_parts.append(f"   模型: {self._color(self.model, 'cyan')}\n")
 
-        summary_parts.extend([
-            f"   工具调用: {self._color(str(self.tool_count), 'yellow')}\n",
-            f"   编辑操作: {self._color(str(self.diff_count), 'green')}\n",
-            f"   输出字符: {self._color(str(self.char_count), 'blue')}\n",
-            f"   耗时: {self._color(f'{elapsed:.2f}s', 'magenta')}\n",
-            self._color("─" * 40 + "\n", "dim"),
-        ])
+        summary_parts.extend(
+            [
+                f"   工具调用: {self._color(str(self.tool_count), 'yellow')}\n",
+                f"   编辑操作: {self._color(str(self.diff_count), 'green')}\n",
+                f"   输出字符: {self._color(str(self.char_count), 'blue')}\n",
+                f"   耗时: {self._color(f'{elapsed:.2f}s', 'magenta')}\n",
+                self._color("─" * 40 + "\n", "dim"),
+            ]
+        )
 
         self._write("".join(summary_parts))

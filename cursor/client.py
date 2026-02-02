@@ -12,6 +12,7 @@ CLI 用法:
 - 编码任务: opus-4.5-thinking (擅长代码生成)
 - 评审任务: opus-4.5-thinking (擅长代码审查)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,15 +23,18 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
 
 from core.cloud_utils import (
     is_cloud_request as _is_cloud_request_util,
+)
+from core.cloud_utils import (
     strip_cloud_prefix as _strip_cloud_prefix_util,
 )
+from core.execution_policy import CloudFailureKind
 from cursor.streaming import (
     AdvancedTerminalRenderer,
     StreamEvent,
@@ -84,11 +88,12 @@ class CursorAgentConfig(BaseModel):
     - 带 --force: 直接修改文件
     - Shell 命令超时 30 秒，不支持交互式命令
     """
+
     # agent CLI 路径（通过 curl https://cursor.com/install -fsS | bash 安装）
     agent_path: str = "agent"
 
     # API 密钥（可选，也可通过环境变量 CURSOR_API_KEY 设置）
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
     # 工作目录
     working_directory: str = "."
@@ -128,9 +133,9 @@ class CursorAgentConfig(BaseModel):
     stream_log_console: bool = True
     stream_log_detail_dir: str = "logs/stream_json/detail/"
     stream_log_raw_dir: str = "logs/stream_json/raw/"
-    stream_agent_id: Optional[str] = None
-    stream_agent_role: Optional[str] = None
-    stream_agent_name: Optional[str] = None
+    stream_agent_id: str | None = None
+    stream_agent_role: str | None = None
+    stream_agent_name: str | None = None
 
     # 流式日志聚合配置
     # - True: ASSISTANT 消息聚合后写入 detail 日志（减少日志碎片）
@@ -190,7 +195,7 @@ class CursorAgentConfig(BaseModel):
     force_write: bool = False
 
     # 会话 ID（用于恢复之前的对话）
-    resume_thread_id: Optional[str] = None
+    resume_thread_id: str | None = None
 
     # 后台模式（--background）
     background: bool = False
@@ -208,18 +213,32 @@ class CursorAgentConfig(BaseModel):
     # - "agent": 完整代理模式（默认行为，不传 --mode）
     # - "code": 已废弃，兼容旧配置，等价于 "agent"
     # - None: 不指定模式，使用默认行为
-    mode: Optional[str] = None
+    mode: str | None = None
 
-    # 执行模式
-    # - "cli": 通过本地 Cursor CLI 执行
-    # - "cloud": 通过 Cloud API 执行
-    # - "auto": 自动选择，Cloud 优先，不可用时回退到 CLI
+    # 执行模式 (execution_mode)
+    # - "cli": 本地 Cursor CLI 执行
+    # - "cloud": 强制 Cloud API 执行
+    # - "auto": Cloud 优先，失败时按错误类型冷却后回退到 CLI
+    #   冷却策略: RateLimitError 使用 retry_after, AuthError 需配置变化, 其他中等冷却
     execution_mode: str = "auto"
 
     # ========== Cloud Agent 配置 ==========
     # 参考: https://cursor.com/cn/docs/cloud-agent
+    #
+    # Cloud/Auto 语义统一说明:
+    # - cloud_enabled: 控制 '&' 前缀的自动检测，False 时 & 前缀视为普通字符
+    # - execution_mode=auto: Cloud 优先，不可用时按错误类型自适应冷却后回退到 CLI
+    # - force_write: 独立于 auto_commit，由用户显式控制 (--force)
+    # - auto_commit: 需显式开启 (--auto-commit)，不影响 force_write 语义
+    #
+    # 配置 API Key 的三种方式:
+    #   1. export CURSOR_API_KEY=your_key
+    #   2. --cloud-api-key your_key
+    #   3. agent login
 
-    # 是否启用 Cloud Agent（使用 & 前缀推送任务到云端）
+    # 是否启用 Cloud Agent '&' 前缀自动检测
+    # - True: '& 任务描述' 自动推送到云端执行
+    # - False: '&' 前缀视为普通字符，不触发 Cloud 路由
     cloud_enabled: bool = False
 
     # Cloud Agent API 端点
@@ -238,10 +257,17 @@ class CursorAgentConfig(BaseModel):
     # 是否自动检测 & 前缀并推送到云端
     auto_detect_cloud_prefix: bool = True
 
+    # execution_mode 的来源（用于决定 cooldown_info 的 message_level）
+    # - "cli": 来自 CLI 显式参数（--execution-mode）→ warning 级别
+    # - "config": 来自 config.yaml 配置 → info 级别（避免每次都警告）
+    # - None: 未指定（使用默认值）→ info 级别
+    mode_source: str | None = None
+
 
 # 预定义模型配置
 class ModelPresets:
     """模型预设配置"""
+
     # 规划者模型 - GPT 5.2-high 擅长高层规划和分析
     PLANNER = CursorAgentConfig(
         model="gpt-5.2-high",
@@ -263,19 +289,28 @@ class ModelPresets:
 
 class CursorAgentResult(BaseModel):
     """Cursor Agent 执行结果"""
+
     success: bool
     output: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     exit_code: int = 0
     duration: float = 0.0  # 秒
     started_at: datetime = Field(default_factory=datetime.now)
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
     # 额外信息
     files_modified: list[str] = Field(default_factory=list)
     files_edited: list[str] = Field(default_factory=list)
     command_used: str = ""
-    session_id: Optional[str] = None  # 从 system/init 事件提取的会话 ID
+    session_id: str | None = None  # 从 system/init 事件提取的会话 ID
+
+    # Cloud 回退相关结构化字段（用于入口脚本统一输出回退消息）
+    # failure_kind: Cloud 错误类型（如 "rate_limit", "auth", "network" 等）
+    # retry_after: 建议重试等待时间（秒）
+    # cooldown_info: 冷却信息字典，包含 user_message 等字段
+    failure_kind: str | None = None
+    retry_after: int | None = None
+    cooldown_info: dict[str, Any] | None = None
 
 
 class CursorAgentClient:
@@ -289,7 +324,10 @@ class CursorAgentClient:
     - 交互模式: agent "prompt"
     """
 
-    def __init__(self, config: Optional[CursorAgentConfig] = None):
+    # 类级别标志：是否已显示过 Cloud API Key 缺失警告（避免刷屏）
+    _cloud_api_key_warning_shown: bool = False
+
+    def __init__(self, config: CursorAgentConfig | None = None):
         self.config = config or CursorAgentConfig()
         self._agent_path = self._find_agent_executable()
         self._session_id = os.urandom(8).hex()
@@ -297,9 +335,8 @@ class CursorAgentClient:
     def _find_agent_executable(self) -> str:
         """查找 agent 可执行文件"""
         # 优先使用配置的路径
-        if self.config.agent_path != "agent":
-            if os.path.isfile(self.config.agent_path):
-                return self.config.agent_path
+        if self.config.agent_path != "agent" and os.path.isfile(self.config.agent_path):
+            return self.config.agent_path
 
         # 测试/调试场景：允许通过环境变量覆盖 agent CLI 路径
         # 仅当 agent_path 为默认值 "agent" 时生效，避免覆盖用户显式指定的路径。
@@ -309,9 +346,7 @@ class CursorAgentClient:
             if os.path.isfile(env_agent_path):
                 logger.debug(f"使用环境变量 AGENT_CLI_PATH 指定 agent CLI: {env_agent_path}")
                 return env_agent_path
-            logger.warning(
-                f"环境变量 AGENT_CLI_PATH 指向的文件不存在: {env_agent_path}，将回退到默认查找逻辑"
-            )
+            logger.warning(f"环境变量 AGENT_CLI_PATH 指向的文件不存在: {env_agent_path}，将回退到默认查找逻辑")
 
         # 尝试常见路径
         possible_paths = [
@@ -336,10 +371,10 @@ class CursorAgentClient:
     async def execute(
         self,
         instruction: str,
-        working_directory: Optional[str] = None,
-        context: Optional[dict[str, Any]] = None,
-        timeout: Optional[int] = None,
-        session_id: Optional[str] = None,
+        working_directory: str | None = None,
+        context: dict[str, Any] | None = None,
+        timeout: int | None = None,
+        session_id: str | None = None,
     ) -> CursorAgentResult:
         """执行 Cursor Agent 任务
 
@@ -427,6 +462,7 @@ class CursorAgentClient:
         统一路由策略:
         - 若 cloud_enabled=True 且 auto_detect_cloud_prefix=True 且 instruction 为 cloud request,
           则返回 True
+        - 预检 API Key：无 key 时直接返回 False 并给出一次性 warning
 
         边界情况处理:
         - None 或空字符串返回 False
@@ -449,10 +485,36 @@ class CursorAgentClient:
             return False
 
         # 检查 instruction 是否为 cloud request
-        return self._is_cloud_request(instruction)
+        if not self._is_cloud_request(instruction):
+            return False
+
+        # 预检 API Key（结合 CloudClientFactory.resolve_api_key）
+        # 无 key 时直接返回 False，并给出一次性 warning（避免每次刷屏）
+        try:
+            from cursor.cloud_client import CloudClientFactory
+
+            resolved_api_key = CloudClientFactory.resolve_api_key(
+                explicit_api_key=None,
+                agent_config=self.config,
+                auth_config=None,
+            )
+
+            if not resolved_api_key:
+                # 降级为 debug 日志，不直接输出多行用户提示
+                # 入口脚本根据返回的 CursorAgentResult.failure_kind 决定是否打印用户提示
+                if not CursorAgentClient._cloud_api_key_warning_shown:
+                    logger.debug("检测到 Cloud 请求 (& 前缀) 但未配置 API Key，将使用本地 CLI 执行")
+                    CursorAgentClient._cloud_api_key_warning_shown = True
+                return False
+
+        except Exception as e:
+            logger.debug(f"预检 API Key 时发生异常: {e}，将使用本地 CLI 执行")
+            return False
+
+        return True
 
     @staticmethod
-    def _is_cloud_request(prompt: str) -> bool:
+    def _is_cloud_request(prompt: object | None) -> bool:
         """检测是否是云端请求（以 & 开头）
 
         委托给 core.cloud_utils.is_cloud_request 实现。
@@ -473,7 +535,7 @@ class CursorAgentClient:
         return _is_cloud_request_util(prompt)
 
     @staticmethod
-    def _strip_cloud_prefix(prompt: str) -> str:
+    def _strip_cloud_prefix(prompt: object | None) -> str:
         """去除 Cloud 前缀 &
 
         委托给 core.cloud_utils.strip_cloud_prefix 实现。
@@ -491,18 +553,22 @@ class CursorAgentClient:
         self,
         instruction: str,
         working_directory: str,
-        context: Optional[dict[str, Any]],
+        context: dict[str, Any] | None,
         timeout: int,
-        session_id: Optional[str],
+        session_id: str | None,
         started_at: datetime,
     ) -> CursorAgentResult:
         """通过 CursorCloudClient 执行任务
 
-        使用 CloudClientFactory.execute_task() 统一执行入口，确保配置来源优先级一致：
-        显式参数 > config.api_key > 环境变量 CURSOR_API_KEY
+        使用 CloudClientFactory.execute_task() 统一执行入口。
 
-        此方法与 CloudAgentExecutor.execute() 使用相同的 CloudClientFactory 方法，
-        确保两条 Cloud 执行路径在 allow_write/timeout/session_id 恢复能力上行为一致。
+        Cloud/Auto 语义:
+        - force_write 由 --force 控制，独立于 auto_commit
+        - execution_mode=auto 失败时按错误类型冷却后回退到 CLI
+        - 回退时 sanitize prompt（剥离 & 前缀），避免再次触发 Cloud 路由
+
+        配置优先级:
+          显式参数 > config.api_key > CURSOR_API_KEY > config.yaml
 
         Args:
             instruction: 给 Agent 的指令（可能带 & 前缀）
@@ -515,13 +581,20 @@ class CursorAgentClient:
         Returns:
             执行结果
         """
+        # 延迟导入避免循环依赖
+        from core.execution_policy import (
+            build_cooldown_info,
+            classify_cloud_failure,
+        )
+        from cursor.cloud_client import CloudClientFactory
+
+        # 构建完整的 prompt（包含上下文）
+        full_prompt = self._build_prompt(instruction, context)
+
+        # allow_write 始终由 force_write 决定，绝不因 auto_commit 改变
+        allow_write = self.config.force_write
+
         try:
-            # 延迟导入避免循环依赖
-            from cursor.cloud_client import CloudClientFactory
-
-            # 构建完整的 prompt（包含上下文）
-            full_prompt = self._build_prompt(instruction, context)
-
             logger.info(f"使用 Cloud 路由执行任务: {instruction[:50]}...")
 
             # 使用 CloudClientFactory.execute_task() 统一执行入口
@@ -531,7 +604,7 @@ class CursorAgentClient:
                 agent_config=self.config,
                 working_directory=working_directory,
                 timeout=timeout,
-                allow_write=self.config.force_write,
+                allow_write=allow_write,
                 session_id=session_id,
                 wait=True,
             )
@@ -552,8 +625,34 @@ class CursorAgentClient:
                 session_id=cloud_result.task.task_id if cloud_result.task else None,
             )
 
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             logger.error(f"Cloud Agent 执行超时 ({timeout}s)")
+            # 检查是否允许回退到 CLI（execution_mode=auto 场景）
+            if self._should_fallback_to_cli(e):
+                # 分类超时错误
+                failure_info = classify_cloud_failure(e)
+
+                result = await self._fallback_to_cli(
+                    instruction=instruction,
+                    working_directory=working_directory,
+                    context=context,
+                    timeout=timeout,
+                    session_id=session_id,
+                    started_at=started_at,
+                    fallback_reason=f"Cloud 执行超时 ({timeout}s)",
+                )
+
+                # 使用权威函数构建统一的 cooldown_info 结构
+                result.failure_kind = failure_info.kind.value
+                result.retry_after = failure_info.retry_after
+                result.cooldown_info = build_cooldown_info(
+                    failure_info=failure_info,
+                    fallback_reason=f"Cloud 执行超时 ({timeout}s)",
+                    requested_mode=self.config.execution_mode,
+                    has_ampersand_prefix=self._is_cloud_request(instruction),
+                    mode_source=self.config.mode_source,
+                )
+                return result
             return CursorAgentResult(
                 success=False,
                 error=f"Cloud 执行超时 ({timeout}s)",
@@ -561,8 +660,41 @@ class CursorAgentClient:
                 duration=timeout,
                 started_at=started_at,
             )
+
         except Exception as e:
             logger.error(f"Cloud Agent 执行异常: {e}")
+
+            # 分类错误并检查是否允许回退
+            failure_info = classify_cloud_failure(e)
+
+            if self._should_fallback_to_cli(e, failure_info.kind):
+                # 降级为 info 日志（技术性信息），用户提示由入口脚本统一输出
+                logger.info(f"Cloud 执行失败，回退到 CLI: {failure_info.message}")
+
+                # 执行 CLI 回退
+                result = await self._fallback_to_cli(
+                    instruction=instruction,
+                    working_directory=working_directory,
+                    context=context,
+                    timeout=timeout,
+                    session_id=session_id,
+                    started_at=started_at,
+                    fallback_reason=failure_info.message,
+                )
+
+                # 使用权威函数构建统一的 cooldown_info 结构
+                # 确保与 cursor/executor.py 输出结构一致
+                result.failure_kind = failure_info.kind.value
+                result.retry_after = failure_info.retry_after
+                result.cooldown_info = build_cooldown_info(
+                    failure_info=failure_info,
+                    fallback_reason=failure_info.message,
+                    requested_mode=self.config.execution_mode,
+                    has_ampersand_prefix=self._is_cloud_request(instruction),
+                    mode_source=self.config.mode_source,
+                )
+                return result
+
             return CursorAgentResult(
                 success=False,
                 error=str(e),
@@ -570,7 +702,108 @@ class CursorAgentClient:
                 started_at=started_at,
             )
 
-    def _build_prompt(self, instruction: str, context: Optional[dict[str, Any]] = None) -> str:
+    def _should_fallback_to_cli(
+        self,
+        error: Exception | None = None,
+        failure_kind: CloudFailureKind | None = None,
+    ) -> bool:
+        """判断是否应该回退到本地 CLI 执行
+
+        回退条件:
+        - execution_mode = "auto" 时允许回退
+        - 某些可重试的错误类型（如超时、网络错误）允许回退
+
+        Args:
+            error: 异常对象
+            failure_kind: 错误类型（来自 classify_cloud_failure）
+
+        Returns:
+            是否应该回退到 CLI
+        """
+        # execution_mode=auto 时允许回退
+        return self.config.execution_mode == "auto"
+
+    async def _fallback_to_cli(
+        self,
+        instruction: str,
+        working_directory: str,
+        context: dict[str, Any] | None,
+        timeout: int,
+        session_id: str | None,
+        started_at: datetime,
+        fallback_reason: str,
+    ) -> CursorAgentResult:
+        """回退到本地 CLI 执行
+
+        当 Cloud 执行失败且策略允许时，回退到本地 CLI 执行。
+        会 sanitize prompt 以避免再次触发 Cloud 路由。
+
+        Args:
+            instruction: 原始指令
+            working_directory: 工作目录
+            context: 上下文信息
+            timeout: 超时时间
+            session_id: 会话 ID
+            started_at: 开始时间
+            fallback_reason: 回退原因
+
+        Returns:
+            CLI 执行结果
+        """
+        from core.execution_policy import sanitize_prompt_for_cli_fallback
+
+        logger.info(f"回退到本地 CLI 执行（原因: {fallback_reason}）")
+
+        # sanitize prompt，避免再次触发 Cloud 路由
+        sanitized_instruction = sanitize_prompt_for_cli_fallback(instruction)
+
+        # 构建完整的 prompt
+        full_prompt = self._build_prompt(sanitized_instruction, context)
+
+        try:
+            result = await self._execute_cursor_agent(
+                prompt=full_prompt,
+                working_directory=working_directory,
+                timeout=timeout,
+                session_id=session_id,
+            )
+
+            completed_at = datetime.now()
+            duration = (completed_at - started_at).total_seconds()
+
+            return CursorAgentResult(
+                success=result["success"],
+                output=result.get("output", ""),
+                error=result.get("error"),
+                exit_code=result.get("exit_code", 0),
+                duration=duration,
+                started_at=started_at,
+                completed_at=completed_at,
+                files_modified=result.get("files_modified", []),
+                files_edited=result.get("files_edited", []),
+                command_used=f"cli-fallback ({fallback_reason})",
+                session_id=result.get("session_id"),
+            )
+
+        except asyncio.TimeoutError:
+            logger.error(f"CLI 回退执行也超时 ({timeout}s)")
+            return CursorAgentResult(
+                success=False,
+                error=f"CLI 回退执行超时 ({timeout}s)，原因: {fallback_reason}",
+                exit_code=-1,
+                duration=timeout,
+                started_at=started_at,
+            )
+        except Exception as e:
+            logger.error(f"CLI 回退执行异常: {e}")
+            return CursorAgentResult(
+                success=False,
+                error=f"CLI 回退执行异常: {e}，原因: {fallback_reason}",
+                exit_code=-1,
+                started_at=started_at,
+            )
+
+    def _build_prompt(self, instruction: str, context: dict[str, Any] | None = None) -> str:
         """构建完整的 prompt"""
         parts = [instruction]
 
@@ -589,7 +822,7 @@ class CursorAgentClient:
         prompt: str,
         working_directory: str,
         timeout: int,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """执行 agent CLI
 
@@ -615,8 +848,8 @@ class CursorAgentClient:
         prompt: str,
         working_directory: str,
         timeout: int,
-        session_id: Optional[str] = None,
-    ) -> Optional[dict[str, Any]]:
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """调用 agent CLI
 
         命令格式:
@@ -636,10 +869,7 @@ class CursorAgentClient:
         # 构建命令参数
         # 兼容测试场景：当 _agent_path 为 .py 脚本时，用当前 Python 解释器启动，
         # 避免依赖脚本的可执行权限位。
-        if self._agent_path.endswith(".py"):
-            cmd = [sys.executable, self._agent_path]
-        else:
-            cmd = [self._agent_path]
+        cmd = [sys.executable, self._agent_path] if self._agent_path.endswith(".py") else [self._agent_path]
 
         # 恢复会话（session_id 参数优先于配置项）
         resume_id = session_id or self.config.resume_thread_id
@@ -661,7 +891,7 @@ class CursorAgentClient:
         # 重要：当前 Cursor CLI 的 --mode 仅接受 plan/ask。
         # - agent 模式是默认行为，不需要也不应传 --mode agent
         # - 兼容旧的 "code" 模式：视为 "agent"（同样不传 --mode）
-        mode_arg: Optional[str] = None
+        mode_arg: str | None = None
         if self.config.mode:
             effective_mode = "agent" if self.config.mode == "code" else self.config.mode
             if effective_mode in ("plan", "ask"):
@@ -702,10 +932,10 @@ class CursorAgentClient:
 
             # 创建子进程后立即设置更大的缓冲区限制（32MB），避免超长行导致异常
             # asyncio.StreamReader 默认 _limit 为 64KB，对于大型 JSON 输出可能不够
-            if process.stdout and hasattr(process.stdout, '_limit'):
+            if process.stdout and hasattr(process.stdout, "_limit"):
                 process.stdout._limit = 32 * 1024 * 1024  # 32MB
                 logger.debug("已设置 stdout 缓冲区限制为 32MB")
-            if process.stderr and hasattr(process.stderr, '_limit'):
+            if process.stderr and hasattr(process.stderr, "_limit"):
                 process.stderr._limit = 32 * 1024 * 1024  # 32MB
                 logger.debug("已设置 stderr 缓冲区限制为 32MB")
 
@@ -751,7 +981,8 @@ class CursorAgentClient:
 
         except FileNotFoundError:
             logger.error(f"找不到 agent CLI: {self._agent_path}")
-            logger.info("请先安装: curl https://cursor.com/install -fsS | bash")
+            # 降级为 debug 日志，安装指引由入口脚本根据错误类型决定是否显示
+            logger.debug("agent CLI 未安装，请执行: curl https://cursor.com/install -fsS | bash")
             return None
         except asyncio.TimeoutError:
             raise
@@ -759,7 +990,7 @@ class CursorAgentClient:
             logger.error(f"agent CLI 执行失败: {e}")
             return None
 
-    def _build_stream_logger(self) -> Optional[StreamEventLogger]:
+    def _build_stream_logger(self) -> StreamEventLogger | None:
         """构建流式事件日志器（可选）
 
         根据配置项控制日志聚合和控制台渲染方式：
@@ -787,7 +1018,7 @@ class CursorAgentClient:
             aggregate_assistant_messages=self.config.stream_log_aggregate,
         )
 
-    def _build_terminal_renderer(self) -> Optional[StreamRenderer]:
+    def _build_terminal_renderer(self) -> StreamRenderer | None:
         """构建终端流式渲染器（可选）
 
         仅当 stream_console_renderer=True 时返回渲染器实例。
@@ -846,21 +1077,24 @@ class CursorAgentClient:
 
         # 文件跟踪 (去重使用 set)
         files_modified_set: set[str] = set()  # 写入/创建的文件
-        files_edited_set: set[str] = set()    # 编辑/修改的文件
+        files_edited_set: set[str] = set()  # 编辑/修改的文件
 
         # 会话 ID 跟踪
-        session_id: Optional[str] = None
+        session_id: str | None = None
 
-        stderr_task = asyncio.create_task(
-            self._collect_stream(process.stderr, deadline, stderr_chunks)
-        )
+        stdout_stream = process.stdout
+        stderr_stream = process.stderr
+        if stdout_stream is None or stderr_stream is None:
+            raise RuntimeError("流式输出不可用: stdout/stderr 为空")
+
+        stderr_task = asyncio.create_task(self._collect_stream(stderr_stream, deadline, stderr_chunks))
 
         # 调用高级渲染器的 start 方法（如果存在）
-        if terminal_renderer and hasattr(terminal_renderer, 'start'):
+        if terminal_renderer and hasattr(terminal_renderer, "start"):
             terminal_renderer.start()
 
         try:
-            async for line in self._read_stream_lines(process.stdout, deadline, strip_line=True):
+            async for line in self._read_stream_lines(stdout_stream, deadline, strip_line=True):
                 # 日志记录（与渲染解耦）
                 if stream_logger:
                     stream_logger.handle_raw_line(line)
@@ -889,22 +1123,33 @@ class CursorAgentClient:
                         if event.type == StreamEventType.ASSISTANT and event.content:
                             accumulated_text_len += len(event.content)
 
-                    # 从 system/init 事件中提取 session_id
-                    if event.type == StreamEventType.SYSTEM_INIT:
-                        session_id = event.data.get("session_id")
+                    # 从事件中提取 session_id
+                    # 优先从 system/init 提取，若无则尝试从任意事件中补齐
+                    # 逻辑：只要 session_id 仍为空，就尝试从 event.data 获取
+                    if session_id is None:
+                        event_session_id = event.data.get("session_id") if event.data else None
+                        if event_session_id:
+                            session_id = event_session_id
 
                     # 收集文件修改信息
-                    if event.type in (StreamEventType.TOOL_STARTED, StreamEventType.TOOL_COMPLETED):
-                        if event.tool_call and event.tool_call.path:
-                            # 写入操作 -> files_modified
-                            if event.tool_call.tool_type == "write":
-                                files_modified_set.add(event.tool_call.path)
-                            # 编辑/替换操作 -> files_edited
-                            elif event.tool_call.is_diff or event.tool_call.tool_type in ("edit", "str_replace"):
-                                files_edited_set.add(event.tool_call.path)
+                    if (
+                        event.type in (StreamEventType.TOOL_STARTED, StreamEventType.TOOL_COMPLETED)
+                        and event.tool_call
+                        and event.tool_call.path
+                    ):
+                        # 写入操作 -> files_modified
+                        if event.tool_call.tool_type == "write":
+                            files_modified_set.add(event.tool_call.path)
+                        # 编辑/替换操作 -> files_edited
+                        elif event.tool_call.is_diff or event.tool_call.tool_type in ("edit", "str_replace"):
+                            files_edited_set.add(event.tool_call.path)
 
                     # 差异事件中收集编辑的文件
-                    if event.type in (StreamEventType.DIFF, StreamEventType.DIFF_STARTED, StreamEventType.DIFF_COMPLETED):
+                    if event.type in (
+                        StreamEventType.DIFF,
+                        StreamEventType.DIFF_STARTED,
+                        StreamEventType.DIFF_COMPLETED,
+                    ):
                         # 优先从 diff_info 提取路径
                         if event.diff_info and event.diff_info.path:
                             files_edited_set.add(event.diff_info.path)
@@ -916,9 +1161,8 @@ class CursorAgentClient:
                     if event.type == StreamEventType.ASSISTANT:
                         if event.content:
                             assistant_chunks.append(event.content)
-                    elif event.type == StreamEventType.MESSAGE:
-                        if event.content:
-                            fallback_chunks.append(event.content)
+                    elif event.type == StreamEventType.MESSAGE and event.content:
+                        fallback_chunks.append(event.content)
 
             await self._wait_process_with_deadline(process, deadline)
         except asyncio.TimeoutError:
@@ -934,7 +1178,7 @@ class CursorAgentClient:
                 logger.warning(f"读取 stderr 失败: {e}")
 
             # 调用高级渲染器的 finish 方法（如果存在）
-            if terminal_renderer and hasattr(terminal_renderer, 'finish'):
+            if terminal_renderer and hasattr(terminal_renderer, "finish"):
                 terminal_renderer.finish()
 
             # 关闭日志记录器
@@ -962,7 +1206,7 @@ class CursorAgentClient:
         # 构建命令描述（用于日志）
         cmd_desc = f"agent -p '...' --model {self.config.model}"
         # 与 _call_agent_cli 的行为保持一致：仅在 plan/ask 时展示 --mode
-        mode_arg: Optional[str] = None
+        mode_arg: str | None = None
         if self.config.mode:
             effective_mode = "agent" if self.config.mode == "code" else self.config.mode
             if effective_mode in ("plan", "ask"):
@@ -1006,7 +1250,7 @@ class CursorAgentClient:
         """
         # 如果渲染器支持 render_event 方法（如 AdvancedTerminalRenderer），
         # 直接使用该方法处理所有事件
-        if hasattr(renderer, 'render_event'):
+        if hasattr(renderer, "render_event"):
             renderer.render_event(event)
             return
 
@@ -1024,15 +1268,11 @@ class CursorAgentClient:
         elif event.type == StreamEventType.DIFF_STARTED:
             renderer.render_diff_started(diff_count + 1, event.tool_call)
         elif event.type == StreamEventType.DIFF_COMPLETED:
-            renderer.render_diff_completed(
-                event.tool_call, event.diff_info, show_diff=True
-            )
+            renderer.render_diff_completed(event.tool_call, event.diff_info, show_diff=True)
         elif event.type == StreamEventType.DIFF:
             renderer.render_diff(diff_count + 1, event.diff_info, show_diff=True)
         elif event.type == StreamEventType.RESULT:
-            renderer.render_result(
-                event.duration_ms, tool_count, accumulated_text_len
-            )
+            renderer.render_result(event.duration_ms, tool_count, accumulated_text_len)
         elif event.type == StreamEventType.ERROR:
             error = event.data.get("error", "未知错误")
             renderer.render_error(error)
@@ -1065,7 +1305,7 @@ class CursorAgentClient:
         """
         # 设置更大的缓冲区限制（32MB），避免超长行导致异常
         # asyncio.StreamReader 默认 limit 为 64KB
-        if hasattr(stream, '_limit'):
+        if hasattr(stream, "_limit"):
             stream._limit = 32 * 1024 * 1024  # 32MB
 
         while True:
@@ -1073,7 +1313,7 @@ class CursorAgentClient:
             if remaining <= 0:
                 raise asyncio.TimeoutError()
 
-            line: bytes = b''
+            line: bytes = b""
             long_line_handled = False  # 标记是否通过超长行处理获取了内容
 
             try:
@@ -1089,7 +1329,7 @@ class CursorAgentClient:
                 logger.warning(f"检测到超长行 (LimitOverrunError): consumed={e.consumed} bytes")
                 try:
                     # 读取超出的数据直到换行符
-                    line = await stream.readuntil(b'\n')
+                    line = await stream.readuntil(b"\n")
                     long_line_handled = True
                     logger.debug(f"超长行读取成功 (readuntil): {len(line)} bytes")
                 except asyncio.IncompleteReadError as ire:
@@ -1198,7 +1438,7 @@ class CursorAgentClient:
             chunks.append(chunk)
 
             # 检查是否包含换行符
-            if b'\n' in chunk:
+            if b"\n" in chunk:
                 break
 
             # 防止内存溢出
@@ -1207,7 +1447,7 @@ class CursorAgentClient:
                 logger.warning(f"超长行超过最大限制 ({max_line_size} bytes)，截断处理")
                 break
 
-        return b''.join(chunks)
+        return b"".join(chunks)
 
     async def _collect_stream(
         self,
@@ -1243,9 +1483,9 @@ class CursorAgentClient:
     async def execute_with_retry(
         self,
         instruction: str,
-        working_directory: Optional[str] = None,
-        context: Optional[dict[str, Any]] = None,
-        max_retries: Optional[int] = None,
+        working_directory: str | None = None,
+        context: dict[str, Any] | None = None,
+        max_retries: int | None = None,
     ) -> CursorAgentResult:
         """带重试的执行"""
         retries = max_retries or self.config.max_retries
@@ -1261,7 +1501,7 @@ class CursorAgentClient:
             logger.warning(f"Cursor Agent 执行失败 (尝试 {attempt + 1}/{retries}): {result.error}")
 
             if attempt < retries - 1:
-                await asyncio.sleep(self.config.retry_delay * (2 ** attempt))  # 指数退避
+                await asyncio.sleep(self.config.retry_delay * (2**attempt))  # 指数退避
 
         return last_result or CursorAgentResult(success=False, error="所有重试均失败")
 
@@ -1294,7 +1534,8 @@ class CursorAgentClient:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "models",
+                self._agent_path,
+                "models",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1338,7 +1579,8 @@ class CursorAgentClient:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "ls",
+                self._agent_path,
+                "ls",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1360,7 +1602,7 @@ class CursorAgentClient:
             logger.error(f"获取会话列表失败: {e}")
             return []
 
-    async def resume_session(self, session_id: Optional[str] = None) -> CursorAgentResult:
+    async def resume_session(self, session_id: str | None = None) -> CursorAgentResult:
         """恢复会话
 
         Args:
@@ -1383,6 +1625,7 @@ class CursorAgentClient:
                 process.communicate(),
                 timeout=self.config.timeout,
             )
+            assert process.returncode is not None
 
             return CursorAgentResult(
                 success=process.returncode == 0,
@@ -1402,7 +1645,8 @@ class CursorAgentClient:
         """
         try:
             process = await asyncio.create_subprocess_exec(
-                self._agent_path, "status",
+                self._agent_path,
+                "status",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1470,7 +1714,7 @@ class CursorAgentPool:
     用于并行执行多个任务
     """
 
-    def __init__(self, size: int = 3, config: Optional[CursorAgentConfig] = None):
+    def __init__(self, size: int = 3, config: CursorAgentConfig | None = None):
         self.size = size
         self.config = config or CursorAgentConfig()
         self._clients: list[CursorAgentClient] = []
@@ -1482,7 +1726,7 @@ class CursorAgentPool:
         if self._initialized:
             return
 
-        for i in range(self.size):
+        for _i in range(self.size):
             client = CursorAgentClient(self.config)
             self._clients.append(client)
             await self._available.put(client)
@@ -1490,7 +1734,7 @@ class CursorAgentPool:
         self._initialized = True
         logger.info(f"Cursor Agent 连接池已初始化: {self.size} 个客户端")
 
-    async def acquire(self, timeout: Optional[float] = None) -> CursorAgentClient:
+    async def acquire(self, timeout: float | None = None) -> CursorAgentClient:
         """获取一个可用的客户端"""
         if not self._initialized:
             await self.initialize()
@@ -1499,8 +1743,8 @@ class CursorAgentPool:
             if timeout:
                 return await asyncio.wait_for(self._available.get(), timeout=timeout)
             return await self._available.get()
-        except asyncio.TimeoutError:
-            raise RuntimeError("获取 Cursor Agent 客户端超时")
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("获取 Cursor Agent 客户端超时") from exc
 
     async def release(self, client: CursorAgentClient) -> None:
         """释放客户端回池"""
@@ -1509,8 +1753,8 @@ class CursorAgentPool:
     async def execute(
         self,
         instruction: str,
-        working_directory: Optional[str] = None,
-        context: Optional[dict[str, Any]] = None,
+        working_directory: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> CursorAgentResult:
         """使用池中的客户端执行任务"""
         client = await self.acquire()

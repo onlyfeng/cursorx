@@ -3,10 +3,12 @@
 协调规划者、执行者、评审者的工作流程
 支持知识库集成
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -50,22 +52,23 @@ class OrchestratorConfig(BaseModel):
     - reviewer_timeout: 评审者超时（秒），默认从 config.yaml reviewer.timeout 获取
     - 若值为 None，则使用 cursor_config.timeout 作为回退
     """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     working_directory: str = "."
-    max_iterations: int = DEFAULT_MAX_ITERATIONS    # 最大迭代次数
+    max_iterations: int = DEFAULT_MAX_ITERATIONS  # 最大迭代次数
     worker_pool_size: int = DEFAULT_WORKER_POOL_SIZE  # Worker 池大小
-    enable_sub_planners: bool = DEFAULT_ENABLE_SUB_PLANNERS   # 是否启用子规划者
-    strict_review: bool = DEFAULT_STRICT_REVIEW        # 严格评审模式
+    enable_sub_planners: bool = DEFAULT_ENABLE_SUB_PLANNERS  # 是否启用子规划者
+    strict_review: bool = DEFAULT_STRICT_REVIEW  # 严格评审模式
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
 
     # 各角色超时配置（秒）
     # 若为 None，则使用 config.yaml 中的配置值；若 config.yaml 也未配置，则使用默认常量
-    planner_timeout: Optional[float] = None     # 规划者超时
-    worker_task_timeout: Optional[float] = None # Worker 任务超时
-    reviewer_timeout: Optional[float] = None    # 评审者超时
+    planner_timeout: float | None = None  # 规划者超时
+    worker_task_timeout: float | None = None  # Worker 任务超时
+    reviewer_timeout: float | None = None  # 评审者超时
 
-    @field_validator('cursor_config', mode='before')
+    @field_validator("cursor_config", mode="before")
     @classmethod
     def validate_cursor_config(cls, v: Any) -> CursorAgentConfig:
         """处理模块重载导致的类型检查问题"""
@@ -74,9 +77,9 @@ class OrchestratorConfig(BaseModel):
         if isinstance(v, dict):
             return CursorAgentConfig(**v)
         # 处理模块重载后类标识符变化的情况
-        if hasattr(v, 'model_dump'):
+        if hasattr(v, "model_dump"):
             return CursorAgentConfig(**v.model_dump())
-        if hasattr(v, '__dict__'):
+        if hasattr(v, "__dict__"):
             return CursorAgentConfig(**v.__dict__)
         return v
 
@@ -84,38 +87,38 @@ class OrchestratorConfig(BaseModel):
     # None 表示使用 config.yaml 中的值（通过 get_config().logging.stream_json 获取）
     # 显式传入的值优先（最高优先级）
     # 解析在 Orchestrator._resolve_config_values() 中进行
-    stream_events_enabled: Optional[bool] = None   # 是否启用流式日志
-    stream_log_console: Optional[bool] = None      # 是否输出到控制台
-    stream_log_detail_dir: Optional[str] = None    # 详细日志目录
-    stream_log_raw_dir: Optional[str] = None       # 原始日志目录
+    stream_events_enabled: bool | None = None  # 是否启用流式日志
+    stream_log_console: bool | None = None  # 是否输出到控制台
+    stream_log_detail_dir: str | None = None  # 详细日志目录
+    stream_log_raw_dir: str | None = None  # 原始日志目录
     # 流式控制台渲染配置（默认关闭，避免噪声）
-    stream_console_renderer: bool = False      # 启用流式控制台渲染器
-    stream_advanced_renderer: bool = False     # 使用高级终端渲染器
-    stream_typing_effect: bool = False         # 启用打字机效果
-    stream_typing_delay: float = 0.02          # 打字延迟（秒）
-    stream_word_mode: bool = True              # 逐词输出模式
-    stream_color_enabled: bool = True          # 启用颜色输出
-    stream_show_word_diff: bool = False        # 显示逐词差异
+    stream_console_renderer: bool = False  # 启用流式控制台渲染器
+    stream_advanced_renderer: bool = False  # 使用高级终端渲染器
+    stream_typing_effect: bool = False  # 启用打字机效果
+    stream_typing_delay: float = 0.02  # 打字延迟（秒）
+    stream_word_mode: bool = True  # 逐词输出模式
+    stream_color_enabled: bool = True  # 启用颜色输出
+    stream_show_word_diff: bool = False  # 显示逐词差异
     # 自动提交配置
-    enable_auto_commit: bool = False   # 默认禁用自动提交（需显式开启）
-    auto_push: bool = False            # 是否自动推送
-    commit_on_complete: bool = True    # 仅在完成时提交
-    commit_per_iteration: bool = False # 每次迭代都提交
+    enable_auto_commit: bool = False  # 默认禁用自动提交（需显式开启）
+    auto_push: bool = False  # 是否自动推送
+    commit_on_complete: bool = True  # 仅在完成时提交
+    commit_per_iteration: bool = False  # 每次迭代都提交
     # Cloud Agent 配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
-    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    cloud_auth_config: CloudAuthConfig | None = None  # Cloud 认证配置
     # 各角色模型配置 - tri-state 设计
     # - None: 使用 config.yaml 中的配置值（通过 get_config().models.* 获取）
     # - 显式传入: 使用调用方传入的值（最高优先级）
     # 解析在 Orchestrator._resolve_config_values() 中进行
-    planner_model: Optional[str] = None    # 规划者模型
-    worker_model: Optional[str] = None     # 执行者模型
-    reviewer_model: Optional[str] = None   # 评审者模型
+    planner_model: str | None = None  # 规划者模型
+    worker_model: str | None = None  # 执行者模型
+    reviewer_model: str | None = None  # 评审者模型
     # 角色级执行模式配置（默认继承全局 execution_mode）
     # 若为 None，则使用全局 execution_mode
-    planner_execution_mode: Optional[ExecutionMode] = None  # 规划者执行模式
-    worker_execution_mode: Optional[ExecutionMode] = None   # 执行者执行模式
-    reviewer_execution_mode: Optional[ExecutionMode] = None # 评审者执行模式
+    planner_execution_mode: ExecutionMode | None = None  # 规划者执行模式
+    worker_execution_mode: ExecutionMode | None = None  # 执行者执行模式
+    reviewer_execution_mode: ExecutionMode | None = None  # 评审者执行模式
 
 
 class Orchestrator:
@@ -131,7 +134,7 @@ class Orchestrator:
     def __init__(
         self,
         config: OrchestratorConfig,
-        knowledge_manager: Optional["KnowledgeManager"] = None,
+        knowledge_manager: KnowledgeManager | None = None,
     ):
         self.config = config
 
@@ -149,7 +152,7 @@ class Orchestrator:
         self.task_queue = TaskQueue()
 
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
-        self._knowledge_manager: Optional["KnowledgeManager"] = knowledge_manager
+        self._knowledge_manager: KnowledgeManager | None = knowledge_manager
 
         # 初始化 Agents
         planner_cursor_config = config.cursor_config.model_copy(deep=True)
@@ -178,10 +181,10 @@ class Orchestrator:
         #   注：Reviewer 的 mode 在 ReviewerAgent._apply_ask_mode_config 中也会设置
         # - Worker: mode='agent', force_write=True（完整代理模式，允许修改文件）
         planner_cursor_config.force_write = False  # 确保 Planner 不会修改文件
-        reviewer_cursor_config.mode = 'ask'        # Reviewer 使用问答模式
+        reviewer_cursor_config.mode = "ask"  # Reviewer 使用问答模式
         reviewer_cursor_config.force_write = False  # 确保 Reviewer 不会修改文件
-        worker_cursor_config.mode = 'agent'        # Worker 使用完整代理模式
-        worker_cursor_config.force_write = True    # Worker 允许修改文件（--force）
+        worker_cursor_config.mode = "agent"  # Worker 使用完整代理模式
+        worker_cursor_config.force_write = True  # Worker 允许修改文件（--force）
 
         # 解析角色级执行模式（默认继承全局 execution_mode）
         planner_exec_mode = config.planner_execution_mode or config.execution_mode
@@ -190,34 +193,40 @@ class Orchestrator:
 
         # 记录执行模式和各角色模型
         logger.info(f"编排器使用执行模式: {config.execution_mode.value}")
-        if (config.planner_execution_mode or config.worker_execution_mode
-                or config.reviewer_execution_mode):
+        if config.planner_execution_mode or config.worker_execution_mode or config.reviewer_execution_mode:
             logger.info(
                 f"角色级执行模式 - Planner: {planner_exec_mode.value}, "
                 f"Worker: {worker_exec_mode.value}, Reviewer: {reviewer_exec_mode.value}"
             )
-        logger.info(f"各角色模型配置 - Planner: {self._resolved_config['planner_model']}, "
-                    f"Worker: {self._resolved_config['worker_model']}, "
-                    f"Reviewer: {self._resolved_config['reviewer_model']}")
+        logger.info(
+            f"各角色模型配置 - Planner: {self._resolved_config['planner_model']}, "
+            f"Worker: {self._resolved_config['worker_model']}, "
+            f"Reviewer: {self._resolved_config['reviewer_model']}"
+        )
 
-        self.planner = PlannerAgent(PlannerConfig(
-            working_directory=config.working_directory,
-            cursor_config=planner_cursor_config,
-            execution_mode=planner_exec_mode,
-            cloud_auth_config=config.cloud_auth_config,
-        ))
+        self.planner = PlannerAgent(
+            PlannerConfig(
+                working_directory=config.working_directory,
+                cursor_config=planner_cursor_config,
+                execution_mode=planner_exec_mode,
+                cloud_auth_config=config.cloud_auth_config,
+            )
+        )
 
-        self.reviewer = ReviewerAgent(ReviewerConfig(
-            working_directory=config.working_directory,
-            strict_mode=config.strict_review,
-            cursor_config=reviewer_cursor_config,
-            execution_mode=reviewer_exec_mode,
-            cloud_auth_config=config.cloud_auth_config,
-        ))
+        self.reviewer = ReviewerAgent(
+            ReviewerConfig(
+                working_directory=config.working_directory,
+                strict_mode=config.strict_review,
+                cursor_config=reviewer_cursor_config,
+                execution_mode=reviewer_exec_mode,
+                cloud_auth_config=config.cloud_auth_config,
+            )
+        )
 
         # Worker 池（传递知识库管理器和执行模式配置）
         # 使用解析后的 worker_task_timeout
         from agents.worker import WorkerConfig
+
         self.worker_pool = WorkerPool(
             size=config.worker_pool_size,
             worker_config=WorkerConfig(
@@ -232,14 +241,16 @@ class Orchestrator:
         self.worker_pool.initialize()
 
         # 初始化 CommitterAgent（当 enable_auto_commit=True 时）
-        self.committer: Optional[CommitterAgent] = None
+        self.committer: CommitterAgent | None = None
         if config.enable_auto_commit:
             committer_cursor_config = config.cursor_config.model_copy(deep=True)
-            self.committer = CommitterAgent(CommitterConfig(
-                working_directory=config.working_directory,
-                auto_push=config.auto_push,
-                cursor_config=committer_cursor_config,
-            ))
+            self.committer = CommitterAgent(
+                CommitterConfig(
+                    working_directory=config.working_directory,
+                    auto_push=config.auto_push,
+                    cursor_config=committer_cursor_config,
+                )
+            )
 
         # 注册 Agents
         self.state.register_agent(self.planner.id, AgentRole.PLANNER)
@@ -249,7 +260,8 @@ class Orchestrator:
         if self.committer:
             self.state.register_agent(self.committer.id, AgentRole.COMMITTER)
 
-    def _resolve_config_values(self, config: OrchestratorConfig) -> Dict[str, Any]:
+    @staticmethod
+    def _resolve_config_values(config: OrchestratorConfig) -> dict[str, Any]:
         """解析配置值，应用优先级规则
 
         配置优先级:
@@ -286,63 +298,31 @@ class Orchestrator:
         yaml_config = get_config()
 
         # 解析超时配置（优先级: 显式传入 > config.yaml > 默认值）
-        planner_timeout = (
-            config.planner_timeout
-            if config.planner_timeout is not None
-            else yaml_config.planner.timeout
-        )
+        planner_timeout = config.planner_timeout if config.planner_timeout is not None else yaml_config.planner.timeout
         worker_task_timeout = (
-            config.worker_task_timeout
-            if config.worker_task_timeout is not None
-            else yaml_config.worker.task_timeout
+            config.worker_task_timeout if config.worker_task_timeout is not None else yaml_config.worker.task_timeout
         )
         reviewer_timeout = (
-            config.reviewer_timeout
-            if config.reviewer_timeout is not None
-            else yaml_config.reviewer.timeout
+            config.reviewer_timeout if config.reviewer_timeout is not None else yaml_config.reviewer.timeout
         )
 
         # 解析模型配置（优先级: 显式传入 > config.yaml > DEFAULT_* 常量）
         # tri-state 设计: None 表示使用 config.yaml 值，显式传入优先
-        planner_model = (
-            config.planner_model
-            if config.planner_model is not None
-            else yaml_config.models.planner
-        )
-        worker_model = (
-            config.worker_model
-            if config.worker_model is not None
-            else yaml_config.models.worker
-        )
-        reviewer_model = (
-            config.reviewer_model
-            if config.reviewer_model is not None
-            else yaml_config.models.reviewer
-        )
+        planner_model = config.planner_model if config.planner_model is not None else yaml_config.models.planner
+        worker_model = config.worker_model if config.worker_model is not None else yaml_config.models.worker
+        reviewer_model = config.reviewer_model if config.reviewer_model is not None else yaml_config.models.reviewer
 
         # 解析流式日志配置（优先级: 显式传入 > config.yaml > DEFAULT_STREAM_* 常量）
         # tri-state 设计: None 表示使用 config.yaml 值，显式传入优先
         stream_json = yaml_config.logging.stream_json
         stream_events_enabled = (
-            config.stream_events_enabled
-            if config.stream_events_enabled is not None
-            else stream_json.enabled
+            config.stream_events_enabled if config.stream_events_enabled is not None else stream_json.enabled
         )
-        stream_log_console = (
-            config.stream_log_console
-            if config.stream_log_console is not None
-            else stream_json.console
-        )
+        stream_log_console = config.stream_log_console if config.stream_log_console is not None else stream_json.console
         stream_log_detail_dir = (
-            config.stream_log_detail_dir
-            if config.stream_log_detail_dir is not None
-            else stream_json.detail_dir
+            config.stream_log_detail_dir if config.stream_log_detail_dir is not None else stream_json.detail_dir
         )
-        stream_log_raw_dir = (
-            config.stream_log_raw_dir
-            if config.stream_log_raw_dir is not None
-            else stream_json.raw_dir
-        )
+        stream_log_raw_dir = config.stream_log_raw_dir if config.stream_log_raw_dir is not None else stream_json.raw_dir
 
         # 解析 agent_cli 配置（用于 _inject_agent_cli_config）
         # 优先级: OrchestratorConfig.cursor_config > config.yaml > 默认值
@@ -362,6 +342,7 @@ class Orchestrator:
 
         # api_key: cursor_config > 环境变量 > config.yaml
         import os
+
         api_key = (
             cursor_cfg.api_key
             or os.environ.get("CURSOR_API_KEY")
@@ -412,7 +393,7 @@ class Orchestrator:
     def _inject_agent_cli_config(
         self,
         cursor_config: CursorAgentConfig,
-        resolved_config: Optional[Dict[str, Any]] = None,
+        resolved_config: dict[str, Any] | None = None,
     ) -> None:
         """将 agent_cli/cloud_agent 配置注入到 CursorAgentConfig
 
@@ -515,7 +496,7 @@ class Orchestrator:
         cursor_config.stream_color_enabled = self.config.stream_color_enabled
         cursor_config.stream_show_word_diff = self.config.stream_show_word_diff
 
-    def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
+    def set_knowledge_manager(self, manager: KnowledgeManager) -> None:
         """设置知识库管理器（延迟初始化）
 
         Args:
@@ -563,7 +544,7 @@ class Orchestrator:
             while self._should_continue_iteration():
                 # 开始新迭代
                 iteration = self.state.start_new_iteration()
-                logger.info(f"\n{'='*50}")
+                logger.info(f"\n{'=' * 50}")
                 logger.info(f"=== 迭代 {iteration.iteration_id} 开始 ===")
 
                 # 1. 规划阶段
@@ -617,6 +598,8 @@ class Orchestrator:
     async def _planning_phase(self, goal: str, iteration_id: int) -> None:
         """规划阶段"""
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入规划阶段")
         iteration.status = IterationStatus.PLANNING
 
         logger.info(f"[迭代 {iteration_id}] 规划阶段开始")
@@ -710,6 +693,8 @@ class Orchestrator:
     async def _execution_phase(self, iteration_id: int) -> None:
         """执行阶段"""
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入执行阶段")
         iteration.status = IterationStatus.EXECUTING
 
         pending = self.task_queue.get_pending_count(iteration_id)
@@ -730,20 +715,16 @@ class Orchestrator:
     async def _review_phase(self, goal: str, iteration_id: int) -> ReviewDecision:
         """评审阶段"""
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入评审阶段")
         iteration.status = IterationStatus.REVIEWING
 
         logger.info(f"[迭代 {iteration_id}] 评审阶段开始")
 
         # 收集已完成和失败的任务（使用统一的 to_commit_entry 格式）
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
-        completed_tasks = [
-            t.to_commit_entry()
-            for t in tasks if t.status.value == "completed"
-        ]
-        failed_tasks = [
-            {"id": t.id, "title": t.title, "error": t.error}
-            for t in tasks if t.status.value == "failed"
-        ]
+        completed_tasks = [t.to_commit_entry() for t in tasks if t.status.value == "completed"]
+        failed_tasks = [{"id": t.id, "title": t.title, "error": t.error} for t in tasks if t.status.value == "failed"]
 
         # 执行评审
         review_result = await self.reviewer.review_iteration(
@@ -757,7 +738,7 @@ class Orchestrator:
         iteration.review_passed = decision == ReviewDecision.COMPLETE
         iteration.review_feedback = review_result.get("summary", "")
         iteration.status = IterationStatus.COMPLETED
-        iteration.completed_at = asyncio.get_event_loop().time()
+        iteration.completed_at = datetime.now()
 
         logger.info(f"[迭代 {iteration_id}] 评审决策: {decision.value}")
         logger.info(f"[迭代 {iteration_id}] 评审得分: {review_result.get('score', 'N/A')}")
@@ -852,6 +833,8 @@ class Orchestrator:
             return {"success": False, "error": "Committer not initialized"}
 
         iteration = self.state.get_current_iteration()
+        if iteration is None:
+            raise RuntimeError("当前迭代状态为空，无法进入提交阶段")
         iteration.status = IterationStatus.COMMITTING
 
         logger.info(f"[迭代 {iteration_id}] 提交阶段开始")
@@ -860,10 +843,7 @@ class Orchestrator:
         # to_commit_entry() 返回: id, title, description, result
         # description 回退策略：若为空则使用 title
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
-        completed_tasks = [
-            t.to_commit_entry()
-            for t in tasks if t.status.value == "completed"
-        ]
+        completed_tasks = [t.to_commit_entry() for t in tasks if t.status.value == "completed"]
 
         # 构建 CommitContext（用于文档化和验证）
         commit_context = CommitContext(
@@ -887,17 +867,17 @@ class Orchestrator:
         )
 
         # 记录提交结果到 iteration（填充 IterationState 字段）
-        iteration.commit_hash = commit_result.get('commit_hash', '')
-        iteration.commit_message = commit_result.get('message', '')
-        iteration.pushed = commit_result.get('pushed', False)
-        iteration.commit_files = commit_result.get('files_changed', [])
+        iteration.commit_hash = commit_result.get("commit_hash", "")
+        iteration.commit_message = commit_result.get("message", "")
+        iteration.pushed = commit_result.get("pushed", False)
+        iteration.commit_files = commit_result.get("files_changed", [])
 
         # 记录错误信息到 iteration（commit 失败或 push 失败均不中断主流程）
         success = commit_result.get("success", False)
         if not success:
-            iteration.commit_error = commit_result.get('error', 'Unknown commit error')
+            iteration.commit_error = commit_result.get("error", "Unknown commit error")
         if commit_result.get("push_error"):
-            iteration.push_error = commit_result.get('push_error')
+            iteration.push_error = commit_result.get("push_error")
 
         result_status = "success" if success else "failed"
 

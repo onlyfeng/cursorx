@@ -2,6 +2,7 @@
 
 提供基于 ChromaDB 的向量存储功能，支持内存模式和持久化模式
 """
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -70,9 +71,7 @@ class ChromaVectorStore(VectorStore):
             try:
                 import chromadb as _chromadb
             except ImportError as e:
-                raise ImportError(
-                    "请安装 chromadb: pip install chromadb"
-                ) from e
+                raise ImportError("请安装 chromadb: pip install chromadb") from e
             chromadb = _chromadb
 
         # 创建 ChromaDB 客户端
@@ -86,7 +85,7 @@ class ChromaVectorStore(VectorStore):
                 settings=chromadb.config.Settings(
                     anonymized_telemetry=False,
                     allow_reset=True,
-                )
+                ),
             )
             self._is_persistent = True
             logger.info(f"ChromaDB 持久化模式: {persist_path}")
@@ -104,10 +103,7 @@ class ChromaVectorStore(VectorStore):
         # 获取或创建集合
         self._collection = self._get_or_create_collection(collection_name)
 
-        logger.info(
-            f"ChromaDB 集合已就绪: {collection_name}, "
-            f"metric={metric}, 已有 {self._collection.count()} 条记录"
-        )
+        logger.info(f"ChromaDB 集合已就绪: {collection_name}, metric={metric}, 已有 {self._collection.count()} 条记录")
 
     def _get_or_create_collection(self, name: str):
         """获取或创建集合
@@ -127,10 +123,7 @@ class ChromaVectorStore(VectorStore):
             "dot": "ip",
         }.get(self._metric, "cosine")
 
-        return self._client.get_or_create_collection(
-            name=name,
-            metadata={"hnsw:space": distance_fn}
-        )
+        return self._client.get_or_create_collection(name=name, metadata={"hnsw:space": distance_fn})
 
     @property
     def persist_directory(self) -> Optional[str]:
@@ -162,7 +155,7 @@ class ChromaVectorStore(VectorStore):
             "file_path": chunk.file_path,
             "start_line": chunk.start_line,
             "end_line": chunk.end_line,
-            "chunk_type": chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
+            "chunk_type": chunk.chunk_type.value if hasattr(chunk.chunk_type, "value") else str(chunk.chunk_type),
             "language": chunk.language,
         }
 
@@ -230,11 +223,7 @@ class ChromaVectorStore(VectorStore):
         return fields
 
     def _add_sync(
-        self,
-        ids: list[str],
-        embeddings: list[list[float]],
-        documents: list[str],
-        metadatas: list[dict[str, Any]]
+        self, ids: list[str], embeddings: list[list[float]], documents: list[str], metadatas: list[dict[str, Any]]
     ) -> None:
         """同步添加数据到集合
 
@@ -273,7 +262,11 @@ class ChromaVectorStore(VectorStore):
 
         # 准备数据
         ids = [chunk.chunk_id for chunk in chunks]
-        embeddings = [chunk.embedding for chunk in chunks]
+        embeddings: list[list[float]] = []
+        for chunk in chunks:
+            if chunk.embedding is None:
+                raise ValueError(f"分块 {chunk.chunk_id} 没有向量嵌入")
+            embeddings.append(chunk.embedding)
         documents = [chunk.content for chunk in chunks]
         metadatas = [self._chunk_to_metadata(chunk) for chunk in chunks]
 
@@ -362,9 +355,7 @@ class ChromaVectorStore(VectorStore):
         metadatas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(ids)
         distances = results["distances"][0] if results.get("distances") else [0.0] * len(ids)
 
-        for rank, (chunk_id, doc, meta, distance) in enumerate(
-            zip(ids, documents, metadatas, distances)
-        ):
+        for rank, (chunk_id, doc, meta, distance) in enumerate(zip(ids, documents, metadatas, distances)):
             # 将距离转换为相似度分数
             # ChromaDB cosine 返回的是 distance (0-2)，需要转换为 similarity (0-1)
             if self._metric == "cosine":
@@ -386,12 +377,14 @@ class ChromaVectorStore(VectorStore):
                 **chunk_fields,
             )
 
-            search_results.append(SearchResult(
-                chunk=chunk,
-                score=score,
-                rank=rank,
-                metadata={"distance": distance},
-            ))
+            search_results.append(
+                SearchResult(
+                    chunk=chunk,
+                    score=score,
+                    rank=rank,
+                    metadata={"distance": distance},
+                )
+            )
 
         return search_results
 
@@ -580,10 +573,7 @@ class ChromaVectorStore(VectorStore):
         if name in existing:
             raise ValueError(f"集合 '{name}' 已存在")
 
-        self._client.create_collection(
-            name=name,
-            metadata={"hnsw:space": self._metric}
-        )
+        self._client.create_collection(name=name, metadata={"hnsw:space": self._metric})
         logger.info(f"已创建集合: {name}")
 
     def delete_collection(self, name: str) -> None:

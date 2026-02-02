@@ -2,6 +2,7 @@
 
 提供基于向量嵌入的语义搜索功能，支持多种搜索模式
 """
+
 import asyncio
 import re
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ class SearchOptions(BaseModel):
         include_context: 是否包含上下文
         context_lines: 上下文行数（上下各多少行）
     """
+
     top_k: int = Field(default=10, ge=1, le=100)
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)
     file_filter: Optional[list[str]] = None
@@ -56,6 +58,7 @@ class SearchResultWithContext(BaseModel):
         chunk_type: 代码块类型
         metadata: 附加元数据
     """
+
     content: str
     file_path: str
     start_line: int
@@ -102,7 +105,7 @@ class SearchResultWithContext(BaseModel):
             chunk=chunk,
             name=chunk.name,
             language=chunk.language,
-            chunk_type=chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
+            chunk_type=chunk.chunk_type.value if hasattr(chunk.chunk_type, "value") else str(chunk.chunk_type),
             metadata={**chunk.metadata, **result.metadata},
         )
 
@@ -128,6 +131,7 @@ class SearchStats:
         embedding_time_ms: 嵌入生成耗时（毫秒）
         filters_applied: 应用的过滤器
     """
+
     total_results: int = 0
     filtered_results: int = 0
     search_time_ms: float = 0.0
@@ -176,9 +180,7 @@ class SemanticSearch:
         self._file_cache: dict[str, list[str]] = {}
 
         logger.info(
-            f"语义搜索引擎已初始化: "
-            f"embedding={embedding_model.model_name}, "
-            f"dimension={embedding_model.dimension}"
+            f"语义搜索引擎已初始化: embedding={embedding_model.model_name}, dimension={embedding_model.dimension}"
         )
 
     @property
@@ -358,10 +360,7 @@ class SemanticSearch:
             keyword_score = self._compute_keyword_score(result.chunk.content, keywords)
 
             # 加权平均
-            hybrid_score = (
-                (1 - keyword_weight) * semantic_score +
-                keyword_weight * keyword_score
-            )
+            hybrid_score = (1 - keyword_weight) * semantic_score + keyword_weight * keyword_score
             scored_results.append((result, hybrid_score))
 
         # 按混合分数排序
@@ -369,7 +368,7 @@ class SemanticSearch:
 
         # 取 top_k 结果并添加上下文
         final_results: list[SearchResultWithContext] = []
-        for result, hybrid_score in scored_results[:opts.top_k]:
+        for result, hybrid_score in scored_results[: opts.top_k]:
             context, ctx_start, ctx_end = await self._get_context(
                 file_path=result.chunk.file_path,
                 start_line=result.chunk.start_line,
@@ -386,9 +385,7 @@ class SemanticSearch:
             # 更新为混合分数
             result_with_ctx.score = hybrid_score
             result_with_ctx.metadata["semantic_score"] = result.score
-            result_with_ctx.metadata["keyword_score"] = self._compute_keyword_score(
-                result.chunk.content, keywords
-            )
+            result_with_ctx.metadata["keyword_score"] = self._compute_keyword_score(result.chunk.content, keywords)
             final_results.append(result_with_ctx)
 
         return final_results
@@ -414,6 +411,8 @@ class SemanticSearch:
             await self._embedding_model.embed_chunk(code_chunk)
 
         # 搜索相似代码
+        if code_chunk.embedding is None:
+            return []
         results = await self._vector_store.search(
             query_embedding=code_chunk.embedding,
             top_k=top_k + 1 if exclude_self else top_k,
@@ -421,10 +420,7 @@ class SemanticSearch:
 
         # 排除自身
         if exclude_self:
-            results = [
-                r for r in results
-                if r.chunk.chunk_id != code_chunk.chunk_id
-            ][:top_k]
+            results = [r for r in results if r.chunk.chunk_id != code_chunk.chunk_id][:top_k]
 
         return results
 
@@ -445,20 +441,14 @@ class SemanticSearch:
             匹配的代码块列表
         """
         # 构建搜索查询
-        if exact_match:
-            query = f"def {function_name}("
-        else:
-            query = f"function {function_name} implementation"
+        query = f"def {function_name}(" if exact_match else f"function {function_name} implementation"
 
         # 执行搜索
         results = await self.search(query=query, top_k=top_k * 2)
 
         # 如果精确匹配，过滤结果
         if exact_match:
-            results = [
-                r for r in results
-                if r.chunk.name == function_name
-            ]
+            results = [r for r in results if r.chunk.name == function_name]
 
         return results[:top_k]
 
@@ -478,7 +468,7 @@ class SemanticSearch:
         Returns:
             过滤条件字典，如果无过滤则返回 None
         """
-        conditions = []
+        conditions: list[dict[str, Any]] = []
 
         if file_filter:
             if len(file_filter) == 1:
@@ -539,7 +529,7 @@ class SemanticSearch:
             ctx_end = min(len(lines), end_line + context_lines)
 
             # 提取上下文（行号从 1 开始）
-            context_lines_list = lines[ctx_start - 1:ctx_end]
+            context_lines_list = lines[ctx_start - 1 : ctx_end]
             context = "\n".join(context_lines_list)
 
             return context, ctx_start, ctx_end
@@ -568,10 +558,7 @@ class SemanticSearch:
 
             # 异步读取文件
             loop = asyncio.get_event_loop()
-            content = await loop.run_in_executor(
-                None,
-                lambda: path.read_text(encoding="utf-8", errors="ignore")
-            )
+            content = await loop.run_in_executor(None, lambda: path.read_text(encoding="utf-8", errors="ignore"))
             lines = content.splitlines()
 
             # 缓存结果（限制缓存大小）
@@ -595,27 +582,98 @@ class SemanticSearch:
         """
         # 简单的关键词提取：分词 + 过滤停用词
         # 匹配英文单词、驼峰命名、下划线命名等
-        words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*|[\u4e00-\u9fff]+', query)
+        words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*|[\u4e00-\u9fff]+", query)
 
         # 过滤短词和常见停用词
         stopwords = {
-            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
-            'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-            'would', 'could', 'should', 'may', 'might', 'must', 'shall',
-            'can', 'need', 'to', 'of', 'in', 'for', 'on', 'with', 'at',
-            'by', 'from', 'as', 'into', 'through', 'during', 'before',
-            'after', 'above', 'below', 'between', 'under', 'again',
-            'further', 'then', 'once', 'here', 'there', 'when', 'where',
-            'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other',
-            'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same',
-            'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
-            'because', 'until', 'while', 'this', 'that', 'these', 'those',
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "can",
+            "need",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "under",
+            "again",
+            "further",
+            "then",
+            "once",
+            "here",
+            "there",
+            "when",
+            "where",
+            "why",
+            "how",
+            "all",
+            "each",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "no",
+            "nor",
+            "not",
+            "only",
+            "own",
+            "same",
+            "so",
+            "than",
+            "too",
+            "very",
+            "just",
+            "and",
+            "but",
+            "if",
+            "or",
+            "because",
+            "until",
+            "while",
+            "this",
+            "that",
+            "these",
+            "those",
         }
 
-        keywords = [
-            w.lower() for w in words
-            if len(w) > 2 and w.lower() not in stopwords
-        ]
+        keywords = [w.lower() for w in words if len(w) > 2 and w.lower() not in stopwords]
 
         # 去重并保持顺序
         seen = set()

@@ -14,7 +14,94 @@
 - 增量更新：仅更新变化的文档
 - 去重机制：基于 URL 和内容哈希去重
 - 文档检索：支持按 ID、URL、标题搜索
+
+================================================================================
+副作用控制策略 (Side Effect Control)
+================================================================================
+
+详细策略矩阵参见: core/execution_policy.py
+
+**本模块产生的副作用**:
+| 操作                    | 副作用类型     | 说明                              |
+|-------------------------|----------------|-----------------------------------|
+| initialize()            | 文件写入       | 创建 .cursor/knowledge/ 目录结构  |
+| save_document()         | 文件写入       | 写入 docs/*.md, metadata/*.json   |
+| _save_index()           | 文件写入       | 更新 index.json                   |
+| sync_vector_store()     | 文件写入       | 更新向量存储文件                  |
+
+**策略行为**:
+| 策略        | 行为                                              |
+|-------------|---------------------------------------------------|
+| normal      | 正常执行所有写入操作                              |
+| skip-online | 正常执行（不涉及网络请求）                        |
+| dry-run     | 禁止写入：仅验证参数，记录将要执行的操作          |
+| minimal     | 禁止写入：同 dry-run                              |
+
+**实现契约**:
+当调用方传入 dry_run=True 时，本模块应：
+1. 验证参数有效性
+2. 记录将要执行的操作（日志级别 INFO）
+3. 返回成功状态但不执行实际写入
+4. 返回值应包含 dry_run=True 标记以便调用方识别
+
+================================================================================
+KnowledgeStorage 写入边界说明
+================================================================================
+
+【何时会写入 .cursor/knowledge/】
+
+| 触发场景                         | 写入操作                    | 控制方式              |
+|----------------------------------|-----------------------------|-----------------------|
+| KnowledgeStorage.initialize()    | 创建目录结构                | read_only=False 时    |
+|                                  |                             | auto_create_dirs=True |
+| KnowledgeStorage.save_document() | docs/*.md, metadata/*.json  | read_only=False 时    |
+|                                  | index.json                  |                       |
+| KnowledgeStorage._save_index()   | index.json                  | read_only=False 时    |
+| save_documents_batch()           | 同 save_document()          | read_only=False 时    |
+| delete_document()                | 删除文件 + 更新 index       | read_only=False 时    |
+| clear_all()                      | 删除所有文件 + 清空 index   | read_only=False 时    |
+| sync_vector_index()              | vectors/ 目录下的索引文件   | read_only=False 时    |
+
+【何时只读】
+
+| 场景                             | 创建方式                           | 行为                    |
+|----------------------------------|------------------------------------|-------------------------|
+| minimal 策略                     | StorageConfig(read_only=True)      | 所有写入抛出异常        |
+| dry_run 模式                     | KnowledgeStorage.create_read_only()| 所有写入抛出异常        |
+| Worker 知识库注入                | create_read_only()                 | 仅搜索/读取             |
+| 多进程编排器检索                 | create_read_only()                 | 避免并发写入冲突        |
+
+【run_iterate.py 中的写入触发点】
+
+| 方法                             | 写入条件                           | 控制参数              |
+|----------------------------------|------------------------------------|----------------------|
+| update_from_analysis()           | dry_run=False                      | --dry-run            |
+| _save_changelog()                | dry_run=False                      | --dry-run            |
+| _fetch_related_docs()            | dry_run=False                      | --dry-run            |
+| _write_llms_txt_cache()          | disable_cache_write=False          | --minimal/--dry-run  |
+
+【只读模式下的异常】
+
+当 read_only=True 时，以下操作会抛出 ReadOnlyStorageError：
+- save_document() / save_documents_batch()
+- delete_document()
+- clear_all()
+- sync_vector_index()
+- _save_index()（内部方法）
+
+以下操作正常执行：
+- initialize()（但不创建目录，只加载已有索引）
+- load_document() / load_document_by_url()
+- search() / search_semantic()
+- list_documents()
+- get_stats()
+- has_document() / has_url()
+- get_document_id_by_url()
+- get_content_hash_by_url()
+- get_cleaned_fingerprint_by_url()
+- get_index_entry_by_url()
 """
+
 import asyncio
 import hashlib
 import json
@@ -37,18 +124,20 @@ class IndexEntry:
 
     存储在 index.json 中的文档摘要信息
     """
+
     doc_id: str
     url: str
     title: str
-    content_hash: str                       # 内容哈希，用于去重和变更检测
+    content_hash: str  # 内容哈希，用于去重和变更检测
     chunk_count: int = 0
-    content_size: int = 0                   # 内容字符数
-    created_at: str = ""                    # ISO 格式时间戳
+    content_size: int = 0  # 内容字符数
+    created_at: str = ""  # ISO 格式时间戳
     updated_at: str = ""
+    cleaned_fingerprint: str = ""  # 清洗后内容的 fingerprint（用于基线比较）
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "doc_id": self.doc_id,
             "url": self.url,
             "title": self.title,
@@ -58,6 +147,10 @@ class IndexEntry:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        # 仅在有值时写入 cleaned_fingerprint（向后兼容）
+        if self.cleaned_fingerprint:
+            result["cleaned_fingerprint"] = self.cleaned_fingerprint
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IndexEntry":
@@ -71,12 +164,19 @@ class IndexEntry:
             content_size=data.get("content_size", 0),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
+            cleaned_fingerprint=data.get("cleaned_fingerprint", ""),
         )
 
     @classmethod
     def from_document(cls, doc: Document) -> "IndexEntry":
-        """从文档创建索引条目"""
+        """从文档创建索引条目
+
+        支持从 doc.metadata 中读取 cleaned_fingerprint 字段，
+        如果调用者已预计算清洗后的 fingerprint，可通过 metadata 传入。
+        """
         content_hash = hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16]
+        # 从 metadata 中提取 cleaned_fingerprint（如果存在）
+        cleaned_fp = doc.metadata.get("cleaned_fingerprint", "") if doc.metadata else ""
         return cls(
             doc_id=doc.id,
             url=doc.url,
@@ -86,24 +186,47 @@ class IndexEntry:
             content_size=len(doc.content),
             created_at=doc.created_at.isoformat(),
             updated_at=doc.updated_at.isoformat(),
+            cleaned_fingerprint=cleaned_fp,
         )
+
+
+class ReadOnlyStorageError(Exception):
+    """只读存储错误
+
+    当在只读模式下尝试执行写入操作时抛出。
+    用于 minimal 策略或 Worker 知识库注入等只读场景。
+    """
+
+    def __init__(self, operation: str, message: str = ""):
+        self.operation = operation
+        self.message = message or f"只读模式下禁止执行 {operation} 操作"
+        super().__init__(self.message)
 
 
 @dataclass
 class StorageConfig:
-    """存储配置"""
+    """存储配置
+
+    Attributes:
+        read_only: 只读模式，禁止所有写入操作（适用于 minimal 策略/Worker 知识库注入）
+                   只读模式下：
+                   - initialize() 不会自动创建目录（auto_create_dirs 被强制为 False）
+                   - save_document/delete_document/clear_all 等写入方法抛出 ReadOnlyStorageError
+                   - 搜索/加载/统计等只读操作正常执行
+    """
+
     # 存储根目录（相对于工作目录）
     storage_root: str = ".cursor/knowledge"
 
     # 子目录名称
     docs_dir: str = "docs"
     metadata_dir: str = "metadata"
-    vectors_dir: str = "vectors"              # 向量索引子目录
+    vectors_dir: str = "vectors"  # 向量索引子目录
 
     # 索引文件名
     index_file: str = "index.json"
 
-    # 是否自动创建目录
+    # 是否自动创建目录（read_only=True 时强制为 False）
     auto_create_dirs: bool = True
 
     # 是否在保存时备份
@@ -112,16 +235,29 @@ class StorageConfig:
     # 是否启用向量索引
     enable_vector_index: bool = False
 
+    # 只读模式：禁止所有写入操作
+    # 适用场景：
+    # - minimal 策略：仅验证参数，不执行写入
+    # - Worker 知识库注入：仅搜索/读取，不修改知识库
+    # - 多进程编排器知识库检索：仅搜索，避免并发写入冲突
+    read_only: bool = False
+
+    def __post_init__(self):
+        """后处理：只读模式时强制禁用自动创建目录"""
+        if self.read_only:
+            object.__setattr__(self, "auto_create_dirs", False)
+
 
 @dataclass
 class SearchResult:
     """搜索结果"""
+
     doc_id: str
     url: str
     title: str
-    score: float = 1.0                      # 匹配分数
-    snippet: str = ""                       # 内容摘要
-    match_type: str = "exact"               # 匹配类型: exact, partial, fuzzy
+    score: float = 1.0  # 匹配分数
+    snippet: str = ""  # 内容摘要
+    match_type: str = "exact"  # 匹配类型: exact, partial, fuzzy
 
 
 class KnowledgeStorage:
@@ -160,6 +296,9 @@ class KnowledgeStorage:
         self.config = config or StorageConfig()
         self.workspace_root = Path(workspace_root or os.getcwd())
 
+        # 只读模式标记（从配置读取，支持运行时检查）
+        self._read_only = self.config.read_only
+
         # 计算存储路径
         self.storage_path = self.workspace_root / self.config.storage_root
         self.docs_path = self.storage_path / self.config.docs_dir
@@ -169,12 +308,59 @@ class KnowledgeStorage:
 
         # 索引缓存
         self._index: dict[str, IndexEntry] = {}
-        self._url_to_id: dict[str, str] = {}    # URL -> doc_id 映射
+        self._url_to_id: dict[str, str] = {}  # URL -> doc_id 映射
         self._initialized = False
         self._lock: Optional[asyncio.Lock] = None
 
         # 向量存储（延迟初始化）
         self._vector_store: Optional[KnowledgeVectorStore] = None
+
+    def _check_writable(self, operation: str) -> None:
+        """检查是否允许写入操作
+
+        Args:
+            operation: 操作名称（用于错误信息）
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下尝试写入时抛出
+        """
+        if self._read_only:
+            raise ReadOnlyStorageError(
+                operation=operation, message=f"只读模式下禁止执行 {operation} 操作 (storage_path={self.storage_path})"
+            )
+
+    @property
+    def is_read_only(self) -> bool:
+        """返回是否为只读模式"""
+        return self._read_only
+
+    @classmethod
+    def create_read_only(
+        cls,
+        workspace_root: Optional[str] = None,
+        storage_root: str = ".cursor/knowledge",
+        enable_vector_index: bool = False,
+    ) -> "KnowledgeStorage":
+        """创建只读 KnowledgeStorage 实例的便捷工厂方法
+
+        适用于 minimal 策略、Worker 知识库注入、多进程编排器检索等场景。
+        只读实例不会创建目录，所有写入操作都会抛出 ReadOnlyStorageError。
+
+        Args:
+            workspace_root: 工作区根目录（默认当前目录）
+            storage_root: 存储根目录（相对于 workspace_root）
+            enable_vector_index: 是否启用向量索引（用于语义搜索）
+
+        Returns:
+            只读模式的 KnowledgeStorage 实例
+        """
+        config = StorageConfig(
+            storage_root=storage_root,
+            enable_vector_index=enable_vector_index,
+            read_only=True,
+            auto_create_dirs=False,  # 只读模式不创建目录
+        )
+        return cls(config=config, workspace_root=workspace_root)
 
     async def _get_lock(self) -> asyncio.Lock:
         """延迟创建锁，避免无事件循环时报错。"""
@@ -255,7 +441,14 @@ class KnowledgeStorage:
             logger.error(f"加载索引失败: {e}")
 
     async def _save_index(self) -> None:
-        """保存索引文件"""
+        """保存索引文件
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
+        """
+        # 只读模式检查
+        self._check_writable("_save_index")
+
         data = {
             "version": 1,
             "updated_at": datetime.now().isoformat(),
@@ -285,7 +478,13 @@ class KnowledgeStorage:
 
         Returns:
             (是否保存成功, 操作说明)
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
         """
+        # 只读模式检查
+        self._check_writable("save_document")
+
         if not self._initialized:
             await self.initialize()
 
@@ -423,17 +622,13 @@ class KnowledgeStorage:
                 logger.warning(f"元数据文件不存在: {doc_id}")
                 return None
 
-            metadata_content = await asyncio.to_thread(
-                metadata_path.read_text, encoding="utf-8"
-            )
+            metadata_content = await asyncio.to_thread(metadata_path.read_text, encoding="utf-8")
             metadata = json.loads(metadata_content)
 
             # 读取文档内容
             doc_path = self.docs_path / f"{doc_id}.md"
             if doc_path.exists():
-                raw_content = await asyncio.to_thread(
-                    doc_path.read_text, encoding="utf-8"
-                )
+                raw_content = await asyncio.to_thread(doc_path.read_text, encoding="utf-8")
                 # 解析 Markdown，提取实际内容（跳过元数据头）
                 content = self._extract_content_from_markdown(raw_content)
             else:
@@ -469,7 +664,7 @@ class KnowledgeStorage:
 
         if separator_index >= 0:
             # 返回分隔线之后的内容
-            content_lines = lines[separator_index + 1:]
+            content_lines = lines[separator_index + 1 :]
             # 跳过开头的空行
             while content_lines and not content_lines[0].strip():
                 content_lines.pop(0)
@@ -502,7 +697,13 @@ class KnowledgeStorage:
 
         Returns:
             是否删除成功
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
         """
+        # 只读模式检查
+        self._check_writable("delete_document")
+
         if not self._initialized:
             await self.initialize()
 
@@ -623,14 +824,16 @@ class KnowledgeStorage:
                     snippet = self._extract_snippet(doc.content, query, max_length=100)
 
             if score > 0:
-                results.append(SearchResult(
-                    doc_id=doc_id,
-                    url=entry.url,
-                    title=entry.title,
-                    score=score,
-                    snippet=snippet,
-                    match_type=match_type,
-                ))
+                results.append(
+                    SearchResult(
+                        doc_id=doc_id,
+                        url=entry.url,
+                        title=entry.title,
+                        score=score,
+                        snippet=snippet,
+                        match_type=match_type,
+                    )
+                )
 
         # 按分数排序
         results.sort(key=lambda r: r.score, reverse=True)
@@ -661,14 +864,16 @@ class KnowledgeStorage:
 
                 entry = self._index.get(vr.doc_id)
                 if entry:
-                    results.append(SearchResult(
-                        doc_id=vr.doc_id,
-                        url=entry.url,
-                        title=entry.title,
-                        score=vr.score,
-                        snippet=vr.content[:100] + "..." if len(vr.content) > 100 else vr.content,
-                        match_type="semantic",
-                    ))
+                    results.append(
+                        SearchResult(
+                            doc_id=vr.doc_id,
+                            url=entry.url,
+                            title=entry.title,
+                            score=vr.score,
+                            snippet=vr.content[:100] + "..." if len(vr.content) > 100 else vr.content,
+                            match_type="semantic",
+                        )
+                    )
 
             return results
 
@@ -754,7 +959,13 @@ class KnowledgeStorage:
 
         Returns:
             同步结果统计 {added: 新增数, removed: 移除数, total: 总数}
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
         """
+        # 只读模式检查（向量同步会写入向量存储文件）
+        self._check_writable("sync_vector_index")
+
         if not self._initialized:
             await self.initialize()
 
@@ -820,7 +1031,7 @@ class KnowledgeStorage:
         # 按更新时间排序（最新的在前）
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
-        return entries[offset:offset + limit]
+        return entries[offset : offset + limit]
 
     async def get_stats(self) -> dict[str, Any]:
         """获取存储统计信息"""
@@ -880,6 +1091,25 @@ class KnowledgeStorage:
                 return entry.content_hash
         return None
 
+    def get_cleaned_fingerprint_by_url(self, url: str) -> Optional[str]:
+        """根据 URL 获取清洗后内容的 fingerprint
+
+        用于基线比较，确保与 ChangelogAnalyzer.compute_fingerprint() 口径一致。
+
+        Args:
+            url: 文档来源 URL
+
+        Returns:
+            清洗后内容的 fingerprint（16字符 SHA256 前缀），
+            不存在或未设置时返回 None
+        """
+        doc_id = self._url_to_id.get(url)
+        if doc_id:
+            entry = self._index.get(doc_id)
+            if entry and entry.cleaned_fingerprint:
+                return entry.cleaned_fingerprint
+        return None
+
     async def get_index_entry_by_url(self, url: str) -> Optional[IndexEntry]:
         """根据 URL 获取索引条目
 
@@ -912,7 +1142,13 @@ class KnowledgeStorage:
 
         Returns:
             {doc_id: (是否成功, 操作说明)}
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
         """
+        # 只读模式检查（批量保存前统一检查，避免部分成功）
+        self._check_writable("save_documents_batch")
+
         results = {}
         for doc in docs:
             success, message = await self.save_document(doc, force=force)
@@ -926,7 +1162,13 @@ class KnowledgeStorage:
 
         Returns:
             是否成功
+
+        Raises:
+            ReadOnlyStorageError: 只读模式下抛出
         """
+        # 只读模式检查
+        self._check_writable("clear_all")
+
         if not self._initialized:
             await self.initialize()
 
