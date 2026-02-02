@@ -10429,7 +10429,8 @@ class TestLoadCoreDocs:
             "# 注释行\n"
             "https://cursor.com/cn/docs/cli/overview\n"
             "\n"  # 空行
-            "https://cursor.com/cn/docs/cli/using\n"
+            "https://cursor.com/cn/docs/cli/using\n",
+            encoding="utf-8",
         )
 
         urls = load_core_docs(
@@ -10546,7 +10547,8 @@ class TestLoadCoreDocs:
             "# 中间注释\n"
             "\n"
             "https://cursor.com/cn/docs/cli/using\n"
-            "# 结尾注释\n"
+            "# 结尾注释\n",
+            encoding="utf-8",
         )
 
         urls = load_core_docs(
@@ -10622,7 +10624,8 @@ class TestLoadCoreDocs:
         # 创建测试文件
         docs_file = tmp_path / "test_docs.txt"
         docs_file.write_text(
-            "# 注释\nhttps://cursor.com/cn/docs/cli/overview\n\nhttps://cursor.com/cn/docs/cli/using\n"
+            "# 注释\nhttps://cursor.com/cn/docs/cli/overview\n\nhttps://cursor.com/cn/docs/cli/using\n",
+            encoding="utf-8",
         )
 
         urls = parse_url_list_file(docs_file)

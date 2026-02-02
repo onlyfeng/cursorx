@@ -1359,6 +1359,9 @@ class TestCooldownInfoNoStringKeyAccess:
             except ValueError:
                 pass
 
+        # 统一路径分隔符为 /（解决 Windows 兼容问题）
+        filepath = filepath.replace("\\", "/")
+
         # 检查文件级别允许
         for allowed_path, _ in self.ALLOWLIST_PATTERNS:
             if filepath.endswith(allowed_path) or allowed_path in filepath:
