@@ -1,60 +1,46 @@
 # Cursor Agent 相关文档
-# 包含：Agent 核心功能、Context 上下文、Subagents、Skills、Rules、MCP、Hooks
-# 共 32 个 URL
+# 基于官方 llms.txt 自动同步，更新日期: 2026-03-04
+# 共 41 个 URL
 
-# ========== Agent 核心功能 ==========
-# Agent 的各种模式和能力
-https://cursor.com/cn/docs/agent/overview
-https://cursor.com/cn/docs/agent/modes
-https://cursor.com/cn/docs/agent/review
-https://cursor.com/cn/docs/agent/terminal
-https://cursor.com/cn/docs/agent/browser
-https://cursor.com/cn/docs/agent/security
-https://cursor.com/cn/docs/agent/hooks
-
-# ========== Context 上下文 ==========
-# Rules、Commands、Skills 等上下文管理
-https://cursor.com/cn/docs/context/rules
-https://cursor.com/cn/docs/context/commands
-https://cursor.com/cn/docs/context/skills
-https://cursor.com/cn/docs/context/subagents
-https://cursor.com/cn/docs/context/semantic-search
-https://cursor.com/cn/docs/context/mentions
-https://cursor.com/cn/docs/context/ignore-files
-
-# ========== MCP (Model Context Protocol) ==========
-# MCP 服务器配置和使用
-https://cursor.com/cn/docs/context/mcp
-https://cursor.com/cn/docs/context/mcp/directory
-https://cursor.com/cn/docs/context/mcp/install-links
-https://cursor.com/cn/docs/cli/mcp
-
-# ========== Cloud Agent ==========
-# 云端 Agent 和 API
-https://cursor.com/cn/docs/cloud-agent
-https://cursor.com/cn/docs/cloud-agent/web-and-mobile
-https://cursor.com/cn/docs/cloud-agent/egress-ip-ranges
-https://cursor.com/cn/docs/cloud-agent/api/endpoints
-
-# ========== 相关功能 ==========
-# Tab 补全（与 Agent 配合）
-https://cursor.com/cn/docs/tab/overview
-
-# Inline Edit（与 Agent 配合）
-https://cursor.com/cn/docs/inline-edit/overview
-https://cursor.com/cn/docs/inline-edit/terminal
-
-# Bugbot（自动代码审查 Agent）
-https://cursor.com/cn/docs/bugbot
-https://cursor.com/cn/docs/cookbook/bugbot-rules
-
-# ========== Agent Cookbook ==========
-# Agent 工作流和最佳实践
-https://cursor.com/cn/docs/cookbook/agent-workflows
-https://cursor.com/cn/docs/cookbook/building-mcp-server
-https://cursor.com/cn/docs/cookbook/large-codebases
-
-# ========== 基础概念 ==========
-# 理解 Agent 需要的基础知识
-https://cursor.com/cn/docs/get-started/concepts
-https://cursor.com/cn/docs/models
+# ========== Agent / Context / Cloud Agent ==========
+https://cursor.com/cn/docs/get-started/concepts.md
+https://cursor.com/cn/docs/models.md
+https://cursor.com/cn/docs/agent/overview.md
+https://cursor.com/cn/docs/agent/modes.md
+https://cursor.com/cn/docs/agent/review.md
+https://cursor.com/cn/docs/agent/terminal.md
+https://cursor.com/cn/docs/agent/browser.md
+https://cursor.com/cn/docs/agent/security.md
+https://cursor.com/cn/docs/agent/hooks.md
+https://cursor.com/cn/docs/agent/third-party-hooks.md
+https://cursor.com/cn/docs/context/rules.md
+https://cursor.com/cn/docs/context/commands.md
+https://cursor.com/cn/docs/context/skills.md
+https://cursor.com/cn/docs/context/subagents.md
+https://cursor.com/cn/docs/context/semantic-search.md
+https://cursor.com/cn/docs/context/mentions.md
+https://cursor.com/cn/docs/context/mcp.md
+https://cursor.com/cn/docs/context/mcp/directory.md
+https://cursor.com/cn/docs/context/mcp/install-links.md
+https://cursor.com/cn/docs/plugins.md
+https://cursor.com/cn/docs/plugins/security.md
+https://cursor.com/cn/docs/plugins/building.md
+https://cursor.com/cn/docs/tab/overview.md
+https://cursor.com/cn/docs/cloud-agent.md
+https://cursor.com/cn/docs/cloud-agent/setup.md
+https://cursor.com/cn/docs/cloud-agent/capabilities.md
+https://cursor.com/cn/docs/cloud-agent/best-practices.md
+https://cursor.com/cn/docs/cloud-agent/security.md
+https://cursor.com/cn/docs/cloud-agent/network-access.md
+https://cursor.com/cn/docs/cloud-agent/egress-ip-ranges.md
+https://cursor.com/cn/docs/cloud-agent/settings.md
+https://cursor.com/cn/docs/cloud-agent/api/endpoints.md
+https://cursor.com/cn/docs/inline-edit/overview.md
+https://cursor.com/cn/docs/inline-edit/terminal.md
+https://cursor.com/cn/docs/bugbot.md
+https://cursor.com/cn/docs/shared-transcripts.md
+https://cursor.com/cn/docs/context/ignore-files.md
+https://cursor.com/cn/docs/cookbook/agent-workflows.md
+https://cursor.com/cn/docs/cookbook/building-mcp-server.md
+https://cursor.com/cn/docs/cookbook/large-codebases.md
+https://cursor.com/cn/docs/cookbook/bugbot-rules.md

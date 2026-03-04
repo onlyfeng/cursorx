@@ -14,6 +14,7 @@
 4. 验证测试
 5. 交互式测试
 6. 常见问题
+7. Cursor CLI / Agent 知识库集成
 
 ================================================================================
 1. 快速开始
@@ -245,11 +246,21 @@ A6:
 
 7.1 更新 Cursor CLI 知识库
 -------------------------
-从 URL 列表批量导入（推荐）：
+一键同步官方 llms.txt、重建本地文档源并刷新知识库（推荐）：
+    python scripts/sync_cursor_docs.py
+
+从官方同步后的 URL 列表批量导入（推荐）：
     python scripts/knowledge_cli.py import cursor_cli_docs.txt
+    python scripts/knowledge_cli.py import cursor_agent_docs.txt
+
+如需整体刷新已存在条目：
+    python scripts/knowledge_cli.py refresh --all
+
+仅更新本地 URL 清单、不刷新 `.cursor/knowledge/`：
+    python scripts/sync_cursor_docs.py --skip-knowledge-sync
 
 也可逐个添加：
-    python scripts/knowledge_cli.py add https://cursor.com/cn/docs/cli/overview
+    python scripts/knowledge_cli.py add https://cursor.com/cn/docs/cli/overview.md
 
 7.2 验证知识库
 -------------
@@ -269,6 +280,14 @@ A6:
 更多示例：
     python scripts/knowledge_cli.py search "模型"
     python scripts/knowledge_cli.py search "登录 认证"
+
+7.5 文档源说明
+-------------
+当前 Cursor 官方文档已切换到 `/docs/.../*.md` 结构。
+本仓库中的 `cursor_cli_docs.txt`、`cursor_agent_docs.txt` 和 `cursor_docs_full.txt`
+均基于官方 `https://cursor.com/llms.txt` 同步生成，并统一使用中文路径
+（例如 `https://cursor.com/cn/docs/cli/overview.md`）。
+底层持久化目录仍是共享的 `.cursor/knowledge/`；项目内部通常把这套 Cursor 文档来源称为 `cursor-docs`。
 
 7.7 知识库内容来源
 -----------------

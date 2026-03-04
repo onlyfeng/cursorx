@@ -264,6 +264,9 @@ indexing:
 支持从网页抓取内容构建知识库：
 
 ```bash
+# 同步官方 Cursor 文档源并刷新本地知识库
+python scripts/sync_cursor_docs.py
+
 # 添加网页
 python scripts/knowledge_cli.py add https://example.com
 
