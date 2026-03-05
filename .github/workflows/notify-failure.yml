@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     # 只在工作流失败时运行
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
 
     steps:
       - name: 获取失败信息
@@ -45,7 +49,7 @@ jobs:
 
       # Slack 通知（可选，需要配置 SLACK_WEBHOOK_URL secret）
       - name: Slack 通知
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v1.25.0
         with:
           payload: |
@@ -189,6 +193,9 @@ jobs:
     runs-on: ubuntu-latest
     # 只在工作流成功时运行
     if: ${{ github.event.workflow_run.conclusion == 'success' && vars.CREATE_ISSUE_ON_FAILURE == 'true' }}
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - name: 检出代码
