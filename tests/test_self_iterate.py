@@ -4413,11 +4413,13 @@ class TestChangelogParserRobust:
         # 应该匹配到 mcp（因为包含 cloud relay）
         assert any("mcp" in url for url in related_urls), f"应包含 mcp 文档，实际: {related_urls}"
 
-        # Jan 16 2026: 应该匹配到 modes/plan 专页（因为包含 plan mode）
-        assert any("modes/plan" in url for url in related_urls), f"应包含 modes/plan 文档，实际: {related_urls}"
-
-        # Jan 16 2026: 应该匹配到 modes/ask 专页（因为包含 ask mode）
-        assert any("modes/ask" in url for url in related_urls), f"应包含 modes/ask 文档，实际: {related_urls}"
+        # 当前文档结构下，plan/ask 模式由 parameters + slash-commands 覆盖
+        assert any("reference/parameters" in url for url in related_urls), (
+            f"应包含 parameters 文档以覆盖 --mode plan/ask，实际: {related_urls}"
+        )
+        assert any("reference/slash-commands" in url for url in related_urls), (
+            f"应包含 slash-commands 文档以覆盖 /plan /ask，实际: {related_urls}"
+        )
 
     def test_html_mixed_content_cleanup(self) -> None:
         """测试 HTML 混合内容清理"""
@@ -4901,24 +4903,33 @@ class TestMainContentExtraction:
         assert "diff" in all_content, "应包含 diff 关键词"
         assert "ctrl+r" in all_content or "ctrl" in all_content, "应包含 Ctrl+R 快捷键"
 
-    def test_user_snippet_hits_modes_plan_url(self) -> None:
-        """测试用户片段能命中 modes/plan URL"""
-        analyzer = ChangelogAnalyzer()
-        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
-        analysis = analyzer.extract_update_points(entries)
-
-        # 验证相关文档 URL 包含 modes/plan
-        related_urls = analysis.related_doc_urls
-        assert any("modes/plan" in url for url in related_urls), f"应命中 modes/plan URL，实际: {related_urls}"
-
-    def test_user_snippet_hits_modes_ask_url(self) -> None:
-        """测试用户片段能命中 modes/ask URL"""
+    def test_user_snippet_hits_plan_related_docs(self) -> None:
+        """测试用户片段能命中 plan 相关文档"""
         analyzer = ChangelogAnalyzer()
         entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
         analysis = analyzer.extract_update_points(entries)
 
         related_urls = analysis.related_doc_urls
-        assert any("modes/ask" in url for url in related_urls), f"应命中 modes/ask URL，实际: {related_urls}"
+        assert any("reference/parameters" in url for url in related_urls), (
+            f"应命中 parameters（覆盖 --mode plan），实际: {related_urls}"
+        )
+        assert any("reference/slash-commands" in url for url in related_urls), (
+            f"应命中 slash-commands（覆盖 /plan），实际: {related_urls}"
+        )
+
+    def test_user_snippet_hits_ask_related_docs(self) -> None:
+        """测试用户片段能命中 ask 相关文档"""
+        analyzer = ChangelogAnalyzer()
+        entries = analyzer.parse_changelog(SAMPLE_USER_CHANGELOG_SNIPPET)
+        analysis = analyzer.extract_update_points(entries)
+
+        related_urls = analysis.related_doc_urls
+        assert any("reference/parameters" in url for url in related_urls), (
+            f"应命中 parameters（覆盖 --mode ask），实际: {related_urls}"
+        )
+        assert any("reference/slash-commands" in url for url in related_urls), (
+            f"应命中 slash-commands（覆盖 /ask），实际: {related_urls}"
+        )
 
     def test_user_snippet_hits_cli_mcp_url(self) -> None:
         """测试用户片段能命中 cli/mcp URL"""
