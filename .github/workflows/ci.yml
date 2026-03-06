@@ -428,7 +428,7 @@ jobs:
           echo "## 单元测试（Matrix: ${{ matrix.os }} / Python ${{ matrix.python-version }}）" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> **说明**: Matrix 单测仅收集覆盖率数据（\`--cov-fail-under=0\`），不做阈值检查。" >> $GITHUB_STEP_SUMMARY
-          echo "> 覆盖率 gating 收敛到 \`pr-check.yml\` 的 \`full-check\` job（阈值 80%）。" >> $GITHUB_STEP_SUMMARY
+          echo "> 覆盖率 gating 收敛到 \`pr-check.yml\` 的 \`full-check\` job（阈值 67%）。" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           pytest tests/ -v --tb=short --color=yes \

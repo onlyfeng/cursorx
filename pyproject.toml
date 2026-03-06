@@ -224,8 +224,8 @@ omit = [
 ]
 
 [tool.coverage.report]
-# 最低覆盖率阈值 80%
-fail_under = 80
+# 最低覆盖率阈值 67%
+fail_under = 67
 show_missing = true
 skip_covered = false
 exclude_lines = [

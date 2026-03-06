@@ -127,7 +127,7 @@ from core.config import DEFAULT_ALLOWED_DOMAINS as CONFIG_DEFAULT_ALLOWED_DOMAIN
 from core.config import DEFAULT_ALLOWED_PATH_PREFIXES as CONFIG_DEFAULT_ALLOWED_PATH_PREFIXES
 from core.config import DEFAULT_ALLOWED_URL_PREFIXES as CONFIG_DEFAULT_ALLOWED_URL_PREFIXES  # deprecated alias
 from core.config import DEFAULT_CHANGELOG_URL as CONFIG_DEFAULT_CHANGELOG_URL
-from core.config import (  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）
+from core.config import (
     DEFAULT_CLOUD_AUTH_TIMEOUT,
 )
 from core.config import DEFAULT_EXTERNAL_LINK_ALLOWLIST as CONFIG_DEFAULT_EXTERNAL_LINK_ALLOWLIST
@@ -143,7 +143,7 @@ from core.config import DEFAULT_URL_STRATEGY_MAX_URLS as CONFIG_DEFAULT_URL_STRA
 from core.config import DEFAULT_URL_STRATEGY_NORMALIZE as CONFIG_DEFAULT_URL_STRATEGY_NORMALIZE
 from core.config import DEFAULT_URL_STRATEGY_PREFER_CHANGELOG as CONFIG_DEFAULT_URL_STRATEGY_PREFER_CHANGELOG
 from core.config import DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS as CONFIG_DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS
-from core.config import (  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）
+from core.config import (
     DEPRECATED_KEY_CLI_ALLOWED_URL_PREFIXES,
     DEPRECATED_KEY_CLI_ALLOWED_URL_PREFIXES_BOTH,
     MAX_CONSOLE_PREVIEW_CHARS,
@@ -154,6 +154,7 @@ from core.config import (  # Deprecated 警告统一机制; parse_max_iterations
     _warn_deprecated_once,
     build_cloud_client_config,
     build_unified_overrides,
+    parse_max_iterations,
     print_debug_config,
     resolve_settings,
 )
@@ -195,6 +196,7 @@ from knowledge.doc_sources import (
 )
 from knowledge.doc_url_strategy import (
     DocURLStrategyConfig,
+    deduplicate_urls,
 )
 from knowledge.doc_url_strategy import is_allowed_doc_url as _is_allowed_doc_url_with_config
 from knowledge.doc_url_strategy import (

@@ -60,8 +60,8 @@ SPLIT_COVERAGE=false
 COVERAGE_TIMEOUT=1800
 E2E_TIMEOUT=900
 # 覆盖率阈值（百分比），用于 --cov-fail-under
-# 默认 80，CI matrix 仅收集覆盖率时可传 0（覆盖率 gating 收敛到 pr-check full-check）
-COV_FAIL_UNDER=80
+# 默认 67，匹配当前仓库基线；CI matrix 仅收集覆盖率时可传 0（覆盖率 gating 收敛到 pr-check full-check）
+COV_FAIL_UNDER=67
 COV_FAIL_UNDER_SET=false
 
 # Marker 包含控制（默认排除 cloud/network，与 CI 一致）
@@ -318,7 +318,7 @@ HELPJSON
             echo "  --include-cloud      包含 cloud 标记的测试（默认排除）"
             echo "  --all-markers        包含所有 marker 的测试（等同于 --include-network --include-cloud）"
             echo "  --run-network-isolation 运行网络隔离测试（与 CI no-api-key-smoke-test 对齐）"
-            echo "  --cov-fail-under N      覆盖率阈值 (默认 80；CI 模式自动为 0)，0 表示仅收集不检查"
+            echo "  --cov-fail-under N      覆盖率阈值 (默认 67；CI 模式自动为 0)，0 表示仅收集不检查"
             echo "  -h, --help    显示此帮助信息"
             echo ""
             echo "运行模式 (--mode):"

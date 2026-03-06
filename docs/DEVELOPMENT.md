@@ -925,7 +925,7 @@ mypy agents/ core/ cursor/ --ignore-missing-imports
 pytest tests/ -v --tb=short
 
 # coverage: 覆盖率
-pytest tests/ --cov=. --cov-fail-under=80
+pytest tests/ --cov=. --cov-fail-under=67
 
 # network: 网络隔离
 pytest tests/ -m network_isolation -v
