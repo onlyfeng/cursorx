@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -44,9 +45,9 @@ class AuthToken:
 
     access_token: str
     token_type: str = "Bearer"
-    expires_at: Optional[datetime] = None
-    refresh_token: Optional[str] = None
-    scope: Optional[str] = None
+    expires_at: datetime | None = None
+    refresh_token: str | None = None
+    scope: str | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -57,7 +58,7 @@ class AuthToken:
         return datetime.now() >= self.expires_at - timedelta(minutes=5)
 
     @property
-    def expires_in_seconds(self) -> Optional[int]:
+    def expires_in_seconds(self) -> int | None:
         """返回 Token 剩余有效时间（秒）"""
         if self.expires_at is None:
             return None
@@ -75,7 +76,7 @@ class AuthToken:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AuthToken":
+    def from_dict(cls, data: dict[str, Any]) -> AuthToken:
         """从字典创建"""
         expires_at = None
         if data.get("expires_at"):
@@ -97,12 +98,12 @@ class AuthStatus:
     """认证状态"""
 
     authenticated: bool = False
-    user_id: Optional[str] = None
-    email: Optional[str] = None
-    plan: Optional[str] = None  # free, pro, business
-    token: Optional[AuthToken] = None
-    last_verified: Optional[datetime] = None
-    error: Optional[AuthError] = None
+    user_id: str | None = None
+    email: str | None = None
+    plan: str | None = None  # free, pro, business
+    token: AuthToken | None = None
+    last_verified: datetime | None = None
+    error: AuthError | None = None
 
     @property
     def needs_refresh(self) -> bool:
@@ -139,7 +140,7 @@ class CloudAuthConfig(BaseModel):
     """Cloud 认证配置"""
 
     # API Key（优先从环境变量读取）
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
     # 配置文件路径
     config_file: str = "config.yaml"
@@ -156,7 +157,7 @@ class CloudAuthConfig(BaseModel):
     refresh_endpoint: str = "/v1/auth/refresh"
 
     # OAuth 配置（可选）
-    oauth_client_id: Optional[str] = None
+    oauth_client_id: str | None = None
     oauth_redirect_uri: str = "http://localhost:8765/callback"
     oauth_scope: str = "read write"
 
@@ -196,11 +197,11 @@ class CloudAuthManager:
             api_key = auth_manager.get_api_key()
     """
 
-    def __init__(self, config: Optional[CloudAuthConfig] = None):
+    def __init__(self, config: CloudAuthConfig | None = None):
         self.config = config or CloudAuthConfig()
         self._status = AuthStatus()
         self._agent_path = self._find_agent_executable()
-        self._token_refresh_lock: Optional[asyncio.Lock] = None
+        self._token_refresh_lock: asyncio.Lock | None = None
         self._on_auth_change_callbacks: list[Callable[[AuthStatus], None]] = []
 
     async def _get_token_refresh_lock(self) -> asyncio.Lock:
@@ -248,7 +249,7 @@ class CloudAuthManager:
             except Exception as e:
                 logger.warning(f"认证状态回调执行失败: {e}")
 
-    def get_api_key(self) -> Optional[str]:
+    def get_api_key(self) -> str | None:
         """获取 API Key
 
         优先级（与 CloudClientFactory.resolve_api_key 保持一致）:
@@ -301,7 +302,7 @@ class CloudAuthManager:
 
         return None
 
-    def _read_api_key_from_yaml(self, file_path: str) -> Optional[str]:
+    def _read_api_key_from_yaml(self, file_path: str) -> str | None:
         """从 YAML 配置文件读取 API Key
 
         YAML 路径优先级（从高到低）：
@@ -353,7 +354,7 @@ class CloudAuthManager:
             logger.debug(f"读取 YAML 配置失败: {e}")
             return None
 
-    def _read_api_key_from_json(self, file_path: str) -> Optional[str]:
+    def _read_api_key_from_json(self, file_path: str) -> str | None:
         """从 JSON 配置文件读取 API Key"""
         try:
             path = Path(file_path)
@@ -481,7 +482,7 @@ class CloudAuthManager:
                 "找不到 agent CLI，请先安装: curl https://cursor.com/install -fsS | bash",
                 AuthErrorCode.CONFIG_NOT_FOUND,
             ) from exc
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise AuthError(
                 "认证请求超时",
                 AuthErrorCode.NETWORK_ERROR,
@@ -599,7 +600,7 @@ class CloudAuthManager:
         except Exception as e:
             logger.debug(f"保存 Token 缓存失败: {e}")
 
-    def _load_token_cache(self) -> Optional[AuthStatus]:
+    def _load_token_cache(self) -> AuthStatus | None:
         """加载 Token 缓存"""
         try:
             cache_path = Path(self.config.token_cache_file)
@@ -670,7 +671,7 @@ class CloudAuthManager:
 
     async def start_oauth_flow(
         self,
-        on_url_ready: Optional[Callable[[str], None]] = None,
+        on_url_ready: Callable[[str], None] | None = None,
     ) -> AuthStatus:
         """启动 OAuth 认证流程（为 Web/移动端准备）
 
@@ -712,7 +713,7 @@ class CloudAuthManager:
                     AuthErrorCode.OAUTH_FAILED,
                 )
 
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise AuthError(
                 "OAuth 认证超时",
                 AuthErrorCode.OAUTH_FAILED,
@@ -761,7 +762,7 @@ class CloudAuthManager:
 
     # ========== 上下文管理器 ==========
 
-    async def __aenter__(self) -> "CloudAuthManager":
+    async def __aenter__(self) -> CloudAuthManager:
         """异步上下文管理器入口"""
         await self.authenticate()
         return self
@@ -774,7 +775,7 @@ class CloudAuthManager:
 # ========== 便捷函数 ==========
 
 
-def get_api_key() -> Optional[str]:
+def get_api_key() -> str | None:
     """快速获取 API Key"""
     manager = CloudAuthManager()
     return manager.get_api_key()

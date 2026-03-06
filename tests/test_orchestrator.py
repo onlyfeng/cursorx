@@ -196,8 +196,9 @@ class TestModelConfigPerRole:
         """验证初始化时输出各角色模型配置日志"""
         from io import StringIO
 
-        from core.config import get_config
         from loguru import logger
+
+        from core.config import get_config
 
         # 使用 loguru sink 捕获日志
         log_output = StringIO()

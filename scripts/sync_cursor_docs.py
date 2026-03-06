@@ -7,10 +7,10 @@ import argparse
 import asyncio
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
 from urllib.request import urlopen
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,9 +30,7 @@ CN_DOCS_PREFIX = "https://cursor.com/cn/docs"
 
 URL_RE = re.compile(r"https://cursor\.com/docs[^\s)]+")
 
-CLI_PREFIXES = (
-    f"{CN_DOCS_PREFIX}/cli/",
-)
+CLI_PREFIXES = (f"{CN_DOCS_PREFIX}/cli/",)
 CLI_EXTRA_URLS = {
     f"{CN_DOCS_PREFIX}/get-started/concepts.md",
     f"{CN_DOCS_PREFIX}/models.md",
@@ -95,11 +93,7 @@ def to_cn_url(url: str) -> str:
 
 
 def build_cli_doc_urls(cn_urls: list[str]) -> list[str]:
-    return [
-        url
-        for url in cn_urls
-        if any(url.startswith(prefix) for prefix in CLI_PREFIXES) or url in CLI_EXTRA_URLS
-    ]
+    return [url for url in cn_urls if any(url.startswith(prefix) for prefix in CLI_PREFIXES) or url in CLI_EXTRA_URLS]
 
 
 def build_agent_doc_urls(cn_urls: list[str]) -> list[str]:

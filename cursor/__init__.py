@@ -1,28 +1,22 @@
 """Cursor Agent 集成层"""
 
 from .client import CursorAgentClient, CursorAgentConfig, CursorAgentPool, CursorAgentResult, ModelPresets
-from .cloud_client import (
+from .cloud_client import (  # 异常层次结构; 认证管理; 工厂类（统一认证与客户端构造）; 任务管理; Cloud Agent（& 前缀推送到云端）; 重试工具
     AuthError,
     AuthErrorCode,
     AuthStatus,
     AuthToken,
-    # 异常层次结构
     CloudAgentError,
     CloudAgentResult,
     CloudAuthConfig,
-    # 认证管理
     CloudAuthManager,
-    # 工厂类（统一认证与客户端构造）
     CloudClientFactory,
     CloudTask,
-    # 任务管理
     CloudTaskClient,
     CloudTaskOptions,
-    # Cloud Agent（& 前缀推送到云端）
     CursorCloudClient,
     NetworkError,
     RateLimitError,
-    # 重试工具
     RetryConfig,
     TaskError,
     TaskResult,
@@ -61,13 +55,12 @@ from .network import (
     FirewallFormat,
     export_firewall_rules,
     fetch_egress_ip_ranges,
+)
+from .network import get_manager as get_network_manager
+from .network import (
     is_allowed_ip,
 )
-from .network import (
-    get_manager as get_network_manager,
-)
-from .streaming import (
-    # 差异相关
+from .streaming import (  # 差异相关
     DiffInfo,
     ProgressTracker,
     StreamEvent,

@@ -144,7 +144,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -160,8 +160,6 @@ from core.execution_policy import (
 )
 from core.output_contract import CooldownInfoFields
 from cursor.client import CursorAgentClient, CursorAgentConfig, CursorAgentResult
-
-# 导入 Cloud Client 相关类
 from cursor.cloud.client import CursorCloudClient
 from cursor.cloud.task import CloudTaskOptions
 from cursor.cloud_client import (
@@ -240,8 +238,8 @@ class CooldownConfig:
     @classmethod
     def from_config(
         cls,
-        overrides: Optional[dict[str, Any]] = None,
-    ) -> "CooldownConfig":
+        overrides: dict[str, Any] | None = None,
+    ) -> CooldownConfig:
         """从 config.yaml 加载冷却配置
 
         使用 core.config.build_cooldown_config() 读取 config.yaml 中的
@@ -276,16 +274,16 @@ class CooldownState:
     使用 failure_kind (CloudFailureKind) 替代已废弃的 error_type。
     """
 
-    failure_kind: Optional[CloudFailureKind] = None  # 使用 CloudFailureKind 替代 CloudErrorType
-    cooldown_until: Optional[datetime] = None
+    failure_kind: CloudFailureKind | None = None  # 使用 CloudFailureKind 替代 CloudErrorType
+    cooldown_until: datetime | None = None
     failure_count: int = 0
-    last_error_message: Optional[str] = None
-    retry_after_hint: Optional[int] = None  # RateLimitError 的 retry_after 提示
-    config_hash: Optional[str] = None  # 用于检测配置变化（AuthError/NO_KEY）
+    last_error_message: str | None = None
+    retry_after_hint: int | None = None  # RateLimitError 的 retry_after 提示
+    config_hash: str | None = None  # 用于检测配置变化（AuthError/NO_KEY）
 
     # ========== 向后兼容属性 ==========
     @property
-    def error_type(self) -> Optional[CloudErrorType]:
+    def error_type(self) -> CloudErrorType | None:
         """[已废弃] 向后兼容：获取错误类型
 
         请使用 failure_kind 替代。
@@ -295,7 +293,7 @@ class CooldownState:
         return _failure_kind_to_error_type(self.failure_kind)
 
     @error_type.setter
-    def error_type(self, value: Optional[CloudErrorType]) -> None:
+    def error_type(self, value: CloudErrorType | None) -> None:
         """[已废弃] 向后兼容：设置错误类型"""
         if value is None:
             self.failure_kind = None
@@ -317,7 +315,7 @@ class CooldownState:
             return False
         return datetime.now() < self.cooldown_until
 
-    def get_remaining_seconds(self) -> Optional[float]:
+    def get_remaining_seconds(self) -> float | None:
         """获取剩余冷却秒数"""
         if not self.is_in_cooldown():
             return None
@@ -343,15 +341,15 @@ class CooldownMetadata:
     """
 
     in_cooldown: bool = False
-    failure_kind: Optional[CloudFailureKind] = None  # 使用 CloudFailureKind 替代 CloudErrorType
-    remaining_seconds: Optional[float] = None
+    failure_kind: CloudFailureKind | None = None  # 使用 CloudFailureKind 替代 CloudErrorType
+    remaining_seconds: float | None = None
     failure_count: int = 0
-    last_error_message: Optional[str] = None
+    last_error_message: str | None = None
     can_retry_with_config_change: bool = False  # AuthError/NO_KEY 时配置变化可重试
 
     # ========== 向后兼容属性 ==========
     @property
-    def error_type(self) -> Optional[CloudErrorType]:
+    def error_type(self) -> CloudErrorType | None:
         """[已废弃] 向后兼容：获取错误类型
 
         请使用 failure_kind 替代。
@@ -361,7 +359,7 @@ class CooldownMetadata:
         return _failure_kind_to_error_type(self.failure_kind)
 
     @property
-    def kind(self) -> Optional[str]:
+    def kind(self) -> str | None:
         """获取错误类型字符串（用于 cooldown_info 输出）
 
         返回 CloudFailureKind 的值，如 "no_key", "auth", "rate_limit" 等。
@@ -400,8 +398,8 @@ class CloudExecutionPolicy:
     def should_try_cloud(
         self,
         cloud_enabled: bool,
-        current_config_hash: Optional[str] = None,
-    ) -> tuple[bool, Optional[str]]:
+        current_config_hash: str | None = None,
+    ) -> tuple[bool, str | None]:
         """判断是否应该尝试 Cloud
 
         Args:
@@ -493,7 +491,7 @@ class CloudExecutionPolicy:
     def start_cooldown(
         self,
         error: Exception,
-        config_hash: Optional[str] = None,
+        config_hash: str | None = None,
     ) -> CooldownMetadata:
         """[已废弃] 开始冷却期
 
@@ -698,36 +696,36 @@ class AgentResult(BaseModel):
 
     success: bool
     output: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     exit_code: int = 0
     duration: float = 0.0  # 秒
     started_at: datetime = Field(default_factory=datetime.now)
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
     # 执行信息
     executor_type: str = ""  # cli, cloud
     files_modified: list[str] = Field(default_factory=list)
-    session_id: Optional[str] = None
+    session_id: str | None = None
 
     # 结构化错误字段（从 CloudAgentResult 透传）
-    error_type: Optional[str] = None  # auth, rate_limit, timeout, network, etc.
-    retry_after: Optional[float] = None  # 建议重试等待时间（秒）
+    error_type: str | None = None  # auth, rate_limit, timeout, network, etc.
+    retry_after: float | None = None  # 建议重试等待时间（秒）
 
     # failure_kind: 使用 CloudFailureKind 枚举值表示的错误类型
     # 与 error_type 的区别:
     # - error_type: 原始结构化错误字符串（来自 CloudAgentResult）
     # - failure_kind: 经过 classify_cloud_failure() 分类后的标准化类型
     #   可选值: no_key, auth, rate_limit, timeout, network, quota, service, unknown, cloud_disabled
-    failure_kind: Optional[str] = None
+    failure_kind: str | None = None
 
     # 原始结果（用于调试）
-    raw_result: Optional[dict[str, Any]] = None
+    raw_result: dict[str, Any] | None = None
 
     # 冷却元数据（供上层打印提示）
-    cooldown_info: Optional[dict[str, Any]] = None
+    cooldown_info: dict[str, Any] | None = None
 
     @classmethod
-    def from_cli_result(cls, result: CursorAgentResult) -> "AgentResult":
+    def from_cli_result(cls, result: CursorAgentResult) -> AgentResult:
         """从 CLI 执行结果转换
 
         透传 CursorAgentResult 中的所有关键字段，包括:
@@ -761,15 +759,15 @@ class AgentResult(BaseModel):
         cls,
         success: bool,
         output: str,
-        error: Optional[str] = None,
+        error: str | None = None,
         duration: float = 0.0,
-        session_id: Optional[str] = None,
-        raw_result: Optional[dict[str, Any]] = None,
-        files_modified: Optional[list[str]] = None,
-        error_type: Optional[str] = None,
-        retry_after: Optional[float] = None,
-        failure_kind: Optional[str] = None,
-    ) -> "AgentResult":
+        session_id: str | None = None,
+        raw_result: dict[str, Any] | None = None,
+        files_modified: list[str] | None = None,
+        error_type: str | None = None,
+        retry_after: float | None = None,
+        failure_kind: str | None = None,
+    ) -> AgentResult:
         """从 Cloud API 结果转换
 
         透传 CloudAgentResult 中的结构化错误字段，以便上层判断错误类型:
@@ -821,9 +819,9 @@ class AgentExecutor(Protocol):
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """执行 Agent 任务
 
@@ -863,8 +861,8 @@ class CLIAgentExecutor:
 
     def __init__(
         self,
-        config: Optional[CursorAgentConfig] = None,
-        mode: Optional[str] = None,
+        config: CursorAgentConfig | None = None,
+        mode: str | None = None,
     ):
         """初始化 CLI 执行器
 
@@ -877,7 +875,7 @@ class CLIAgentExecutor:
         if mode is not None:
             self._config = self._config.model_copy(update={"mode": mode})
         self._client = CursorAgentClient(self._config)
-        self._available: Optional[bool] = None
+        self._available: bool | None = None
 
     @property
     def executor_type(self) -> str:
@@ -892,16 +890,16 @@ class CLIAgentExecutor:
         return self._client
 
     @property
-    def cli_mode(self) -> Optional[str]:
+    def cli_mode(self) -> str | None:
         """返回当前 CLI 工作模式（plan/ask/agent）"""
         return self._config.mode
 
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """通过 CLI 执行任务"""
         cli_result = await self._client.execute(
@@ -915,9 +913,9 @@ class CLIAgentExecutor:
     async def execute_with_retry(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        max_retries: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        max_retries: int | None = None,
     ) -> AgentResult:
         """带重试的执行"""
         cli_result = await self._client.execute_with_retry(
@@ -953,7 +951,7 @@ class PlanAgentExecutor:
     - 适合生成任务计划、分析代码结构等场景
     """
 
-    def __init__(self, config: Optional[CursorAgentConfig] = None):
+    def __init__(self, config: CursorAgentConfig | None = None):
         """初始化规划模式执行器
 
         Args:
@@ -984,9 +982,9 @@ class PlanAgentExecutor:
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """使用规划模式执行任务"""
         result = await self._cli_executor.execute(
@@ -1020,7 +1018,7 @@ class AskAgentExecutor:
     - 适合代码解释、问题咨询等场景
     """
 
-    def __init__(self, config: Optional[CursorAgentConfig] = None):
+    def __init__(self, config: CursorAgentConfig | None = None):
         """初始化问答模式执行器
 
         Args:
@@ -1051,9 +1049,9 @@ class AskAgentExecutor:
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """使用问答模式执行任务"""
         result = await self._cli_executor.execute(
@@ -1095,9 +1093,9 @@ class CloudAgentExecutor:
 
     def __init__(
         self,
-        auth_config: Optional[CloudAuthConfig] = None,
-        agent_config: Optional[CursorAgentConfig] = None,
-        cloud_client: Optional[CursorCloudClient] = None,
+        auth_config: CloudAuthConfig | None = None,
+        agent_config: CursorAgentConfig | None = None,
+        cloud_client: CursorCloudClient | None = None,
     ):
         """初始化 Cloud 执行器
 
@@ -1123,8 +1121,8 @@ class CloudAgentExecutor:
             self._auth_config = auth_config
 
         self._agent_config = agent_config or CursorAgentConfig()
-        self._available: Optional[bool] = None
-        self._auth_status: Optional[AuthStatus] = None
+        self._available: bool | None = None
+        self._auth_status: AuthStatus | None = None
 
         # 使用 CloudClientFactory 统一创建认证管理器和客户端
         # 配置来源优先级: agent_config.api_key > auth_config.api_key > 环境变量 > config.yaml
@@ -1161,11 +1159,11 @@ class CloudAgentExecutor:
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
         background: bool = False,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         force_cloud: bool = True,
     ) -> AgentResult:
         """通过 Cloud API 执行任务
@@ -1266,7 +1264,7 @@ class CloudAgentExecutor:
                     failure_kind=failure_kind_value,
                 )
 
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             failure_info = classify_cloud_failure(e)
             return AgentResult(
                 success=False,
@@ -1291,7 +1289,7 @@ class CloudAgentExecutor:
     async def submit_background_task(
         self,
         prompt: str,
-        options: Optional[CloudTaskOptions] = None,
+        options: CloudTaskOptions | None = None,
     ) -> AgentResult:
         """提交后台任务（不等待完成）
 
@@ -1364,7 +1362,7 @@ class CloudAgentExecutor:
     async def wait_for_task(
         self,
         task_id: str,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """等待后台任务完成
 
@@ -1421,7 +1419,7 @@ class CloudAgentExecutor:
     async def resume_session(
         self,
         session_id: str,
-        prompt: Optional[str] = None,
+        prompt: str | None = None,
     ) -> AgentResult:
         """恢复云端会话
 
@@ -1545,12 +1543,12 @@ class AutoAgentExecutor:
 
     def __init__(
         self,
-        cli_config: Optional[CursorAgentConfig] = None,
-        cloud_auth_config: Optional[CloudAuthConfig] = None,
-        cooldown_config: Optional[CooldownConfig] = None,
+        cli_config: CursorAgentConfig | None = None,
+        cloud_auth_config: CloudAuthConfig | None = None,
+        cooldown_config: CooldownConfig | None = None,
         enable_cooldown: bool = True,
         # 向后兼容参数（已废弃，请使用 cooldown_config）
-        cloud_cooldown_seconds: Optional[int] = None,
+        cloud_cooldown_seconds: int | None = None,
     ):
         """初始化自动执行器
 
@@ -1567,7 +1565,7 @@ class AutoAgentExecutor:
             auth_config=cloud_auth_config,
             agent_config=cli_config,
         )
-        self._preferred_executor: Optional[AgentExecutor] = None
+        self._preferred_executor: AgentExecutor | None = None
 
         # Cloud 执行策略
         self._enable_cooldown = enable_cooldown
@@ -1611,7 +1609,7 @@ class AutoAgentExecutor:
         return self._policy.cooldown_state.is_in_cooldown()
 
     @property
-    def cloud_cooldown_remaining(self) -> Optional[float]:
+    def cloud_cooldown_remaining(self) -> float | None:
         """获取 Cloud 冷却剩余时间（秒），未在冷却期返回 None"""
         if not self.is_cloud_in_cooldown:
             return None
@@ -1620,12 +1618,12 @@ class AutoAgentExecutor:
     # ========== 向后兼容属性（已废弃） ==========
 
     @property
-    def _cloud_cooldown_until(self) -> Optional[datetime]:
+    def _cloud_cooldown_until(self) -> datetime | None:
         """[已废弃] 向后兼容：获取冷却截止时间"""
         return self._policy.cooldown_state.cooldown_until
 
     @_cloud_cooldown_until.setter
-    def _cloud_cooldown_until(self, value: Optional[datetime]) -> None:
+    def _cloud_cooldown_until(self, value: datetime | None) -> None:
         """[已废弃] 向后兼容：设置冷却截止时间"""
         self._policy.cooldown_state.cooldown_until = value
 
@@ -1678,7 +1676,7 @@ class AutoAgentExecutor:
             return True
         return False
 
-    def _get_config_hash(self) -> Optional[str]:
+    def _get_config_hash(self) -> str | None:
         """获取当前配置的哈希值（用于检测 AuthError 配置变化）
 
         基于 CloudClientFactory.resolve_api_key() 的最终解析值计算 hash，
@@ -1728,7 +1726,7 @@ class AutoAgentExecutor:
     def _start_cooldown_from_failure_info(
         self,
         failure_info: CloudFailureInfo,
-        config_hash: Optional[str] = None,
+        config_hash: str | None = None,
     ) -> CooldownMetadata:
         """根据 CloudFailureInfo 启动冷却期
 
@@ -1789,10 +1787,10 @@ class AutoAgentExecutor:
     def _build_cooldown_info_dict(
         self,
         cooldown_meta: CooldownMetadata,
-        failure_info: Optional[CloudFailureInfo] = None,
-        fallback_reason: Optional[str] = None,
+        failure_info: CloudFailureInfo | None = None,
+        fallback_reason: str | None = None,
         has_ampersand_prefix: bool = False,
-        mode_source: Optional[str] = None,
+        mode_source: str | None = None,
     ) -> dict[str, Any]:
         """构建冷却信息字典，包含统一的用户提示消息
 
@@ -1862,8 +1860,8 @@ class AutoAgentExecutor:
 
     async def _select_executor(
         self,
-        current_config_hash: Optional[str] = None,
-    ) -> tuple[AgentExecutor, Optional[str]]:
+        current_config_hash: str | None = None,
+    ) -> tuple[AgentExecutor, str | None]:
         """选择可用的执行器
 
         优先级:
@@ -1919,9 +1917,9 @@ class AutoAgentExecutor:
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """自动选择执行器并执行任务
 
@@ -1946,7 +1944,7 @@ class AutoAgentExecutor:
             should_reselect = True
             logger.debug("冷却期已结束，重新选择执行器")
 
-        skip_reason: Optional[str] = None
+        skip_reason: str | None = None
         if should_reselect:
             self._preferred_executor, skip_reason = await self._select_executor(
                 current_config_hash=config_hash,
@@ -2134,9 +2132,9 @@ class AgentExecutorFactory:
     @staticmethod
     def create(
         mode: ExecutionMode = ExecutionMode.AUTO,
-        cli_config: Optional[CursorAgentConfig] = None,
-        cloud_auth_config: Optional[CloudAuthConfig] = None,
-        cooldown_config: Optional[CooldownConfig] = None,
+        cli_config: CursorAgentConfig | None = None,
+        cloud_auth_config: CloudAuthConfig | None = None,
+        cooldown_config: CooldownConfig | None = None,
     ) -> AgentExecutor:
         """创建执行器实例
 
@@ -2183,7 +2181,7 @@ class AgentExecutorFactory:
     @staticmethod
     def create_from_config(
         config: CursorAgentConfig,
-        cloud_auth_config: Optional[CloudAuthConfig] = None,
+        cloud_auth_config: CloudAuthConfig | None = None,
     ) -> AgentExecutor:
         """从配置创建执行器
 
@@ -2210,8 +2208,8 @@ class AgentExecutorFactory:
 
     @staticmethod
     async def create_best_available(
-        cli_config: Optional[CursorAgentConfig] = None,
-        cloud_auth_config: Optional[CloudAuthConfig] = None,
+        cli_config: CursorAgentConfig | None = None,
+        cloud_auth_config: CloudAuthConfig | None = None,
     ) -> AgentExecutor:
         """创建最佳可用执行器
 
@@ -2252,9 +2250,9 @@ class AgentExecutorFactory:
 
 async def execute_agent(
     prompt: str,
-    context: Optional[dict[str, Any]] = None,
+    context: dict[str, Any] | None = None,
     mode: ExecutionMode = ExecutionMode.AUTO,
-    config: Optional[CursorAgentConfig] = None,
+    config: CursorAgentConfig | None = None,
 ) -> AgentResult:
     """便捷函数：执行 Agent 任务
 
@@ -2273,9 +2271,9 @@ async def execute_agent(
 
 def execute_agent_sync(
     prompt: str,
-    context: Optional[dict[str, Any]] = None,
+    context: dict[str, Any] | None = None,
     mode: ExecutionMode = ExecutionMode.CLI,
-    config: Optional[CursorAgentConfig] = None,
+    config: CursorAgentConfig | None = None,
 ) -> AgentResult:
     """同步版本：执行 Agent 任务"""
     return asyncio.get_event_loop().run_until_complete(

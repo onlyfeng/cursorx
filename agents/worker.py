@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -42,7 +42,7 @@ class WorkerConfig(BaseModel):
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
-    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    cloud_auth_config: CloudAuthConfig | None = None  # Cloud 认证配置
     # 语义搜索配置（可选增强）
     enable_context_search: bool = False  # 是否启用上下文搜索
     context_search_top_k: int = 5  # 上下文搜索返回结果数
@@ -53,7 +53,7 @@ class WorkerConfig(BaseModel):
     # CLI ask 模式配置（用于知识库增强查询）
     enable_cli_ask_mode: bool = False  # 是否启用 CLI ask 模式查询
     cli_ask_timeout: int = 60  # CLI ask 查询超时时间
-    cli_ask_model: Optional[str] = None  # CLI ask 使用的模型（默认使用系统默认）
+    cli_ask_model: str | None = None  # CLI ask 使用的模型（默认使用系统默认）
     # 中间提交配置
     enable_intermediate_commit: bool = False  # 是否启用中间提交建议
     intermediate_commit_threshold: int = 5  # 更改文件数阈值，超过则建议提交
@@ -88,8 +88,8 @@ class WorkerAgent(BaseAgent):
     def __init__(
         self,
         config: WorkerConfig,
-        semantic_search: Optional["SemanticSearch"] = None,
-        knowledge_manager: Optional["KnowledgeManager"] = None,
+        semantic_search: SemanticSearch | None = None,
+        knowledge_manager: KnowledgeManager | None = None,
     ):
         agent_config = AgentConfig(
             role=AgentRole.WORKER,
@@ -116,17 +116,17 @@ class WorkerAgent(BaseAgent):
 
             self.cursor_client = CursorAgentClient(config.cursor_config)
 
-        self.current_task: Optional[Task] = None
+        self.current_task: Task | None = None
         self.completed_tasks: list[str] = []
 
         # 语义搜索增强（可选）
-        self._semantic_search: Optional[SemanticSearch] = semantic_search
+        self._semantic_search: SemanticSearch | None = semantic_search
         self._search_enabled = config.enable_context_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 上下文搜索已启用")
 
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
-        self._knowledge_manager: Optional[KnowledgeManager] = knowledge_manager
+        self._knowledge_manager: KnowledgeManager | None = knowledge_manager
         self._knowledge_search_enabled = config.enable_knowledge_search and knowledge_manager is not None
         if self._knowledge_search_enabled:
             logger.info(f"[{config.name}] 知识库搜索已启用")
@@ -142,7 +142,7 @@ class WorkerAgent(BaseAgent):
             cursor_config.output_format = "stream-json"
             cursor_config.stream_partial_output = True
 
-    def set_semantic_search(self, search: "SemanticSearch") -> None:
+    def set_semantic_search(self, search: SemanticSearch) -> None:
         """设置语义搜索引擎（延迟初始化）
 
         Args:
@@ -153,7 +153,7 @@ class WorkerAgent(BaseAgent):
         if self._search_enabled:
             logger.info(f"[{self.id}] 上下文搜索已启用")
 
-    def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
+    def set_knowledge_manager(self, manager: KnowledgeManager) -> None:
         """设置知识库管理器（延迟初始化）
 
         Args:
@@ -164,7 +164,7 @@ class WorkerAgent(BaseAgent):
         if self._knowledge_search_enabled:
             logger.info(f"[{self.id}] 知识库搜索已启用")
 
-    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: dict | None = None) -> dict[str, Any]:
         """执行任务指令
 
         Args:
@@ -396,7 +396,7 @@ class WorkerAgent(BaseAgent):
             logger.warning(f"[{self.id}] 知识库搜索失败: {e}")
             return []
 
-    async def _query_knowledge_with_cli_ask(self, query: str) -> Optional[dict[str, Any]]:
+    async def _query_knowledge_with_cli_ask(self, query: str) -> dict[str, Any] | None:
         """使用 CLI ask 模式查询知识库
 
         通过 Cursor CLI 的 --mode=ask 执行只读查询，获取基于知识库的智能回答。
@@ -491,7 +491,7 @@ class WorkerAgent(BaseAgent):
             logger.warning(f"[{self.id}] 检查提交建议失败: {e}")
             return False, 0
 
-    def _build_execution_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
+    def _build_execution_prompt(self, instruction: str, context: dict | None = None) -> str:
         """构建执行 prompt"""
         parts = [
             self.SYSTEM_PROMPT,

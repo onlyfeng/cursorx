@@ -10,7 +10,6 @@
 使用 Mock 替代真实 Cursor CLI/Cloud 调用
 """
 
-import asyncio
 from datetime import datetime, timedelta
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -552,7 +551,7 @@ class TestCloudExecutionMode:
 
         # 模拟 CloudClientFactory.execute_task 超时
         with patch("cursor.cloud_client.CloudClientFactory.execute_task") as mock_execute_task:
-            mock_execute_task.side_effect = asyncio.TimeoutError("执行超时")
+            mock_execute_task.side_effect = TimeoutError("执行超时")
 
             result = await executor.execute(
                 prompt="长时间任务",

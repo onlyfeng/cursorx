@@ -7,7 +7,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 import html2text
 from bs4 import BeautifulSoup, Tag
@@ -255,7 +255,7 @@ class HTMLParser:
         print(result.content)  # "<p>Hello</p>"
     """
 
-    def __init__(self, parser: Optional[str] = None):
+    def __init__(self, parser: str | None = None):
         """初始化解析器
 
         Args:
@@ -436,10 +436,10 @@ class ContentCleaner:
 
     def __init__(
         self,
-        remove_tags: Optional[list[str]] = None,
-        remove_classes: Optional[list[str]] = None,
-        remove_ids: Optional[list[str]] = None,
-        parser: Optional[str] = None,
+        remove_tags: list[str] | None = None,
+        remove_classes: list[str] | None = None,
+        remove_ids: list[str] | None = None,
+        parser: str | None = None,
     ):
         """初始化清理器
 
@@ -627,7 +627,7 @@ class MarkdownConverter:
 
         return markdown
 
-    def convert_with_cleaning(self, html: str, cleaner: Optional[ContentCleaner] = None) -> str:
+    def convert_with_cleaning(self, html: str, cleaner: ContentCleaner | None = None) -> str:
         """先清理 HTML 再转换为 Markdown
 
         Args:
@@ -674,7 +674,7 @@ class ChunkSplitter:
         chunk_size: int = 1000,
         overlap: int = 100,
         min_chunk_size: int = 100,
-        separators: Optional[list[str]] = None,
+        separators: list[str] | None = None,
         preserve_headings: bool = True,
     ):
         """初始化分块器
@@ -708,7 +708,7 @@ class ChunkSplitter:
             " ",  # 空格
         ]
 
-    def split(self, text: str, source_doc: Optional[str] = None) -> list[DocumentChunk]:
+    def split(self, text: str, source_doc: str | None = None) -> list[DocumentChunk]:
         """分割文本为多个块
 
         Args:
@@ -752,7 +752,7 @@ class ChunkSplitter:
 
         return chunks
 
-    def split_markdown(self, markdown: str, source_doc: Optional[str] = None) -> list[DocumentChunk]:
+    def split_markdown(self, markdown: str, source_doc: str | None = None) -> list[DocumentChunk]:
         """分割 Markdown 文档，保留标题层级信息
 
         Args:

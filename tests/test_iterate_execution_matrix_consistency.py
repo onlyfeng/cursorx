@@ -89,7 +89,7 @@ import argparse
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -125,7 +125,7 @@ class ConsistencyTestCase:
     """
 
     test_id: str
-    requested_mode: Optional[str]  # CLI 参数或 config.yaml 中的 execution_mode
+    requested_mode: str | None  # CLI 参数或 config.yaml 中的 execution_mode
     has_api_key: bool
     cloud_enabled: bool
     expected_orchestrator: str  # "mp" 或 "basic"
@@ -664,16 +664,14 @@ class DecisionSnapshot:
     orchestrator: str  # mp 或 basic
     prefix_routed: bool  # 策略决策：& 前缀是否成功触发 Cloud
     # 可选字段（有默认值）放在后面
-    requested_mode_for_decision: Optional[str] = (
-        None  # 用于决策的请求模式（resolve_requested_mode_for_decision 返回值）
-    )
-    cli_execution_mode: Optional[str] = None  # CLI 原始 --execution-mode 参数值
+    requested_mode_for_decision: str | None = None  # 用于决策的请求模式（resolve_requested_mode_for_decision 返回值）
+    cli_execution_mode: str | None = None  # CLI 原始 --execution-mode 参数值
     # 追溯字段（不参与核心对比，用于调试追溯）
     has_ampersand_prefix: bool = False  # 语法检测层面：原始文本是否有 & 前缀
-    config_execution_mode: Optional[str] = None  # config.yaml 中的 cloud_agent.execution_mode
+    config_execution_mode: str | None = None  # config.yaml 中的 cloud_agent.execution_mode
 
     @property
-    def requested_mode(self) -> Optional[str]:
+    def requested_mode(self) -> str | None:
         """[DEPRECATED] 兼容别名 - 新代码请使用 requested_mode_for_decision
 
         此属性保留以兼容旧测试代码，语义等同于 requested_mode_for_decision。
@@ -696,7 +694,7 @@ class DecisionSnapshot:
         """
         return self.effective_mode
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典便于比较"""
         return {
             # 核心字段（与 ExecutionDecision 对齐）
@@ -729,10 +727,10 @@ class SnapshotTestCase:
 
     test_id: str
     requirement: str  # 用户输入的任务描述（可包含 & 前缀）
-    execution_mode: Optional[str]  # CLI --execution-mode 参数（即 cli_execution_mode）
+    execution_mode: str | None  # CLI --execution-mode 参数（即 cli_execution_mode）
     has_api_key: bool
     cloud_enabled: bool
-    orchestrator_cli: Optional[str]  # CLI --orchestrator 参数
+    orchestrator_cli: str | None  # CLI --orchestrator 参数
     no_mp_cli: bool  # CLI --no-mp 参数
     expected_snapshot: DecisionSnapshot
     description: str
@@ -2303,11 +2301,11 @@ class MinimalConsistencyTestCase:
     test_id: str
     # 输入参数
     minimal: bool
-    execution_mode: Optional[str]
+    execution_mode: str | None
     has_api_key: bool
     cli_skip_online: bool
     cli_dry_run: bool
-    cli_orchestrator: Optional[str]
+    cli_orchestrator: str | None
     cli_no_mp: bool
     # 期望输出
     expected_orchestrator: str
@@ -2559,7 +2557,7 @@ class TestMinimalModeRunPyConsistency:
     def test_minimal_mode_options_merge(self, test_case: MinimalConsistencyTestCase) -> None:
         """测试 run.py 的 options 合并在 minimal 模式下的一致性"""
         # 使用 resolve_orchestrator_settings 模拟 run.py 的逻辑
-        overrides: Dict[str, Any] = {}
+        overrides: dict[str, Any] = {}
 
         if test_case.execution_mode is not None:
             overrides["execution_mode"] = test_case.execution_mode
@@ -2731,7 +2729,7 @@ class TestMinimalModeRunPyAndSelfIteratorConsistency:
         ConfigManager.reset_instance()
 
         # === 计算 run.py 语义 ===
-        run_py_overrides: Dict[str, Any] = {}
+        run_py_overrides: dict[str, Any] = {}
         if test_case.execution_mode is not None:
             run_py_overrides["execution_mode"] = test_case.execution_mode
         if test_case.cli_orchestrator is not None:
@@ -3202,8 +3200,8 @@ class ExecutionDecisionTestCase:
 
     test_id: str
     # === 输入参数（必需）===
-    prompt: Optional[str]
-    requested_mode: Optional[str]
+    prompt: str | None
+    requested_mode: str | None
     cloud_enabled: bool
     has_api_key: bool
     # === 期望输出（必需）===
@@ -3217,7 +3215,7 @@ class ExecutionDecisionTestCase:
     description: str
     # === 输入参数（可选，有默认值）===
     auto_detect_cloud_prefix: bool = True
-    user_requested_orchestrator: Optional[str] = None
+    user_requested_orchestrator: str | None = None
 
 
 # build_execution_decision 测试参数表
@@ -3883,13 +3881,13 @@ class ResolveConfigSettingsTestCase:
 
     test_id: str
     # 输入
-    execution_mode: Optional[str]
+    execution_mode: str | None
     has_api_key: bool
     cloud_enabled: bool
-    user_orchestrator: Optional[str]
+    user_orchestrator: str | None
     has_ampersand_prefix: bool
-    cli_workers: Optional[int]
-    cli_max_iterations: Optional[str]
+    cli_workers: int | None
+    cli_max_iterations: str | None
     # 期望输出
     expected_orchestrator: str
     description: str
@@ -5177,10 +5175,10 @@ class TestRunPyAndIteratePyConsistency:
 
     def _create_mock_args_for_run_py(
         self,
-        execution_mode: Optional[str] = None,
+        execution_mode: str | None = None,
         orchestrator: str = "mp",
         orchestrator_user_set: bool = False,
-        no_mp: Optional[bool] = None,
+        no_mp: bool | None = None,
     ) -> argparse.Namespace:
         """创建模拟 run.py 的 args"""
         return argparse.Namespace(
@@ -5237,10 +5235,10 @@ class TestRunPyAndIteratePyConsistency:
     def _create_mock_args_for_iterate_py(
         self,
         requirement: str,
-        execution_mode: Optional[str] = None,
+        execution_mode: str | None = None,
         orchestrator: str = "mp",
         orchestrator_user_set: bool = False,
-        no_mp: Optional[bool] = None,
+        no_mp: bool | None = None,
     ) -> argparse.Namespace:
         """创建模拟 scripts/run_iterate.py 的 args"""
         return argparse.Namespace(
@@ -5508,7 +5506,7 @@ class FullMatrixTestCase:
     # === 输入参数 ===
     # requested_mode 来源
     mode_source: str  # "cli_explicit" | "config_yaml" | "ampersand_prefix"
-    requested_mode: Optional[str]  # None（& 前缀触发）或显式模式
+    requested_mode: str | None  # None（& 前缀触发）或显式模式
     # prompt 相关
     has_ampersand_prefix: bool
     # 环境条件
@@ -6509,7 +6507,7 @@ class TestCoreRuleAssertions:
         ["cli", "plan", "ask", None],
         ids=["cli", "plan", "ask", "none"],
     )
-    def test_non_cloud_modes_allow_mp(self, requested_mode: Optional[str]) -> None:
+    def test_non_cloud_modes_allow_mp(self, requested_mode: str | None) -> None:
         """验证非 Cloud 模式允许 mp"""
         can_use_mp = should_use_mp_orchestrator(requested_mode)
 
@@ -6553,7 +6551,7 @@ class ConfigYamlRequestedModeTestCase:
     expected_prefix_routed: bool
     description: str
     # 可选：SelfIterator 测试的期望 orchestrator（当与 expected_orchestrator 不同时使用）
-    expected_orchestrator_self_iterator: Optional[str] = None
+    expected_orchestrator_self_iterator: str | None = None
 
 
 # config.yaml 源 requested_mode 测试矩阵
@@ -8206,12 +8204,12 @@ class NoApiKeyTestCase:
 
     test_id: str
     # 输入配置
-    cli_execution_mode: Optional[str]  # CLI 显式指定的 execution_mode（None 表示未指定）
+    cli_execution_mode: str | None  # CLI 显式指定的 execution_mode（None 表示未指定）
     config_execution_mode: str  # config.yaml 中的默认 execution_mode
     prompt: str  # 测试 prompt（可能带 & 前缀）
     cloud_enabled: bool
     # 期望输出
-    expected_requested_mode: Optional[str]  # requested_mode 应为此值
+    expected_requested_mode: str | None  # requested_mode 应为此值
     expected_effective_mode: str  # effective_mode 应为此值
     expected_orchestrator: str  # orchestrator 应为此值
     expected_has_ampersand_prefix: bool  # 是否有 & 前缀
@@ -8697,7 +8695,7 @@ class TestUserMessageDedupNoApiKey:
         clean_api_key_env: None,
         monkeypatch: pytest.MonkeyPatch,
         execution_mode: str,
-        mode_source: Optional[str],
+        mode_source: str | None,
         expected_message_level: str,
     ) -> None:
         """验证 message_level 根据 mode_source 正确设置
@@ -8953,7 +8951,7 @@ class TestMessageLevelSemanticsMatrix:
         clean_api_key_env: None,
         monkeypatch: pytest.MonkeyPatch,
         execution_mode: str,
-        mode_source: Optional[str],
+        mode_source: str | None,
         expected_message_level: str,
         description: str,
     ) -> None:
@@ -9029,7 +9027,7 @@ class TestMessageLevelSemanticsMatrix:
         monkeypatch: pytest.MonkeyPatch,
         has_api_key: bool,
         cloud_enabled: bool,
-        cli_mode: Optional[str],
+        cli_mode: str | None,
         expected_message_level: str,
         expected_status_substr: str,
         description: str,
@@ -9271,16 +9269,16 @@ class TaskAnalyzerAlignmentCase:
 
     test_id: str
     task_text: str  # 用户输入的任务描述（可包含 & 前缀）
-    execution_mode: Optional[str]  # CLI --execution-mode 参数
+    execution_mode: str | None  # CLI --execution-mode 参数
     has_api_key: bool
     cloud_enabled: bool
-    orchestrator_cli: Optional[str]  # CLI --orchestrator 参数
+    orchestrator_cli: str | None  # CLI --orchestrator 参数
     no_mp_cli: bool  # CLI --no-mp 参数
     expected_effective_mode: str
     expected_orchestrator: str
     expected_prefix_routed: bool
     expected_has_ampersand_prefix: bool
-    expected_requested_mode: Optional[str]
+    expected_requested_mode: str | None
     description: str
 
 
@@ -10384,11 +10382,11 @@ class EntryRequestedModeTestCase:
 
     test_id: str
     requirement: str
-    cli_execution_mode: Optional[str]
+    cli_execution_mode: str | None
     config_execution_mode: str
     has_api_key: bool
     cloud_enabled: bool
-    expected_requested_mode: Optional[str]
+    expected_requested_mode: str | None
     expected_has_ampersand: bool
     expected_prefix_routed: bool
     expected_orchestrator: str
@@ -11381,10 +11379,10 @@ class TestAutoDetectCloudPrefixDisabledConsistency:
     def _create_test_args(
         self,
         requirement: str,
-        execution_mode: Optional[str] = None,
+        execution_mode: str | None = None,
         orchestrator: str = "mp",
         orchestrator_user_set: bool = False,
-        auto_detect_cloud_prefix: Optional[bool] = None,
+        auto_detect_cloud_prefix: bool | None = None,
     ) -> argparse.Namespace:
         """创建测试用的 argparse.Namespace"""
         return argparse.Namespace(
@@ -11761,8 +11759,8 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetect:
     def _create_test_args(
         self,
         requirement: str = "& 测试任务",
-        execution_mode: Optional[str] = None,
-        auto_detect_cloud_prefix: Optional[bool] = None,
+        execution_mode: str | None = None,
+        auto_detect_cloud_prefix: bool | None = None,
     ) -> argparse.Namespace:
         """创建测试用 args"""
         return argparse.Namespace(

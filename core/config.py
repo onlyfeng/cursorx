@@ -84,7 +84,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from loguru import logger
@@ -267,7 +267,7 @@ class AgentCliConfig:
     timeout: int = DEFAULT_AGENT_CLI_TIMEOUT
     max_retries: int = 3
     output_format: str = "text"
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
 
 @dataclass
@@ -304,7 +304,7 @@ class CloudAgentConfig:
     enabled: bool = False
     execution_mode: str = "auto"
     api_base_url: str = "https://api.cursor.com"
-    api_key: Optional[str] = None
+    api_key: str | None = None
     timeout: int = DEFAULT_CLOUD_TIMEOUT
     auth_timeout: int = DEFAULT_CLOUD_AUTH_TIMEOUT
     max_retries: int = 3
@@ -884,7 +884,7 @@ class AppConfig:
 # ============================================================
 
 
-def find_config_file() -> Optional[Path]:
+def find_config_file() -> Path | None:
     """查找配置文件
 
     按以下顺序查找:
@@ -933,11 +933,11 @@ class ConfigManager:
         planner_model = config.models.planner
     """
 
-    _instance: Optional["ConfigManager"] = None
-    _config: Optional[AppConfig] = None
-    _config_path: Optional[Path] = None
+    _instance: ConfigManager | None = None
+    _config: AppConfig | None = None
+    _config_path: Path | None = None
 
-    def __new__(cls) -> "ConfigManager":
+    def __new__(cls) -> ConfigManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
@@ -947,7 +947,7 @@ class ConfigManager:
         if self._config is None:
             self._load_config()
 
-    def _find_config_file(self) -> Optional[Path]:
+    def _find_config_file(self) -> Path | None:
         """查找配置文件
 
         按以下顺序查找:
@@ -1346,7 +1346,7 @@ class ConfigManager:
         return self._config  # type: ignore
 
     @property
-    def config_path(self) -> Optional[Path]:
+    def config_path(self) -> Path | None:
         """获取配置文件路径"""
         return self._config_path
 
@@ -1396,7 +1396,7 @@ class ConfigManager:
         return self.config.knowledge_docs_update
 
     @classmethod
-    def get_instance(cls) -> "ConfigManager":
+    def get_instance(cls) -> ConfigManager:
         """获取单例实例"""
         if cls._instance is None:
             cls._instance = cls()
@@ -1560,11 +1560,11 @@ def get_timeout_config() -> dict[str, float]:
 
 
 def resolve_stream_log_config(
-    cli_enabled: Optional[bool] = None,
-    cli_console: Optional[bool] = None,
-    cli_detail_dir: Optional[str] = None,
-    cli_raw_dir: Optional[str] = None,
-    config_data: Optional[dict[str, Any]] = None,
+    cli_enabled: bool | None = None,
+    cli_console: bool | None = None,
+    cli_detail_dir: str | None = None,
+    cli_raw_dir: str | None = None,
+    config_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """解析流式日志配置（CLI 参数优先）
 
@@ -1628,10 +1628,10 @@ def resolve_stream_log_config(
 
 def _resolve_with_priority(
     cli_value: Any,
-    env_key: Optional[str],
+    env_key: str | None,
     yaml_value: Any,
     default_value: Any,
-    fallback_env_keys: Optional[list[str]] = None,
+    fallback_env_keys: list[str] | None = None,
 ) -> Any:
     """按优先级解析配置值
 
@@ -1676,7 +1676,7 @@ def _resolve_with_priority(
 
 def build_cursor_agent_config(
     working_directory: str = ".",
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 CursorAgentConfig 所需的配置字典
 
@@ -1867,7 +1867,7 @@ def build_cursor_agent_config(
 def build_cursor_agent_config_for_role(
     role: str,
     working_directory: str = ".",
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """为指定角色构建 CursorAgentConfig 配置字典
 
@@ -1931,7 +1931,7 @@ def build_cursor_agent_config_for_role(
 
 
 def build_cloud_client_config(
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 Cloud Client 所需的配置字典
 
@@ -2014,10 +2014,10 @@ def build_cloud_client_config(
 
 
 def resolve_orchestrator_settings(
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
     triggered_by_prefix: bool = False,
     *,
-    prefix_routed: Optional[bool] = None,
+    prefix_routed: bool | None = None,
 ) -> dict[str, Any]:
     """解析编排器设置
 
@@ -2373,7 +2373,7 @@ def resolve_agent_timeouts() -> dict[str, float]:
 
 def build_orchestrator_config(
     working_directory: str = ".",
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 OrchestratorConfig 所需的完整配置字典
 
@@ -2788,7 +2788,7 @@ def build_orchestrator_config(
 
 
 def build_cooldown_config(
-    overrides: Optional[dict[str, Any]] = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建 CooldownConfig 所需的配置字典
 
@@ -2886,8 +2886,8 @@ def build_cooldown_config(
 
 
 def build_cloud_auth_config(
-    overrides: Optional[dict[str, Any]] = None,
-) -> Optional[dict[str, Any]]:
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """构建 CloudAuthConfig 所需的配置字典
 
     统一 Cloud 认证配置的构建逻辑。
@@ -2961,10 +2961,10 @@ CONFIG_DEBUG_PREFIX = "[CONFIG]"
 
 
 def format_debug_config(
-    cli_overrides: Optional[dict[str, Any]] = None,
+    cli_overrides: dict[str, Any] | None = None,
     source_label: str = "unknown",
     has_api_key: bool = False,
-    cloud_enabled: Optional[bool] = None,
+    cloud_enabled: bool | None = None,
 ) -> str:
     """格式化配置调试输出
 
@@ -3096,10 +3096,10 @@ def format_debug_config(
 
 
 def print_debug_config(
-    cli_overrides: Optional[dict[str, Any]] = None,
+    cli_overrides: dict[str, Any] | None = None,
     source_label: str = "unknown",
     has_api_key: bool = False,
-    cloud_enabled: Optional[bool] = None,
+    cloud_enabled: bool | None = None,
 ) -> None:
     """打印配置调试信息到标准输出
 
@@ -3163,18 +3163,18 @@ class ResolvedSettings:
 
 
 def resolve_settings(
-    cli_workers: Optional[int] = None,
-    cli_max_iterations: Optional[int] = None,
-    cli_cloud_timeout: Optional[int] = None,
-    cli_cloud_auth_timeout: Optional[int] = None,
-    cli_execution_mode: Optional[str] = None,
-    cli_planner_model: Optional[str] = None,
-    cli_worker_model: Optional[str] = None,
-    cli_reviewer_model: Optional[str] = None,
-    cli_stream_events_enabled: Optional[bool] = None,
-    cli_stream_log_console: Optional[bool] = None,
-    cli_stream_log_detail_dir: Optional[str] = None,
-    cli_stream_log_raw_dir: Optional[str] = None,
+    cli_workers: int | None = None,
+    cli_max_iterations: int | None = None,
+    cli_cloud_timeout: int | None = None,
+    cli_cloud_auth_timeout: int | None = None,
+    cli_execution_mode: str | None = None,
+    cli_planner_model: str | None = None,
+    cli_worker_model: str | None = None,
+    cli_reviewer_model: str | None = None,
+    cli_stream_events_enabled: bool | None = None,
+    cli_stream_log_console: bool | None = None,
+    cli_stream_log_detail_dir: str | None = None,
+    cli_stream_log_raw_dir: str | None = None,
 ) -> ResolvedSettings:
     """统一的配置解析器
 
@@ -3317,7 +3317,7 @@ class UnifiedOptions:
     resolved: dict[str, Any] = field(default_factory=dict)
 
     # === 执行模式状态 ===
-    requested_mode: Optional[str] = None  # 原始请求模式（CLI 参数或 config.yaml）
+    requested_mode: str | None = None  # 原始请求模式（CLI 参数或 config.yaml）
     effective_mode: str = DEFAULT_EXECUTION_MODE  # 有效执行模式（快照，优先使用）
 
     # === & 前缀状态（策略决策层面） ===
@@ -3332,10 +3332,10 @@ class UnifiedOptions:
 
     # === 原始 prompt 状态（语法检测层面） ===
     has_ampersand_prefix: bool = False  # 语法检测：原始 prompt 是否有 & 前缀
-    sanitized_prompt: Optional[str] = None  # 清理后的 prompt（移除 & 前缀）
+    sanitized_prompt: str | None = None  # 清理后的 prompt（移除 & 前缀）
 
     # === 用户消息（仅构建，不打印）===
-    user_message: Optional[str] = None
+    user_message: str | None = None
 
     @property
     def prefix_routed(self) -> bool:
@@ -3373,7 +3373,7 @@ class UnifiedOptions:
 
 def build_cli_overrides_from_args(
     args: Any,
-    nl_options: Optional[dict[str, Any]] = None,
+    nl_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """从 argparse args 构建 CLI overrides 字典
 
@@ -3535,11 +3535,11 @@ def build_cli_overrides_from_args(
 
 def build_unified_overrides(
     args: Any,
-    nl_options: Optional[dict[str, Any]] = None,
-    execution_decision: Optional[Any] = None,
+    nl_options: dict[str, Any] | None = None,
+    execution_decision: Any | None = None,
     triggered_by_prefix: bool = False,
     *,
-    prefix_routed: Optional[bool] = None,
+    prefix_routed: bool | None = None,
 ) -> UnifiedOptions:
     """构建统一的配置解析结果
 

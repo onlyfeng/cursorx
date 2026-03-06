@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 # ============================================================================
@@ -123,15 +121,15 @@ class KnowledgeDoc(BaseModel):
     source: str = Field(..., description="来源类型: 'cursor-docs' | 'cli-ask'")
 
     # 可选字段
-    context_used: Optional[list[str]] = Field(
+    context_used: list[str] | None = Field(
         default=None,
         description="CLI ask 模式使用的上下文文档 URL 列表",
     )
-    query: Optional[str] = Field(
+    query: str | None = Field(
         default=None,
         description="CLI ask 查询的原始问题",
     )
-    truncated: Optional[bool] = Field(
+    truncated: bool | None = Field(
         default=None,
         description="内容是否已被截断",
     )

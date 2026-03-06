@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from loguru import logger
 
@@ -111,7 +110,7 @@ class AgentProcessManager:
         """广播消息给所有 Agent"""
         self.message_queue.broadcast_to_agents(message)
 
-    def receive_message(self, timeout: Optional[float] = None) -> Optional[ProcessMessage]:
+    def receive_message(self, timeout: float | None = None) -> ProcessMessage | None:
         """接收来自 Agent 的消息"""
         return self.message_queue.receive_from_coordinator(timeout)
 
@@ -175,7 +174,7 @@ class AgentProcessManager:
         process = self._processes.get(agent_id)
         return process is not None and process.is_alive()
 
-    def get_process_info(self, agent_id: str) -> Optional[dict]:
+    def get_process_info(self, agent_id: str) -> dict | None:
         """获取进程信息"""
         return self._process_info.get(agent_id)
 
@@ -278,7 +277,7 @@ class AgentProcessManager:
         # 维护反向索引
         self._message_to_task[message_id] = task_id
 
-    def untrack_task(self, task_id: str) -> Optional[dict]:
+    def untrack_task(self, task_id: str) -> dict | None:
         """取消跟踪任务
 
         Args:
@@ -312,7 +311,7 @@ class AgentProcessManager:
         """
         return self._task_assignments.copy()
 
-    def get_task_by_message_id(self, message_id: str) -> Optional[tuple[str, dict]]:
+    def get_task_by_message_id(self, message_id: str) -> tuple[str, dict] | None:
         """通过消息 ID 查找任务信息
 
         用于处理 late result 场景：当收到 TASK_RESULT 但 correlation_id
@@ -332,7 +331,7 @@ class AgentProcessManager:
             return None
         return (task_id, assignment_info)
 
-    def get_task_assignment(self, task_id: str) -> Optional[dict]:
+    def get_task_assignment(self, task_id: str) -> dict | None:
         """获取任务的分配信息
 
         Args:

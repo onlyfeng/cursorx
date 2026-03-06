@@ -10,8 +10,9 @@ import asyncio
 import functools
 import random
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import TypeVar
 
 # ParamSpec 在 Python 3.10+ 中可用
 if sys.version_info >= (3, 10):
@@ -52,7 +53,7 @@ class RetryConfig:
         )
     )
 
-    def calculate_delay(self, attempt: int, retry_after: Optional[float] = None) -> float:
+    def calculate_delay(self, attempt: int, retry_after: float | None = None) -> float:
         """计算重试延迟时间
 
         使用指数退避算法：delay = base_delay * (exponential_base ^ attempt)
@@ -83,8 +84,8 @@ class RetryConfig:
 
 
 def with_retry(
-    config: Optional[RetryConfig] = None,
-    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
+    config: RetryConfig | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """重试装饰器（用于异步函数）
 
@@ -126,7 +127,7 @@ def with_retry(
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            last_exception: Optional[Exception] = None
+            last_exception: Exception | None = None
 
             for attempt in range(retry_config.max_retries + 1):
                 try:
@@ -187,8 +188,8 @@ def with_retry(
 
 async def retry_async(
     func: Callable[[], Awaitable[T]],
-    config: Optional[RetryConfig] = None,
-    on_retry: Optional[Callable[[int, Exception, float], None]] = None,
+    config: RetryConfig | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
 ) -> T:
     """异步重试辅助函数
 

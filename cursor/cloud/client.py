@@ -16,9 +16,10 @@ import contextlib
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -26,12 +27,8 @@ from loguru import logger
 from core.cloud_utils import (
     CLOUD_PREFIX,
 )
-from core.cloud_utils import (
-    is_cloud_request as _is_cloud_request_util,
-)
-from core.cloud_utils import (
-    strip_cloud_prefix as _strip_cloud_prefix_util,
-)
+from core.cloud_utils import is_cloud_request as _is_cloud_request_util
+from core.cloud_utils import strip_cloud_prefix as _strip_cloud_prefix_util
 
 # 从本地模块导入
 from .auth import CloudAuthManager
@@ -454,7 +451,7 @@ class CursorCloudClient:
                 output=output,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_error = NetworkError(
                 message="提交任务超时",
                 error_type="timeout",
@@ -675,7 +672,7 @@ class CursorCloudClient:
 
             return self._parse_task_from_json_output(task_id, output)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_error = NetworkError(
                 message="获取任务列表超时 (30s)",
                 error_type="timeout",
@@ -755,7 +752,7 @@ class CursorCloudClient:
 
             return self._parse_task_from_text_output(task_id, output)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_error = NetworkError(
                 message="获取任务列表超时 (30s)",
                 error_type="timeout",
@@ -1316,7 +1313,7 @@ class CursorCloudClient:
                 output=output,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_error = NetworkError(
                 message="推送到云端超时",
                 error_type="timeout",
@@ -1507,7 +1504,7 @@ class CursorCloudClient:
                 files_modified=files_modified,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timeout_error = NetworkError(
                 message=f"从云端恢复超时 ({options.timeout or 300}s)",
                 error_type="timeout",

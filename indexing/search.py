@@ -7,13 +7,14 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .base import CodeChunk, EmbeddingModel, VectorStore
+from .base import CodeChunk, EmbeddingModel
 from .base import SearchResult as BaseSearchResult
+from .base import VectorStore
 
 
 class SearchOptions(BaseModel):
@@ -31,9 +32,9 @@ class SearchOptions(BaseModel):
 
     top_k: int = Field(default=10, ge=1, le=100)
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    file_filter: Optional[list[str]] = None
-    language_filter: Optional[list[str]] = None
-    chunk_types: Optional[list[str]] = None
+    file_filter: list[str] | None = None
+    language_filter: list[str] | None = None
+    chunk_types: list[str] | None = None
     include_context: bool = False
     context_lines: int = Field(default=3, ge=0, le=20)
 
@@ -64,11 +65,11 @@ class SearchResultWithContext(BaseModel):
     start_line: int
     end_line: int
     score: float
-    context: Optional[str] = None
-    context_start_line: Optional[int] = None
-    context_end_line: Optional[int] = None
-    chunk: Optional[CodeChunk] = None
-    name: Optional[str] = None
+    context: str | None = None
+    context_start_line: int | None = None
+    context_end_line: int | None = None
+    chunk: CodeChunk | None = None
+    name: str | None = None
     language: str = "unknown"
     chunk_type: str = "unknown"
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -77,9 +78,9 @@ class SearchResultWithContext(BaseModel):
     def from_base_result(
         cls,
         result: BaseSearchResult,
-        context: Optional[str] = None,
-        context_start_line: Optional[int] = None,
-        context_end_line: Optional[int] = None,
+        context: str | None = None,
+        context_start_line: int | None = None,
+        context_end_line: int | None = None,
     ) -> "SearchResultWithContext":
         """从基础搜索结果创建带上下文的结果
 
@@ -163,7 +164,7 @@ class SemanticSearch:
         self,
         embedding_model: EmbeddingModel,
         vector_store: VectorStore,
-        default_options: Optional[SearchOptions] = None,
+        default_options: SearchOptions | None = None,
     ):
         """初始化语义搜索引擎
 
@@ -196,10 +197,10 @@ class SemanticSearch:
     async def search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None,
-        file_filter: Optional[list[str]] = None,
-        language_filter: Optional[list[str]] = None,
+        top_k: int | None = None,
+        min_score: float | None = None,
+        file_filter: list[str] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[BaseSearchResult]:
         """基本语义搜索
 
@@ -241,7 +242,7 @@ class SemanticSearch:
     async def search_with_context(
         self,
         query: str,
-        options: Optional[SearchOptions] = None,
+        options: SearchOptions | None = None,
     ) -> list[SearchResultWithContext]:
         """带上下文的语义搜索
 
@@ -289,8 +290,8 @@ class SemanticSearch:
         self,
         query: str,
         file_paths: list[str],
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None,
+        top_k: int | None = None,
+        min_score: float | None = None,
     ) -> list[BaseSearchResult]:
         """限定文件范围的语义搜索
 
@@ -320,8 +321,8 @@ class SemanticSearch:
     async def hybrid_search(
         self,
         query: str,
-        keywords: Optional[list[str]] = None,
-        options: Optional[SearchOptions] = None,
+        keywords: list[str] | None = None,
+        options: SearchOptions | None = None,
         keyword_weight: float = 0.3,
     ) -> list[SearchResultWithContext]:
         """混合搜索：结合语义搜索和关键词匹配
@@ -456,9 +457,9 @@ class SemanticSearch:
 
     def _build_filter_dict(
         self,
-        file_filter: Optional[list[str]],
-        language_filter: Optional[list[str]],
-    ) -> Optional[dict[str, Any]]:
+        file_filter: list[str] | None,
+        language_filter: list[str] | None,
+    ) -> dict[str, Any] | None:
         """构建向量存储的过滤条件
 
         Args:
@@ -503,7 +504,7 @@ class SemanticSearch:
         start_line: int,
         end_line: int,
         context_lines: int,
-    ) -> tuple[Optional[str], Optional[int], Optional[int]]:
+    ) -> tuple[str | None, int | None, int | None]:
         """获取代码块的上下文
 
         Args:
@@ -729,7 +730,7 @@ class SemanticSearch:
 async def create_semantic_search(
     embedding_model: EmbeddingModel,
     vector_store: VectorStore,
-    default_options: Optional[SearchOptions] = None,
+    default_options: SearchOptions | None = None,
 ) -> SemanticSearch:
     """工厂函数：创建语义搜索引擎
 

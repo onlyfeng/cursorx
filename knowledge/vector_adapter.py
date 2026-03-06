@@ -118,7 +118,7 @@ class DocumentChunkAdapter:
         self,
         doc: Document,
         chunker: Optional["DocumentTextChunker"] = None,
-        config: Optional[DocumentChunkConfig] = None,
+        config: DocumentChunkConfig | None = None,
     ) -> list[CodeChunk]:
         """将文档分块并准备用于嵌入
 
@@ -167,7 +167,7 @@ class DocumentTextChunker:
     # 句子结束符模式
     SENTENCE_PATTERN = re.compile(r"(?<=[.!?。！？])\s+")
 
-    def __init__(self, config: Optional[DocumentChunkConfig] = None):
+    def __init__(self, config: DocumentChunkConfig | None = None):
         """初始化分块器
 
         Args:
@@ -176,7 +176,7 @@ class DocumentTextChunker:
         self.config = config or DocumentChunkConfig()
 
     def chunk_document(
-        self, doc: Document, chunk_size: Optional[int] = None, overlap: Optional[int] = None
+        self, doc: Document, chunk_size: int | None = None, overlap: int | None = None
     ) -> list[DocumentChunk]:
         """将文档内容分块
 
@@ -260,7 +260,7 @@ class DocumentTextChunker:
         # 合并段落直到达到目标大小
         chunks: list[tuple[str, int, int]] = []
         current_chunk_parts: list[str] = []
-        current_start: Optional[int] = None
+        current_start: int | None = None
         current_end: int = 0
         current_length = 0
 
@@ -371,7 +371,7 @@ class DocumentTextChunker:
         # 合并句子直到达到目标大小
         chunks: list[tuple[str, int, int]] = []
         current_chunk_parts: list[str] = []
-        current_start: Optional[int] = None
+        current_start: int | None = None
         current_end: int = 0
         current_length = 0
 
@@ -482,9 +482,7 @@ class DocumentTextChunker:
 
         return chunks
 
-    def estimate_chunks_count(
-        self, content: str, chunk_size: Optional[int] = None, overlap: Optional[int] = None
-    ) -> int:
+    def estimate_chunks_count(self, content: str, chunk_size: int | None = None, overlap: int | None = None) -> int:
         """估算分块数量
 
         快速估算文档会被分成多少块

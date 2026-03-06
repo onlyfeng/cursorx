@@ -6,7 +6,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -44,7 +44,7 @@ class ChromaVectorStore(VectorStore):
 
     def __init__(
         self,
-        persist_directory: Optional[str] = None,
+        persist_directory: str | None = None,
         collection_name: str = DEFAULT_COLLECTION_NAME,
         embedding_dimension: int = 384,
         metric: str = "cosine",
@@ -126,7 +126,7 @@ class ChromaVectorStore(VectorStore):
         return self._client.get_or_create_collection(name=name, metadata={"hnsw:space": distance_fn})
 
     @property
-    def persist_directory(self) -> Optional[str]:
+    def persist_directory(self) -> str | None:
         """持久化目录路径"""
         return self._persist_directory
 
@@ -288,7 +288,7 @@ class ChromaVectorStore(VectorStore):
         self,
         query_embedding: list[float],
         n_results: int,
-        where: Optional[dict[str, Any]],
+        where: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """同步搜索
 
@@ -314,8 +314,8 @@ class ChromaVectorStore(VectorStore):
         self,
         query_embedding: list[float],
         top_k: int = 10,
-        filter_dict: Optional[dict[str, Any]] = None,
-        threshold: Optional[float] = None,
+        filter_dict: dict[str, Any] | None = None,
+        threshold: float | None = None,
     ) -> list[SearchResult]:
         """搜索相似的代码分块
 
@@ -414,7 +414,7 @@ class ChromaVectorStore(VectorStore):
         else:
             return {"$and": where_conditions}
 
-    def _delete_sync(self, ids: Optional[list[str]], where: Optional[dict[str, Any]]) -> int:
+    def _delete_sync(self, ids: list[str] | None, where: dict[str, Any] | None) -> int:
         """同步删除
 
         Args:
@@ -601,7 +601,7 @@ class ChromaVectorStore(VectorStore):
         self._collection_name = name
         logger.info(f"已切换到集合: {name}")
 
-    def get_collection_info(self, name: Optional[str] = None) -> dict[str, Any]:
+    def get_collection_info(self, name: str | None = None) -> dict[str, Any]:
         """获取集合信息
 
         Args:

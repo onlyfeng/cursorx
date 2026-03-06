@@ -29,13 +29,12 @@ to_dict() 的输出中保留 triggered_by_prefix 字段以兼容下游消费者�
 """
 
 import argparse
-import asyncio
 import os
 import tempfile
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar
 from unittest.mock import DEFAULT, AsyncMock, MagicMock
 from unittest.mock import patch as _patch
 
@@ -478,7 +477,7 @@ class TestMPOrchestratorFallback:
                     MockKM.return_value = mock_km
 
                     mock_orch = MagicMock()
-                    mock_orch.run = AsyncMock(side_effect=asyncio.TimeoutError("启动超时"))
+                    mock_orch.run = AsyncMock(side_effect=TimeoutError("启动超时"))
                     MockMP.return_value = mock_orch
 
                     result = await iterator._run_with_mp_orchestrator(3, mock_km)
@@ -3042,7 +3041,7 @@ class TestExecutionModeAutoFallbackTableDriven:
         requirement: str,
         cloud_enabled: bool,
         has_api_key: bool,
-        requested_mode: Optional[str],
+        requested_mode: str | None,
         expect_cli_fallback: bool,
         expect_reason: str,
     ) -> None:
@@ -6519,9 +6518,9 @@ https://cursor.com/changelog/2024
 
     def test_deprecated_alias_compatibility(self) -> None:
         """测试 [DEPRECATED] 旧名别名仍然可用（向后兼容）"""
+        from scripts.run_iterate import ALLOWED_DOC_DOMAINS  # [DEPRECATED] 旧名别名
+        from scripts.run_iterate import ALLOWED_DOC_DOMAINS_NETLOC  # [DEPRECATED] 旧名别名
         from scripts.run_iterate import (
-            ALLOWED_DOC_DOMAINS,  # [DEPRECATED] 旧名别名
-            ALLOWED_DOC_DOMAINS_NETLOC,  # [DEPRECATED] 旧名别名
             ALLOWED_DOC_URL_PREFIXES,
             ALLOWED_DOC_URL_PREFIXES_NETLOC,
         )
@@ -7267,10 +7266,7 @@ class TestCompatibilityEntry:
 
     def test_self_iterate_imports_run_iterate_main(self) -> None:
         """测试兼容入口正确导入 run_iterate.main"""
-        # 验证 self_iterate 模块可以被导入
         from scripts import self_iterate
-
-        # 验证 main 函数来自 run_iterate
         from scripts.run_iterate import main as run_iterate_main
 
         assert self_iterate.main is run_iterate_main, "self_iterate.main 应该是 run_iterate.main 的引用"
@@ -11189,12 +11185,12 @@ class ExecutionModeOrchestratorTestCase:
     """
 
     test_id: str
-    requested_execution_mode: Optional[str]  # None/cli/auto/cloud
+    requested_execution_mode: str | None  # None/cli/auto/cloud
     has_ampersand_prefix: bool
     cloud_enabled: bool
     has_api_key: bool
     orchestrator_user_set: bool
-    orchestrator_flag: Optional[str]  # mp/basic/None
+    orchestrator_flag: str | None  # mp/basic/None
     no_mp_flag: bool
     expected_orchestrator_type: str  # mp/basic
     expected_effective_execution_mode: str  # cli/auto/cloud
@@ -11685,7 +11681,7 @@ class EdgeCaseTestParam:
 
     test_id: str
     requirement: str
-    execution_mode: Optional[str]
+    execution_mode: str | None
     has_api_key: bool
     cloud_enabled: bool
     orchestrator_flag: str
@@ -11824,7 +11820,7 @@ class TestEdgeCaseOrchestratorAndExecutionMode:
     def _create_base_args(
         self,
         requirement: str,
-        execution_mode: Optional[str],
+        execution_mode: str | None,
         orchestrator_flag: str,
         _orchestrator_user_set: bool,
     ) -> argparse.Namespace:
@@ -16240,11 +16236,11 @@ class SelfIteratorRequestedModeCase:
 
     test_id: str
     requirement: str
-    cli_execution_mode: Optional[str]
+    cli_execution_mode: str | None
     config_execution_mode: str
     has_api_key: bool
     cloud_enabled: bool
-    expected_requested_mode_for_decision: Optional[str]
+    expected_requested_mode_for_decision: str | None
     expected_has_ampersand_prefix: bool
     expected_prefix_routed: bool
     expected_orchestrator: str

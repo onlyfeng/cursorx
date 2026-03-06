@@ -1390,16 +1390,18 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetectConfig:
 
         # Mock get_config（在 core.config 模块级别，影响 compute_decision_inputs 的延迟导入）
         # 以及 CloudClientFactory.resolve_api_key
-        with patch("core.config.get_config", return_value=mock_config):
-            with patch(
+        with (
+            patch("core.config.get_config", return_value=mock_config),
+            patch(
                 "cursor.cloud_client.CloudClientFactory.resolve_api_key",
                 return_value="test_key",
-            ):
-                options = build_unified_overrides(
-                    args=mock_args_with_ampersand,
-                    nl_options=nl_options,
-                    execution_decision=None,  # 关键：不提供 execution_decision
-                )
+            ),
+        ):
+            options = build_unified_overrides(
+                args=mock_args_with_ampersand,
+                nl_options=nl_options,
+                execution_decision=None,  # 关键：不提供 execution_decision
+            )
 
         # 核心断言：auto_detect_cloud_prefix=False 时，& 前缀被忽略，允许 mp
         assert options.orchestrator == "mp", (
@@ -1439,16 +1441,18 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetectConfig:
         }
 
         # Mock get_config 和 CloudClientFactory（无 API Key，触发 prefix_routed=False）
-        with patch("core.config.get_config", return_value=mock_config):
-            with patch(
+        with (
+            patch("core.config.get_config", return_value=mock_config),
+            patch(
                 "cursor.cloud_client.CloudClientFactory.resolve_api_key",
                 return_value=None,  # 无 API Key
-            ):
-                options = build_unified_overrides(
-                    args=mock_args_with_ampersand,
-                    nl_options=nl_options,
-                    execution_decision=None,  # 关键：不提供 execution_decision
-                )
+            ),
+        ):
+            options = build_unified_overrides(
+                args=mock_args_with_ampersand,
+                nl_options=nl_options,
+                execution_decision=None,  # 关键：不提供 execution_decision
+            )
 
         # 核心断言：auto_detect_cloud_prefix=True 时，& 前缀触发 Cloud 意图，强制 basic
         assert options.orchestrator == "basic", (
@@ -1498,16 +1502,18 @@ class TestBuildUnifiedOverridesNoDecisionAutoDetectConfig:
 
         api_key_value = "test_key" if has_api_key else None
 
-        with patch("core.config.get_config", return_value=mock_config):
-            with patch(
+        with (
+            patch("core.config.get_config", return_value=mock_config),
+            patch(
                 "cursor.cloud_client.CloudClientFactory.resolve_api_key",
                 return_value=api_key_value,
-            ):
-                options = build_unified_overrides(
-                    args=mock_args_with_ampersand,
-                    nl_options=nl_options,
-                    execution_decision=None,
-                )
+            ),
+        ):
+            options = build_unified_overrides(
+                args=mock_args_with_ampersand,
+                nl_options=nl_options,
+                execution_decision=None,
+            )
 
         assert options.orchestrator == expected_orchestrator, (
             f"[{scenario_desc}] orchestrator 不符预期: 期望 {expected_orchestrator}, 实际 {options.orchestrator}"

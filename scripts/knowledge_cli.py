@@ -36,7 +36,7 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -416,7 +416,7 @@ class KnowledgeCLI:
 
     async def refresh(
         self,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         refresh_all: bool = False,
     ) -> int:
         """刷新文档（重新获取 URL 内容）

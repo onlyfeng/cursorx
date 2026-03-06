@@ -51,13 +51,13 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from loguru import logger
 
 # 全局缓存：避免每个 WebFetcher 实例都做一遍外部依赖探测（会启动子进程，较慢）
-_AVAILABLE_METHODS_CACHE: Optional[list["FetchMethod"]] = None
+_AVAILABLE_METHODS_CACHE: list["FetchMethod"] | None = None
 _AVAILABLE_METHODS_LOCK = asyncio.Lock()
 
 
@@ -116,7 +116,7 @@ class UrlRejectionReason:
     url: str  # 截断后的 URL（安全用于日志）
     reason: str
     policy_type: str
-    raw_url: Optional[str] = field(default=None, repr=False)  # 原始 URL，repr 中不显示
+    raw_url: str | None = field(default=None, repr=False)  # 原始 URL，repr 中不显示
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典（用于 JSON 序列化）"""
@@ -279,7 +279,7 @@ class UrlPolicy:
             self._check_private_network(url, hostname, ip_obj)
 
     def _check_private_network(
-        self, url: str, hostname: str, ip_obj: Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]
+        self, url: str, hostname: str, ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address | None
     ) -> None:
         """检查是否为私有网络地址"""
         # 特殊主机名
@@ -384,7 +384,7 @@ class UrlPolicy:
         except UrlPolicyError:
             return False
 
-    def get_validation_error(self, url: str) -> Optional[str]:
+    def get_validation_error(self, url: str) -> str | None:
         """获取 URL 校验错误信息
 
         Args:
@@ -399,7 +399,7 @@ class UrlPolicy:
         except UrlPolicyError as e:
             return str(e)
 
-    def get_rejection_reason(self, url: str) -> Optional[UrlRejectionReason]:
+    def get_rejection_reason(self, url: str) -> UrlRejectionReason | None:
         """获取 URL 拒绝的结构化原因
 
         Args:
@@ -467,7 +467,7 @@ class FetchConfig:
 
     # Playwright 特定配置
     playwright_headless: bool = True  # 无头模式
-    playwright_wait_for_selector: Optional[str] = None  # 等待指定选择器出现
+    playwright_wait_for_selector: str | None = None  # 等待指定选择器出现
     playwright_scroll_to_bottom: bool = False  # 滚动到页面底部（加载懒加载内容）
     playwright_wait_after_load: float = 0.0  # 页面加载后额外等待时间（秒）
     playwright_js_enabled: bool = True  # 是否启用 JavaScript
@@ -475,7 +475,7 @@ class FetchConfig:
     # URL 安全策略配置
     # 为 None 时使用默认策略（允许 http/https，拒绝私网）
     # 设为 UrlPolicy() 可自定义策略
-    url_policy: Optional[UrlPolicy] = None
+    url_policy: UrlPolicy | None = None
 
     # 是否启用 URL 策略校验（默认启用）
     enforce_url_policy: bool = True
@@ -488,21 +488,21 @@ class FetchResult:
     url: str
     success: bool
     content: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     method_used: FetchMethod = FetchMethod.AUTO
-    status_code: Optional[int] = None
-    content_type: Optional[str] = None
+    status_code: int | None = None
+    content_type: str | None = None
     duration: float = 0.0
     retry_count: int = 0
 
     # 内容质量评分（0.0-1.0，None 表示未评估）
-    quality_score: Optional[float] = None
+    quality_score: float | None = None
 
     # 元数据
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # URL 策略拒绝原因（结构化，仅当因策略被拒绝时设置）
-    rejection_reason: Optional[UrlRejectionReason] = None
+    rejection_reason: UrlRejectionReason | None = None
 
 
 class WebFetcher:
@@ -523,9 +523,9 @@ class WebFetcher:
     ```
     """
 
-    def __init__(self, config: Optional[FetchConfig] = None):
+    def __init__(self, config: FetchConfig | None = None):
         self.config = config or FetchConfig()
-        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore: asyncio.Semaphore | None = None
         self._available_methods: list[FetchMethod] = []
         self._initialized = False
         # URL 策略：优先使用配置中的策略，否则使用默认策略
@@ -628,8 +628,8 @@ class WebFetcher:
     async def fetch(
         self,
         url: str,
-        method: Optional[FetchMethod] = None,
-        timeout: Optional[int] = None,
+        method: FetchMethod | None = None,
+        timeout: int | None = None,
     ) -> FetchResult:
         """获取单个网页
 
@@ -662,7 +662,7 @@ class WebFetcher:
         # 带重试的获取
         return await self._fetch_with_retry(url, method, timeout)
 
-    def _validate_url_policy(self, url: str) -> Optional[UrlRejectionReason]:
+    def _validate_url_policy(self, url: str) -> UrlRejectionReason | None:
         """校验 URL 是否符合策略
 
         Args:
@@ -684,7 +684,7 @@ class WebFetcher:
     async def fetch_many(
         self,
         urls: list[str],
-        method: Optional[FetchMethod] = None,
+        method: FetchMethod | None = None,
     ) -> list[FetchResult]:
         """并发获取多个网页
 
@@ -704,7 +704,7 @@ class WebFetcher:
     async def _fetch_with_semaphore(
         self,
         url: str,
-        method: Optional[FetchMethod] = None,
+        method: FetchMethod | None = None,
     ) -> FetchResult:
         """带信号量限制的获取"""
         assert self._semaphore is not None
@@ -794,7 +794,7 @@ class WebFetcher:
         result.method_used = method
         return result
 
-    def _select_best_method(self, url: Optional[str] = None) -> FetchMethod:
+    def _select_best_method(self, url: str | None = None) -> FetchMethod:
         """选择最佳的获取方式
 
         Args:
@@ -894,7 +894,7 @@ class WebFetcher:
                     method_used=FetchMethod.MCP,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return FetchResult(
                 url=url,
                 success=False,
@@ -1101,7 +1101,7 @@ class WebFetcher:
                 method_used=FetchMethod.CURL,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return FetchResult(
                 url=url,
                 success=False,
@@ -1157,7 +1157,7 @@ class WebFetcher:
                     method_used=FetchMethod.LYNX,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return FetchResult(
                 url=url,
                 success=False,

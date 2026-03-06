@@ -19,7 +19,6 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -583,8 +582,8 @@ class KnowledgeValidationReport:
 
     def __init__(self):
         self.results: list[dict] = []
-        self.start_time: Optional[datetime] = None
-        self.end_time: Optional[datetime] = None
+        self.start_time: datetime | None = None
+        self.end_time: datetime | None = None
 
     def add_result(self, name: str, passed: bool, message: str = ""):
         """添加验证结果"""

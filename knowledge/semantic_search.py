@@ -12,7 +12,7 @@
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -65,7 +65,7 @@ class KnowledgeSemanticSearch:
     def __init__(
         self,
         vector_store: KnowledgeVectorStore,
-        config: Optional[KnowledgeVectorConfig] = None,
+        config: KnowledgeVectorConfig | None = None,
     ):
         """初始化语义搜索引擎
 

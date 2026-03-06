@@ -17,7 +17,6 @@ import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
@@ -335,7 +334,7 @@ class ProjectInfo:
 
     state: ProjectState
     path: Path
-    detected_language: Optional[str] = None
+    detected_language: str | None = None
     marker_files: list[str] = field(default_factory=list)
     source_files_count: int = 0
     is_newly_initialized: bool = False
@@ -347,7 +346,7 @@ class ReferenceProject:
 
     path: Path
     relative_path: str
-    detected_language: Optional[str] = None
+    detected_language: str | None = None
     marker_files: list[str] = field(default_factory=list)
     description: str = ""
 
@@ -359,16 +358,16 @@ class ScaffoldResult:
     success: bool
     language: str
     created_files: list[str] = field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
 class TaskAnalysis:
     """任务解析结果（由 Agent 推断）"""
 
-    language: Optional[str] = None
-    project_name: Optional[str] = None
-    framework: Optional[str] = None
+    language: str | None = None
+    project_name: str | None = None
+    framework: str | None = None
     params: dict[str, str] = field(default_factory=dict)
     raw_output: str = ""
 
@@ -411,7 +410,7 @@ def inspect_project_state(
 
     # 检测工程标记文件
     marker_files: list[str] = []
-    detected_language: Optional[str] = None
+    detected_language: str | None = None
 
     for marker, lang in PROJECT_MARKERS.items():
         if marker.startswith("*"):
@@ -440,7 +439,7 @@ def inspect_project_state(
 
     # 没有工程标记，检查是否有源码文件
     source_files_count = 0
-    source_language: Optional[str] = None
+    source_language: str | None = None
 
     for item in _iter_files(target_dir, max_depth=max_depth):
         ext = item.suffix.lower()
@@ -513,7 +512,7 @@ def _iter_files(
 # ============================================================
 
 
-def infer_language(task_text: str) -> Optional[str]:
+def infer_language(task_text: str) -> str | None:
     """从任务文本推断语言
 
     默认使用大模型推断，失败时回退到关键词规则。
@@ -543,7 +542,7 @@ def infer_language(task_text: str) -> Optional[str]:
     return None
 
 
-def _infer_language_with_keywords(task_text: str) -> Optional[str]:
+def _infer_language_with_keywords(task_text: str) -> str | None:
     """使用关键词规则推断语言（回退路径）"""
     task_lower = task_text.lower()
 
@@ -571,7 +570,7 @@ def _infer_language_with_keywords(task_text: str) -> Optional[str]:
     return None
 
 
-def _infer_language_with_llm(task_text: str) -> Optional[str]:
+def _infer_language_with_llm(task_text: str) -> str | None:
     """使用大模型推断语言
 
     通过 agent CLI 调用规划模式，要求只输出语言标签。
@@ -609,7 +608,7 @@ def _infer_language_with_llm(task_text: str) -> Optional[str]:
     return _parse_language_from_output(output)
 
 
-def _parse_language_from_output(output: str) -> Optional[str]:
+def _parse_language_from_output(output: str) -> str | None:
     """从大模型输出中解析语言标签"""
     if not output:
         return None
@@ -635,7 +634,7 @@ def _build_language_infer_prompt(task_text: str) -> str:
     )
 
 
-def _analyze_task_with_agent(task_text: str) -> Optional[TaskAnalysis]:
+def _analyze_task_with_agent(task_text: str) -> TaskAnalysis | None:
     """使用 Agent 解析任务描述为结构化参数"""
     if not task_text:
         return None
@@ -697,7 +696,7 @@ def _build_task_analysis_prompt(task_text: str) -> str:
     )
 
 
-def _parse_task_analysis_output(output: str) -> Optional[TaskAnalysis]:
+def _parse_task_analysis_output(output: str) -> TaskAnalysis | None:
     """解析任务分析输出为 TaskAnalysis"""
     if not output:
         return None
@@ -782,7 +781,7 @@ def get_language_hint() -> str:
 def scaffold(
     language: str,
     target_dir: Path,
-    project_name: Optional[str] = None,
+    project_name: str | None = None,
 ) -> ScaffoldResult:
     """生成最小工程骨架
 
@@ -1169,7 +1168,7 @@ def detect_reference_projects(
 
                 # 检测该子目录是否为工程
                 marker_files: list[str] = []
-                detected_language: Optional[str] = None
+                detected_language: str | None = None
 
                 for marker, lang in PROJECT_MARKERS.items():
                     if marker.startswith("*"):
@@ -1244,16 +1243,16 @@ class WorkspacePreparationResult:
 
     project_info: ProjectInfo
     reference_projects: list[ReferenceProject] = field(default_factory=list)
-    scaffold_result: Optional[ScaffoldResult] = None
-    task_analysis: Optional[TaskAnalysis] = None
-    error: Optional[str] = None
-    hint: Optional[str] = None
+    scaffold_result: ScaffoldResult | None = None
+    task_analysis: TaskAnalysis | None = None
+    error: str | None = None
+    hint: str | None = None
 
 
 def prepare_workspace(
     target_dir: Path,
     task_text: str,
-    explicit_language: Optional[str] = None,
+    explicit_language: str | None = None,
     force_scaffold: bool = False,
     dry_run: bool = False,
 ) -> WorkspacePreparationResult:

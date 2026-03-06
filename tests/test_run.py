@@ -29,12 +29,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import run as run_module
-from core.cloud_utils import is_cloud_request, strip_cloud_prefix
-
 # 使用 DEFAULT_* 常量作为测试默认值（避免在模块加载时初始化 ConfigManager）
 # 这样可以确保测试之间的隔离，防止 ConfigManager 状态污染
-from core.config import (
+import run as run_module
+from core.cloud_utils import is_cloud_request, strip_cloud_prefix
+from core.config import (  # 控制台预览截断常量
     DEFAULT_CLOUD_TIMEOUT,
     DEFAULT_ENABLE_SUB_PLANNERS,
     DEFAULT_MAX_ITERATIONS,
@@ -50,7 +49,6 @@ from core.config import (
     DEFAULT_WORKER_MODEL,
     DEFAULT_WORKER_POOL_SIZE,
     DEFAULT_WORKER_TIMEOUT,
-    # 控制台预览截断常量
     MAX_CONSOLE_PREVIEW_CHARS,
     MAX_GOAL_SUMMARY_CHARS,
     MAX_KNOWLEDGE_DOC_PREVIEW_CHARS,
@@ -1327,7 +1325,7 @@ class TestAutoDetectCloudPrefixCLI:
         预期：& 前缀应触发 Cloud 路由（需有 API Key 和 cloud_enabled）
         """
         from core.config import get_config
-        from core.execution_policy import build_execution_decision, compute_decision_inputs
+        from core.execution_policy import compute_decision_inputs
         from cursor.cloud_client import CloudClientFactory
 
         config = get_config()
@@ -3956,13 +3954,12 @@ class TestRunnerRunMethods:
     @pytest.mark.asyncio
     async def test_run_plan_timeout(self, runner: Runner) -> None:
         """测试 _run_plan 方法超时（使用 PlanAgentExecutor）"""
-        import asyncio
 
         with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
             mock_executor = MagicMock()
             mock_executor.config.mode = "plan"
             mock_executor.config.force_write = False
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
@@ -4037,11 +4034,10 @@ class TestRunnerRunMethods:
     @pytest.mark.asyncio
     async def test_run_ask_timeout(self, runner: Runner) -> None:
         """测试 _run_ask 方法超时"""
-        import asyncio
 
         with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
             mock_instance = MagicMock()
-            mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_instance.execute = AsyncMock(side_effect=TimeoutError())
             MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
@@ -5618,13 +5614,12 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_plan_timeout(self, runner: Runner) -> None:
         """测试规划模式超时处理（使用 PlanAgentExecutor）"""
-        import asyncio
 
         with patch("cursor.executor.PlanAgentExecutor") as mock_executor_cls:
             mock_executor = MagicMock()
             mock_executor.config.mode = "plan"
             mock_executor.config.force_write = False
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             mock_executor_cls.return_value = mock_executor
 
             options = runner._merge_options({})
@@ -5734,11 +5729,10 @@ mp (多进程模式)"""
     @pytest.mark.asyncio
     async def test_run_ask_timeout(self, runner: Runner) -> None:
         """测试问答模式超时处理"""
-        import asyncio
 
         with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
             mock_instance = MagicMock()
-            mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_instance.execute = AsyncMock(side_effect=TimeoutError())
             MockExecutor.return_value = mock_instance
 
             options = runner._merge_options({})
@@ -7055,13 +7049,12 @@ class TestRunCloudMode:
     @pytest.mark.asyncio
     async def test_run_cloud_timeout_exception_handling(self, cloud_runner_args: argparse.Namespace) -> None:
         """验证超时异常被正确处理"""
-        import asyncio
 
         runner = Runner(cloud_runner_args)
 
         def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
             mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             return mock_executor
 
         with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
@@ -7448,13 +7441,12 @@ class TestRunCloudMode:
     @pytest.mark.asyncio
     async def test_run_cloud_timeout_exception_sets_failure_kind(self, cloud_runner_args: argparse.Namespace) -> None:
         """验证 Cloud 超时异常时 failure_kind 被设置为 timeout"""
-        import asyncio
 
         runner = Runner(cloud_runner_args)
 
         def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
             mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             return mock_executor
 
         with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
@@ -10183,8 +10175,8 @@ class TestExecutionModeAutoOrchestratorBasicPassthrough:
 # ============================================================
 
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 
 @dataclass
@@ -10210,12 +10202,12 @@ class ExecutionModeOrchestratorTestCase:
     """
 
     test_id: str
-    requested_execution_mode: Optional[str]  # None/cli/auto/cloud
+    requested_execution_mode: str | None  # None/cli/auto/cloud
     has_ampersand_prefix: bool
     cloud_enabled: bool
     has_api_key: bool
     orchestrator_user_set: bool
-    orchestrator_flag: Optional[str]  # mp/basic/None
+    orchestrator_flag: str | None  # mp/basic/None
     no_mp_flag: bool
     expected_orchestrator_type: str  # mp/basic
     expected_effective_execution_mode: str  # cli/auto/cloud
@@ -10554,15 +10546,15 @@ class ExecutionModeMatrixTestCase:
 
     # 输入条件
     task: str  # 任务描述（可能含 & 前缀，has_ampersand_prefix）
-    cli_execution_mode: Optional[str]  # CLI --execution-mode 参数值
-    cli_orchestrator: Optional[str]  # CLI --orchestrator 参数值
-    cli_no_mp: Optional[bool]  # CLI --no-mp 参数值
+    cli_execution_mode: str | None  # CLI --execution-mode 参数值
+    cli_orchestrator: str | None  # CLI --orchestrator 参数值
+    cli_no_mp: bool | None  # CLI --no-mp 参数值
     cloud_enabled: bool  # config.yaml cloud_agent.enabled
     has_api_key: bool  # 是否有 API Key
 
     # 期望 _rule_based_analysis 返回的 analysis.options
-    expected_analysis_execution_mode: Optional[str]
-    expected_analysis_cloud_background: Optional[bool]
+    expected_analysis_execution_mode: str | None
+    expected_analysis_cloud_background: bool | None
     # prefix_routed（策略决策层面）：& 前缀是否成功触发 Cloud 路由
     # 字段名使用 prefix_routed（内部分支统一使用此字段）
     expected_analysis_prefix_routed: bool
@@ -10845,9 +10837,9 @@ class TestRuleBasedAnalysisAndMergeOptionsMatrix:
 
         def _make_args(
             task: str,
-            cli_execution_mode: Optional[str],
-            cli_orchestrator: Optional[str],
-            cli_no_mp: Optional[bool],
+            cli_execution_mode: str | None,
+            cli_orchestrator: str | None,
+            cli_no_mp: bool | None,
         ) -> argparse.Namespace:
             return argparse.Namespace(
                 task=task,
@@ -13681,13 +13673,12 @@ class TestCloudExecutionResultFields:
         场景: 执行器抛 asyncio.TimeoutError
         预期: success=False, failure_kind='timeout', retryable=True
         """
-        import asyncio as aio
 
         runner = Runner(cloud_args)
 
         def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
             mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(side_effect=aio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             return mock_executor
 
         with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
@@ -14175,7 +14166,6 @@ class TestCooldownInfoFieldConsistency:
     @pytest.mark.asyncio
     async def test_timeout_error_contains_cooldown_info(self, cloud_args: argparse.Namespace) -> None:
         """验证超时错误时 cooldown_info 字段存在"""
-        import asyncio
 
         from run import Runner
 
@@ -14183,7 +14173,7 @@ class TestCooldownInfoFieldConsistency:
 
         def mock_factory_create(mode, cli_config=None, cloud_auth_config=None):
             mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError("超时"))
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError("超时"))
             return mock_executor
 
         with patch("cursor.executor.AgentExecutorFactory.create", side_effect=mock_factory_create):
@@ -14201,7 +14191,6 @@ class TestCooldownInfoFieldConsistency:
 
         这是关键测试：确保成功/失败/回退/无回退各分支的字段集合相同。
         """
-        import asyncio
 
         from run import Runner
 
@@ -14251,7 +14240,7 @@ class TestCooldownInfoFieldConsistency:
         # 场景 3: 超时
         def mock_timeout(mode, cli_config=None, cloud_auth_config=None):
             mock_executor = MagicMock()
-            mock_executor.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+            mock_executor.execute = AsyncMock(side_effect=TimeoutError())
             return mock_executor
 
         runner = Runner(cloud_args)
@@ -14882,11 +14871,11 @@ class RequestedModeInvariantCase:
 
     test_id: str
     requirement: str
-    cli_execution_mode: Optional[str]
+    cli_execution_mode: str | None
     config_execution_mode: str
     has_api_key: bool
     cloud_enabled: bool
-    expected_requested_mode_for_decision: Optional[str]
+    expected_requested_mode_for_decision: str | None
     expected_has_ampersand_prefix: bool
     expected_prefix_routed: bool
     expected_orchestrator: str

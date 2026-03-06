@@ -19,9 +19,10 @@ import asyncio
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 from loguru import logger
 from pydantic import BaseModel
@@ -1217,7 +1218,7 @@ class KnowledgeManager:
                     context_used=context_used,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = (datetime.now() - start_time).total_seconds()
             logger.error(f"CLI ask 查询超时 ({timeout}s)")
             return AskResult(

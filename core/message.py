@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
@@ -47,14 +47,14 @@ class Message(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     type: MessageType
     sender: str  # 发送者 Agent ID
-    receiver: Optional[str] = None  # 接收者 Agent ID（None 表示广播）
+    receiver: str | None = None  # 接收者 Agent ID（None 表示广播）
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.now)
-    correlation_id: Optional[str] = None  # 关联消息 ID（用于追踪请求-响应）
+    correlation_id: str | None = None  # 关联消息 ID（用于追踪请求-响应）
 
     model_config = ConfigDict()
 
-    def create_reply(self, msg_type: MessageType, payload: dict[str, Any]) -> "Message":
+    def create_reply(self, msg_type: MessageType, payload: dict[str, Any]) -> Message:
         """创建回复消息"""
         return Message(
             type=msg_type,

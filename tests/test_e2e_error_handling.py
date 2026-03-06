@@ -102,7 +102,7 @@ class TestPlanningErrors:
             await asyncio.sleep(10)  # 模拟超时
             return {"success": True, "tasks": []}
 
-        with patch.object(orchestrator.planner, "execute", side_effect=asyncio.TimeoutError()):
+        with patch.object(orchestrator.planner, "execute", side_effect=TimeoutError()):
             # 超时应该导致规划失败
             result = await orchestrator.run("超时测试")
 
@@ -371,7 +371,7 @@ class TestReviewErrors:
         with (
             patch.object(orchestrator.planner, "execute", new_callable=AsyncMock) as mock_planner,
             patch.object(orchestrator.worker_pool, "start", new_callable=AsyncMock) as mock_workers,
-            patch.object(orchestrator.reviewer, "review_iteration", side_effect=asyncio.TimeoutError()),
+            patch.object(orchestrator.reviewer, "review_iteration", side_effect=TimeoutError()),
         ):
             mock_planner.return_value = mock_plan_result
 

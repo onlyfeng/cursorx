@@ -9,7 +9,7 @@ import fnmatch
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -223,8 +223,8 @@ class CommitterAgent(BaseAgent):
 
     async def generate_commit_message(
         self,
-        diff: Optional[str] = None,
-        files: Optional[list[str]] = None,
+        diff: str | None = None,
+        files: list[str] | None = None,
     ) -> str:
         """根据 diff 生成提交信息
 
@@ -312,7 +312,7 @@ class CommitterAgent(BaseAgent):
 
         return filtered
 
-    def commit(self, message: str, files: Optional[list[str]] = None) -> CommitResult:
+    def commit(self, message: str, files: list[str] | None = None) -> CommitResult:
         """执行 git add + commit
 
         Args:
@@ -424,7 +424,7 @@ class CommitterAgent(BaseAgent):
         finally:
             self.update_status(AgentStatus.IDLE)
 
-    def push(self, remote: str = "origin", branch: Optional[str] = None) -> CommitResult:
+    def push(self, remote: str = "origin", branch: str | None = None) -> CommitResult:
         """执行 git push
 
         Args:
@@ -482,7 +482,7 @@ class CommitterAgent(BaseAgent):
         self,
         mode: str = "soft",
         commit: str = "HEAD~1",
-        files: Optional[list[str]] = None,
+        files: list[str] | None = None,
     ) -> CommitResult:
         """执行回退操作
 
@@ -555,7 +555,7 @@ class CommitterAgent(BaseAgent):
         finally:
             self.update_status(AgentStatus.IDLE)
 
-    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: dict | None = None) -> dict[str, Any]:
         """执行完整提交流程
 
         Args:

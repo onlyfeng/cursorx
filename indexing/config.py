@@ -1,7 +1,7 @@
 """索引模块配置定义"""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,11 +50,11 @@ class EmbeddingConfig(BaseModel):
     batch_size: int = 100  # 批量处理大小
 
     # API 配置（用于远程服务）
-    api_key: Optional[str] = None  # API 密钥
-    api_base: Optional[str] = None  # API 基础 URL
+    api_key: str | None = None  # API 密钥
+    api_base: str | None = None  # API 基础 URL
 
     # 本地模型配置
-    model_path: Optional[str] = None  # 本地模型路径
+    model_path: str | None = None  # 本地模型路径
     device: str = "cpu"  # 运行设备（cpu/cuda）
 
     # 性能配置
@@ -111,9 +111,9 @@ class VectorStoreConfig(BaseModel):
     collection_name: str = "code_index"  # 集合名称
 
     # 连接配置（用于远程存储）
-    host: Optional[str] = None  # 服务器地址
-    port: Optional[int] = None  # 端口
-    api_key: Optional[str] = None  # API 密钥
+    host: str | None = None  # 服务器地址
+    port: int | None = None  # 端口
+    api_key: str | None = None  # API 密钥
 
     # 索引配置
     metric: str = "cosine"  # 相似度度量（cosine/euclidean/dot）

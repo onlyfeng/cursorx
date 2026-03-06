@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from multiprocessing import Queue
-from typing import Optional
 
 
 class ProcessMessageType(str, Enum):
@@ -48,18 +47,18 @@ class ProcessMessage:
     receiver: str = ""  # 接收者进程 ID（空表示广播）
     payload: dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
-    correlation_id: Optional[str] = None  # 关联消息 ID
+    correlation_id: str | None = None  # 关联消息 ID
 
     def to_bytes(self) -> bytes:
         """序列化为字节"""
         return pickle.dumps(self)
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "ProcessMessage":
+    def from_bytes(cls, data: bytes) -> ProcessMessage:
         """从字节反序列化"""
         return pickle.loads(data)
 
-    def create_reply(self, msg_type: ProcessMessageType, payload: dict) -> "ProcessMessage":
+    def create_reply(self, msg_type: ProcessMessageType, payload: dict) -> ProcessMessage:
         """创建回复消息"""
         return ProcessMessage(
             type=msg_type,
@@ -88,7 +87,7 @@ class MessageQueue:
         self._agent_queues[agent_id] = queue
         return queue
 
-    def get_agent_queue(self, agent_id: str) -> Optional[Queue]:
+    def get_agent_queue(self, agent_id: str) -> Queue | None:
         """获取 Agent 队列"""
         return self._agent_queues.get(agent_id)
 
@@ -109,7 +108,7 @@ class MessageQueue:
         for queue in self._agent_queues.values():
             queue.put(message)
 
-    def receive_from_coordinator(self, timeout: Optional[float] = None) -> Optional[ProcessMessage]:
+    def receive_from_coordinator(self, timeout: float | None = None) -> ProcessMessage | None:
         """从协调器队列接收消息"""
         try:
             if timeout:

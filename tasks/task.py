@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -63,23 +63,23 @@ class Task(BaseModel):
     priority: TaskPriority = TaskPriority.NORMAL
 
     # 关联信息
-    parent_task_id: Optional[str] = None  # 父任务 ID
+    parent_task_id: str | None = None  # 父任务 ID
     sub_task_ids: list[str] = Field(default_factory=list)  # 子任务 ID 列表
-    created_by: Optional[str] = None  # 创建者 Agent ID
-    assigned_to: Optional[str] = None  # 分配给的 Agent ID
+    created_by: str | None = None  # 创建者 Agent ID
+    assigned_to: str | None = None  # 分配给的 Agent ID
 
     # 上下文
     context: dict[str, Any] = Field(default_factory=dict)
     target_files: list[str] = Field(default_factory=list)  # 涉及的文件
 
     # 结果
-    result: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
 
     # 时间戳
     created_at: datetime = Field(default_factory=datetime.now)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
     # 迭代信息
     iteration_id: int = 0

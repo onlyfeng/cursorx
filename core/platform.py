@@ -9,8 +9,8 @@
 import multiprocessing as mp
 import signal
 import sys
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable, Optional
 
 
 class Platform(str, Enum):
@@ -137,7 +137,7 @@ def supports_signal(sig: signal.Signals) -> bool:
 def register_signal_handler(
     sig: signal.Signals,
     handler: Callable,
-    fallback_sig: Optional[signal.Signals] = None,
+    fallback_sig: signal.Signals | None = None,
 ) -> bool:
     """跨平台注册信号处理器
 

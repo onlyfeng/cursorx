@@ -9,7 +9,7 @@ import pickle
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from loguru import logger
 
@@ -73,7 +73,7 @@ class EmbeddingCache:
     def __init__(
         self,
         max_size: int = 10000,
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
     ):
         """初始化缓存
 
@@ -107,7 +107,7 @@ class EmbeddingCache:
         content = f"{model_name}:{text}"
         return hashlib.md5(content.encode()).hexdigest()
 
-    def get(self, text: str, model_name: str) -> Optional[list[float]]:
+    def get(self, text: str, model_name: str) -> list[float] | None:
         """获取缓存的嵌入向量
 
         Args:
@@ -148,7 +148,7 @@ class EmbeddingCache:
 
         self._cache[key] = embedding
 
-    def get_batch(self, texts: list[str], model_name: str) -> tuple[list[Optional[list[float]]], list[int]]:
+    def get_batch(self, texts: list[str], model_name: str) -> tuple[list[list[float] | None], list[int]]:
         """批量获取缓存
 
         Args:
@@ -158,7 +158,7 @@ class EmbeddingCache:
         Returns:
             (缓存结果列表, 未命中的索引列表)
         """
-        results: list[Optional[list[float]]] = []
+        results: list[list[float] | None] = []
         miss_indices: list[int] = []
 
         for i, text in enumerate(texts):
@@ -272,9 +272,9 @@ class SentenceTransformerEmbedding(EmbeddingModel):
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
-        device: Optional[str] = None,
+        device: str | None = None,
         batch_size: int = 32,
-        cache: Optional[EmbeddingCache] = None,
+        cache: EmbeddingCache | None = None,
         show_progress: bool = False,
     ):
         """初始化 SentenceTransformer 嵌入模型

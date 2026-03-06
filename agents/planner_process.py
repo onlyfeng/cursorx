@@ -9,7 +9,7 @@ import asyncio
 import json
 import re
 from multiprocessing import Queue
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -85,8 +85,8 @@ Shell 命令限制:
         config: dict,
     ):
         super().__init__(agent_id, agent_type, inbox, outbox, config)
-        self.cursor_client: Optional[CursorAgentClient] = None
-        self.current_request_id: Optional[str] = None
+        self.cursor_client: CursorAgentClient | None = None
+        self.current_request_id: str | None = None
 
     def on_start(self) -> None:
         """进程启动初始化"""

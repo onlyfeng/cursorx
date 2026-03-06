@@ -9,7 +9,6 @@
 6. AgentExecutorFactory 创建正确的 Executor
 """
 
-import asyncio
 import json
 import os
 from datetime import datetime, timedelta
@@ -19,12 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # 推荐: 从 cursor 顶层包导入（统一入口）
-from cursor import (
-    # 执行器
+from cursor import (  # 执行器; 认证相关; 任务管理
     AgentExecutorFactory,
     AgentResult,
     AskAgentExecutor,
-    # 认证相关
     AuthError,
     AuthErrorCode,
     AuthStatus,
@@ -34,7 +31,6 @@ from cursor import (
     CloudAgentExecutor,
     CloudAuthConfig,
     CloudAuthManager,
-    # 任务管理
     CloudTask,
     CloudTaskClient,
     CloudTaskOptions,
@@ -329,7 +325,7 @@ class TestCloudAuthManager:
 
         with patch(
             "asyncio.create_subprocess_exec",
-            side_effect=asyncio.TimeoutError(),
+            side_effect=TimeoutError(),
         ):
             status = await manager.authenticate()
             assert status.authenticated is False
@@ -2302,12 +2298,11 @@ class TestClassifyCloudFailure:
 
     def test_classify_timeout_error(self):
         """测试超时错误分类"""
-        import asyncio
 
         from core.execution_policy import CloudFailureKind, classify_cloud_failure
 
         # 从 TimeoutError 异常分类
-        result = classify_cloud_failure(asyncio.TimeoutError())
+        result = classify_cloud_failure(TimeoutError())
         assert result.kind == CloudFailureKind.TIMEOUT
         assert result.retryable is True
 

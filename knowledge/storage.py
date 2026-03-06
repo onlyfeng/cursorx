@@ -109,7 +109,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -284,8 +284,8 @@ class KnowledgeStorage:
 
     def __init__(
         self,
-        config: Optional[StorageConfig] = None,
-        workspace_root: Optional[str] = None,
+        config: StorageConfig | None = None,
+        workspace_root: str | None = None,
     ):
         """初始化存储管理器
 
@@ -310,10 +310,10 @@ class KnowledgeStorage:
         self._index: dict[str, IndexEntry] = {}
         self._url_to_id: dict[str, str] = {}  # URL -> doc_id 映射
         self._initialized = False
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
 
         # 向量存储（延迟初始化）
-        self._vector_store: Optional[KnowledgeVectorStore] = None
+        self._vector_store: KnowledgeVectorStore | None = None
 
     def _check_writable(self, operation: str) -> None:
         """检查是否允许写入操作
@@ -337,7 +337,7 @@ class KnowledgeStorage:
     @classmethod
     def create_read_only(
         cls,
-        workspace_root: Optional[str] = None,
+        workspace_root: str | None = None,
         storage_root: str = ".cursor/knowledge",
         enable_vector_index: bool = False,
     ) -> "KnowledgeStorage":
@@ -593,14 +593,14 @@ class KnowledgeStorage:
         content = json.dumps(metadata, ensure_ascii=False, indent=2)
         await asyncio.to_thread(file_path.write_text, content, encoding="utf-8")
 
-    def _get_entry_by_url(self, url: str) -> Optional[IndexEntry]:
+    def _get_entry_by_url(self, url: str) -> IndexEntry | None:
         """根据 URL 获取索引条目"""
         doc_id = self._url_to_id.get(url)
         if doc_id:
             return self._index.get(doc_id)
         return None
 
-    async def load_document(self, doc_id: str) -> Optional[Document]:
+    async def load_document(self, doc_id: str) -> Document | None:
         """加载文档
 
         Args:
@@ -672,7 +672,7 @@ class KnowledgeStorage:
 
         return raw_content
 
-    async def load_document_by_url(self, url: str) -> Optional[Document]:
+    async def load_document_by_url(self, url: str) -> Document | None:
         """根据 URL 加载文档
 
         Args:
@@ -1069,11 +1069,11 @@ class KnowledgeStorage:
         """检查 URL 是否已存在"""
         return url in self._url_to_id
 
-    def get_document_id_by_url(self, url: str) -> Optional[str]:
+    def get_document_id_by_url(self, url: str) -> str | None:
         """根据 URL 获取文档 ID"""
         return self._url_to_id.get(url)
 
-    def get_content_hash_by_url(self, url: str) -> Optional[str]:
+    def get_content_hash_by_url(self, url: str) -> str | None:
         """根据 URL 获取文档内容哈希（fingerprint）
 
         用于快速比较内容是否变化，无需加载完整文档。
@@ -1091,7 +1091,7 @@ class KnowledgeStorage:
                 return entry.content_hash
         return None
 
-    def get_cleaned_fingerprint_by_url(self, url: str) -> Optional[str]:
+    def get_cleaned_fingerprint_by_url(self, url: str) -> str | None:
         """根据 URL 获取清洗后内容的 fingerprint
 
         用于基线比较，确保与 ChangelogAnalyzer.compute_fingerprint() 口径一致。
@@ -1110,7 +1110,7 @@ class KnowledgeStorage:
                 return entry.cleaned_fingerprint
         return None
 
-    async def get_index_entry_by_url(self, url: str) -> Optional[IndexEntry]:
+    async def get_index_entry_by_url(self, url: str) -> IndexEntry | None:
         """根据 URL 获取索引条目
 
         用于获取文档的摘要信息（不加载完整内容）。

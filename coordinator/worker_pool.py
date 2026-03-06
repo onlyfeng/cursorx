@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -23,15 +23,15 @@ class WorkerPool:
     def __init__(
         self,
         size: int = 3,
-        worker_config: Optional[WorkerConfig] = None,
-        knowledge_manager: Optional["KnowledgeManager"] = None,
+        worker_config: WorkerConfig | None = None,
+        knowledge_manager: KnowledgeManager | None = None,
     ):
         self.size = size
         self.worker_config = worker_config or WorkerConfig()
         self.workers: list[WorkerAgent] = []
         self._running = False
         self._worker_tasks: list[asyncio.Task] = []
-        self._knowledge_manager: Optional[KnowledgeManager] = knowledge_manager
+        self._knowledge_manager: KnowledgeManager | None = knowledge_manager
 
     def initialize(self) -> None:
         """初始化 Worker 池"""
@@ -55,7 +55,7 @@ class WorkerPool:
             self.workers.append(worker)
         logger.info(f"Worker 池已初始化: {self.size} 个 Worker")
 
-    def set_knowledge_manager(self, manager: "KnowledgeManager") -> None:
+    def set_knowledge_manager(self, manager: KnowledgeManager) -> None:
         """设置知识库管理器（延迟初始化）
 
         Args:

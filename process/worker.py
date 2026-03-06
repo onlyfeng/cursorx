@@ -14,7 +14,7 @@ import time
 from abc import abstractmethod
 from multiprocessing import Process, Queue
 from queue import Empty
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -54,14 +54,14 @@ class AgentWorkerProcess(Process):
 
         # 工作线程池（用于执行耗时任务）
         # 注意：这些对象在 run() 方法中初始化，以支持 macOS 的 spawn 启动方式
-        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        self._current_task_future: Optional[concurrent.futures.Future] = None
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._current_task_future: concurrent.futures.Future | None = None
         self._last_heartbeat_time: float = 0.0  # 最后心跳响应时间
         self._is_busy: bool = False  # 是否正在执行任务
         # 锁对象在 run() 中初始化，避免 pickle 序列化问题
         # macOS 默认使用 spawn 方式启动子进程，需要序列化所有对象
         # threading.Lock 无法被 pickle 序列化
-        self._task_lock: Optional[threading.Lock] = None
+        self._task_lock: threading.Lock | None = None
 
     def run(self) -> None:
         """进程主循环"""
@@ -256,7 +256,7 @@ class AgentWorkerProcess(Process):
         self,
         msg_type: ProcessMessageType,
         payload: dict,
-        correlation_id: Optional[str] = None,
+        correlation_id: str | None = None,
     ) -> None:
         """发送消息到协调器"""
         message = ProcessMessage(

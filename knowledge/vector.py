@@ -10,7 +10,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -121,7 +121,7 @@ class KnowledgeVectorStore:
     ```
     """
 
-    def __init__(self, config: Optional[KnowledgeVectorConfig] = None):
+    def __init__(self, config: KnowledgeVectorConfig | None = None):
         """初始化向量存储
 
         Args:
@@ -242,8 +242,8 @@ class KnowledgeVectorStore:
     async def search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None,
+        top_k: int | None = None,
+        min_score: float | None = None,
     ) -> list[VectorSearchResult]:
         """向量相似度搜索
 
@@ -450,7 +450,7 @@ class KnowledgeSemanticSearch:
     def __init__(
         self,
         vector_store: KnowledgeVectorStore,
-        config: Optional[KnowledgeVectorConfig] = None,
+        config: KnowledgeVectorConfig | None = None,
     ):
         """初始化语义搜索
 
@@ -464,8 +464,8 @@ class KnowledgeSemanticSearch:
     async def semantic_search(
         self,
         query: str,
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None,
+        top_k: int | None = None,
+        min_score: float | None = None,
     ) -> list[VectorSearchResult]:
         """纯语义搜索
 
@@ -487,7 +487,7 @@ class KnowledgeSemanticSearch:
         self,
         query: str,
         keyword_results: list[dict[str, Any]],
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
     ) -> list[VectorSearchResult]:
         """混合搜索（关键词 + 语义）
 

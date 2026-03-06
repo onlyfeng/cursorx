@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +64,9 @@ class OrchestratorConfig(BaseModel):
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 迭代助手上下文（.iteration + Engram + 规则摘要）
     iteration_context: dict[str, Any] | None = None
+    # 迭代上下文刷新与记录回写（可选回调）
+    iteration_context_provider: Callable[[], Awaitable[dict[str, Any] | None]] | None = None
+    iteration_record_writer: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
     # 各角色超时配置（秒）
     # 若为 None，则使用 config.yaml 中的配置值；若 config.yaml 也未配置，则使用默认常量
@@ -156,6 +160,8 @@ class Orchestrator:
         # 知识库管理器（用于 Cursor 相关问题自动搜索）
         self._knowledge_manager: KnowledgeManager | None = knowledge_manager
         self._iteration_context: dict[str, Any] = config.iteration_context or {}
+        self._iteration_context_provider = config.iteration_context_provider
+        self._iteration_record_writer = config.iteration_record_writer
 
         # 初始化 Agents
         planner_cursor_config = config.cursor_config.model_copy(deep=True)
@@ -607,6 +613,9 @@ class Orchestrator:
 
         logger.info(f"[迭代 {iteration_id}] 规划阶段开始")
 
+        # 刷新迭代上下文（.iteration / Engram）
+        await self._refresh_iteration_context(iteration_id, phase="planning")
+
         # 构建规划上下文
         context = {
             "iteration_id": iteration_id,
@@ -730,6 +739,9 @@ class Orchestrator:
 
         logger.info(f"[迭代 {iteration_id}] 评审阶段开始")
 
+        # 刷新迭代上下文（.iteration / Engram）
+        await self._refresh_iteration_context(iteration_id, phase="review")
+
         # 收集已完成和失败的任务（使用统一的 to_commit_entry 格式）
         tasks = self.task_queue.get_tasks_by_iteration(iteration_id)
         completed_tasks = [t.to_commit_entry() for t in tasks if t.status.value == "completed"]
@@ -753,7 +765,47 @@ class Orchestrator:
         logger.info(f"[迭代 {iteration_id}] 评审决策: {decision.value}")
         logger.info(f"[迭代 {iteration_id}] 评审得分: {review_result.get('score', 'N/A')}")
 
+        # 迭代记录回写（可选）
+        await self._write_iteration_record(
+            {
+                "iteration_id": iteration_id,
+                "goal": goal,
+                "decision": decision.value if hasattr(decision, "value") else str(decision),
+                "review_result": review_result,
+                "tasks_completed": [
+                    {
+                        "id": t.get("id"),
+                        "title": t.get("title"),
+                        "description": t.get("description"),
+                    }
+                    for t in completed_tasks
+                ],
+                "tasks_failed": failed_tasks,
+            }
+        )
+
         return decision
+
+    async def _refresh_iteration_context(self, iteration_id: int, phase: str) -> None:
+        """刷新迭代上下文（支持每轮更新 .iteration/Engram）"""
+        if not self._iteration_context_provider:
+            return
+        try:
+            updated = await self._iteration_context_provider()
+            if updated is not None:
+                self._iteration_context = updated
+                logger.debug(f"[迭代 {iteration_id}] 已刷新迭代上下文（{phase}）")
+        except Exception as e:
+            logger.warning(f"[迭代 {iteration_id}] 刷新迭代上下文失败（{phase}）: {e}")
+
+    async def _write_iteration_record(self, record: dict[str, Any]) -> None:
+        """回写迭代记录（.iteration/regression.md 等）"""
+        if not self._iteration_record_writer:
+            return
+        try:
+            await self._iteration_record_writer(record)
+        except Exception as e:
+            logger.warning(f"回写迭代记录失败: {e}")
 
     def _should_commit(self, decision: ReviewDecision) -> bool:
         """判断是否应该执行提交

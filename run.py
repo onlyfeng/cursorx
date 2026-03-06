@@ -75,7 +75,7 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from cursor.client import CursorAgentConfig
@@ -1275,7 +1275,7 @@ class TaskAnalyzer:
     def _merge_analysis(
         self,
         original_task: str,
-        agent_analysis: Optional[TaskAnalysis],
+        agent_analysis: TaskAnalysis | None,
         rule_analysis: TaskAnalysis,
     ) -> TaskAnalysis:
         """合并 Agent 与规则分析结果"""
@@ -1326,7 +1326,7 @@ class TaskAnalyzer:
             return primary
         return f"{primary}; {extra}"
 
-    def _agent_analysis(self, task: str, args: Optional[argparse.Namespace] = None) -> Optional[TaskAnalysis]:
+    def _agent_analysis(self, task: str, args: argparse.Namespace | None = None) -> TaskAnalysis | None:
         """使用 Agent 分析任务（只读模式）
 
         使用 --mode plan 确保只读执行，不会修改任何文件。
@@ -1385,7 +1385,7 @@ class TaskAnalyzer:
     def _normalize_agent_options(
         self,
         options: Any,
-        args: Optional[argparse.Namespace],
+        args: argparse.Namespace | None,
     ) -> dict[str, Any]:
         """规范化 Agent 返回的 options
 
@@ -1488,7 +1488,7 @@ class TaskAnalyzer:
 
         return normalized
 
-    def _resolve_planner_model(self, args: Optional[argparse.Namespace]) -> Optional[str]:
+    def _resolve_planner_model(self, args: argparse.Namespace | None) -> str | None:
         """解析规划者模型，用于 Agent 任务解析"""
         env_model = os.getenv("TASK_ANALYSIS_MODEL")
         if env_model:
@@ -1506,7 +1506,7 @@ class TaskAnalyzer:
     def _build_agent_context(
         self,
         task: str,
-        args: Optional[argparse.Namespace],
+        args: argparse.Namespace | None,
     ) -> dict[str, Any]:
         """构建 Agent 解析上下文"""
         context: dict[str, Any] = {
@@ -1677,7 +1677,7 @@ class Runner:
         """
         # 【重要】优先使用 _execution_decision 对象（在 _rule_based_analysis 中构建）
         # 这确保整个 iterate 流程只构建一次决策，避免重复决策和重复提示
-        execution_decision: Optional[ExecutionDecision] = analysis_options.get("_execution_decision")
+        execution_decision: ExecutionDecision | None = analysis_options.get("_execution_decision")
 
         # 获取 prefix_routed 标志（优先从决策对象，回退到快照字段）
         # 内部统一使用 prefix_routed，triggered_by_prefix 仅作为输出兼容字段
@@ -1990,7 +1990,7 @@ class Runner:
         }
         return mode_map.get(effective_mode_str, ExecutionMode.CLI)
 
-    def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
+    def _parse_execution_mode(self, mode_str: str | None) -> ExecutionMode | None:
         """解析执行模式字符串为 ExecutionMode 枚举
 
         Args:
@@ -2011,7 +2011,7 @@ class Runner:
         }
         return mode_map.get(mode_str.lower())
 
-    def _get_cloud_auth_config(self, options: dict) -> Optional[CloudAuthConfig]:
+    def _get_cloud_auth_config(self, options: dict) -> CloudAuthConfig | None:
         """获取 Cloud 认证配置
 
         配置 API Key 的三种方式:
@@ -2062,7 +2062,7 @@ class Runner:
     async def _search_knowledge_docs(
         self,
         query: str,
-        options: Optional[dict] = None,
+        options: dict | None = None,
     ) -> list[dict[str, Any]]:
         """搜索知识库文档
 
@@ -2566,7 +2566,7 @@ class Runner:
                     ResultFields.ERROR: error_msg,
                 }
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             print_error("规划超时")
             return {
                 ResultFields.SUCCESS: False,
@@ -2635,7 +2635,7 @@ class Runner:
                     ResultFields.ERROR: error_msg,
                 }
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             print_error("问答超时")
             return {
                 ResultFields.SUCCESS: False,
@@ -2849,7 +2849,7 @@ class Runner:
                     cooldown_info=result.cooldown_info,
                 )
 
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             # 使用 Policy 分类错误
             failure_info = classify_cloud_failure(e)
             cloud_timeout = options.get("cloud_timeout", 300)

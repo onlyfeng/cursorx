@@ -115,7 +115,7 @@ async def test_run_ask_timeout():
     """测试问答模式超时处理"""
     with patch("cursor.executor.AskAgentExecutor") as MockExecutor:
         mock_instance = MagicMock()
-        mock_instance.execute = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_instance.execute = AsyncMock(side_effect=TimeoutError())
         MockExecutor.return_value = mock_instance
 
         result = await runner._run_ask("超时问题", runner._merge_options({}))

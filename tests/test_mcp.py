@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -373,7 +372,7 @@ class TestMCPManagerRunCommand:
         manager = MCPManager()
 
         mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.communicate = AsyncMock(side_effect=TimeoutError())
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process):
             result = await manager._run_command(["mcp", "list"], timeout=1)

@@ -33,7 +33,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 try:
     from packaging.version import InvalidVersion, Version
@@ -124,9 +124,9 @@ class DependencySpec:
 
     name: str
     version_spec: str  # 原始版本规范，如 ">=1.0.0"
-    min_version: Optional[str] = None
-    max_version: Optional[str] = None
-    exact_version: Optional[str] = None
+    min_version: str | None = None
+    max_version: str | None = None
+    exact_version: str | None = None
     source: str = "requirements.txt"  # 来源文件
 
 
@@ -200,7 +200,7 @@ class DependencyReport:
     missing_optional_packages: list[str] = field(default_factory=list)
     extra_packages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    import_consistency: Optional[ImportConsistencyReport] = None
+    import_consistency: ImportConsistencyReport | None = None
 
     @property
     def has_errors(self) -> bool:

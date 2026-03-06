@@ -9,13 +9,11 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from multiprocessing import Queue
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
 from core.config import DEFAULT_WORKER_MODEL, DEFAULT_WORKER_TIMEOUT
-
-# 从共享模块导入知识库常量和工具函数（避免重复定义）
 from core.knowledge import (
     MAX_CHARS_PER_DOC,
     MAX_CLI_ASK_CHARS_PER_DOC,
@@ -158,13 +156,13 @@ Shell 命令限制（重要）:
         config: dict,
     ):
         super().__init__(agent_id, agent_type, inbox, outbox, config)
-        self.cursor_client: Optional[CursorAgentClient] = None
-        self.current_task_id: Optional[str] = None
+        self.cursor_client: CursorAgentClient | None = None
+        self.current_task_id: str | None = None
         self.completed_tasks: list[str] = []
         self.failed_tasks: list[str] = []
 
         # 知识库集成相关
-        self._knowledge_storage: Optional[Any] = None  # 延迟导入类型
+        self._knowledge_storage: Any | None = None  # 延迟导入类型
         self._knowledge_enabled: bool = False
         self._knowledge_stats: KnowledgeIntegrationStats = KnowledgeIntegrationStats()
         self._knowledge_config: dict = {}

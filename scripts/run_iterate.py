@@ -103,7 +103,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -111,7 +111,6 @@ from loguru import logger
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
 from agents.committer import CommitterAgent, CommitterConfig
 from coordinator import (
     MultiProcessOrchestrator,
@@ -119,29 +118,32 @@ from coordinator import (
     Orchestrator,
     OrchestratorConfig,
 )
-
-# core.cloud_utils 的 is_cloud_request/strip_cloud_prefix:
-# - 已由 build_execution_decision 内部调用
-# - 重新导出供外部测试使用（如 test_cloud_integration.py 验证模块一致性）
 from core.cloud_utils import (
     CLOUD_PREFIX,
     is_cloud_request,
     strip_cloud_prefix,
 )
-from core.config import (
-    DEFAULT_ALLOWED_DOMAINS as CONFIG_DEFAULT_ALLOWED_DOMAINS,
-)
-from core.config import (
-    DEFAULT_ALLOWED_PATH_PREFIXES as CONFIG_DEFAULT_ALLOWED_PATH_PREFIXES,
-)
-from core.config import (
-    DEFAULT_ALLOWED_URL_PREFIXES as CONFIG_DEFAULT_ALLOWED_URL_PREFIXES,  # deprecated alias
-)
-from core.config import (
-    DEFAULT_CHANGELOG_URL as CONFIG_DEFAULT_CHANGELOG_URL,
-)
-from core.config import (
+from core.config import DEFAULT_ALLOWED_DOMAINS as CONFIG_DEFAULT_ALLOWED_DOMAINS
+from core.config import DEFAULT_ALLOWED_PATH_PREFIXES as CONFIG_DEFAULT_ALLOWED_PATH_PREFIXES
+from core.config import DEFAULT_ALLOWED_URL_PREFIXES as CONFIG_DEFAULT_ALLOWED_URL_PREFIXES  # deprecated alias
+from core.config import DEFAULT_CHANGELOG_URL as CONFIG_DEFAULT_CHANGELOG_URL
+from core.config import (  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）
     DEFAULT_CLOUD_AUTH_TIMEOUT,
+)
+from core.config import DEFAULT_EXTERNAL_LINK_ALLOWLIST as CONFIG_DEFAULT_EXTERNAL_LINK_ALLOWLIST
+from core.config import DEFAULT_EXTERNAL_LINK_MODE as CONFIG_DEFAULT_EXTERNAL_LINK_MODE
+from core.config import DEFAULT_FALLBACK_CORE_DOCS_COUNT as CONFIG_DEFAULT_FALLBACK_CORE_DOCS_COUNT
+from core.config import DEFAULT_LLMS_CACHE_PATH as CONFIG_DEFAULT_LLMS_CACHE_PATH
+from core.config import DEFAULT_LLMS_TXT_URL as CONFIG_DEFAULT_LLMS_TXT_URL
+from core.config import DEFAULT_MAX_FETCH_URLS as CONFIG_DEFAULT_MAX_FETCH_URLS
+from core.config import DEFAULT_URL_STRATEGY_DEDUPLICATE as CONFIG_DEFAULT_URL_STRATEGY_DEDUPLICATE
+from core.config import DEFAULT_URL_STRATEGY_EXCLUDE_PATTERNS as CONFIG_DEFAULT_URL_STRATEGY_EXCLUDE_PATTERNS
+from core.config import DEFAULT_URL_STRATEGY_KEYWORD_BOOST_WEIGHT as CONFIG_DEFAULT_URL_STRATEGY_KEYWORD_BOOST_WEIGHT
+from core.config import DEFAULT_URL_STRATEGY_MAX_URLS as CONFIG_DEFAULT_URL_STRATEGY_MAX_URLS  # URL 策略默认值
+from core.config import DEFAULT_URL_STRATEGY_NORMALIZE as CONFIG_DEFAULT_URL_STRATEGY_NORMALIZE
+from core.config import DEFAULT_URL_STRATEGY_PREFER_CHANGELOG as CONFIG_DEFAULT_URL_STRATEGY_PREFER_CHANGELOG
+from core.config import DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS as CONFIG_DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS
+from core.config import (  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）  # Deprecated 警告统一机制; parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）
     DEPRECATED_KEY_CLI_ALLOWED_URL_PREFIXES,
     DEPRECATED_KEY_CLI_ALLOWED_URL_PREFIXES_BOTH,
     MAX_CONSOLE_PREVIEW_CHARS,
@@ -149,54 +151,11 @@ from core.config import (
     TRUNCATION_HINT,
     ResolvedSettings,
     UnifiedOptions,
-    # Deprecated 警告统一机制
     _warn_deprecated_once,
     build_cloud_client_config,
     build_unified_overrides,
-    parse_max_iterations,
-    # parse_max_iterations 用于解析 max_iterations 参数（重新导出供测试使用）
     print_debug_config,
     resolve_settings,
-)
-from core.config import (
-    DEFAULT_EXTERNAL_LINK_ALLOWLIST as CONFIG_DEFAULT_EXTERNAL_LINK_ALLOWLIST,
-)
-from core.config import (
-    DEFAULT_EXTERNAL_LINK_MODE as CONFIG_DEFAULT_EXTERNAL_LINK_MODE,
-)
-from core.config import (
-    DEFAULT_FALLBACK_CORE_DOCS_COUNT as CONFIG_DEFAULT_FALLBACK_CORE_DOCS_COUNT,
-)
-from core.config import (
-    DEFAULT_LLMS_CACHE_PATH as CONFIG_DEFAULT_LLMS_CACHE_PATH,
-)
-from core.config import (
-    DEFAULT_LLMS_TXT_URL as CONFIG_DEFAULT_LLMS_TXT_URL,
-)
-from core.config import (
-    DEFAULT_MAX_FETCH_URLS as CONFIG_DEFAULT_MAX_FETCH_URLS,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_DEDUPLICATE as CONFIG_DEFAULT_URL_STRATEGY_DEDUPLICATE,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_EXCLUDE_PATTERNS as CONFIG_DEFAULT_URL_STRATEGY_EXCLUDE_PATTERNS,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_KEYWORD_BOOST_WEIGHT as CONFIG_DEFAULT_URL_STRATEGY_KEYWORD_BOOST_WEIGHT,
-)
-from core.config import (
-    # URL 策略默认值
-    DEFAULT_URL_STRATEGY_MAX_URLS as CONFIG_DEFAULT_URL_STRATEGY_MAX_URLS,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_NORMALIZE as CONFIG_DEFAULT_URL_STRATEGY_NORMALIZE,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_PREFER_CHANGELOG as CONFIG_DEFAULT_URL_STRATEGY_PREFER_CHANGELOG,
-)
-from core.config import (
-    DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS as CONFIG_DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS,
 )
 from core.execution_policy import (
     ExecutionDecision,
@@ -219,9 +178,9 @@ from core.project_workspace import (
     prepare_workspace,
 )
 from cursor.client import CursorAgentConfig
-from cursor.mcp import MCPManager
 from cursor.cloud_client import CloudAuthConfig, CloudClientFactory
 from cursor.executor import ExecutionMode
+from cursor.mcp import MCPManager
 from knowledge import (
     ContentCleaner,
     FetchConfig,
@@ -236,18 +195,13 @@ from knowledge.doc_sources import (
 )
 from knowledge.doc_url_strategy import (
     DocURLStrategyConfig,
-    deduplicate_urls,
+)
+from knowledge.doc_url_strategy import is_allowed_doc_url as _is_allowed_doc_url_with_config
+from knowledge.doc_url_strategy import (
     normalize_url,
 )
-from knowledge.doc_url_strategy import (
-    is_allowed_doc_url as _is_allowed_doc_url_with_config,
-)
-from knowledge.doc_url_strategy import (
-    parse_llms_txt_urls as strategy_parse_llms_txt,
-)
-from knowledge.doc_url_strategy import (
-    select_urls_to_fetch as strategy_select_urls,
-)
+from knowledge.doc_url_strategy import parse_llms_txt_urls as strategy_parse_llms_txt
+from knowledge.doc_url_strategy import select_urls_to_fetch as strategy_select_urls
 from knowledge.fetcher import FetchMethod, FetchResult, UrlPolicy, sanitize_url_for_log
 from knowledge.parser import ContentCleanMode
 from knowledge.storage import ReadOnlyStorageError
@@ -613,7 +567,7 @@ class ChangelogAnalysisLog:
     quality_score: float = 0.0
     entry_count: int = 0
     fingerprint: str = ""
-    baseline_match: Optional[bool] = None
+    baseline_match: bool | None = None
     links_extracted: dict[str, int] = field(default_factory=dict)
     duration_ms: float = 0.0
 
@@ -661,7 +615,7 @@ class UpdateAnalysis:
     raw_content: str = ""
     fingerprint: str = ""  # 清洗后内容的 fingerprint（用于保存到 storage 作为 baseline）
     # 结构化日志（可选）
-    analysis_log: Optional[ChangelogAnalysisLog] = None
+    analysis_log: ChangelogAnalysisLog | None = None
 
 
 @dataclass
@@ -669,17 +623,17 @@ class IterationContext:
     """迭代上下文"""
 
     user_requirement: str = ""
-    update_analysis: Optional[UpdateAnalysis] = None
+    update_analysis: UpdateAnalysis | None = None
     knowledge_context: list[dict] = field(default_factory=list)
     iteration_goal: str = ""
     dry_run: bool = False
     # 目录驱动工程创建/扩展相关
-    project_info: Optional[ProjectInfo] = None
+    project_info: ProjectInfo | None = None
     reference_projects: list[ReferenceProject] = field(default_factory=list)
-    workspace_preparation: Optional[WorkspacePreparationResult] = None
-    task_analysis: Optional[TaskAnalysis] = None
+    workspace_preparation: WorkspacePreparationResult | None = None
+    task_analysis: TaskAnalysis | None = None
     # 迭代助手上下文（.iteration + Engram + 规则摘要）
-    iteration_assistant: Optional["IterationAssistantContext"] = None
+    iteration_assistant: IterationAssistantContext | None = None
 
 
 @dataclass
@@ -707,9 +661,9 @@ class IterationDocs:
     """迭代文档内容"""
 
     iteration_id: str
-    plan_path: Optional[str] = None
-    regression_path: Optional[str] = None
-    readme_path: Optional[str] = None
+    plan_path: str | None = None
+    regression_path: str | None = None
+    readme_path: str | None = None
     plan_content: str = ""
     regression_content: str = ""
     readme_content: str = ""
@@ -730,10 +684,10 @@ class IterationDocs:
 class IterationAssistantContext:
     """迭代助手上下文"""
 
-    iteration_dir: Optional[str] = None
-    iteration_id: Optional[str] = None
+    iteration_dir: str | None = None
+    iteration_id: str | None = None
     git_policy: str = "absent"  # tracked/ignored/untracked/absent
-    docs: Optional[IterationDocs] = None
+    docs: IterationDocs | None = None
     rules_summary: str = ""
     engram: EngramStatus = field(default_factory=EngramStatus)
     bootstrap_performed: bool = False
@@ -762,6 +716,68 @@ def _truncate_text(text: str, max_chars: int, suffix: str = "...") -> str:
     return text[:max_chars] + suffix
 
 
+def _format_iteration_record(record: dict[str, Any]) -> str:
+    """格式化迭代记录（写入 .iteration/regression.md）"""
+    iteration_id = record.get("iteration_id", "N/A")
+    decision = record.get("decision") or ""
+    goal = _truncate_text(str(record.get("goal", "")).strip(), 400)
+    review_result = record.get("review_result") or {}
+    summary = _truncate_text(str(review_result.get("summary", "")).strip(), 800)
+    next_focus = _truncate_text(str(review_result.get("next_iteration_focus", "")).strip(), 400)
+    suggestions = [s for s in (review_result.get("suggestions") or []) if isinstance(s, str) and s.strip()]
+    issues = [i for i in (review_result.get("issues") or []) if isinstance(i, str) and i.strip()]
+    pending_items = [p for p in (review_result.get("pending_items") or []) if isinstance(p, str) and p.strip()]
+    completed_items = [c for c in (review_result.get("completed_items") or []) if isinstance(c, str) and c.strip()]
+
+    def _summarize_tasks(items: list[dict[str, Any]], include_error: bool = False) -> list[str]:
+        results: list[str] = []
+        for item in items:
+            title = str(item.get("title") or item.get("id") or "").strip()
+            if not title:
+                continue
+            if include_error and item.get("error"):
+                err = _truncate_text(str(item.get("error", "")).strip(), 200)
+                title = f"{title}（错误: {err}）"
+            results.append(title)
+        return results
+
+    completed_tasks = _summarize_tasks(record.get("tasks_completed") or [])
+    failed_tasks = _summarize_tasks(record.get("tasks_failed") or [], include_error=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "",
+        f"## 迭代 {iteration_id} 记录 ({timestamp})",
+    ]
+
+    if decision:
+        lines.append(f"- 决策: {decision}")
+    if goal:
+        lines.append(f"- 目标摘要: {goal}")
+    if summary:
+        lines.append(f"- 评审摘要: {summary}")
+    if next_focus:
+        lines.append(f"- 下轮重点: {next_focus}")
+
+    def _append_list_section(title: str, items: list[str], max_items: int = 10) -> None:
+        if not items:
+            return
+        lines.append(f"\n### {title}")
+        for item in items[:max_items]:
+            lines.append(f"- {item}")
+        if len(items) > max_items:
+            lines.append(f"- ... 还有 {len(items) - max_items} 项")
+
+    _append_list_section("完成任务", completed_tasks)
+    _append_list_section("失败任务", failed_tasks)
+    _append_list_section("评审已完成项", completed_items)
+    _append_list_section("评审待完成项", pending_items)
+    _append_list_section("问题", issues)
+    _append_list_section("建议", suggestions)
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _read_text_safe(path: Path) -> str:
     try:
         if not path.exists():
@@ -772,14 +788,14 @@ def _read_text_safe(path: Path) -> str:
         return ""
 
 
-def detect_iteration_dir(working_directory: Path) -> Optional[Path]:
+def detect_iteration_dir(working_directory: Path) -> Path | None:
     iteration_dir = working_directory / ".iteration"
     if iteration_dir.exists() and iteration_dir.is_dir():
         return iteration_dir
     return None
 
 
-def select_iteration_id(iteration_dir: Path, explicit_id: Optional[str] = None) -> str:
+def select_iteration_id(iteration_dir: Path, explicit_id: str | None = None) -> str:
     if explicit_id:
         return str(explicit_id)
     # 选择最大纯数字目录名
@@ -801,7 +817,7 @@ def _bootstrap_iteration_docs(
     iteration_id: str,
     allow_bootstrap: bool,
     allow_write: bool,
-) -> tuple[Optional[Path], Optional[Path], bool, str]:
+) -> tuple[Path | None, Path | None, bool, str]:
     if not allow_bootstrap:
         return None, None, False, "bootstrap_disabled"
     if not allow_write:
@@ -841,7 +857,7 @@ def load_iteration_docs(iteration_dir: Path, iteration_id: str) -> IterationDocs
     )
 
 
-def detect_iteration_git_policy(working_directory: Path, iteration_dir: Optional[Path]) -> str:
+def detect_iteration_git_policy(working_directory: Path, iteration_dir: Path | None) -> str:
     if iteration_dir is None or not iteration_dir.exists():
         return "absent"
 
@@ -967,8 +983,8 @@ async def detect_engram_mcp(agent_path: str = "agent") -> EngramStatus:
 
 async def build_iteration_assistant_context(
     working_directory: Path,
-    side_effect_policy: "SideEffectPolicy",
-    iteration_id: Optional[str] = None,
+    side_effect_policy: SideEffectPolicy,
+    iteration_id: str | None = None,
     iteration_source: str = "auto",
     iteration_git_policy: str = "auto",
     allow_bootstrap: bool = True,
@@ -1751,7 +1767,7 @@ class ResolvedDocsSourceConfig:
     allowed_doc_url_prefixes: list[str]
 
 
-def _parse_comma_separated_list(value: Optional[str]) -> Optional[list[str]]:
+def _parse_comma_separated_list(value: str | None) -> list[str] | None:
     """解析逗号分隔的字符串为列表
 
     三态语义设计:
@@ -1950,8 +1966,8 @@ class ResolvedURLStrategyConfig:
 
 
 def _parse_append_or_comma_separated(
-    values: Optional[list[str]],
-) -> Optional[list[str]]:
+    values: list[str] | None,
+) -> list[str] | None:
     """解析 action="append" 参数，支持重复指定或逗号分隔
 
     处理以下输入形式：
@@ -2079,9 +2095,9 @@ class DocAllowlistResult:
 
 
 def build_doc_allowlist(
-    url_strategy_config: Optional[ResolvedURLStrategyConfig] = None,
-    fetch_policy: Optional[ResolvedFetchPolicyConfig] = None,
-    allowed_doc_url_prefixes: Optional[list[str]] = None,
+    url_strategy_config: ResolvedURLStrategyConfig | None = None,
+    fetch_policy: ResolvedFetchPolicyConfig | None = None,
+    allowed_doc_url_prefixes: list[str] | None = None,
 ) -> DocAllowlistResult:
     """构建统一的文档 URL 允许列表配置
 
@@ -2268,7 +2284,7 @@ class FetchAttemptLog:
     success: bool
     content_length: int
     quality_score: float
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class ChangelogAnalyzer:
@@ -2284,10 +2300,10 @@ class ChangelogAnalyzer:
     def __init__(
         self,
         changelog_url: str = DEFAULT_CHANGELOG_URL,
-        storage: Optional[KnowledgeStorage] = None,
-        quality_config: Optional[ContentQualityConfig] = None,
-        doc_allowlist: Optional[DocAllowlistResult] = None,
-        fetch_policy: Optional[ResolvedFetchPolicyConfig] = None,
+        storage: KnowledgeStorage | None = None,
+        quality_config: ContentQualityConfig | None = None,
+        doc_allowlist: DocAllowlistResult | None = None,
+        fetch_policy: ResolvedFetchPolicyConfig | None = None,
     ):
         self.changelog_url = changelog_url
         self.fetcher = WebFetcher(FetchConfig(timeout=60))
@@ -2437,7 +2453,7 @@ class ChangelogAnalyzer:
             f"content_length={content_length}, quality={quality_score:.3f}"
         )
 
-    async def fetch_changelog(self) -> Optional[str]:
+    async def fetch_changelog(self) -> str | None:
         """获取 Changelog 内容
 
         支持内容质量检测和按方法重试：
@@ -3110,7 +3126,7 @@ class ChangelogAnalyzer:
 
         return entries
 
-    def _parse_category_date_section(self, section: str) -> Optional[ChangelogEntry]:
+    def _parse_category_date_section(self, section: str) -> ChangelogEntry | None:
         """解析类别+日期格式的 section
 
         Args:
@@ -3294,7 +3310,7 @@ class ChangelogAnalyzer:
 
         return [entry]
 
-    def _parse_section(self, section: str) -> Optional[ChangelogEntry]:
+    def _parse_section(self, section: str) -> ChangelogEntry | None:
         """解析单个 section 为 ChangelogEntry
 
         Args:
@@ -3773,7 +3789,7 @@ class ChangelogAnalyzer:
         cleaned = self._clean_content(content)
         return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:16]
 
-    async def _get_baseline_fingerprint(self) -> tuple[Optional[str], str]:
+    async def _get_baseline_fingerprint(self) -> tuple[str | None, str]:
         """获取基线 fingerprint
 
         从知识库中读取上次保存的 changelog 清洗后内容哈希。
@@ -4024,17 +4040,17 @@ class KnowledgeUpdater:
         max_fetch_urls: int = DEFAULT_MAX_FETCH_URLS,
         fallback_core_docs_count: int = DEFAULT_FALLBACK_CORE_DOCS_COUNT,
         llms_txt_url: str = DEFAULT_LLMS_TXT_URL,
-        llms_cache_path: Optional[str] = None,
-        llms_local_fallback: Optional[str] = None,
-        url_strategy_config: Optional[ResolvedURLStrategyConfig] = None,
-        allowed_doc_url_prefixes: Optional[list[str]] = None,
+        llms_cache_path: str | None = None,
+        llms_local_fallback: str | None = None,
+        url_strategy_config: ResolvedURLStrategyConfig | None = None,
+        allowed_doc_url_prefixes: list[str] | None = None,
         offline: bool = False,
         disable_cache_write: bool = False,
-        fetch_policy: Optional[ResolvedFetchPolicyConfig] = None,
+        fetch_policy: ResolvedFetchPolicyConfig | None = None,
         changelog_url: str = DEFAULT_CHANGELOG_URL,
         dry_run: bool = False,
         # 新增：SideEffectPolicy 统一控制副作用
-        side_effect_policy: Optional["SideEffectPolicy"] = None,
+        side_effect_policy: SideEffectPolicy | None = None,
     ):
         # ============================================================
         # 副作用控制：从 side_effect_policy 派生或使用显式参数
@@ -4141,7 +4157,7 @@ class KnowledgeUpdater:
     def _build_url_policy(
         primary_domains: list[str],
         allowed_doc_url_prefixes: list[str],
-        fetch_policy: Optional[ResolvedFetchPolicyConfig],
+        fetch_policy: ResolvedFetchPolicyConfig | None,
     ) -> UrlPolicy:
         """构建 UrlPolicy（基于内部文档域名 + fetch_policy 放行范围）
 
@@ -4685,7 +4701,7 @@ class KnowledgeUpdater:
 
         return keywords
 
-    async def _fetch_llms_txt(self) -> Optional[str]:
+    async def _fetch_llms_txt(self) -> str | None:
         """获取 llms.txt 内容
 
         ================================================================
@@ -5121,7 +5137,7 @@ class SelfIterator:
             user_requirement=user_requirement,
             dry_run=args.dry_run,
         )
-        self._iteration_context_payload: Optional[dict[str, Any]] = None
+        self._iteration_context_payload: dict[str, Any] | None = None
 
         # 保存 _directory_user_set 标记（用于工程准备逻辑）
         self._directory_user_set = getattr(args, "_directory_user_set", False)
@@ -5167,13 +5183,49 @@ class SelfIterator:
 
         self._iteration_context_payload = self.context.iteration_assistant.to_dict()
 
-    def _get_iteration_context_payload(self) -> Optional[dict[str, Any]]:
+    def _get_iteration_context_payload(self) -> dict[str, Any] | None:
         if self._iteration_context_payload:
             return self._iteration_context_payload
         if self.context.iteration_assistant:
             self._iteration_context_payload = self.context.iteration_assistant.to_dict()
             return self._iteration_context_payload
         return None
+
+    async def _refresh_iteration_context_payload(self) -> dict[str, Any] | None:
+        """刷新迭代上下文（每轮重新读取 .iteration 与 Engram MCP）"""
+        await self._load_iteration_assistant_context()
+        return self._get_iteration_context_payload()
+
+    async def _write_iteration_record(self, record: dict[str, Any]) -> None:
+        """将本轮评审结果写入 .iteration/regression.md（若可用）"""
+        if not self._side_effect_policy.allow_file_write:
+            logger.info("副作用策略禁止写入，跳过迭代记录回写")
+            return
+
+        iteration_ctx = self.context.iteration_assistant
+        if not iteration_ctx or not iteration_ctx.docs or not iteration_ctx.docs.regression_path:
+            logger.debug("未找到 regression.md 路径，跳过迭代记录回写")
+            return
+
+        regression_path = Path(iteration_ctx.docs.regression_path)
+
+        if not regression_path.exists():
+            if not self._side_effect_policy.allow_directory_create:
+                logger.info("副作用策略禁止创建目录，跳过迭代记录回写")
+                return
+            try:
+                regression_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.warning(f"创建 regression.md 目录失败: {e}")
+                return
+
+        try:
+            content = _format_iteration_record(record)
+            with regression_path.open("a", encoding="utf-8") as handle:
+                handle.write(content)
+            logger.info(f"已回写迭代记录: {regression_path}")
+        except Exception as e:
+            logger.warning(f"回写迭代记录失败: {e}")
 
     async def _prepare_workspace(self) -> bool:
         """工程准备（仅当用户显式指定 --directory 时触发）
@@ -5911,7 +5963,7 @@ class SelfIterator:
         }
         return mode_map.get(effective_mode, ExecutionMode.CLI)
 
-    def _parse_execution_mode(self, mode_str: Optional[str]) -> Optional[ExecutionMode]:
+    def _parse_execution_mode(self, mode_str: str | None) -> ExecutionMode | None:
         """解析执行模式字符串为 ExecutionMode 枚举
 
         Args:
@@ -5932,7 +5984,7 @@ class SelfIterator:
         }
         return mode_map.get(mode_str.lower())
 
-    def _get_cloud_auth_config(self) -> Optional[CloudAuthConfig]:
+    def _get_cloud_auth_config(self) -> CloudAuthConfig | None:
         """获取 Cloud 认证配置
 
         配置 API Key 的三种方式:
@@ -6121,7 +6173,7 @@ class SelfIterator:
         orchestrator_type = self._get_orchestrator_type()
         orchestrator_requested = orchestrator_type  # 记录请求的编排器类型
         use_fallback = False
-        fallback_reason: Optional[str] = None
+        fallback_reason: str | None = None
         result: dict[str, Any] = {}
 
         if orchestrator_type == "mp":
@@ -6298,6 +6350,8 @@ class SelfIterator:
                 max_iterations=max_iterations,
                 worker_count=settings.worker_pool_size,
                 iteration_context=self._get_iteration_context_payload(),
+                iteration_context_provider=self._refresh_iteration_context_payload,
+                iteration_record_writer=self._write_iteration_record,
                 # 从 resolved settings 注入系统配置
                 enable_sub_planners=settings.enable_sub_planners,
                 strict_review=settings.strict_review,
@@ -6362,7 +6416,7 @@ class SelfIterator:
             result = await orchestrator.run(enhanced_goal)
             return result
 
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             logger.error(f"MP 编排器超时: {e}")
             return {
                 "_fallback_required": True,
@@ -6466,6 +6520,8 @@ class SelfIterator:
             worker_pool_size=settings.worker_pool_size,
             cursor_config=cursor_config,
             iteration_context=self._get_iteration_context_payload(),
+            iteration_context_provider=self._refresh_iteration_context_payload,
+            iteration_record_writer=self._write_iteration_record,
             # 从 resolved settings 注入系统配置
             enable_sub_planners=settings.enable_sub_planners,
             strict_review=settings.strict_review,

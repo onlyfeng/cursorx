@@ -15,7 +15,6 @@
 """
 
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
@@ -143,7 +142,7 @@ def _get_project_root() -> Path:
 
 def parse_url_list_file(
     file_path: Path,
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 ) -> list[str]:
     """解析 URL 列表文件
 
@@ -195,10 +194,10 @@ def parse_url_list_file(
 
 def is_valid_doc_url(
     url: str,
-    allowed_url_prefixes: Optional[list[str]] = None,
+    allowed_url_prefixes: list[str] | None = None,
     *,
-    allowed_domains: Optional[list[str]] = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
-    config: Optional[DocURLStrategyConfig] = None,  # 支持直接传入配置
+    allowed_domains: list[str] | None = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
+    config: DocURLStrategyConfig | None = None,  # 支持直接传入配置
 ) -> bool:
     """检查 URL 是否为有效的文档 URL
 
@@ -239,13 +238,13 @@ def is_valid_doc_url(
 
 
 def load_core_docs(
-    source_files: Optional[list[str]] = None,
-    project_root: Optional[Path] = None,
-    allowed_url_prefixes: Optional[list[str]] = None,
+    source_files: list[str] | None = None,
+    project_root: Path | None = None,
+    allowed_url_prefixes: list[str] | None = None,
     base_url: str = "https://cursor.com",
-    fallback_urls: Optional[list[str]] = None,
+    fallback_urls: list[str] | None = None,
     *,
-    allowed_domains: Optional[list[str]] = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
+    allowed_domains: list[str] | None = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
 ) -> list[str]:
     """从配置文件加载核心文档 URL
 
@@ -370,13 +369,13 @@ def load_core_docs(
 
 
 def load_core_docs_with_fallback(
-    source_files: Optional[list[str]] = None,
-    legacy_urls: Optional[list[str]] = None,
-    project_root: Optional[Path] = None,
-    allowed_url_prefixes: Optional[list[str]] = None,
+    source_files: list[str] | None = None,
+    legacy_urls: list[str] | None = None,
+    project_root: Path | None = None,
+    allowed_url_prefixes: list[str] | None = None,
     base_url: str = "https://cursor.com",
     *,
-    allowed_domains: Optional[list[str]] = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
+    allowed_domains: list[str] | None = None,  # [DEPRECATED] 旧参数名，请使用 allowed_url_prefixes
 ) -> list[str]:
     """加载核心文档 URL，支持 legacy fallback
 

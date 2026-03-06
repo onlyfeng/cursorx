@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -42,7 +42,7 @@ class ReviewerConfig(BaseModel):
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
-    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    cloud_auth_config: CloudAuthConfig | None = None  # Cloud 认证配置
 
 
 class ReviewerAgent(BaseAgent):
@@ -131,7 +131,7 @@ class ReviewerAgent(BaseAgent):
 
         logger.debug(f"[{config.name}] 使用执行模式: {config.execution_mode.value}")
 
-    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: dict | None = None) -> dict[str, Any]:
         """执行评审
 
         Args:
@@ -193,8 +193,8 @@ class ReviewerAgent(BaseAgent):
         iteration_id: int,
         tasks_completed: list[dict],
         tasks_failed: list[dict],
-        previous_reviews: Optional[list[dict]] = None,
-        extra_context: Optional[dict] = None,
+        previous_reviews: list[dict] | None = None,
+        extra_context: dict | None = None,
     ) -> dict[str, Any]:
         """评审一次迭代
 
@@ -220,7 +220,7 @@ class ReviewerAgent(BaseAgent):
 
         return await self.execute(goal, context)
 
-    def _build_review_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
+    def _build_review_prompt(self, instruction: str, context: dict | None = None) -> str:
         """构建评审 prompt"""
         parts = [
             self.SYSTEM_PROMPT,

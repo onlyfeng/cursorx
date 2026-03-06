@@ -826,7 +826,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any
 
 from core.cloud_utils import is_cloud_request, strip_cloud_prefix
 from core.config import DEFAULT_EXECUTION_MODE
@@ -1045,7 +1045,7 @@ class AmpersandPrefixInfo:
 
     # 详细状态
     status: AmpersandPrefixStatus = AmpersandPrefixStatus.NOT_PRESENT
-    ignore_reason: Optional[str] = None  # 当 has_prefix 但未 routed 时的原因
+    ignore_reason: str | None = None  # 当 has_prefix 但未 routed 时的原因
 
     # ========== 兼容旧代码的属性 ==========
 
@@ -1074,8 +1074,8 @@ class AmpersandPrefixInfo:
 
 
 def detect_ampersand_prefix(
-    prompt: Optional[str],
-    requested_mode: Optional[str],
+    prompt: str | None,
+    requested_mode: str | None,
     cloud_enabled: bool,
     has_api_key: bool,
     auto_detect_cloud_prefix: bool = True,
@@ -1220,9 +1220,9 @@ class CloudFailureInfo:
 
     kind: CloudFailureKind
     message: str
-    retry_after: Optional[int] = None  # 建议重试等待时间（秒）
+    retry_after: int | None = None  # 建议重试等待时间（秒）
     retryable: bool = False  # 是否可重试
-    original_error: Optional[Exception] = None
+    original_error: Exception | None = None
 
     def to_dict(self) -> dict:
         """转换为字典格式"""
@@ -1245,7 +1245,7 @@ class ExecutionModeResolution:
 
     mode: EffectiveExecutionMode
     reason: str
-    fallback_mode: Optional[EffectiveExecutionMode] = None  # 当 mode 失败时的回退模式
+    fallback_mode: EffectiveExecutionMode | None = None  # 当 mode 失败时的回退模式
     warnings: list[str] = field(default_factory=list)
 
     def to_tuple(self) -> tuple[str, str]:
@@ -1259,12 +1259,12 @@ class ExecutionModeResolution:
 
 
 def resolve_effective_execution_mode(
-    requested_mode: Optional[str],
-    has_ampersand_prefix: Optional[bool] = None,
+    requested_mode: str | None,
+    has_ampersand_prefix: bool | None = None,
     cloud_enabled: bool = False,
     has_api_key: bool = False,
     *,
-    triggered_by_prefix: Optional[bool] = None,  # DEPRECATED: 使用 has_ampersand_prefix
+    triggered_by_prefix: bool | None = None,  # DEPRECATED: 使用 has_ampersand_prefix
 ) -> tuple[str, str]:
     """解析实际执行模式
 
@@ -1402,12 +1402,12 @@ def resolve_effective_execution_mode(
 
 
 def resolve_effective_execution_mode_full(
-    requested_mode: Optional[str],
-    has_ampersand_prefix: Optional[bool] = None,
+    requested_mode: str | None,
+    has_ampersand_prefix: bool | None = None,
     cloud_enabled: bool = False,
     has_api_key: bool = False,
     *,
-    triggered_by_prefix: Optional[bool] = None,  # DEPRECATED: 使用 has_ampersand_prefix
+    triggered_by_prefix: bool | None = None,  # DEPRECATED: 使用 has_ampersand_prefix
 ) -> ExecutionModeResolution:
     """解析实际执行模式（完整版）
 
@@ -1516,7 +1516,7 @@ def should_route_ampersand_to_cloud(
 
 
 def classify_cloud_failure(
-    error: Union[Exception, str, dict, None],
+    error: Exception | str | dict | None,
 ) -> CloudFailureInfo:
     """分类 Cloud 执行错误
 
@@ -1599,7 +1599,7 @@ def classify_cloud_failure(
     original_error = error if isinstance(error, Exception) else None
 
     # 尝试从异常对象中提取 retry_after 属性（如 RateLimitError）
-    exception_retry_after: Optional[int] = None
+    exception_retry_after: int | None = None
     if isinstance(error, Exception):
         raw_retry_after = getattr(error, "retry_after", None)
         if raw_retry_after is not None:
@@ -1761,8 +1761,8 @@ def classify_cloud_failure(
 def _classify_from_structured_type(
     structured_type: str,
     message: str,
-    retry_after: Optional[float] = None,
-    original_error: Optional[Exception] = None,
+    retry_after: float | None = None,
+    original_error: Exception | None = None,
 ) -> CloudFailureInfo:
     """从结构化错误类型创建 CloudFailureInfo
 
@@ -1814,7 +1814,7 @@ def _classify_from_structured_type(
     )
 
 
-def _extract_retry_after(error_str: str) -> Optional[int]:
+def _extract_retry_after(error_str: str) -> int | None:
     """从错误信息中提取 retry-after 值"""
     # 尝试匹配常见格式: "retry after 60s", "retry-after: 60", "wait 60 seconds"
     patterns = [
@@ -1833,9 +1833,9 @@ def _extract_retry_after(error_str: str) -> Optional[int]:
 
 
 def build_user_facing_fallback_message(
-    kind: Union[CloudFailureKind, str],
-    retry_after: Optional[int],
-    requested_mode: Optional[str],
+    kind: CloudFailureKind | str,
+    retry_after: int | None,
+    requested_mode: str | None,
     has_ampersand_prefix: bool,
 ) -> str:
     """构建用户友好的回退消息
@@ -1912,7 +1912,7 @@ def build_user_facing_fallback_message(
     return base_message + trigger_info
 
 
-def sanitize_prompt_for_cli_fallback(prompt: Optional[str]) -> str:
+def sanitize_prompt_for_cli_fallback(prompt: str | None) -> str:
     """清理 prompt 以避免 CLI 回退时再次触发 Cloud 路由
 
     当 Cloud 执行失败回退到 CLI 时，需要确保 prompt 不会再次触发 Cloud 路由。
@@ -2020,21 +2020,21 @@ class CooldownInfo:
     kind: str  # CloudFailureKind.value
     user_message: str
     retryable: bool
-    retry_after: Optional[int] = None
+    retry_after: int | None = None
 
     # 原因字段
     reason: str = ""
 
     # 冷却状态字段（可选）
     in_cooldown: bool = False
-    remaining_seconds: Optional[float] = None
+    remaining_seconds: float | None = None
     failure_count: int = 0
 
     # 消息级别（控制入口脚本使用 print_warning 还是 print_info）
     message_level: str = "info"
 
     # 扩展字段
-    skip_reason: Optional[str] = None  # 跳过 Cloud 的原因
+    skip_reason: str | None = None  # 跳过 Cloud 的原因
 
     # ========== 兼容属性 ==========
 
@@ -2098,13 +2098,13 @@ class CooldownInfo:
 
 def build_cooldown_info(
     failure_info: CloudFailureInfo,
-    fallback_reason: Optional[str] = None,
-    requested_mode: Optional[str] = None,
+    fallback_reason: str | None = None,
+    requested_mode: str | None = None,
     has_ampersand_prefix: bool = False,
     in_cooldown: bool = False,
-    remaining_seconds: Optional[float] = None,
+    remaining_seconds: float | None = None,
     failure_count: int = 0,
-    mode_source: Optional[str] = None,
+    mode_source: str | None = None,
 ) -> dict:
     """构建统一的 cooldown_info 字典
 
@@ -2232,17 +2232,17 @@ def build_cooldown_info(
 
 
 def build_cooldown_info_from_metadata(
-    failure_kind: Optional[CloudFailureKind],
-    failure_message: Optional[str],
-    retry_after: Optional[int],
+    failure_kind: CloudFailureKind | None,
+    failure_message: str | None,
+    retry_after: int | None,
     retryable: bool,
-    fallback_reason: Optional[str] = None,
-    requested_mode: Optional[str] = None,
+    fallback_reason: str | None = None,
+    requested_mode: str | None = None,
     has_ampersand_prefix: bool = False,
     in_cooldown: bool = False,
-    remaining_seconds: Optional[float] = None,
+    remaining_seconds: float | None = None,
     failure_count: int = 0,
-    mode_source: Optional[str] = None,
+    mode_source: str | None = None,
 ) -> dict:
     """从元数据构建 cooldown_info（不需要 CloudFailureInfo 实例）
 
@@ -2294,10 +2294,10 @@ def build_cooldown_info_from_metadata(
 
 
 def resolve_requested_mode_for_decision(
-    cli_execution_mode: Optional[str],
+    cli_execution_mode: str | None,
     has_ampersand_prefix: bool,
-    config_execution_mode: Optional[str],
-) -> Optional[str]:
+    config_execution_mode: str | None,
+) -> str | None:
     """确定用于执行决策的 requested_mode
 
     这是 run.py 和 scripts/run_iterate.py 共享的 requested_mode 判定逻辑的统一实现。
@@ -2384,10 +2384,10 @@ def resolve_requested_mode_for_decision(
 
 
 def resolve_mode_source(
-    cli_execution_mode: Optional[str],
+    cli_execution_mode: str | None,
     has_ampersand_prefix: bool,
-    requested_mode_for_decision: Optional[str],
-) -> Optional[str]:
+    requested_mode_for_decision: str | None,
+) -> str | None:
     """确定 mode_source（execution_mode 的来源）
 
     这是 run.py 和 scripts/run_iterate.py 共享的 mode_source 判定逻辑的统一实现。
@@ -2433,9 +2433,9 @@ def resolve_mode_source(
 
 def validate_requested_mode_invariant(
     has_ampersand_prefix: bool,
-    cli_execution_mode: Optional[str],
-    requested_mode_for_decision: Optional[str],
-    config_execution_mode: Optional[str],
+    cli_execution_mode: str | None,
+    requested_mode_for_decision: str | None,
+    config_execution_mode: str | None,
     caller_name: str = "unknown",
     *,
     raise_on_violation: bool = False,
@@ -2481,7 +2481,7 @@ def validate_requested_mode_invariant(
             raise ValueError(error_msg)
 
 
-def is_cloud_mode(mode: Optional[str]) -> bool:
+def is_cloud_mode(mode: str | None) -> bool:
     """判断是否为 Cloud 相关模式
 
     Args:
@@ -2496,7 +2496,7 @@ def is_cloud_mode(mode: Optional[str]) -> bool:
     return mode_lower in ("cloud", "auto")
 
 
-def is_readonly_mode(mode: Optional[str]) -> bool:
+def is_readonly_mode(mode: str | None) -> bool:
     """判断是否为只读模式
 
     Args:
@@ -2511,7 +2511,7 @@ def is_readonly_mode(mode: Optional[str]) -> bool:
     return mode_lower in ("plan", "ask")
 
 
-def get_fallback_mode(mode: Optional[str]) -> str:
+def get_fallback_mode(mode: str | None) -> str:
     """获取回退模式
 
     Args:
@@ -2525,7 +2525,7 @@ def get_fallback_mode(mode: Optional[str]) -> str:
     return mode or "cli"
 
 
-def should_use_mp_orchestrator(requested_mode: Optional[str]) -> bool:
+def should_use_mp_orchestrator(requested_mode: str | None) -> bool:
     """判断是否可以使用 MP 编排器
 
     基于 **requested_mode**（用户请求的执行模式）判断，不受 API Key/cloud_enabled 影响。
@@ -2651,11 +2651,11 @@ class ExecutionPolicyContext:
     auto_detect_cloud_prefix: bool = True
 
     # 请求信息
-    requested_mode: Optional[str] = None
-    prompt: Optional[str] = None
+    requested_mode: str | None = None
+    prompt: str | None = None
 
     # 缓存的前缀信息
-    _prefix_info: Optional[AmpersandPrefixInfo] = field(default=None, repr=False)
+    _prefix_info: AmpersandPrefixInfo | None = field(default=None, repr=False)
 
     # ========== 语义明确的属性（优先使用这些属性） ==========
 
@@ -2852,8 +2852,8 @@ class ExecutionDecision:
     prefix_routed: bool = False  # 策略决策：& 是否成功触发 Cloud 模式
 
     # === 请求信息 ===
-    requested_mode: Optional[str] = None  # 原始请求模式
-    original_prompt: Optional[str] = None  # 原始 prompt
+    requested_mode: str | None = None  # 原始请求模式
+    original_prompt: str | None = None  # 原始 prompt
     sanitized_prompt: str = ""  # 清理后的 prompt（移除 & 前缀）
 
     # === 决策原因 ===
@@ -2861,14 +2861,14 @@ class ExecutionDecision:
     orchestrator_reason: str = ""  # 编排器选择原因
 
     # === 用户提示消息 ===
-    user_message: Optional[str] = None  # 用户友好消息（仅构建，不打印）
+    user_message: str | None = None  # 用户友好消息（仅构建，不打印）
     message_level: str = "info"  # 消息级别: "warning" 或 "info"
 
     # === 配置来源 ===
-    mode_source: Optional[str] = None  # 执行模式来源: "cli"/"config"/None
+    mode_source: str | None = None  # 执行模式来源: "cli"/"config"/None
 
     # === & 前缀详细状态（可选） ===
-    ampersand_prefix_info: Optional[AmpersandPrefixInfo] = None
+    ampersand_prefix_info: AmpersandPrefixInfo | None = None
 
     # ========== 兼容旧代码的属性（仅用于兼容输出，避免新代码引用） ==========
 
@@ -2983,9 +2983,9 @@ class DecisionMatrixCase:
     description: str
 
     # === 推导输入（传给 resolve_requested_mode_for_decision）===
-    cli_execution_mode: Optional[str]  # CLI --execution-mode 参数
+    cli_execution_mode: str | None  # CLI --execution-mode 参数
     has_ampersand_prefix: bool  # 语法检测：原始 prompt 是否有 & 前缀
-    config_execution_mode: Optional[str]  # config.yaml 中的 cloud_agent.execution_mode
+    config_execution_mode: str | None  # config.yaml 中的 cloud_agent.execution_mode
 
     # === build_execution_decision 的其他输入 ===
     has_api_key: bool
@@ -2993,7 +2993,7 @@ class DecisionMatrixCase:
     auto_detect_cloud_prefix: bool = True
 
     # === 期望输出 ===
-    expected_requested_mode_for_decision: Optional[str] = None  # resolve_requested_mode_for_decision 的输出
+    expected_requested_mode_for_decision: str | None = None  # resolve_requested_mode_for_decision 的输出
     expected_effective_mode: str = "cli"  # 有效执行模式
     expected_orchestrator: str = "mp"  # 编排器类型
     expected_prefix_routed: bool = False  # 策略决策：& 前缀是否成功触发 Cloud
@@ -3314,13 +3314,13 @@ EXECUTION_DECISION_MATRIX_CASES: list[DecisionMatrixCase] = [
 
 
 def build_execution_decision(
-    prompt: Optional[str],
-    requested_mode: Optional[str],
+    prompt: str | None,
+    requested_mode: str | None,
     cloud_enabled: bool,
     has_api_key: bool,
     auto_detect_cloud_prefix: bool = True,
-    user_requested_orchestrator: Optional[str] = None,
-    mode_source: Optional[str] = None,
+    user_requested_orchestrator: str | None = None,
+    mode_source: str | None = None,
 ) -> ExecutionDecision:
     """构建执行决策
 
@@ -3756,17 +3756,17 @@ class DecisionInputs:
         original_prompt: 原始 prompt（未经处理）
     """
 
-    prompt: Optional[str]
-    requested_mode: Optional[str]
+    prompt: str | None
+    requested_mode: str | None
     cloud_enabled: bool
     has_api_key: bool
     auto_detect_cloud_prefix: bool = True
-    user_requested_orchestrator: Optional[str] = None
-    mode_source: Optional[str] = None
+    user_requested_orchestrator: str | None = None
+    mode_source: str | None = None
     has_ampersand_prefix: bool = False
-    original_prompt: Optional[str] = None
+    original_prompt: str | None = None
 
-    def build_decision(self) -> "ExecutionDecision":
+    def build_decision(self) -> ExecutionDecision:
         """使用当前输入参数构建 ExecutionDecision
 
         Returns:
@@ -3790,10 +3790,10 @@ VIRTUAL_PROMPT_FOR_PREFIX_DETECTION = "& _"
 
 def compute_decision_inputs(
     args: Any,
-    original_prompt: Optional[str] = None,
-    nl_options: Optional[dict[str, Any]] = None,
+    original_prompt: str | None = None,
+    nl_options: dict[str, Any] | None = None,
     *,
-    config: Optional[Any] = None,
+    config: Any | None = None,
 ) -> DecisionInputs:
     """统一计算 build_execution_decision 所需的输入参数
 

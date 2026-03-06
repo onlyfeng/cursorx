@@ -10,7 +10,7 @@ import json
 import re
 from enum import Enum
 from multiprocessing import Queue
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -82,9 +82,9 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         config: dict,
     ):
         super().__init__(agent_id, agent_type, inbox, outbox, config)
-        self.cursor_client: Optional[CursorAgentClient] = None
+        self.cursor_client: CursorAgentClient | None = None
         self.review_history: list[dict] = []
-        self.current_request_id: Optional[str] = None
+        self.current_request_id: str | None = None
 
     def on_start(self) -> None:
         """进程启动初始化"""
@@ -179,7 +179,7 @@ class ReviewerAgentProcess(AgentWorkerProcess):
         iteration_id: int,
         tasks_completed: list,
         tasks_failed: list,
-        extra_context: Optional[dict] = None,
+        extra_context: dict | None = None,
     ) -> str:
         """构建评审 prompt"""
         parts = [

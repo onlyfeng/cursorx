@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -38,7 +38,7 @@ class PlannerConfig(BaseModel):
     cursor_config: CursorAgentConfig = Field(default_factory=CursorAgentConfig)
     # 执行模式配置
     execution_mode: ExecutionMode = ExecutionMode.CLI  # 执行模式: cli, cloud, auto
-    cloud_auth_config: Optional[CloudAuthConfig] = None  # Cloud 认证配置
+    cloud_auth_config: CloudAuthConfig | None = None  # Cloud 认证配置
     # Plan 模式配置
     use_plan_mode: bool = True  # 是否使用 --mode=plan（仅分析不修改文件）
     # 语义搜索配置（可选增强）
@@ -95,7 +95,7 @@ class PlannerAgent(BaseAgent):
 }
 ```"""
 
-    def __init__(self, config: PlannerConfig, semantic_search: Optional["SemanticSearch"] = None):
+    def __init__(self, config: PlannerConfig, semantic_search: SemanticSearch | None = None):
         agent_config = AgentConfig(
             role=AgentRole.PLANNER,
             name=config.name,
@@ -127,7 +127,7 @@ class PlannerAgent(BaseAgent):
         self.sub_planners: list[PlannerAgent] = []
 
         # 语义搜索增强（可选）
-        self._semantic_search: Optional[SemanticSearch] = semantic_search
+        self._semantic_search: SemanticSearch | None = semantic_search
         self._search_enabled = config.enable_semantic_search and semantic_search is not None
         if self._search_enabled:
             logger.info(f"[{config.name}] 语义搜索已启用")
@@ -162,7 +162,7 @@ class PlannerAgent(BaseAgent):
             cursor_config.output_format = "stream-json"
             cursor_config.stream_partial_output = True
 
-    def set_semantic_search(self, search: "SemanticSearch") -> None:
+    def set_semantic_search(self, search: SemanticSearch) -> None:
         """设置语义搜索引擎（延迟初始化）
 
         Args:
@@ -173,7 +173,7 @@ class PlannerAgent(BaseAgent):
         if self._search_enabled:
             logger.info(f"[{self.id}] 语义搜索已启用")
 
-    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: dict | None = None) -> dict[str, Any]:
         """执行规划任务
 
         Args:
@@ -283,7 +283,7 @@ class PlannerAgent(BaseAgent):
             logger.warning(f"[{self.id}] 语义搜索失败: {e}")
             return {}
 
-    def _build_planning_prompt(self, instruction: str, context: Optional[dict] = None) -> str:
+    def _build_planning_prompt(self, instruction: str, context: dict | None = None) -> str:
         """构建规划 prompt"""
         parts = [
             self.SYSTEM_PROMPT,
@@ -375,7 +375,7 @@ class PlannerAgent(BaseAgent):
             "sub_planners_needed": [],
         }
 
-    async def spawn_sub_planner(self, area: str, context: Optional[dict] = None) -> "PlannerAgent":
+    async def spawn_sub_planner(self, area: str, context: dict | None = None) -> PlannerAgent:
         """派生子规划者
 
         Args:

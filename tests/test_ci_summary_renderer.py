@@ -26,8 +26,6 @@ from core.check_all_contract import (  # noqa: E402
     VALID_STATUSES,
     status_emoji,
 )
-
-# 导入被测模块的函数
 from scripts.render_check_all_summary import (  # noqa: E402
     group_checks_by_section,
     group_checks_by_status,

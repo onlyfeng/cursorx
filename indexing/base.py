@@ -3,7 +3,7 @@
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -39,13 +39,13 @@ class CodeChunk(BaseModel):
     language: str = "unknown"  # 编程语言
 
     # 语义信息
-    name: Optional[str] = None  # 名称（函数名/类名等）
-    parent_name: Optional[str] = None  # 父级名称（类名等）
-    signature: Optional[str] = None  # 签名
-    docstring: Optional[str] = None  # 文档字符串
+    name: str | None = None  # 名称（函数名/类名等）
+    parent_name: str | None = None  # 父级名称（类名等）
+    signature: str | None = None  # 签名
+    docstring: str | None = None  # 文档字符串
 
     # 向量嵌入
-    embedding: Optional[list[float]] = None  # 向量嵌入
+    embedding: list[float] | None = None  # 向量嵌入
 
     # 元数据
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -174,8 +174,8 @@ class VectorStore(ABC):
         self,
         query_embedding: list[float],
         top_k: int = 10,
-        filter_dict: Optional[dict[str, Any]] = None,
-        threshold: Optional[float] = None,
+        filter_dict: dict[str, Any] | None = None,
+        threshold: float | None = None,
     ) -> list[SearchResult]:
         """搜索相似的代码分块
 
@@ -236,7 +236,7 @@ class VectorStore(ABC):
         query_text: str,
         embedding_model: EmbeddingModel,
         top_k: int = 10,
-        filter_dict: Optional[dict[str, Any]] = None,
+        filter_dict: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
         """通过文本搜索相似的代码分块
 
@@ -272,9 +272,7 @@ class CodeChunker(ABC):
         pass
 
     @abstractmethod
-    async def chunk_text(
-        self, text: str, file_path: str = "<unknown>", language: Optional[str] = None
-    ) -> list[CodeChunk]:
+    async def chunk_text(self, text: str, file_path: str = "<unknown>", language: str | None = None) -> list[CodeChunk]:
         """分块代码文本
 
         Args:

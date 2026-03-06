@@ -8,13 +8,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 if TYPE_CHECKING:
     from knowledge.storage import KnowledgeStorage
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from agents.committer import CommitterAgent, CommitterConfig
 from agents.planner_process import PlannerAgentProcess
@@ -53,6 +54,8 @@ class MultiProcessOrchestratorConfig(BaseModel):
     默认值从 config.yaml 加载，通过 core.config 模块统一管理。
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     working_directory: str = "."
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     worker_count: int = DEFAULT_WORKER_POOL_SIZE  # Worker 进程数量
@@ -60,6 +63,9 @@ class MultiProcessOrchestratorConfig(BaseModel):
     strict_review: bool = False
     # 迭代助手上下文（.iteration + Engram + 规则摘要）
     iteration_context: dict[str, Any] | None = None
+    # 迭代上下文刷新与记录回写（可选回调）
+    iteration_context_provider: Callable[[], Awaitable[dict[str, Any] | None]] | None = None
+    iteration_record_writer: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
     # 超时设置 - 默认值从 core.config 获取
     planning_timeout: float = DEFAULT_PLANNING_TIMEOUT  # 规划超时
@@ -193,6 +199,8 @@ class MultiProcessOrchestrator:
 
         # 迭代助手上下文
         self._iteration_context: dict[str, Any] = config.iteration_context or {}
+        self._iteration_context_provider = config.iteration_context_provider
+        self._iteration_record_writer = config.iteration_record_writer
 
         # 进程管理器
         self.process_manager = AgentProcessManager()
@@ -1546,7 +1554,7 @@ class MultiProcessOrchestrator:
             # 正常响应：重置超时计数
             self._timeout_count[agent_id] = 0
             return response
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending_responses.pop(message.id, None)
             # 递增超时计数
             self._timeout_count[agent_id] = self._timeout_count.get(agent_id, 0) + 1
@@ -1589,6 +1597,9 @@ class MultiProcessOrchestrator:
         iteration.status = IterationStatus.PLANNING
 
         logger.info(f"[迭代 {iteration_id}] 规划阶段")
+
+        # 刷新迭代上下文（.iteration / Engram）
+        await self._refresh_iteration_context(iteration_id, phase="planning")
 
         if self.planner_id is None:
             raise RuntimeError("Planner 进程未初始化")
@@ -1996,6 +2007,9 @@ class MultiProcessOrchestrator:
 
         logger.info(f"[迭代 {iteration_id}] 评审阶段")
 
+        # 刷新迭代上下文（.iteration / Engram）
+        await self._refresh_iteration_context(iteration_id, phase="review")
+
         if self.reviewer_id is None:
             raise RuntimeError("Reviewer 进程未初始化")
 
@@ -2038,7 +2052,47 @@ class MultiProcessOrchestrator:
         logger.info(f"[迭代 {iteration_id}] 评审决策: {decision.value}")
         logger.info(f"[迭代 {iteration_id}] 评审得分: {response.payload.get('score', 'N/A')}")
 
+        # 迭代记录回写（可选）
+        await self._write_iteration_record(
+            {
+                "iteration_id": iteration_id,
+                "goal": goal,
+                "decision": decision.value if hasattr(decision, "value") else str(decision),
+                "review_result": response.payload,
+                "tasks_completed": [
+                    {
+                        "id": t.get("id"),
+                        "title": t.get("title"),
+                        "description": t.get("description"),
+                    }
+                    for t in completed
+                ],
+                "tasks_failed": failed,
+            }
+        )
+
         return decision
+
+    async def _refresh_iteration_context(self, iteration_id: int, phase: str) -> None:
+        """刷新迭代上下文（支持每轮更新 .iteration/Engram）"""
+        if not self._iteration_context_provider:
+            return
+        try:
+            updated = await self._iteration_context_provider()
+            if updated is not None:
+                self._iteration_context = updated
+                logger.debug(f"[迭代 {iteration_id}] 已刷新迭代上下文（{phase}）")
+        except Exception as e:
+            logger.warning(f"[迭代 {iteration_id}] 刷新迭代上下文失败（{phase}）: {e}")
+
+    async def _write_iteration_record(self, record: dict[str, Any]) -> None:
+        """回写迭代记录（.iteration/regression.md 等）"""
+        if not self._iteration_record_writer:
+            return
+        try:
+            await self._iteration_record_writer(record)
+        except Exception as e:
+            logger.warning(f"回写迭代记录失败: {e}")
 
     def _should_commit(self, decision: ReviewDecision) -> bool:
         """判断是否应该执行提交

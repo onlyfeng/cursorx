@@ -31,8 +31,6 @@ from .auth import (
     verify_auth,
     verify_auth_sync,
 )
-
-# ========== Cloud Agent 客户端 ==========
 from .client import (
     CloudAgentResult,
     CursorCloudClient,
@@ -46,11 +44,7 @@ from .exceptions import (
     TaskError,
     handle_http_error,
 )
-
-# ========== 重试工具 ==========
 from .retry import RetryConfig, retry_async, with_retry
-
-# ========== 任务管理 ==========
 from .task import (
     CloudTask,
     CloudTaskClient,

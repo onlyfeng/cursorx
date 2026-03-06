@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -51,12 +52,12 @@ class MockAgentResult(BaseModel):
 
     success: bool = True
     output: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     exit_code: int = 0
     duration: float = 0.1
     executor_type: str = "mock"
     files_modified: list[str] = []
-    session_id: Optional[str] = None
+    session_id: str | None = None
 
 
 class ExecutionTrace(BaseModel):
@@ -67,19 +68,19 @@ class ExecutionTrace(BaseModel):
 
     execution_id: str
     prompt: str
-    context: Optional[dict[str, Any]] = None
-    working_directory: Optional[str] = None
-    timeout: Optional[int] = None
+    context: dict[str, Any] | None = None
+    working_directory: str | None = None
+    timeout: int | None = None
 
     # 状态追踪
     started_at: datetime
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
     status: str = "pending"  # pending, in_progress, completed, failed
 
     # 执行结果
-    success: Optional[bool] = None
-    output: Optional[str] = None
-    error: Optional[str] = None
+    success: bool | None = None
+    output: str | None = None
+    error: str | None = None
     files_modified: list[str] = Field(default_factory=list)
 
     # 执行时长（秒）
@@ -163,7 +164,7 @@ class MockAgentExecutor:
         """获取执行追踪记录列表"""
         return self._execution_traces
 
-    def get_trace_by_id(self, execution_id: str) -> Optional[ExecutionTrace]:
+    def get_trace_by_id(self, execution_id: str) -> ExecutionTrace | None:
         """根据执行 ID 获取追踪记录"""
         for trace in self._execution_traces:
             if trace.execution_id == execution_id:
@@ -186,8 +187,8 @@ class MockAgentExecutor:
         self,
         success: bool = True,
         output: str = "",
-        error: Optional[str] = None,
-        files_modified: Optional[list[str]] = None,
+        error: str | None = None,
+        files_modified: list[str] | None = None,
         duration: float = 0.1,
     ) -> None:
         """配置下一次执行的响应
@@ -280,9 +281,9 @@ class MockAgentExecutor:
     async def execute(
         self,
         prompt: str,
-        context: Optional[dict[str, Any]] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
+        context: dict[str, Any] | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
     ) -> AgentResult:
         """模拟执行任务
 
@@ -386,7 +387,7 @@ class MockTaskQueue:
 
     def __init__(
         self,
-        preset_tasks: Optional[list[Task]] = None,
+        preset_tasks: list[Task] | None = None,
     ):
         """初始化 Mock 任务队列
 
@@ -416,8 +417,8 @@ class MockTaskQueue:
     async def dequeue(
         self,
         iteration_id: int,
-        timeout: Optional[float] = None,
-    ) -> Optional[Task]:
+        timeout: float | None = None,
+    ) -> Task | None:
         """出队任务"""
         if iteration_id not in self._queues:
             return None
@@ -434,10 +435,10 @@ class MockTaskQueue:
                 task.status = TaskStatus.ASSIGNED
                 return task
             return None
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
 
-    def get_task(self, task_id: str) -> Optional[Task]:
+    def get_task(self, task_id: str) -> Task | None:
         """获取任务"""
         return self._tasks.get(task_id)
 
@@ -573,9 +574,9 @@ class MockKnowledgeManager:
     async def add_url(
         self,
         url: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         force_refresh: bool = False,
-    ) -> Optional[Document]:
+    ) -> Document | None:
         """模拟添加 URL
 
         返回预设的文档或创建一个简单的 Mock 文档。
@@ -595,7 +596,7 @@ class MockKnowledgeManager:
     async def add_urls(
         self,
         urls: list[str],
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         force_refresh: bool = False,
     ) -> list[Document]:
         """模拟批量添加 URL"""
@@ -639,7 +640,7 @@ class MockKnowledgeManager:
 
     def list(
         self,
-        limit: Optional[int] = None,
+        limit: int | None = None,
         offset: int = 0,
     ) -> list[Document]:
         """列出所有文档"""
@@ -650,11 +651,11 @@ class MockKnowledgeManager:
             docs = docs[:limit]
         return docs
 
-    def get_document(self, doc_id: str) -> Optional[Document]:
+    def get_document(self, doc_id: str) -> Document | None:
         """获取指定文档"""
         return self._documents.get(doc_id)
 
-    def get_document_by_url(self, url: str) -> Optional[Document]:
+    def get_document_by_url(self, url: str) -> Document | None:
         """根据 URL 获取文档"""
         doc_id = self._url_to_doc_id.get(url)
         if doc_id:
@@ -894,7 +895,7 @@ def orchestrator_factory(
 
 def assert_iteration_success(
     result: dict[str, Any],
-    expected_iterations: Optional[int] = None,
+    expected_iterations: int | None = None,
     min_tasks_completed: int = 0,
 ) -> None:
     """断言迭代执行成功
@@ -921,7 +922,7 @@ def assert_iteration_success(
 
 def assert_iteration_failed(
     result: dict[str, Any],
-    expected_error_contains: Optional[str] = None,
+    expected_error_contains: str | None = None,
 ) -> None:
     """断言迭代执行失败
 
@@ -941,7 +942,7 @@ def assert_iteration_failed(
 
 def assert_task_completed(
     task: Task,
-    expected_result_contains: Optional[str] = None,
+    expected_result_contains: str | None = None,
 ) -> None:
     """断言任务完成
 
@@ -964,7 +965,7 @@ def assert_task_completed(
 
 def assert_task_failed(
     task: Task,
-    expected_error_contains: Optional[str] = None,
+    expected_error_contains: str | None = None,
 ) -> None:
     """断言任务失败
 
@@ -1074,7 +1075,7 @@ def assert_all_executions_completed(executor: MockAgentExecutor) -> None:
 
 def assert_execution_status_transitions(
     executor: MockAgentExecutor,
-    expected_final_statuses: Optional[list[str]] = None,
+    expected_final_statuses: list[str] | None = None,
 ) -> None:
     """断言执行状态变更正确
 
@@ -1140,8 +1141,8 @@ def assert_execution_success_rate(
 
 def assert_execution_durations(
     executor: MockAgentExecutor,
-    max_duration: Optional[float] = None,
-    min_duration: Optional[float] = None,
+    max_duration: float | None = None,
+    min_duration: float | None = None,
 ) -> None:
     """断言执行时长在预期范围内
 

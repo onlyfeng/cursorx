@@ -20,12 +20,12 @@ import shutil
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional, TextIO
+from typing import TextIO
 
 from loguru import logger
 
@@ -424,13 +424,13 @@ class StreamEvent:
     type: StreamEventType
     subtype: str = ""
     data: dict = field(default_factory=dict)
-    timestamp: Optional[float] = None
+    timestamp: float | None = None
 
     # 具体信息
     model: str = ""  # 模型名称 (system_init)
     content: str = ""  # 文本内容 (assistant)
-    tool_call: Optional[ToolCallInfo] = None  # 工具调用 (tool_*)
-    diff_info: Optional[DiffInfo] = None  # 差异信息 (diff_*)
+    tool_call: ToolCallInfo | None = None  # 工具调用 (tool_*)
+    diff_info: DiffInfo | None = None  # 差异信息 (diff_*)
     duration_ms: int = 0  # 耗时毫秒 (result)
 
     def get_formatted_diff(self, colored: bool = False) -> str:
@@ -465,7 +465,7 @@ class StreamEvent:
         return ""
 
 
-def parse_stream_event(line: str) -> Optional[StreamEvent]:
+def parse_stream_event(line: str) -> StreamEvent | None:
     """解析 stream-json 输出行"""
     if not line:
         return None
@@ -654,7 +654,7 @@ def parse_tool_call(tool_call_data: dict) -> ToolCallInfo:
     return info
 
 
-def _extract_diff_info(tool_call: ToolCallInfo) -> Optional[DiffInfo]:
+def _extract_diff_info(tool_call: ToolCallInfo) -> DiffInfo | None:
     """从工具调用中提取差异信息"""
     if not tool_call.is_diff:
         return None
@@ -722,7 +722,7 @@ class StreamingClient:
         prompt: str,
         model: str,
         working_directory: str = ".",
-        on_event: Optional[Callable[[StreamEvent], None]] = None,
+        on_event: Callable[[StreamEvent], None] | None = None,
         timeout: int = 300,
     ) -> AsyncIterator[StreamEvent]:
         """流式执行 Agent 任务
@@ -781,7 +781,7 @@ class StreamingClient:
                 on_event(complete_event)
             yield complete_event
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
@@ -818,7 +818,7 @@ class StreamingClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
 
             line: bytes = b""
             long_line_handled = False  # 标记是否通过超长行处理获取了内容
@@ -831,7 +831,7 @@ class StreamingClient:
                 if not line:
                     break
                 yield line.decode("utf-8", errors="replace").strip()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except asyncio.LimitOverrunError as e:
                 # "Separator is found, but chunk is longer than limit" 错误
@@ -932,14 +932,14 @@ class StreamingClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
 
             try:
                 chunk = await asyncio.wait_for(
                     stream.read(chunk_size),
                     timeout=min(remaining, 5.0),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
             if not chunk:
@@ -959,7 +959,7 @@ class StreamingClient:
 
         return b"".join(chunks)
 
-    def _parse_stream_line(self, line: str) -> Optional[StreamEvent]:
+    def _parse_stream_line(self, line: str) -> StreamEvent | None:
         """解析流式输出行"""
         return parse_stream_event(line)
 
@@ -981,25 +981,25 @@ class StreamRenderer(ABC):
         pass
 
     @abstractmethod
-    def render_tool_started(self, tool_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_started(self, tool_count: int, tool: ToolCallInfo | None) -> None:
         """渲染工具开始事件"""
         pass
 
     @abstractmethod
-    def render_tool_completed(self, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_completed(self, tool: ToolCallInfo | None) -> None:
         """渲染工具完成事件"""
         pass
 
     @abstractmethod
-    def render_diff_started(self, diff_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_diff_started(self, diff_count: int, tool: ToolCallInfo | None) -> None:
         """渲染差异开始事件"""
         pass
 
     @abstractmethod
     def render_diff_completed(
         self,
-        tool: Optional[ToolCallInfo],
-        diff_info: Optional[DiffInfo],
+        tool: ToolCallInfo | None,
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异完成事件"""
@@ -1009,7 +1009,7 @@ class StreamRenderer(ABC):
     def render_diff(
         self,
         diff_count: int,
-        diff_info: Optional[DiffInfo],
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异事件"""
@@ -1055,7 +1055,7 @@ class TerminalStreamRenderer(StreamRenderer):
             print(f"\r📝 生成中: {accumulated_length} 字符", end="", flush=True)
         # 精简模式不显示增量文本
 
-    def render_tool_started(self, tool_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_started(self, tool_count: int, tool: ToolCallInfo | None) -> None:
         """渲染工具开始事件"""
         if not tool:
             return
@@ -1076,7 +1076,7 @@ class TerminalStreamRenderer(StreamRenderer):
             elif tool.tool_type == "shell":
                 print("[执行] shell 命令", flush=True)
 
-    def render_tool_completed(self, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_completed(self, tool: ToolCallInfo | None) -> None:
         """渲染工具完成事件"""
         if not tool or not tool.success:
             return
@@ -1091,7 +1091,7 @@ class TerminalStreamRenderer(StreamRenderer):
                 print(f"   ✅ 已读取 {lines} 行")
         # 精简模式不显示完成详情
 
-    def render_diff_started(self, diff_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_diff_started(self, diff_count: int, tool: ToolCallInfo | None) -> None:
         """渲染差异开始事件"""
         if not tool:
             return
@@ -1103,8 +1103,8 @@ class TerminalStreamRenderer(StreamRenderer):
 
     def render_diff_completed(
         self,
-        tool: Optional[ToolCallInfo],
-        diff_info: Optional[DiffInfo],
+        tool: ToolCallInfo | None,
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异完成事件"""
@@ -1147,7 +1147,7 @@ class TerminalStreamRenderer(StreamRenderer):
     def render_diff(
         self,
         diff_count: int,
-        diff_info: Optional[DiffInfo],
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异事件"""
@@ -1209,7 +1209,7 @@ class ProgressTracker:
         self,
         verbose: bool = False,
         show_diff: bool = True,
-        renderer: Optional[StreamRenderer] = None,
+        renderer: StreamRenderer | None = None,
     ):
         """初始化进度跟踪器
 
@@ -1323,9 +1323,9 @@ class StreamEventLogger:
 
     def __init__(
         self,
-        agent_id: Optional[str],
-        agent_role: Optional[str],
-        agent_name: Optional[str],
+        agent_id: str | None,
+        agent_role: str | None,
+        agent_name: str | None,
         console: bool = True,
         detail_dir: str = "logs/stream_json/detail/",
         raw_dir: str = "logs/stream_json/raw/",
@@ -1591,7 +1591,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         show_status_bar: bool = True,
         status_bar_position: str = "bottom",
         min_width: int = 40,
-        max_width: Optional[int] = None,
+        max_width: int | None = None,
         output: TextIO | None = None,
         show_word_diff: bool = False,
     ) -> None:
@@ -1624,7 +1624,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         self.diff_count: int = 0
         self.char_count: int = 0
         self.current_line_len: int = 0
-        self.start_time: Optional[float] = None
+        self.start_time: float | None = None
         self.is_active: bool = False
 
         # 状态栏内容缓存
@@ -1659,7 +1659,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
         self.render_text(content)
 
-    def render_tool_started(self, tool_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_started(self, tool_count: int, tool: ToolCallInfo | None) -> None:
         """渲染工具开始事件
 
         Args:
@@ -1677,7 +1677,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
             self._write(msg)
         self._update_status_bar()
 
-    def render_tool_completed(self, tool: Optional[ToolCallInfo]) -> None:
+    def render_tool_completed(self, tool: ToolCallInfo | None) -> None:
         """渲染工具完成事件
 
         Args:
@@ -1690,7 +1690,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         self._write("\n")
         self.current_line_len = 0
 
-    def render_diff_started(self, diff_count: int, tool: Optional[ToolCallInfo]) -> None:
+    def render_diff_started(self, diff_count: int, tool: ToolCallInfo | None) -> None:
         """渲染差异开始事件
 
         Args:
@@ -1709,8 +1709,8 @@ class AdvancedTerminalRenderer(StreamRenderer):
 
     def render_diff_completed(
         self,
-        tool: Optional[ToolCallInfo],
-        diff_info: Optional[DiffInfo],
+        tool: ToolCallInfo | None,
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异完成事件
@@ -1742,7 +1742,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
     def render_diff(
         self,
         diff_count: int,
-        diff_info: Optional[DiffInfo],
+        diff_info: DiffInfo | None,
         show_diff: bool,
     ) -> None:
         """渲染差异事件
@@ -2066,7 +2066,7 @@ class AdvancedTerminalRenderer(StreamRenderer):
         # 确保换行
         self._write("\n")
 
-    def render_text(self, text: str, style: Optional[str] = None) -> None:
+    def render_text(self, text: str, style: str | None = None) -> None:
         """渲染文本内容（逐词/逐字符显示）
 
         Args:

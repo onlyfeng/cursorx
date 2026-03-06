@@ -14,32 +14,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from knowledge import (
+from knowledge import (  # 数据模型; 枚举类型; 解析器; 存储管理; URL 安全策略; 获取器
     ChunkSplitter,
     ContentCleaner,
     ContentFormat,
     Document,
-    # 数据模型
     DocumentChunk,
     FetchConfig,
     FetchMethod,
     FetchResult,
-    # 枚举类型
     FetchStatus,
     FetchTask,
-    # 解析器
     HTMLParser,
-    # 存储管理
     IndexEntry,
     KnowledgeBase,
     KnowledgeBaseStats,
     KnowledgeManager,
     KnowledgeStorage,
     MarkdownConverter,
-    # URL 安全策略
     UrlPolicy,
     UrlPolicyError,
-    # 获取器
     WebFetcher,
 )
 

@@ -37,13 +37,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # 导入 E2E 测试配置
-from tests.conftest_e2e import (
-    # Mock 类
+from tests.conftest_e2e import (  # Mock 类; 断言助手; 辅助函数; Fixtures; pytest 配置
     MockAgentExecutor,
     MockAgentResult,
     MockKnowledgeManager,
     MockTaskQueue,
-    # 断言助手
     assert_executor_called_with,
     assert_iteration_failed,
     assert_iteration_success,
@@ -51,15 +49,12 @@ from tests.conftest_e2e import (
     assert_task_completed,
     assert_task_failed,
     assert_tasks_in_order,
-    # 辅助函数
     create_test_document,
     create_test_task,
-    # Fixtures
     mock_executor,
     mock_knowledge_manager,
     mock_task_queue,
     orchestrator_factory,
-    # pytest 配置
     pytest_configure,
     sample_tasks,
     temp_workspace,

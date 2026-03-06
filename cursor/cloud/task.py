@@ -13,11 +13,11 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -440,7 +440,7 @@ class CloudTaskClient:
                 output = stdout.decode("utf-8", errors="replace")
                 return self._parse_task_status_output(task_id, output)
 
-        except (FileNotFoundError, asyncio.TimeoutError):
+        except (TimeoutError, FileNotFoundError):
             pass
 
         return None
@@ -508,7 +508,7 @@ class CloudTaskClient:
                     # 其他错误
                     logger.debug(f"HTTP API 错误: {error}")
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug(f"HTTP API 查询超时: task_id={task_id}")
         except httpx.RequestError as e:
             error = NetworkError.from_exception(e, context=f"查询任务 {task_id}")
@@ -633,7 +633,7 @@ class CloudTaskClient:
                                 ):
                                     break
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     error_event = StreamEvent(
                         type=StreamEventType.ERROR,
                         data={"error": f"WebSocket 连接超时 ({timeout}s)"},
@@ -790,7 +790,7 @@ class CloudTaskClient:
                         ):
                             break
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             from ..streaming import StreamEvent, StreamEventType
 
             logger.warning(f"SSE 连接超时: {timeout}s")
@@ -1107,7 +1107,7 @@ class CloudTaskClient:
                 on_event(complete_event)
             yield complete_event
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 process.kill()
                 await process.wait()
@@ -1167,7 +1167,7 @@ class CloudTaskClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise asyncio.TimeoutError()
+                raise TimeoutError()
 
             try:
                 line = await asyncio.wait_for(
@@ -1177,7 +1177,7 @@ class CloudTaskClient:
                 if not line:
                     break
                 yield line.decode("utf-8", errors="replace").strip()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # 单次读取超时，检查总超时
                 if asyncio.get_event_loop().time() >= deadline:
                     raise

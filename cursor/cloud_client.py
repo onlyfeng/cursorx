@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -38,8 +38,6 @@ from .cloud.auth import (
     verify_auth,
     verify_auth_sync,
 )
-
-# 导入 Cloud Agent 客户端
 from .cloud.client import (
     CloudAgentResult,
     CursorCloudClient,
@@ -58,8 +56,6 @@ from .cloud.retry import (
     retry_async,
     with_retry,
 )
-
-# 导入任务管理模块
 from .cloud.task import (
     CloudTask,
     CloudTaskClient,
@@ -67,8 +63,6 @@ from .cloud.task import (
     TaskResult,
     TaskStatus,
 )
-
-# 导入流式事件类型
 from .streaming import (
     StreamEvent,
     StreamEventType,
@@ -114,10 +108,10 @@ class CloudClientFactory:
 
     @staticmethod
     def resolve_api_key(
-        explicit_api_key: Optional[str] = None,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-    ) -> Optional[str]:
+        explicit_api_key: str | None = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+    ) -> str | None:
         """解析 API Key，遵循统一优先级
 
         优先级：
@@ -180,12 +174,12 @@ class CloudClientFactory:
 
     @staticmethod
     def create_auth_config(
-        explicit_api_key: Optional[str] = None,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-        auth_timeout: Optional[int] = None,
-        base_url: Optional[str] = None,
-        max_retries: Optional[int] = None,
+        explicit_api_key: str | None = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+        auth_timeout: int | None = None,
+        base_url: str | None = None,
+        max_retries: int | None = None,
     ) -> CloudAuthConfig:
         """创建统一的 CloudAuthConfig
 
@@ -260,10 +254,10 @@ class CloudClientFactory:
 
     @staticmethod
     def create_auth_manager(
-        explicit_api_key: Optional[str] = None,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-        auth_timeout: Optional[int] = None,
+        explicit_api_key: str | None = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+        auth_timeout: int | None = None,
     ) -> CloudAuthManager:
         """创建统一的 CloudAuthManager
 
@@ -286,11 +280,11 @@ class CloudClientFactory:
 
     @staticmethod
     def create(
-        explicit_api_key: Optional[str] = None,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-        auth_timeout: Optional[int] = None,
-        api_base: Optional[str] = None,
+        explicit_api_key: str | None = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+        auth_timeout: int | None = None,
+        api_base: str | None = None,
         agents_endpoint: str = "/v1/agents",
     ) -> tuple[CursorCloudClient, CloudAuthManager]:
         """创建 CursorCloudClient 和 CloudAuthManager
@@ -344,11 +338,11 @@ class CloudClientFactory:
 
     @staticmethod
     def build_task_options(
-        agent_config: Optional[Any] = None,
-        model: Optional[str] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
-        allow_write: Optional[bool] = None,
+        agent_config: Any | None = None,
+        model: str | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
+        allow_write: bool | None = None,
     ) -> CloudTaskOptions:
         """构建 CloudTaskOptions
 
@@ -387,13 +381,13 @@ class CloudClientFactory:
     @staticmethod
     async def execute_task(
         prompt: str,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-        explicit_api_key: Optional[str] = None,
-        working_directory: Optional[str] = None,
-        timeout: Optional[int] = None,
-        allow_write: Optional[bool] = None,
-        session_id: Optional[str] = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+        explicit_api_key: str | None = None,
+        working_directory: str | None = None,
+        timeout: int | None = None,
+        allow_write: bool | None = None,
+        session_id: str | None = None,
         wait: bool = True,
         force_cloud: bool = False,
     ) -> CloudAgentResult:
@@ -465,10 +459,10 @@ class CloudClientFactory:
     @staticmethod
     async def resume_session(
         session_id: str,
-        prompt: Optional[str] = None,
-        agent_config: Optional[Any] = None,
-        auth_config: Optional[CloudAuthConfig] = None,
-        explicit_api_key: Optional[str] = None,
+        prompt: str | None = None,
+        agent_config: Any | None = None,
+        auth_config: CloudAuthConfig | None = None,
+        explicit_api_key: str | None = None,
         local: bool = True,
     ) -> CloudAgentResult:
         """恢复云端会话

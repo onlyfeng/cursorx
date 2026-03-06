@@ -31,6 +31,7 @@
     python scripts/pre_commit_check.py --quick --core-only --json  # CI 推荐组合
     python scripts/pre_commit_check.py --req-files requirements.txt  # 仅检查核心依赖
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,9 +43,8 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 # ============================================================
 # 常量定义
@@ -188,7 +188,7 @@ def is_ci_environment() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
 
 
-def get_github_step_summary_path() -> Optional[str]:
+def get_github_step_summary_path() -> str | None:
     """获取 GitHub Step Summary 文件路径"""
     return os.environ.get("GITHUB_STEP_SUMMARY")
 
@@ -396,7 +396,7 @@ class CheckReport:
 
 def check_dependencies(
     verbose: bool = False,
-    req_files: Optional[list[str]] = None,
+    req_files: list[str] | None = None,
 ) -> CheckResult:
     """检查 requirements 文件中的依赖是否都已安装
 
@@ -1123,7 +1123,7 @@ def run_checks(
     verbose: bool = False,
     silent: bool = False,
     core_only: bool = False,
-    req_files: Optional[list[str]] = None,
+    req_files: list[str] | None = None,
 ) -> CheckReport:
     """运行所有检查
 
@@ -1191,7 +1191,7 @@ def run_quick_checks(
     verbose: bool = False,
     silent: bool = False,
     core_only: bool = False,
-    req_files: Optional[list[str]] = None,
+    req_files: list[str] | None = None,
 ) -> CheckReport:
     """运行快速检查（仅语法和导入）
 
@@ -1372,7 +1372,7 @@ def main() -> int:
             pass
 
     # 记录开始时间
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(UTC)
 
     try:
         # 根据模式选择检查范围
@@ -1391,7 +1391,7 @@ def main() -> int:
         exit_code = 0 if report.all_passed else 1
 
         # 计算结束时间
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
         if args.json:

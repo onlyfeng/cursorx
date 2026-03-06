@@ -17,8 +17,8 @@ import asyncio
 import json
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -96,7 +96,7 @@ class ProgressBar:
         print(f"\n完成! 耗时: {elapsed:.1f}s")
 
 
-def load_config(config_file: Optional[str] = None) -> IndexConfig:
+def load_config(config_file: str | None = None) -> IndexConfig:
     """加载配置文件
 
     配置查找策略:
@@ -123,7 +123,7 @@ def load_config(config_file: Optional[str] = None) -> IndexConfig:
         IndexConfig 实例
     """
     # 确定要使用的配置文件路径
-    resolved_config_path: Optional[Path] = None
+    resolved_config_path: Path | None = None
 
     if config_file:
         # 显式指定的路径优先

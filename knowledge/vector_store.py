@@ -14,10 +14,11 @@
 
 import asyncio
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -37,7 +38,7 @@ EmbeddingCache: type["EmbeddingCacheType"] | None = None
 
 
 # 类型别名：进度回调函数
-ProgressCallback = Callable[[int, int, Optional[str]], None]
+ProgressCallback = Callable[[int, int, str | None], None]
 
 
 # 知识库专用集合名称
@@ -54,7 +55,7 @@ class IndexingStats:
     记录索引操作的统计信息和状态
     """
 
-    last_index_time: Optional[datetime] = None  # 最后索引时间
+    last_index_time: datetime | None = None  # 最后索引时间
     indexed_doc_count: int = 0  # 已索引文档数
     indexed_chunk_count: int = 0  # 已索引分块数
     pending_queue_size: int = 0  # 待索引队列大小
@@ -132,13 +133,13 @@ class KnowledgeVectorStore:
         self._lock = asyncio.Lock()
 
         # ChromaDB 向量存储实例
-        self._vector_store: "ChromaVectorStoreType | None" = None
+        self._vector_store: ChromaVectorStoreType | None = None
 
         # SentenceTransformer 嵌入模型实例
-        self._embedding_model: "SentenceTransformerEmbeddingType | None" = None
+        self._embedding_model: SentenceTransformerEmbeddingType | None = None
 
         # EmbeddingCache 实例
-        self._embedding_cache: "EmbeddingCacheType | None" = None
+        self._embedding_cache: EmbeddingCacheType | None = None
 
         # 文档 ID 到分块 ID 的映射
         self._doc_chunk_mapping: dict[str, list[str]] = {}
@@ -173,12 +174,8 @@ class KnowledgeVectorStore:
 
                     ChromaVectorStore = _ChromaVectorStore
                 if SentenceTransformerEmbedding is None or EmbeddingCache is None:
-                    from indexing.embedding import (
-                        EmbeddingCache as _EmbeddingCache,
-                    )
-                    from indexing.embedding import (
-                        SentenceTransformerEmbedding as _SentenceTransformerEmbedding,
-                    )
+                    from indexing.embedding import EmbeddingCache as _EmbeddingCache
+                    from indexing.embedding import SentenceTransformerEmbedding as _SentenceTransformerEmbedding
 
                     SentenceTransformerEmbedding = _SentenceTransformerEmbedding
                     EmbeddingCache = _EmbeddingCache
@@ -350,7 +347,7 @@ class KnowledgeVectorStore:
         self,
         docs: list[Document],
         concurrency: int = 4,
-        progress_callback: Optional[ProgressCallback] = None,
+        progress_callback: ProgressCallback | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
         """批量并发索引文档
@@ -744,7 +741,7 @@ class KnowledgeVectorStore:
         # 如果哈希值不同，需要重新索引
         return current_hash != stored_hash
 
-    def get_content_hash(self, doc_id: str) -> Optional[str]:
+    def get_content_hash(self, doc_id: str) -> str | None:
         """获取已存储的文档内容哈希
 
         Args:
@@ -880,7 +877,7 @@ class KnowledgeVectorStore:
     async def rebuild_all(
         self,
         documents: list[Document],
-        progress_callback: Optional[ProgressCallback] = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> int:
         """重建所有文档索引
 

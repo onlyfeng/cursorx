@@ -18,7 +18,6 @@
 """
 
 import argparse
-import asyncio
 import os
 import tempfile
 from collections.abc import Generator
@@ -28,13 +27,9 @@ import pytest
 
 from coordinator.orchestrator import Orchestrator, OrchestratorConfig
 from core.contract_fields import CooldownInfoFields
-
-# 推荐: 从 cursor 顶层包导入（统一入口）
-from cursor import (
-    # 执行器
+from cursor import (  # 执行器; 认证相关; 任务管理; 客户端配置; 异常类; 重试配置; 流式输出
     AgentExecutorFactory,
     AgentResult,
-    # 认证相关
     AuthError,
     AuthErrorCode,
     AuthStatus,
@@ -43,20 +38,15 @@ from cursor import (
     CloudAgentExecutor,
     CloudAuthConfig,
     CloudAuthManager,
-    # 任务管理
     CloudTask,
     CloudTaskClient,
     CloudTaskOptions,
-    # 客户端配置
     CursorCloudClient,
     ExecutionMode,
     NetworkError,
     ProgressTracker,
-    # 异常类
     RateLimitError,
-    # 重试配置
     RetryConfig,
-    # 流式输出
     StreamEvent,
     StreamEventType,
     TaskResult,
@@ -750,7 +740,7 @@ class TestErrorHandlingAndRetry:
     def test_network_error_from_exception(self):
         """测试从异常创建网络错误"""
         error = NetworkError.from_exception(
-            asyncio.TimeoutError(),
+            TimeoutError(),
             context="测试操作",
         )
 
@@ -1078,7 +1068,7 @@ class TestCloudSessionManagement:
             ),
             patch(
                 "asyncio.wait_for",
-                new=AsyncMock(side_effect=asyncio.TimeoutError()),
+                new=AsyncMock(side_effect=TimeoutError()),
             ),
         ):
             result = await cursor_cloud_client.push_to_cloud("session-slow")
@@ -1112,7 +1102,7 @@ class TestCloudSessionManagement:
             # wait_for 直接抛出 TimeoutError，模拟超时场景
             with patch(
                 "asyncio.wait_for",
-                new=AsyncMock(side_effect=asyncio.TimeoutError()),
+                new=AsyncMock(side_effect=TimeoutError()),
             ):
                 result = await cursor_cloud_client.resume_from_cloud(
                     "task-timeout",
@@ -1436,9 +1426,9 @@ class TestCloudClientFactory:
 
     def test_build_task_options_explicit_overrides(self):
         """测试显式参数覆盖 agent_config"""
+        from core.config import DEFAULT_WORKER_MODEL
         from cursor.client import CursorAgentConfig
         from cursor.cloud_client import CloudClientFactory
-        from core.config import DEFAULT_WORKER_MODEL
 
         agent_config = CursorAgentConfig(
             model="gpt-5.2-high",
@@ -1618,8 +1608,8 @@ class TestCloudExecutionPathConsistency:
     @pytest.fixture
     def cloud_enabled_agent_config(self):
         """启用 Cloud 的 Agent 配置"""
-        from cursor.client import CursorAgentConfig
         from core.config import DEFAULT_WORKER_MODEL
+        from cursor.client import CursorAgentConfig
 
         return CursorAgentConfig(
             cloud_enabled=True,
@@ -1900,8 +1890,8 @@ class TestCursorAgentClientCloudRouting:
     @pytest.fixture
     def cloud_enabled_config(self):
         """启用 Cloud 路由的配置"""
-        from cursor.client import CursorAgentConfig
         from core.config import DEFAULT_WORKER_MODEL
+        from cursor.client import CursorAgentConfig
 
         return CursorAgentConfig(
             cloud_enabled=True,
@@ -2120,7 +2110,7 @@ class TestCursorAgentClientCloudRouting:
         with patch.object(
             CloudClientFactory,
             "execute_task",
-            side_effect=asyncio.TimeoutError(),
+            side_effect=TimeoutError(),
         ):
             result = await client.execute("& 慢任务", timeout=1)
 

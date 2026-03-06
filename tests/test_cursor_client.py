@@ -521,7 +521,7 @@ class TestExecuteFailure:
 
         # 使用 AsyncMock 避免创建未 await 的协程
         mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_process.communicate = AsyncMock(side_effect=TimeoutError())
 
         with patch(
             "asyncio.create_subprocess_exec",
@@ -5471,7 +5471,7 @@ class TestCloudFallbackNoUserMessageInLogs:
 
         try:
             # 使用 asyncio.TimeoutError
-            timeout_error = asyncio.TimeoutError("Cloud 执行超时")
+            timeout_error = TimeoutError("Cloud 执行超时")
 
             with (
                 patch.object(client, "_should_route_to_cloud", return_value=True),
@@ -5645,7 +5645,7 @@ class TestCloudFallbackNoUserMessageInLogs:
             (RateLimitError("Rate limit exceeded"), CloudFailureKind.RATE_LIMIT),
             (AuthError("Invalid API Key"), CloudFailureKind.AUTH),
             (NetworkError("Connection refused"), CloudFailureKind.NETWORK),
-            (asyncio.TimeoutError("Timeout"), CloudFailureKind.TIMEOUT),
+            (TimeoutError("Timeout"), CloudFailureKind.TIMEOUT),
             (Exception("Unknown error"), CloudFailureKind.UNKNOWN),
         ]
 

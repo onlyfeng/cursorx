@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Optional
 
 from loguru import logger
 
@@ -21,7 +20,7 @@ class TaskQueue:
     def __init__(self):
         self._queues: dict[int, asyncio.PriorityQueue] = defaultdict(asyncio.PriorityQueue)
         self._tasks: dict[str, Task] = {}  # 所有任务的索引
-        self._lock: Optional[asyncio.Lock] = None
+        self._lock: asyncio.Lock | None = None
         # 队列索引：追踪已入队的任务 ID（用于 reconcile 检测不一致）
         self._queued_ids: dict[int, set[str]] = defaultdict(set)
 
@@ -79,7 +78,7 @@ class TaskQueue:
                 log_msg += f" - 原因: {reason}"
             logger.info(log_msg)
 
-    async def dequeue(self, iteration_id: int, timeout: Optional[float] = None) -> Optional[Task]:
+    async def dequeue(self, iteration_id: int, timeout: float | None = None) -> Task | None:
         """出队任务
 
         Args:
@@ -106,12 +105,12 @@ class TaskQueue:
                 return task
             return None
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         except asyncio.QueueEmpty:
             return None
 
-    def get_task(self, task_id: str) -> Optional[Task]:
+    def get_task(self, task_id: str) -> Task | None:
         """获取任务"""
         return self._tasks.get(task_id)
 

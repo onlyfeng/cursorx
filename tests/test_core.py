@@ -7,7 +7,7 @@
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -28,7 +28,7 @@ class ConcreteAgent(BaseAgent):
         self.execute_called = False
         self.reset_called = False
 
-    async def execute(self, instruction: str, context: Optional[dict] = None) -> dict[str, Any]:
+    async def execute(self, instruction: str, context: dict | None = None) -> dict[str, Any]:
         self.execute_called = True
         self._context["last_instruction"] = instruction
         return {"status": "success", "instruction": instruction}

@@ -11,37 +11,31 @@ from .doc_sources import (
     load_core_docs_with_fallback,
     parse_url_list_file,
 )
-from .doc_url_strategy import (
+from .doc_url_strategy import (  # 外链白名单校验; 外链判定与策略; 校验函数（契约级公共 API）; 测试辅助（重置 deprecated 警告状态）; [DEPRECATED] 兼容别名，将在 v2.0 移除; 新名: validate_fetch_policy_path_prefixes
     VALID_EXECUTION_MODES,
     VALID_EXTERNAL_LINK_MODES,
     DocURLStrategyConfig,
-    # 外链白名单校验
     ExternalLinkAllowlist,
     FetchPolicyResult,
     apply_fetch_policy,
     deduplicate_urls,
-    # 外链判定与策略
     derive_primary_domains,
     extract_domain,
     filter_urls_by_keywords,
     is_allowed_doc_url,
     is_external_link,
-    # 校验函数（契约级公共 API）
     is_full_url_prefix,
     is_path_prefix,
     is_valid_execution_mode,
     is_valid_external_link_mode,
     normalize_url,
     parse_llms_txt_urls,
-    # 测试辅助（重置 deprecated 警告状态）
     reset_deprecated_func_warnings,
     select_urls_to_fetch,
     validate_execution_mode,
     validate_external_link_allowlist,
     validate_external_link_mode,
     validate_fetch_policy_path_prefixes,
-    # [DEPRECATED] 兼容别名，将在 v2.0 移除
-    # 新名: validate_fetch_policy_path_prefixes
     validate_fetch_policy_prefixes,
     validate_url_strategy_prefixes,
 )
@@ -60,29 +54,23 @@ from .fetcher import (
     sanitize_url_for_log,
 )
 from .manager import AskResult, KnowledgeManager
-from .models import (
+from .models import (  # 数据模型; 枚举类型
     Document,
-    # 数据模型
     DocumentChunk,
     FetchPriority,
-    # 枚举类型
     FetchStatus,
     FetchTask,
     KnowledgeBase,
     KnowledgeBaseStats,
 )
-from .parser import (
+from .parser import (  # 内容清洗; 解析器; 数据结构; 清洗函数
     ChunkSplitter,
-    # 内容清洗
     CleanedContent,
     ContentCleaner,
     ContentCleanMode,
-    # 解析器
     HTMLParser,
     MarkdownConverter,
-    # 数据结构
     ParsedContent,
-    # 清洗函数
     clean_content_unified,
     compute_content_fingerprint,
 )
@@ -107,12 +95,8 @@ from .vector_adapter import (
     DocumentChunkConfig,
     DocumentTextChunker,
 )
-from .vector_store import (
-    KnowledgeVectorStore as ChromaVectorStore,
-)
-from .vector_store import (
-    VectorSearchResult as ChromaVectorSearchResult,
-)
+from .vector_store import KnowledgeVectorStore as ChromaVectorStore
+from .vector_store import VectorSearchResult as ChromaVectorSearchResult
 
 __all__ = [
     # 枚举类型

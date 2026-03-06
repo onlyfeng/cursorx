@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -35,8 +35,8 @@ class DocumentChunk(BaseModel):
 
     chunk_id: str = Field(default_factory=lambda: f"chunk-{uuid.uuid4().hex[:8]}")
     content: str  # 分块内容
-    embedding: Optional[list[float]] = None  # 向量嵌入（可选）
-    source_doc: Optional[str] = None  # 来源文档 ID
+    embedding: list[float] | None = None  # 向量嵌入（可选）
+    source_doc: str | None = None  # 来源文档 ID
 
     # 位置信息
     start_index: int = 0  # 在原文档中的起始位置
@@ -74,7 +74,7 @@ class Document(BaseModel):
         chunk.source_doc = self.id
         self.chunks.append(chunk)
 
-    def update_content(self, content: str, title: Optional[str] = None) -> None:
+    def update_content(self, content: str, title: str | None = None) -> None:
         """更新文档内容"""
         self.content = content
         if title:
@@ -102,7 +102,7 @@ class KnowledgeBaseStats(BaseModel):
     chunk_count: int = 0
     embedding_count: int = 0
     total_content_size: int = 0  # 总内容字符数
-    last_updated: Optional[datetime] = None
+    last_updated: datetime | None = None
 
 
 class KnowledgeBase(BaseModel):
@@ -128,7 +128,7 @@ class KnowledgeBase(BaseModel):
         self._update_stats()
         self.updated_at = datetime.now()
 
-    def remove_document(self, doc_id: str) -> Optional[Document]:
+    def remove_document(self, doc_id: str) -> Document | None:
         """移除文档"""
         doc = self.documents.pop(doc_id, None)
         if doc:
@@ -136,11 +136,11 @@ class KnowledgeBase(BaseModel):
             self.updated_at = datetime.now()
         return doc
 
-    def get_document(self, doc_id: str) -> Optional[Document]:
+    def get_document(self, doc_id: str) -> Document | None:
         """获取文档"""
         return self.documents.get(doc_id)
 
-    def get_document_by_url(self, url: str) -> Optional[Document]:
+    def get_document_by_url(self, url: str) -> Document | None:
         """根据 URL 获取文档"""
         for doc in self.documents.values():
             if doc.url == url:
@@ -180,10 +180,10 @@ class FetchTask(BaseModel):
     url: str  # 目标 URL
     status: FetchStatus = FetchStatus.PENDING  # 任务状态
     priority: FetchPriority = FetchPriority.NORMAL  # 优先级
-    result: Optional[Document] = None  # 抓取结果（文档）
+    result: Document | None = None  # 抓取结果（文档）
 
     # 错误信息
-    error: Optional[str] = None
+    error: str | None = None
     retry_count: int = 0
     max_retries: int = 3
 
@@ -193,8 +193,8 @@ class FetchTask(BaseModel):
 
     # 时间戳
     created_at: datetime = Field(default_factory=datetime.now)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
     def start(self) -> None:
         """开始抓取"""

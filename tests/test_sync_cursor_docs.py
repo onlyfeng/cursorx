@@ -12,7 +12,6 @@ from scripts.sync_cursor_docs import (
     to_cn_url,
 )
 
-
 SAMPLE_LLMS_TXT = """
 # Cursor Documentation
 - https://cursor.com/docs/cli/overview.md

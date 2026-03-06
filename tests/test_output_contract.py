@@ -18,16 +18,14 @@ from core.execution_policy import (
     CooldownInfo,
     build_cooldown_info,
 )
-from core.output_contract import (
+from core.output_contract import (  # Cloud 结果构建器; Iterate 结果构建器
     COOLDOWN_INFO_ALL_KNOWN_FIELDS,
     COOLDOWN_INFO_COMPAT_FIELDS,
     COOLDOWN_INFO_EXTENSION_FIELDS,
     COOLDOWN_INFO_MINIMUM_STABLE_FIELDS,
     COOLDOWN_INFO_REQUIRED_FIELDS,
-    # Cloud 结果构建器
     CloudResultFields,
     CooldownInfoFields,
-    # Iterate 结果构建器
     IterateResultFields,
     build_cloud_error_result,
     build_cloud_result_defaults,

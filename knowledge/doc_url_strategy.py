@@ -426,7 +426,6 @@ Phase B（计划中）启用后：
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from loguru import logger
@@ -483,7 +482,7 @@ class DocURLStrategyConfig:
     priority_weights: dict[str, float] = field(default_factory=lambda: DEFAULT_URL_STRATEGY_PRIORITY_WEIGHTS.copy())
 
 
-def normalize_url(url: str, base_url: Optional[str] = None) -> str:
+def normalize_url(url: str, base_url: str | None = None) -> str:
     """规范化 URL
 
     处理相对路径、移除锚点、统一协议和路径格式。
@@ -576,7 +575,7 @@ def normalize_url(url: str, base_url: Optional[str] = None) -> str:
 
 def _normalize_prefixes(
     prefixes: list[str],
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 ) -> list[str]:
     """规范化 URL 前缀列表
 
@@ -619,7 +618,7 @@ def _normalize_prefixes(
 def is_allowed_doc_url(
     url: str,
     config: DocURLStrategyConfig,
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 ) -> bool:
     """检查 URL 是否在允许的范围内
 
@@ -739,7 +738,7 @@ def is_allowed_doc_url(
 def deduplicate_urls(
     urls: list[str],
     normalize_before_dedup: bool = True,
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 ) -> list[str]:
     """URL 去重
 
@@ -777,7 +776,7 @@ def deduplicate_urls(
 
 def parse_llms_txt_urls(
     content: str,
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 ) -> list[str]:
     """解析 llms.txt 文件中的 URL
 
@@ -861,11 +860,11 @@ def _calculate_keyword_score(
 def select_urls_to_fetch(
     changelog_links: list[str],
     related_doc_urls: list[str],
-    llms_txt_content: Optional[str],
+    llms_txt_content: str | None,
     core_docs: list[str],
     keywords: list[str],
-    config: Optional[DocURLStrategyConfig] = None,
-    base_url: Optional[str] = None,
+    config: DocURLStrategyConfig | None = None,
+    base_url: str | None = None,
 ) -> list[str]:
     """选择要获取的 URL
 
@@ -1079,8 +1078,8 @@ def extract_domain(url: str) -> str:
 
 
 def derive_primary_domains(
-    llms_txt_url: Optional[str] = None,
-    changelog_url: Optional[str] = None,
+    llms_txt_url: str | None = None,
+    changelog_url: str | None = None,
 ) -> list[str]:
     """从配置的 URL 推导主域名列表
 
@@ -1114,7 +1113,7 @@ def derive_primary_domains(
 def is_external_link(
     url: str,
     primary_domains: list[str],
-    allowed_domains: Optional[list[str]] = None,
+    allowed_domains: list[str] | None = None,
 ) -> bool:
     """判断 URL 是否为外链
 
@@ -1221,11 +1220,11 @@ def _matches_path_prefixes(url: str, allowed_path_prefixes: list[str]) -> bool:
 def apply_fetch_policy(
     urls: list[str],
     fetch_policy_mode: str,
-    base_url: Optional[str] = None,
-    primary_domains: Optional[list[str]] = None,
-    allowed_domains: Optional[list[str]] = None,
-    external_link_allowlist: "Optional[list[str] | ExternalLinkAllowlist]" = None,
-    allowed_path_prefixes: Optional[list[str]] = None,
+    base_url: str | None = None,
+    primary_domains: list[str] | None = None,
+    allowed_domains: list[str] | None = None,
+    external_link_allowlist: "list[str] | ExternalLinkAllowlist | None" = None,
+    allowed_path_prefixes: list[str] | None = None,
     enforce_path_prefixes: bool = False,
 ) -> FetchPolicyResult:
     """根据 fetch_policy 过滤 URL 列表
