@@ -43,7 +43,7 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ============================================================
@@ -53,6 +53,8 @@ from pathlib import Path
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+UTC = timezone.utc
 
 # 依赖文件列表（分层配置）
 # - requirements.txt: 核心依赖（CI 默认）

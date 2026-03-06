@@ -36,7 +36,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   # 检测文件变更
@@ -500,15 +499,6 @@ jobs:
           COVERAGE=$(python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); print(f'{float(tree.getroot().attrib[\"line-rate\"]) * 100:.1f}%')" 2>/dev/null || echo "N/A")
           echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
           echo "### 单元测试覆盖率: $COVERAGE" >> $GITHUB_STEP_SUMMARY
-
-      - name: PR 覆盖率评论
-        # 支持直接触发和 workflow_call（继承调用者的 github.event）
-        if: (github.event_name == 'pull_request' || github.event.pull_request) && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
-        uses: py-cov-action/python-coverage-comment-action@v3
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINIMUM_GREEN: 80
-          MINIMUM_ORANGE: 50
 
   # E2E 测试 (端到端测试)
   e2e-test:
