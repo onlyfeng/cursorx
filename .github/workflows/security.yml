@@ -24,7 +24,7 @@ jobs:
       deps_files: ${{ steps.filter.outputs.deps_files }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 检测依赖文件变更
         uses: dorny/paths-filter@v3
@@ -56,7 +56,7 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v5
