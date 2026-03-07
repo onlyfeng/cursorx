@@ -1554,7 +1554,7 @@ class MultiProcessOrchestrator:
             # 正常响应：重置超时计数
             self._timeout_count[agent_id] = 0
             return response
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             self._pending_responses.pop(message.id, None)
             # 递增超时计数
             self._timeout_count[agent_id] = self._timeout_count.get(agent_id, 0) + 1

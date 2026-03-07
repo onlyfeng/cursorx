@@ -435,7 +435,7 @@ class CursorAgentClient:
                 session_id=result.get("session_id"),
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error(f"Cursor Agent 执行超时 ({timeout_sec}s)")
             return CursorAgentResult(
                 success=False,
@@ -622,7 +622,7 @@ class CursorAgentClient:
                 session_id=cloud_result.task.task_id if cloud_result.task else None,
             )
 
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             logger.error(f"Cloud Agent 执行超时 ({timeout}s)")
             # 检查是否允许回退到 CLI（execution_mode=auto 场景）
             if self._should_fallback_to_cli(e):
@@ -782,7 +782,7 @@ class CursorAgentClient:
                 session_id=result.get("session_id"),
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error(f"CLI 回退执行也超时 ({timeout}s)")
             return CursorAgentResult(
                 success=False,
@@ -981,7 +981,7 @@ class CursorAgentClient:
             # 降级为 debug 日志，安装指引由入口脚本根据错误类型决定是否显示
             logger.debug("agent CLI 未安装，请执行: curl https://cursor.com/install -fsS | bash")
             return None
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             raise
         except Exception as e:
             logger.error(f"agent CLI 执行失败: {e}")
@@ -1162,14 +1162,14 @@ class CursorAgentClient:
                         fallback_chunks.append(event.content)
 
             await self._wait_process_with_deadline(process, deadline)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             process.kill()
             await process.wait()
             raise
         finally:
             try:
                 await stderr_task
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 stderr_task.cancel()
             except Exception as e:
                 logger.warning(f"读取 stderr 失败: {e}")
@@ -1318,7 +1318,7 @@ class CursorAgentClient:
                     stream.readline(),
                     timeout=min(remaining, 1.0),
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 continue
             except asyncio.LimitOverrunError as e:
                 # "Separator is found, but chunk is longer than limit" 错误
@@ -1426,7 +1426,7 @@ class CursorAgentClient:
                     stream.read(chunk_size),
                     timeout=min(remaining, 5.0),
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 continue
 
             if not chunk:
@@ -1740,7 +1740,7 @@ class CursorAgentPool:
             if timeout:
                 return await asyncio.wait_for(self._available.get(), timeout=timeout)
             return await self._available.get()
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise RuntimeError("获取 Cursor Agent 客户端超时") from exc
 
     async def release(self, client: CursorAgentClient) -> None:

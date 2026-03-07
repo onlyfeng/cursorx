@@ -781,7 +781,7 @@ class StreamingClient:
                 on_event(complete_event)
             yield complete_event
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             process.kill()
             error_event = StreamEvent(
                 type=StreamEventType.ERROR,
@@ -831,7 +831,7 @@ class StreamingClient:
                 if not line:
                     break
                 yield line.decode("utf-8", errors="replace").strip()
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 continue
             except asyncio.LimitOverrunError as e:
                 # "Separator is found, but chunk is longer than limit" 错误
@@ -939,7 +939,7 @@ class StreamingClient:
                     stream.read(chunk_size),
                     timeout=min(remaining, 5.0),
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 continue
 
             if not chunk:

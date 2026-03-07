@@ -450,7 +450,7 @@ class TestWorkerPoolConcurrency:
             # 等待信号继续，或者 0.5 秒超时
             try:
                 await asyncio.wait_for(execute_continue.wait(), timeout=0.5)
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 pass
             task.complete({"output": "done"})
             return task
@@ -470,7 +470,7 @@ class TestWorkerPoolConcurrency:
         # 等待任务开始执行
         try:
             await asyncio.wait_for(execute_started.wait(), timeout=1.0)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             pass
 
         # 验证运行状态
@@ -658,7 +658,7 @@ class TestWorkerLoop:
         # 由于 dequeue 超时为 2s，需要等待足够时间或手动停止
         try:
             await asyncio.wait_for(pool_task, timeout=3.0)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             # 手动停止
             await safely_stop_pool(pool, pool_task)
 
@@ -718,7 +718,7 @@ class TestWorkerPoolEdgeCases:
         # 应该快速完成（空队列会立即检测到迭代完成）
         try:
             await asyncio.wait_for(pool_task, timeout=1.0)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             await safely_stop_pool(pool, pool_task)
 
     def test_initialize_multiple_times(self, worker_config):

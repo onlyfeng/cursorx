@@ -6418,7 +6418,7 @@ class SelfIterator:
             result = await orchestrator.run(enhanced_goal)
             return result
 
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             logger.error(f"MP 编排器超时: {e}")
             return {
                 "_fallback_required": True,

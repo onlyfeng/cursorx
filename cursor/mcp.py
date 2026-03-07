@@ -133,7 +133,7 @@ class MCPManager:
                 "error": stderr.decode("utf-8", errors="replace") if process.returncode != 0 else None,
             }
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return {"success": False, "error": "命令超时"}
         except FileNotFoundError:
             return {"success": False, "error": f"找不到 agent CLI: {self.agent_path}"}

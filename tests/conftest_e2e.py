@@ -435,7 +435,7 @@ class MockTaskQueue:
                 task.status = TaskStatus.ASSIGNED
                 return task
             return None
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return None
 
     def get_task(self, task_id: str) -> Task | None:

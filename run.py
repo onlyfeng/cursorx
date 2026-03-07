@@ -2566,7 +2566,7 @@ class Runner:
                     ResultFields.ERROR: error_msg,
                 }
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             print_error("规划超时")
             return {
                 ResultFields.SUCCESS: False,
@@ -2635,7 +2635,7 @@ class Runner:
                     ResultFields.ERROR: error_msg,
                 }
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             print_error("问答超时")
             return {
                 ResultFields.SUCCESS: False,
@@ -2849,7 +2849,7 @@ class Runner:
                     cooldown_info=result.cooldown_info,
                 )
 
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             # 使用 Policy 分类错误
             failure_info = classify_cloud_failure(e)
             cloud_timeout = options.get("cloud_timeout", 300)

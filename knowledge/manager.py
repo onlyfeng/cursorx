@@ -1218,7 +1218,7 @@ class KnowledgeManager:
                     context_used=context_used,
                 )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             duration = (datetime.now() - start_time).total_seconds()
             logger.error(f"CLI ask 查询超时 ({timeout}s)")
             return AskResult(

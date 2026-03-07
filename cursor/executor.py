@@ -1264,7 +1264,7 @@ class CloudAgentExecutor:
                     failure_kind=failure_kind_value,
                 )
 
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             failure_info = classify_cloud_failure(e)
             return AgentResult(
                 success=False,

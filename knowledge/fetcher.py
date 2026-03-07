@@ -894,7 +894,7 @@ class WebFetcher:
                     method_used=FetchMethod.MCP,
                 )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return FetchResult(
                 url=url,
                 success=False,
@@ -1101,7 +1101,7 @@ class WebFetcher:
                 method_used=FetchMethod.CURL,
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return FetchResult(
                 url=url,
                 success=False,
@@ -1157,7 +1157,7 @@ class WebFetcher:
                     method_used=FetchMethod.LYNX,
                 )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return FetchResult(
                 url=url,
                 success=False,

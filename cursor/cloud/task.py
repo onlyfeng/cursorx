@@ -508,7 +508,7 @@ class CloudTaskClient:
                     # 其他错误
                     logger.debug(f"HTTP API 错误: {error}")
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.debug(f"HTTP API 查询超时: task_id={task_id}")
         except httpx.RequestError as e:
             error = NetworkError.from_exception(e, context=f"查询任务 {task_id}")
@@ -633,7 +633,7 @@ class CloudTaskClient:
                                 ):
                                     break
 
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
                     error_event = StreamEvent(
                         type=StreamEventType.ERROR,
                         data={"error": f"WebSocket 连接超时 ({timeout}s)"},
@@ -790,7 +790,7 @@ class CloudTaskClient:
                         ):
                             break
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             from ..streaming import StreamEvent, StreamEventType
 
             logger.warning(f"SSE 连接超时: {timeout}s")
@@ -1107,7 +1107,7 @@ class CloudTaskClient:
                 on_event(complete_event)
             yield complete_event
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             try:
                 process.kill()
                 await process.wait()
@@ -1177,7 +1177,7 @@ class CloudTaskClient:
                 if not line:
                     break
                 yield line.decode("utf-8", errors="replace").strip()
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 # 单次读取超时，检查总超时
                 if asyncio.get_event_loop().time() >= deadline:
                     raise

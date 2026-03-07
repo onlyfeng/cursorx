@@ -105,7 +105,7 @@ class TaskQueue:
                 return task
             return None
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return None
         except asyncio.QueueEmpty:
             return None

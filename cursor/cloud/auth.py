@@ -482,7 +482,7 @@ class CloudAuthManager:
                 "找不到 agent CLI，请先安装: curl https://cursor.com/install -fsS | bash",
                 AuthErrorCode.CONFIG_NOT_FOUND,
             ) from exc
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise AuthError(
                 "认证请求超时",
                 AuthErrorCode.NETWORK_ERROR,
@@ -713,7 +713,7 @@ class CloudAuthManager:
                     AuthErrorCode.OAUTH_FAILED,
                 )
 
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise AuthError(
                 "OAuth 认证超时",
                 AuthErrorCode.OAUTH_FAILED,

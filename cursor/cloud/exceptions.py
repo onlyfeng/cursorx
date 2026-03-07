@@ -258,7 +258,7 @@ class NetworkError(CloudAgentError):
         retry_after = None
 
         # 检测异常类型
-        if isinstance(error, asyncio.TimeoutError):
+        if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
             error_type = "timeout"
             message = f"请求超时{': ' + context if context else ''}"
             retry_after = 5.0  # 超时后建议等待 5 秒

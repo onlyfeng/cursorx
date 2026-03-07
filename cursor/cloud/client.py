@@ -451,7 +451,7 @@ class CursorCloudClient:
                 output=output,
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             timeout_error = NetworkError(
                 message="提交任务超时",
                 error_type="timeout",
@@ -672,7 +672,7 @@ class CursorCloudClient:
 
             return self._parse_task_from_json_output(task_id, output)
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             timeout_error = NetworkError(
                 message="获取任务列表超时 (30s)",
                 error_type="timeout",
@@ -752,7 +752,7 @@ class CursorCloudClient:
 
             return self._parse_task_from_text_output(task_id, output)
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             timeout_error = NetworkError(
                 message="获取任务列表超时 (30s)",
                 error_type="timeout",
@@ -1313,7 +1313,7 @@ class CursorCloudClient:
                 output=output,
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             timeout_error = NetworkError(
                 message="推送到云端超时",
                 error_type="timeout",
@@ -1504,7 +1504,7 @@ class CursorCloudClient:
                 files_modified=files_modified,
             )
 
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             timeout_error = NetworkError(
                 message=f"从云端恢复超时 ({options.timeout or 300}s)",
                 error_type="timeout",
