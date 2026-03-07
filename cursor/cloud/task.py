@@ -1167,7 +1167,7 @@ class CloudTaskClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise TimeoutError()
+                raise asyncio.TimeoutError()
 
             try:
                 line = await asyncio.wait_for(

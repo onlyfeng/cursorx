@@ -1282,7 +1282,7 @@ class CursorAgentClient:
         """等待进程结束（带总超时）"""
         remaining = deadline - asyncio.get_event_loop().time()
         if remaining <= 0:
-            raise TimeoutError()
+            raise asyncio.TimeoutError()
         await asyncio.wait_for(process.wait(), timeout=remaining)
 
     async def _read_stream_lines(
@@ -1308,7 +1308,7 @@ class CursorAgentClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise TimeoutError()
+                raise asyncio.TimeoutError()
 
             line: bytes = b""
             long_line_handled = False  # 标记是否通过超长行处理获取了内容
@@ -1419,7 +1419,7 @@ class CursorAgentClient:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise TimeoutError()
+                raise asyncio.TimeoutError()
 
             try:
                 chunk = await asyncio.wait_for(

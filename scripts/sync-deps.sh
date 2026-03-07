@@ -91,7 +91,7 @@ show_help() {
 check_pip_tools() {
     if ! command -v pip-compile &> /dev/null; then
         echo -e "${YELLOW}[警告] pip-tools 未安装，正在安装...${NC}"
-        pip install pip-tools>=7.3.0
+        pip install "pip-tools>=7.3.0"
     fi
 }
 
@@ -207,7 +207,7 @@ sync_requirements() {
     
     if ! command -v pip-sync &> /dev/null; then
         echo -e "${YELLOW}[警告] pip-tools 未安装，正在安装...${NC}"
-        pip install pip-tools>=7.3.0
+        pip install "pip-tools>=7.3.0"
     fi
     
     # 安装所有依赖
@@ -403,7 +403,7 @@ run_audit() {
     
     if ! command -v pip-audit &> /dev/null; then
         echo -e "${YELLOW}[警告] pip-audit 未安装，正在安装...${NC}"
-        pip install pip-audit>=2.6.0
+        pip install "pip-audit>=2.6.0"
     fi
     
     echo -e "${BLUE}[INFO] 审计 requirements.txt...${NC}"

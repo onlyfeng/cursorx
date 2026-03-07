@@ -77,7 +77,7 @@ jobs:
           pip-sync requirements.txt
 
       - name: 安装安全审计工具
-        run: pip install pip-audit>=2.6.0
+        run: pip install "pip-audit>=2.6.0"
 
       - name: Run pip check
         id: pip_check
